@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ifc-console viewer</title>
+  <link rel="stylesheet" href="/viewer/static/app.css">
+  <link rel="icon" href="data:,">
+</head>
+<body>
+  <header id="topbar">
+    <span id="brand" aria-label="ifc-console viewer">
+      <!-- the >_ prompt mark, same squared monoline system as the logo kit -->
+      <svg class="brand-mark" width="15" height="15" viewBox="0 0 16 16" fill="none"
+           aria-hidden="true" stroke="currentColor" stroke-width="1.5"
+           stroke-linecap="square" stroke-linejoin="miter">
+        <path d="M3.4 3.6L7.9 8L3.4 12.4"/>
+        <path d="M9.9 12.4H13.1"/>
+      </svg>
+      <span class="brand-name">ifc-console</span>
+    </span>
+    <span id="model-name" aria-label="Current model"></span>
+    <span id="schema" class="meta" hidden></span>
+    <span id="mode" class="meta mode">...</span>
+    <span id="dirty" class="meta warn" hidden>Unsaved</span>
+    <span id="live" class="dot off" role="status" aria-label="Server disconnected"
+          title="Server connection"></span>
+    <span class="spacer"></span>
+    <button id="btn-clear-hl" class="text-action" hidden
+            title="Clear highlights placed by the assistant">
+      <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
+        <path d="m4 4 8 8m0-8-8 8" stroke="currentColor" stroke-width="1.4"
+              stroke-linecap="square"/>
+      </svg>
+      Clear highlights
+    </button>
+    <span class="toolbar-sep"></span>
+    <span class="seg" role="group" aria-label="Panels">
+      <button id="btn-panel-tree" class="seg-btn" aria-pressed="true"
+              aria-controls="tree-panel" aria-label="Toggle model tree"
+              title="Toggle the spatial tree panel">
+        <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
+          <rect x="2" y="3" width="12" height="10" rx=".75" stroke="currentColor" stroke-width="1.4"/>
+          <path d="M6 3.5V12.5" stroke="currentColor" stroke-width="1.4"/>
+        </svg>
+      </button>
+      <button id="btn-panel-props" class="seg-btn" aria-pressed="true"
+              aria-controls="props-panel" aria-label="Toggle properties"
+              title="Toggle the properties panel">
+        <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
+          <rect x="2" y="3" width="12" height="10" rx=".75" stroke="currentColor" stroke-width="1.4"/>
+          <path d="M10 3.5V12.5" stroke="currentColor" stroke-width="1.4"/>
+        </svg>
+      </button>
+    </span>
+    <button id="btn-settings" class="icon-btn" aria-expanded="false"
+            aria-controls="settings-panel" aria-label="Display settings"
+            title="Display settings">
+      <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
+        <path d="M2 4.5h6M11 4.5h3M2 11.5h3M8 11.5h6" stroke="currentColor"
+              stroke-width="1.4" stroke-linecap="round"/>
+        <circle cx="9.5" cy="4.5" r="1.9" stroke="currentColor" stroke-width="1.4"/>
+        <circle cx="6.5" cy="11.5" r="1.9" stroke="currentColor" stroke-width="1.4"/>
+      </svg>
+    </button>
+  </header>
+
+  <main id="layout">
+    <aside id="tree-panel">
+      <div class="panel-title">Model tree</div>
+      <div class="panel-body"><div id="tree" role="tree"></div></div>
+    </aside>
+    <div id="split-tree" class="splitter" role="separator" aria-orientation="vertical"
+         aria-label="Resize model tree"
+         title="Drag to resize; double-click to reset"></div>
+
+    <section id="canvas-wrap">
+      <canvas id="canvas"></canvas>
+      <div id="overlay" class="overlay"><div class="overlay-card">loading&hellip;</div></div>
+
+      <div id="settings-panel" class="popover" hidden>
+        <div class="popover-title">Display</div>
+        <label class="switch-row">
+          <span class="switch-label">Ground grid <kbd>G</kbd></span>
+          <input type="checkbox" id="set-grid" class="switch">
+        </label>
+        <label class="switch-row">
+          <span class="switch-label">Origin axes</span>
+          <input type="checkbox" id="set-axes" class="switch">
+        </label>
+      </div>
+
+      <div id="help-panel" class="popover" hidden>
+        <div class="popover-title">Navigation</div>
+        <table>
+          <tr><td>drag</td><td>orbit</td></tr>
+          <tr><td>right-drag</td><td>pan</td></tr>
+          <tr><td>scroll</td><td>zoom</td></tr>
+          <tr><td>click</td><td>select</td></tr>
+          <tr><td>ctrl+click</td><td>add to selection</td></tr>
+          <tr><td><kbd>F</kbd></td><td>fit the whole model</td></tr>
+          <tr><td><kbd>G</kbd></td><td>toggle the ground grid</td></tr>
+          <tr><td>tree click</td><td>select and frame a branch</td></tr>
+          <tr><td>tree checkbox</td><td>hide or show a branch</td></tr>
+        </table>
+      </div>
+    </section>
+
+    <div id="split-props" class="splitter" role="separator" aria-orientation="vertical"
+         aria-label="Resize properties"
+         title="Drag to resize; double-click to reset"></div>
+    <aside id="props-panel">
+      <div class="panel-title">Properties</div>
+      <div class="panel-body">
+        <div id="props"><p class="hint">click an element to inspect it</p></div>
+      </div>
+    </aside>
+  </main>
+
+  <footer id="statusbar">
+    <span id="sel-info">No selection</span>
+    <span id="hl-info"></span>
+    <span class="spacer"></span>
+    <span id="stats"></span>
+    <button id="btn-help" class="icon-btn" aria-expanded="false"
+            aria-controls="help-panel" aria-label="Viewer controls"
+            title="Viewer controls">
+      <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
+        <circle cx="8" cy="8" r="5.75" stroke="currentColor" stroke-width="1.25"/>
+        <path d="M8 7.2v3.5M8 5.1v.1" stroke="currentColor" stroke-width="1.5"
+              stroke-linecap="square"/>
+      </svg>
+    </button>
+  </footer>
+
+  <script type="module" src="/viewer/static/app.js"></script>
+</body>
+</html>

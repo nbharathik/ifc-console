@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+.pytest_cache/
+.ruff_cache/
+.coverage
+*.log
+
+# Generated test fixtures
+tests/fixtures/generated/
+
+# MkDocs output
+site/
+
+# Local development notes (design docs, implementation log, scratch)
+dev/
+*.ifc
+CLAUDE.md

@@ -1,0 +1,48 @@
+name: Release
+
+# Publishes to PyPI via trusted publishing when a v* tag is pushed.
+# One-time setup: on PyPI, add a trusted publisher for this repository,
+# workflow "release.yml", environment "pypi". No token secrets needed.
+
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv sync --extra dev
+      - run: uv run ruff check src tests
+      - run: uv run pytest
+
+  publish:
+    needs: test
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write  # trusted publishing
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - name: Build sdist and wheel
+        run: uv build
+      - name: Verify viewer assets in wheel
+        run: uv run python -c "import zipfile,glob; names=zipfile.ZipFile(glob.glob('dist/*.whl')[0]).namelist(); assert any('web-ifc.wasm' in n for n in names)"
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+
+  docs:
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write  # push to gh-pages
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - name: Deploy docs to GitHub Pages
+        run: |
+          uv sync --extra docs
+          uv run mkdocs gh-deploy --force

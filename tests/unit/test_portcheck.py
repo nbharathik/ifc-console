@@ -1,0 +1,87 @@
+"""Port occupant identification: free vs ifc-console vs foreign app."""
+
+from __future__ import annotations
+
+import http.server
+import json
+import socket
+import threading
+
+from ifc_console.portcheck import (
+    FOREIGN,
+    FREE,
+    IFC_CONSOLE,
+    IFC_CONSOLE_OTHER,
+    classify_http,
+    conflict_hint,
+    port_status,
+)
+
+STATUS_BODY = json.dumps({"server": {"name": "ifc-console"}, "model": None})
+UNAUTHORIZED_BODY = json.dumps(
+    {"error": "unauthorized", "hint": "the token is shown in the ifc-console terminal"}
+)
+
+
+def _free_port() -> int:
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
+
+
+# ------------------------------------------------------------- classification
+def test_classify_running_session() -> None:
+    kind, _ = classify_http(200, STATUS_BODY)
+    assert kind == IFC_CONSOLE
+
+
+def test_classify_ifc_code_with_other_token() -> None:
+    kind, _ = classify_http(401, UNAUTHORIZED_BODY)
+    assert kind == IFC_CONSOLE_OTHER
+
+
+def test_classify_foreign_app() -> None:
+    kind, detail = classify_http(404, "<html>totally different app</html>")
+    assert kind == FOREIGN
+    assert "404" in detail
+
+
+# ------------------------------------------------------------------- probing
+def test_free_port_reports_free() -> None:
+    kind, _ = port_status(_free_port())
+    assert kind == FREE
+
+
+def test_silent_socket_is_foreign() -> None:
+    """Something accepts connections but speaks no HTTP: not ifc-console."""
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        sock.listen(1)
+        port = sock.getsockname()[1]
+        kind, detail = port_status(port)
+    assert kind == FOREIGN
+    assert "no HTTP answer" in detail
+
+
+def test_foreign_http_server_identified() -> None:
+    server = http.server.HTTPServer(
+        ("127.0.0.1", 0), http.server.BaseHTTPRequestHandler
+    )
+    port = server.server_address[1]
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        kind, detail = port_status(port)
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+    assert kind == FOREIGN
+    assert "not ifc-console" in detail
+
+
+# ---------------------------------------------------------------------- hints
+def test_hints_are_actionable() -> None:
+    assert "--port" in conflict_hint(IFC_CONSOLE, 8383)
+    assert "token" in conflict_hint(IFC_CONSOLE_OTHER, 8383)
+    foreign = conflict_hint(FOREIGN, 8383)
+    assert "server.port" in foreign and "mcp-config" in foreign

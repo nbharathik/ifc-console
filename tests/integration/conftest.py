@@ -1,0 +1,77 @@
+"""Integration harness: an in-memory MCP client wired to a real AppCore."""
+
+from __future__ import annotations
+
+import json
+from collections.abc import AsyncIterator
+from pathlib import Path
+
+import pytest_asyncio
+from mcp.shared.memory import create_connected_server_and_client_session
+
+from ifc_console.app import AppCore
+from ifc_console.policy.modes import Mode
+from ifc_console.settings import SettingsStore
+
+
+class Harness:
+    def __init__(self, core: AppCore, session) -> None:
+        self.core = core
+        self.session = session
+
+    async def call(self, tool: str, **arguments) -> dict:
+        result = await self.session.call_tool(tool, arguments)
+        texts = [c.text for c in result.content if getattr(c, "type", None) == "text"]
+        payload = json.loads(texts[0]) if texts else {}
+        payload["_images"] = sum(
+            1 for c in result.content if getattr(c, "type", None) == "image"
+        )
+        return payload
+
+    async def list_tools(self) -> list[str]:
+        result = await self.session.list_tools()
+        return [t.name for t in result.tools]
+
+    def set_mode(self, mode: Mode) -> None:
+        self.core.set_mode(mode, by="test")
+
+
+async def _make_core(home: Path, project_dir: Path, model: Path | None, mode: Mode) -> AppCore:
+    store = SettingsStore(home=home, project_dir=project_dir, env={})
+    core = AppCore(store, mode=mode)
+    core.start_audit()
+    if model is not None:
+        core.add_allowed_dir(model.parent)
+        await core.open_model(model)
+    return core
+
+
+@pytest_asyncio.fixture
+async def harness_factory(tmp_path: Path):
+    created: list[AppCore] = []
+
+    async def factory(
+        model: Path | None = None,
+        mode: Mode = Mode.ASK,
+    ) -> AsyncIterator[Harness]:
+        home = tmp_path / "home"
+        core = await _make_core(home, tmp_path, model, mode)
+        created.append(core)
+        from ifc_console.mcp.server import build_mcp
+
+        mcp = build_mcp(core)
+        cm = create_connected_server_and_client_session(mcp, raise_exceptions=True)
+        session = await cm.__aenter__()
+        await session.initialize()
+        harness = Harness(core, session)
+        harness._cm = cm  # keep the context manager alive
+        return harness
+
+    yield factory
+    for core in created:
+        core.shutdown()
+
+
+@pytest_asyncio.fixture
+async def ask_harness(harness_factory, work_model: Path):
+    return await harness_factory(model=work_model, mode=Mode.ASK)

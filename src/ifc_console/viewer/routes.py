@@ -1,0 +1,184 @@
+"""Viewer HTTP + WebSocket routes.
+
+Mounted into the same Starlette app as /mcp. Every route except the static
+assets is token-gated by TokenAuthMiddleware; on top of that, everything here
+answers 404 while the viewer is disabled so a session without --viewer exposes
+no viewer surface at all.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
+
+from starlette.responses import FileResponse, JSONResponse, Response
+from starlette.routing import Route, WebSocketRoute
+from starlette.staticfiles import StaticFiles
+from starlette.websockets import WebSocket, WebSocketDisconnect
+
+from ifc_console.ifc.elements import element_detail
+from ifc_console.mcp.envelope import ToolError
+
+if TYPE_CHECKING:
+    from ifc_console.app import AppCore
+
+log = logging.getLogger("ifc-console.viewer")
+
+STATIC_DIR = Path(__file__).parent / "static"
+
+# The SPA makes zero non-localhost requests; the CSP makes that a guarantee.
+# script-src needs 'unsafe-eval': web-ifc's embind glue builds its invoker
+# functions with new Function(...) at runtime. Scripts still load exclusively
+# from 'self' on a token-gated loopback origin.
+_CSP = (
+    "default-src 'self'; "
+    "connect-src 'self' ws://127.0.0.1:* ws://localhost:*; "
+    "img-src 'self' blob: data:; "
+    "worker-src 'self' blob:; "
+    "script-src 'self' 'unsafe-eval' 'wasm-unsafe-eval'; "
+    "style-src 'self'"
+)
+
+
+def _disabled_response() -> JSONResponse:
+    return JSONResponse(
+        {
+            "error": "viewer_disabled",
+            "hint": "start ifc-console with --viewer, or type /viewer in the terminal",
+        },
+        status_code=404,
+    )
+
+
+def _tool_error_response(exc: ToolError, status: int) -> JSONResponse:
+    return JSONResponse(
+        {"error": exc.code, "message": exc.message, "hint": exc.hint},
+        status_code=status,
+    )
+
+
+def build_viewer_routes(core: AppCore) -> list[Any]:
+    """Routes for the SPA shell, model/element APIs, and the live WebSocket."""
+
+    async def viewer_shell(request) -> Response:
+        if not core.viewer.enabled:
+            return _disabled_response()
+        return FileResponse(
+            STATIC_DIR / "index.html",
+            headers={"Content-Security-Policy": _CSP, "Cache-Control": "no-cache"},
+        )
+
+    async def model_ifc(request) -> Response:
+        if not core.viewer.enabled:
+            return _disabled_response()
+        session = core.session
+        if not session.loaded:
+            return JSONResponse(
+                {"error": "NO_MODEL_LOADED", "hint": "open a model in the terminal"},
+                status_code=404,
+            )
+        max_mb = core.settings.viewer.max_model_mb
+        if session.size_bytes > max_mb * 1_048_576:
+            return JSONResponse(
+                {
+                    "error": "MODEL_TOO_LARGE",
+                    "message": f"model is {session.size_bytes / 1_048_576:.0f} MB, "
+                    f"viewer limit is {max_mb} MB",
+                    "hint": "raise viewer.max_model_mb in settings if you really "
+                    "want to try",
+                },
+                status_code=413,
+            )
+        etag = core.viewer_hub.model_etag() or ""
+        if request.headers.get("if-none-match") == etag:
+            return Response(status_code=304, headers={"ETag": etag})
+        data = core.viewer_hub.cached_model_bytes(etag)
+        if data is None:
+            # Serialization runs on the model worker: the file object is not
+            # thread-safe and edits must not interleave with it.
+            data = await session.run(
+                lambda: session.ifc.to_string().encode("utf-8"), timeout=600
+            )
+            core.viewer_hub.cache_model_bytes(etag, data)
+        return Response(
+            data,
+            media_type="application/x-step",
+            headers={"ETag": etag, "Cache-Control": "no-cache"},
+        )
+
+    async def element(request) -> Response:
+        if not core.viewer.enabled:
+            return _disabled_response()
+        session = core.session
+        if not session.loaded:
+            return JSONResponse({"error": "NO_MODEL_LOADED"}, status_code=404)
+        guid = request.path_params["guid"]
+
+        def job() -> dict | None:
+            try:
+                entity = session.ifc.by_guid(guid)
+            except Exception:
+                return None
+            if entity is None:
+                return None
+            return element_detail(entity, ("attributes", "psets", "qtos", "type", "container"))
+
+        try:
+            detail = await session.run(job, timeout=60)
+        except ToolError as exc:
+            return _tool_error_response(exc, status=503)
+        if detail is None:
+            return JSONResponse(
+                {"error": "ELEMENT_NOT_FOUND", "guid": guid}, status_code=404
+            )
+        return JSONResponse(detail)
+
+    async def ws_endpoint(websocket: WebSocket) -> None:
+        if not core.viewer.enabled:
+            await websocket.close(code=4404)
+            return
+        await websocket.accept()
+        hub = core.viewer_hub
+        client = None
+        try:
+            # First frame should be the hello handshake (belt on top of the
+            # token check the middleware already did at the upgrade).
+            raw = await websocket.receive_text()
+            frame = json.loads(raw)
+            if frame.get("type") == "hello" and frame.get("token") != core.token:
+                await websocket.close(code=4401)
+                return
+            client = hub.register(websocket)
+            await client.send(hub.status_payload())
+            if frame.get("type") != "hello":
+                await hub.handle_frame(client, frame)
+            while True:
+                raw = await websocket.receive_text()
+                try:
+                    frame = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(frame, dict):
+                    await hub.handle_frame(client, frame)
+        except WebSocketDisconnect:
+            pass
+        except Exception:
+            log.exception("viewer websocket failed")
+        finally:
+            if client is not None:
+                hub.unregister(client)
+
+    return [
+        Route("/viewer", viewer_shell, methods=["GET"]),
+        Route("/api/model.ifc", model_ifc, methods=["GET"]),
+        Route("/api/elements/{guid}", element, methods=["GET"]),
+        WebSocketRoute("/ws", ws_endpoint),
+    ]
+
+
+def build_static_app() -> StaticFiles:
+    """Static assets (JS/CSS/WASM). Public by design: they are generic vendor
+    code plus our SPA source and contain nothing session-specific."""
+    return StaticFiles(directory=STATIC_DIR)

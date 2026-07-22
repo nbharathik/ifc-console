@@ -1,0 +1,6 @@
+# LF everywhere, on every platform: the vendored viewer assets must stay
+# byte-identical to their npm distribution (see viewer/static/vendor/).
+* text=auto eol=lf
+*.wasm binary
+*.png binary
+*.jpg binary

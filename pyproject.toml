@@ -1,0 +1,71 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "ifc-console"
+version = "0.1.0"
+description = "A terminal interface to connect IFC files to LLMs: a standalone MCP server for IFC/BIM with an ask/edit safety switch and a local 3D viewer."
+readme = "README.md"
+requires-python = ">=3.10,<3.15"
+license = { text = "Apache-2.0" }
+authors = [{ name = "nbharathik" }]
+keywords = ["ifc", "bim", "mcp", "ifcopenshell", "llm", "claude", "openbim"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering",
+]
+dependencies = [
+    # 1.16 is the first release with FastMCP.remove_tool, which /viewer off needs.
+    "mcp>=1.16,<2",
+    "ifcopenshell>=0.8.1,<0.9",
+    "pydantic>=2.7,<3",
+    "textual>=1.0",
+    "uvicorn>=0.30",
+    "starlette>=0.37",
+    # The viewer's WebSocket endpoint needs a WS protocol implementation
+    # for uvicorn.
+    "websockets>=12",
+]
+
+[project.optional-dependencies]
+dev = [
+    "httpx>=0.27",
+    "pytest>=8",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.5",
+]
+docs = [
+    "mkdocs>=1.6",
+    "mkdocs-material>=9.5",
+]
+
+[project.urls]
+Homepage = "https://github.com/nbharathik/ifc-console"
+Documentation = "https://nbharathik.github.io/ifc-console/"
+Repository = "https://github.com/nbharathik/ifc-console"
+Issues = "https://github.com/nbharathik/ifc-console/issues"
+
+[project.scripts]
+ifc-console = "ifc_console.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ifc_console"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM"]
+ignore = ["E501"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+addopts = "-ra -q"

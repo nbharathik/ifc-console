@@ -1,0 +1,66 @@
+site_name: ifc-console
+site_description: >-
+  A terminal interface to connect IFC files to LLMs: a standalone MCP server
+  for IFC/BIM with an ask/edit safety switch and a local 3D viewer.
+site_url: https://nbharathik.github.io/ifc-console/
+repo_url: https://github.com/nbharathik/ifc-console
+repo_name: ifc-console
+edit_uri: ""
+
+theme:
+  name: material
+  logo: assets/brand/mark-white.svg
+  favicon: assets/brand/favicon.svg
+  palette:
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: blue
+      accent: light blue
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: blue
+      accent: light blue
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+  features:
+    - navigation.sections
+    - navigation.top
+    - navigation.footer
+    - content.code.copy
+    - content.tabs.link
+    - search.suggest
+    - toc.integrate
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.highlight
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+
+nav:
+  - Home: index.md
+  - Getting started: getting-started.md
+  - Guide:
+      - The console: console.md
+      - Connecting clients: clients.md
+      - Safety model: safety.md
+      - 3D viewer: viewer.md
+  - Reference:
+      - MCP tools: tools.md
+      - CLI: cli.md
+      - Settings: settings.md
+  - Project:
+      - Architecture: architecture.md
+      - Troubleshooting: troubleshooting.md
+      - Development: development.md
+      - Contributing and security: contributing.md
