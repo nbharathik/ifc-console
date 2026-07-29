@@ -3,7 +3,7 @@
     <picture>
       <source media="(prefers-color-scheme: dark)" srcset="docs/assets/brand/horizontal-dark.svg">
       <source media="(prefers-color-scheme: light)" srcset="docs/assets/brand/horizontal-light.svg">
-      <img alt="IFC CONSOLE" src="docs/assets/brand/horizontal-light.svg">
+      <img alt="IFC CONSOLE" src="docs/assets/brand/horizontal-light.svg" width="60%">
     </picture>
   </a>
 </p>

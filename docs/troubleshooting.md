@@ -49,6 +49,25 @@ npx -y mcp-remote@0.1.38 --help
 Use the same pinned version as your config entry; npx caches each version spec
 separately. Every launch after a warm cache starts instantly.
 
+### Claude Desktop shows ifc-console as disconnected
+
+Claude Desktop connects to its MCP servers once, at app startup, and never
+retries on its own. If the ifc-console console was not running when Claude
+Desktop started, or you closed it while Claude Desktop was open, the entry
+stays disconnected until the app is relaunched. Nothing is misconfigured; the
+persistent token and port mean your config entry is still correct.
+
+Fix, in this order:
+
+1. Start ifc-console and leave it running.
+2. Fully quit Claude Desktop. Closing the window is not enough: quit it from
+   the system tray, or end the "Claude" processes in Task Manager.
+3. Start Claude Desktop again. It reconnects on launch.
+
+Rule of thumb: have the ifc-console console up before you open Claude Desktop.
+Claude Code does not need this dance; its `/mcp` menu can reconnect a running
+session without a restart.
+
 ### The client keeps opening an old IFC file
 
 The client is probably a standalone stdio server with `--file` in its arguments.
