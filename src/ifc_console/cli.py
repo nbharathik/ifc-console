@@ -173,10 +173,11 @@ def _add_run_flags(parser: argparse.ArgumentParser) -> None:
 
 
 def _version_line() -> str:
+    # metadata only: importing ifcopenshell itself costs seconds per launch
     try:
-        import ifcopenshell
+        from importlib.metadata import version
 
-        ios = ifcopenshell.version
+        ios = version("ifcopenshell")
     except Exception:
         ios = "missing"
     return f"ifc-console {__version__} (ifcopenshell {ios}, python {platform.python_version()})"
@@ -282,6 +283,11 @@ def _cmd_interactive(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 3
+    # instant feedback; the console takes over the screen once it is up
+    print(f"ifc-console {__version__} starting...", file=sys.stderr, flush=True)
+    from ifc_console import preload
+
+    preload.start()
     store = _make_store(args)
     _setup_logging(store, level=store.settings.logging.level)
     # the TUI owns the terminal: drop the stderr handler, keep the file log
@@ -300,6 +306,9 @@ def _cmd_interactive(args: argparse.Namespace) -> int:
 
 
 def _run_headless_http(args: argparse.Namespace) -> int:
+    from ifc_console import preload
+
+    preload.start()
     store = _make_store(args)
     _setup_logging(store, level=store.settings.logging.level)
     core = _make_core(args, store, transport="http")
@@ -356,6 +365,9 @@ def _cmd_serve(args: argparse.Namespace) -> int:
     if args.http:
         return _run_headless_http(args)
     # stdio: stdout belongs to the protocol; logs go to stderr + file only
+    from ifc_console import preload
+
+    preload.start()
     store = _make_store(args)
     _setup_logging(store, level=store.settings.logging.level)
     core = _make_core(args, store, transport="stdio")

@@ -124,6 +124,10 @@ class IfcConsoleApp(App):
     async def ensure_server(self, port: int) -> bool:
         if self._server is not None:
             return True
+        # heavy imports run off the event loop so the UI never freezes
+        from ifc_console import preload
+
+        await asyncio.to_thread(preload.wait)
         from ifc_console.mcp.server import build_http_app, build_mcp, make_uvicorn_server
 
         self.core.port = port
