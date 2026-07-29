@@ -318,6 +318,21 @@ def build_namespace(
             raise RuntimeError("no IFC model is loaded")
         return list(ifcopenshell.util.selector.filter_elements(ifc_file, selector))
 
+    # Read-only domain helpers: shorter generated code, fewer guard trips.
+    def by_class(name: str) -> list[Any]:
+        if ifc_file is None:
+            raise RuntimeError("no IFC model is loaded")
+        return list(ifc_file.by_type(name))
+
+    def psets(element: Any) -> dict:
+        return ifcopenshell.util.element.get_psets(element, psets_only=True)
+
+    def qtos(element: Any) -> dict:
+        return ifcopenshell.util.element.get_psets(element, qtos_only=True)
+
+    def container(element: Any) -> Any:
+        return ifcopenshell.util.element.get_container(element)
+
     return {
         "__builtins__": ns_builtins,
         "__name__": "__ifc_code_exec__",
@@ -329,4 +344,8 @@ def build_namespace(
         "unit_util": ifcopenshell.util.unit,
         "get_ifc_file": get_ifc_file,
         "query": query,
+        "by_class": by_class,
+        "psets": psets,
+        "qtos": qtos,
+        "container": container,
     }

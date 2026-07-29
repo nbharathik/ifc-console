@@ -12,12 +12,19 @@ pytestmark = pytest.mark.asyncio
 
 CORE_TOOLS = {
     "get_session_status",
+    "orient",
+    "describe_capabilities",
     "get_ifc_project_info",
     "get_spatial_structure",
     "query_elements",
     "get_element",
     "get_psets",
     "get_schema_docs",
+    "validate_model",
+    "validate_ids",
+    "compute_quantities",
+    "get_georeferencing",
+    "export_csv",
     "execute_ifc_code",
     "list_ifc_files",
     "open_ifc_file",
@@ -26,7 +33,7 @@ CORE_TOOLS = {
 
 
 async def test_core_tools_registered_viewer_tools_absent(ask_harness) -> None:
-    """Without the viewer, the surface is the lean 11-tool core set."""
+    """Without the viewer, the surface is the lean core set."""
     tools = set(await ask_harness.list_tools())
     assert CORE_TOOLS.issubset(tools), CORE_TOOLS - tools
     assert not tools & set(VIEWER_TOOLS)

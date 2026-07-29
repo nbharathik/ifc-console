@@ -1,4 +1,4 @@
-"""File tools: list_ifc_files, open_ifc_file, save_ifc_file."""
+﻿"""File tools: list_ifc_files, open_ifc_file, save_ifc_file."""
 
 from __future__ import annotations
 
@@ -7,11 +7,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any
 
-from mcp.server.fastmcp import FastMCP
-from mcp.types import ToolAnnotations
 from pydantic import Field
 
-from ifc_console.mcp.envelope import ToolError, ok
+from ifc_console.mcp.compat import MCPServer, ToolAnnotations
+from ifc_console.mcp.envelope import Envelope, ToolError, ok
 from ifc_console.mcp.server import enveloped
 from ifc_console.policy.modes import Mode
 
@@ -34,7 +33,7 @@ def _peek_schema(path: Path) -> str | None:
     return match.group(1) if match else None
 
 
-def register(mcp: FastMCP, core: AppCore) -> None:
+def register(mcp: MCPServer, core: AppCore) -> None:
     limit_ = core.settings.exec.output_char_limit
 
     @mcp.tool(
@@ -53,7 +52,7 @@ def register(mcp: FastMCP, core: AppCore) -> None:
         ] = None,
         recursive: bool = False,
         limit: Annotated[int, Field(ge=1, le=500)] = 100,
-    ) -> str:
+    ) -> Envelope:
         if dir is not None:
             root = core.require_path_allowed(Path(dir))
             if not root.is_dir():
@@ -122,7 +121,7 @@ def register(mcp: FastMCP, core: AppCore) -> None:
     @enveloped(core, "open_ifc_file")
     async def open_ifc_file(
         path: Annotated[str, Field(description="Path to an .ifc/.ifczip/.ifcxml file.")],
-    ) -> str:
+    ) -> Envelope:
         target = core.require_path_allowed(Path(path))
         if target.suffix.lower() not in _IFC_SUFFIXES:
             raise ToolError(
@@ -170,7 +169,7 @@ def register(mcp: FastMCP, core: AppCore) -> None:
             str | None, Field(description="Save-as path; omit to save in place.")
         ] = None,
         overwrite: bool = False,
-    ) -> str:
+    ) -> Envelope:
         core.session.require_loaded()
         if core.policy.mode is Mode.ASK:
             raise ToolError(

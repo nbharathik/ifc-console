@@ -1,4 +1,4 @@
-"""Viewer tools: selection, highlight, screenshot.
+﻿"""Viewer tools: selection, highlight, screenshot.
 
 This is the optional tool category: it is registered only while the viewer
 is enabled (AppCore._sync_viewer_tools adds and removes it as /viewer
@@ -14,13 +14,12 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Annotated, Any, Literal
 
-from mcp.server.fastmcp import FastMCP
-from mcp.server.fastmcp.utilities.types import Image
-from mcp.types import ToolAnnotations
-from pydantic import Field
+from pydantic import BaseModel, Field
 
+from ifc_console.branding import categorical_color
 from ifc_console.ifc.query import DEFAULT_FIELDS, element_row
-from ifc_console.mcp.envelope import ok
+from ifc_console.mcp.compat import Image, MCPServer, ToolAnnotations
+from ifc_console.mcp.envelope import Envelope, ToolError, ok
 from ifc_console.mcp.server import enveloped
 
 if TYPE_CHECKING:
@@ -30,10 +29,27 @@ VIEW_ANN = ToolAnnotations(readOnlyHint=True, destructiveHint=False)
 
 # The names this module registers; AppCore uses them to unregister on
 # /viewer off. Keep in sync with the @mcp.tool functions below.
-TOOL_NAMES = ("get_viewer_selection", "highlight_elements", "get_viewer_screenshot")
+TOOL_NAMES = (
+    "get_viewer_selection",
+    "highlight_elements",
+    "apply_color_theme",
+    "get_viewer_screenshot",
+)
 
 
-def register(mcp: FastMCP, core: AppCore) -> None:
+class ColorGroup(BaseModel):
+    """One legend entry: a label, its elements, and an optional color."""
+
+    label: str = Field(description="Legend label, e.g. 'F30' or 'Level 2'.")
+    global_ids: list[str] = Field(min_length=1, max_length=5000)
+    color: str | None = Field(
+        default=None,
+        pattern="^#[0-9a-fA-F]{6}$",
+        description="Optional #rrggbb; a colorblind-safe palette color is assigned when omitted.",
+    )
+
+
+def register(mcp: MCPServer, core: AppCore) -> None:
     limit_ = core.settings.exec.output_char_limit
 
     @mcp.tool(
@@ -46,7 +62,7 @@ def register(mcp: FastMCP, core: AppCore) -> None:
         ),
     )
     @enveloped(core, "get_viewer_selection")
-    async def get_viewer_selection() -> str:
+    async def get_viewer_selection() -> Envelope:
         hub = core.viewer_hub
         hub.require_connected()
         guids = list(hub.selection)
@@ -95,7 +111,7 @@ def register(mcp: FastMCP, core: AppCore) -> None:
         isolate: bool = False,
         fit: bool = True,
         clear: bool = False,
-    ) -> str:
+    ) -> Envelope:
         hub = core.viewer_hub
         hub.require_connected()
         if clear:
@@ -123,6 +139,73 @@ def register(mcp: FastMCP, core: AppCore) -> None:
         data: dict[str, Any] = {"highlighted": len(found), "missing": missing}
         if not found:
             data["note"] = "no valid GlobalIds to highlight; nothing changed in the viewer"
+        return ok(data, core.session_meta(), char_limit=limit_)
+
+    @mcp.tool(
+        annotations=VIEW_ANN,
+        description=(
+            "[VIEW] Paint viewer elements by group with a legend: you compute the "
+            "grouping (by storey, type, material, a pset value, pass/fail, "
+            "anything), the viewer colors it, the user reads it. Colors come from "
+            "a colorblind-safe palette unless a group sets its own. clear=true "
+            "removes the theme. Requires the viewer."
+        ),
+    )
+    @enveloped(core, "apply_color_theme")
+    async def apply_color_theme(
+        groups: Annotated[
+            list[ColorGroup] | None,
+            Field(max_length=24, description="The groups to paint, in legend order."),
+        ] = None,
+        title: Annotated[str, Field(max_length=80, description="Legend title.")] = "",
+        clear: bool = False,
+    ) -> Envelope:
+        hub = core.viewer_hub
+        hub.require_connected()
+        if clear:
+            await hub.send_color_theme([], title="", clear=True)
+            return ok({"cleared": True}, core.session_meta(), char_limit=limit_)
+        if not groups:
+            raise ToolError(
+                "INVALID_INPUT",
+                "groups is required unless clear=true.",
+                "Pass groups=[{label, global_ids, color?}] or clear=true.",
+            )
+        core.session.require_loaded()
+        wanted = [list(dict.fromkeys(g.global_ids)) for g in groups]
+
+        def job() -> tuple[list[list[str]], list[str]]:
+            resolved, missing = [], []
+            for gids in wanted:
+                found = []
+                for gid in gids:
+                    try:
+                        entity = core.session.ifc.by_guid(gid)
+                    except Exception:
+                        entity = None
+                    (found if entity is not None else missing).append(gid)
+                resolved.append(found)
+            return resolved, missing
+
+        resolved, missing = await core.session.run(job, timeout=60)
+        frame_groups, legend = [], []
+        for index, group in enumerate(groups):
+            color = group.color or categorical_color(index)
+            frame_groups.append(
+                {"label": group.label, "color": color, "guids": resolved[index]}
+            )
+            legend.append(
+                {"label": group.label, "color": color, "count": len(resolved[index])}
+            )
+        await hub.send_color_theme(frame_groups, title=title, clear=False)
+        data: dict[str, Any] = {
+            "title": title,
+            "legend": legend,
+            "painted": sum(len(r) for r in resolved),
+            "missing": missing[:50],
+        }
+        if not data["painted"]:
+            data["note"] = "no valid GlobalIds; nothing was painted"
         return ok(data, core.session_meta(), char_limit=limit_)
 
     @mcp.tool(

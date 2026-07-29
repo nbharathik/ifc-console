@@ -69,7 +69,8 @@ nearby IFC files, filtered as you type.
 | `/open <path>` | open a model by path (a bare path in the prompt works too) |
 | `/recent` | list recently opened models |
 | `/mode [ask\|edit]` | show or change what the AI may do (switching to edit asks to confirm) |
-| `/viewer [off\|url]` | open the 3D viewer (its 3 MCP tools register live); `off` closes tabs and removes them, `url` prints the link |
+| `/theme [dark\|light\|auto]` | switch the console theme (persists; open viewer tabs follow) |
+| `/viewer [off\|url]` | open the 3D viewer (its 4 MCP tools register live); `off` closes tabs and removes them, `url` prints the link |
 | `/connect [client\|all]` | shared-HTTP setup for claude-code, claude-desktop, cursor, vscode, codex |
 | `/copy [client\|url\|viewer\|token]` | copy a complete client setup, MCP URL, viewer URL, or token |
 | `/status` | session summary |

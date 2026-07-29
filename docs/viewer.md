@@ -15,23 +15,34 @@ bundled in the package, and `ifc-console doctor` verifies them on its
 - At launch: `ifc-console --viewer ...` or `viewer.enabled_default true`.
 - Headless: `ifc-console --no-tui --viewer` prints the viewer URL.
 
-The URL carries the session token
-(`http://127.0.0.1:8383/viewer?t=<token>`); without it the page and its APIs
-answer 401. Everything is served from your machine: three.js and the web-ifc
-WASM parser ship inside the package, and the page makes zero non-localhost
-requests (enforced by its Content-Security-Policy).
+The URL carries the session token in its fragment
+(`http://127.0.0.1:8383/viewer#t=<token>`). The fragment never leaves the
+browser, so the token stays out of server logs and referrers; the page reads
+it, scrubs it from the address bar, and then authenticates every API call and
+the live WebSocket with it. Without the token the data APIs answer 401. The
+server additionally rejects any request whose Host or Origin is not loopback,
+so a malicious website cannot reach the session even from your own machine.
+Everything is served from your machine: three.js and the web-ifc WASM parser
+ship inside the package, and the page makes zero non-localhost requests
+(enforced by its Content-Security-Policy).
 
 stdio sessions have no HTTP server, so no viewer. Run the console or `--no-tui`
 if you want it.
 
 ## Tool registration follows the viewer
 
-The three viewer tools (`get_viewer_selection`, `highlight_elements`,
-`get_viewer_screenshot`) are an optional category. They appear in the MCP tool
-list only while the viewer is enabled. `/viewer` adds them live, `/viewer off`
-removes them, and sessions that never touch the viewer keep the lean 11-tool
-core. Clients that connected before the toggle see the change on their next tool
-refresh or reconnect.
+The four viewer tools (`get_viewer_selection`, `highlight_elements`,
+`apply_color_theme`, `get_viewer_screenshot`) are an optional category. They
+appear in the MCP tool list only while the viewer is enabled. `/viewer` adds
+them live, `/viewer off` removes them, and sessions that never touch the
+viewer keep the lean core set. Clients that connected before the toggle see
+the change on their next tool refresh or reconnect.
+
+The color theme is the review headline: the LLM computes any grouping (by
+storey, type, material, a property value, validation pass/fail), the viewer
+paints it with colorblind-safe colors, and a legend with labels and counts
+appears in the corner of the canvas. The console theme (`/theme dark|light`)
+also restyles the viewer live, 3D canvas included.
 
 ## What you can do
 
@@ -43,8 +54,12 @@ refresh or reconnect.
   remembers it: the LLM reads it with `get_viewer_selection`. "Delete this wall"
   becomes unambiguous.
 - **Spatial tree** (left): project > site > building > storeys, with checkboxes
-  toggling whole branches. Clicking a node selects its elements and frames them.
-  Long names never truncate: the panel scrolls and shows a hover tooltip.
+  toggling whole branches. Clicking a node selects its elements without moving
+  the camera. Long names never truncate: the panel scrolls and shows a hover
+  tooltip.
+- **View tools** (the stack icon, top left of the canvas): isolate or hide the
+  selection, show all, zoom to the selection or the whole model, and jump to
+  view presets (top, front, iso, ...).
 - **Properties** (right): attributes, type, container chain, and property sets of
   the last clicked element, straight from the server (same source as
   `get_element`). Each section folds.

@@ -14,12 +14,47 @@ from pathlib import Path
 
 from textual.app import App
 from textual.binding import Binding
+from textual.theme import Theme
 
+from ifc_console import branding
 from ifc_console.app import AppCore
 from ifc_console.tui.console import ConsoleScreen
 from ifc_console.tui.modals import QuitModal
 
 log = logging.getLogger("ifc-console.tui")
+
+# Brand themes built from the grayscale kit; status hues match the viewer and
+# keep the ask/edit convention legible on both backgrounds.
+THEMES = {
+    "dark": Theme(
+        name="ifc-dark",
+        primary=branding.GRAY_LIGHT,
+        secondary=branding.GRAY_MID,
+        accent=branding.GRAY_LIGHT,
+        foreground=branding.GRAY_LIGHT,
+        background=branding.BG_DARK,
+        surface="#1c1a19",
+        panel="#262322",
+        success="#72bd91",
+        warning="#d8ad64",
+        error="#df7378",
+        dark=True,
+    ),
+    "light": Theme(
+        name="ifc-light",
+        primary=branding.GRAY_DARK,
+        secondary=branding.GRAY_MID,
+        accent=branding.GRAY_DARK,
+        foreground=branding.GRAY_DARK,
+        background=branding.PAPER,
+        surface="#e9edf2",
+        panel="#dde3ea",
+        success="#1c7c4d",
+        warning="#9a6b1a",
+        error="#b3383f",
+        dark=False,
+    ),
+}
 
 
 class IfcConsoleApp(App):
@@ -47,9 +82,19 @@ class IfcConsoleApp(App):
 
     # -- lifecycle ----------------------------------------------------------------
     async def on_mount(self) -> None:
+        for theme in THEMES.values():
+            self.register_theme(theme)
+        self.apply_theme(self.core.ui_theme)
         self.core.start_audit()
         self._unsubscribe = self.core.events.subscribe(self._on_event)
         await self.push_screen(ConsoleScreen())
+
+    def apply_theme(self, name: str, *, persist: bool = False) -> str:
+        """Apply dark/light/auto; auto follows the app default (dark)."""
+        resolved = "light" if name == "light" else "dark"
+        self.theme = THEMES[resolved].name
+        self.core.set_ui_theme(name, persist=persist)
+        return resolved
 
     def begin_startup(self) -> None:
         """Kicked off by the console once it is mounted and can show output."""

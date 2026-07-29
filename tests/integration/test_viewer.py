@@ -1,4 +1,4 @@
-"""Viewer integration: HTTP routes, WebSocket handshake, and the three tools
+﻿"""Viewer integration: HTTP routes, WebSocket handshake, and the three tools
 running against a fake browser tab."""
 
 from __future__ import annotations
@@ -15,13 +15,17 @@ from tests.unit.test_viewer_hub import TINY_PNG, FakeWS
 
 pytestmark = pytest.mark.asyncio
 
+# websocket_connect ignores base_url; an absolute URL keeps the Host loopback.
+WS_URL = "ws://127.0.0.1/ws"
+
 
 # --------------------------------------------------------------------- helpers
 def _http_client(core) -> TestClient:
     from ifc_console.mcp.server import build_http_app, build_mcp
 
     app = build_http_app(core, build_mcp(core))
-    return TestClient(app)
+    # base_url sets the Host header; the middleware only answers loopback.
+    return TestClient(app, base_url="http://127.0.0.1")
 
 
 def _auth(core) -> dict:
@@ -44,11 +48,35 @@ async def viewer_core(core, work_model: Path):
 # ------------------------------------------------------------------ HTTP routes
 async def test_routes_require_token(viewer_core):
     client = _http_client(viewer_core)
-    assert client.get("/viewer").status_code == 401
     assert client.get("/api/model.ifc").status_code == 401
     assert client.get("/api/status").status_code == 401
-    # the query form used by the viewer URL must also work
-    assert client.get(f"/viewer?t={viewer_core.token}").status_code == 200
+    # the retired ?t= query form must not authorize anything
+    assert client.get(f"/api/status?t={viewer_core.token}").status_code == 401
+    # the shell is public (nothing session-specific); the SPA holds the token
+    assert client.get("/viewer").status_code == 200
+
+
+async def test_cross_origin_rejected_even_with_token(viewer_core):
+    """DNS rebinding / cross-site guard: a valid token never overrides Origin."""
+    client = _http_client(viewer_core)
+    headers = {**_auth(viewer_core), "Origin": "https://evil.example"}
+    assert client.get("/api/status", headers=headers).status_code == 403
+    assert client.get("/viewer", headers={"Origin": "https://evil.example"}).status_code == 403
+
+
+async def test_rebound_host_rejected_even_with_token(viewer_core):
+    client = _http_client(viewer_core)
+    headers = {**_auth(viewer_core), "Host": "evil.example"}
+    assert client.get("/api/status", headers=headers).status_code == 403
+
+
+async def test_loopback_origin_and_host_accepted(viewer_core):
+    client = _http_client(viewer_core)
+    for origin in ("http://127.0.0.1:8383", "http://localhost:8383"):
+        response = client.get(
+            "/api/status", headers={**_auth(viewer_core), "Origin": origin}
+        )
+        assert response.status_code == 200, origin
 
 
 async def test_static_assets_are_public_and_complete(viewer_core):
@@ -172,7 +200,7 @@ async def _wait_for(condition, timeout: float = 2.0) -> None:
 
 async def test_ws_handshake_status_and_selection(viewer_core):
     client = _http_client(viewer_core)
-    with client.websocket_connect(f"/ws?t={viewer_core.token}") as ws:
+    with client.websocket_connect(WS_URL) as ws:
         ws.send_text(json.dumps({"type": "hello", "token": viewer_core.token}))
         status = ws.receive_json()
         assert status["type"] == "status"
@@ -183,30 +211,46 @@ async def test_ws_handshake_status_and_selection(viewer_core):
     await _wait_for(lambda: viewer_core.viewer.connected == 0)  # unregistered on close
 
 
-async def test_ws_rejects_without_token(viewer_core):
+def _expect_ws_close(ws, code: int) -> None:
+    from starlette.websockets import WebSocketDisconnect
+
+    try:
+        closed = ws.receive()
+        assert closed["type"] == "websocket.close"
+        assert closed.get("code") == code
+    except WebSocketDisconnect as exc:
+        assert exc.code == code
+
+
+async def test_ws_rejects_non_hello_first_frame(viewer_core):
+    """Without a verified hello nothing is served, whatever arrives first."""
+    client = _http_client(viewer_core)
+    with client.websocket_connect(WS_URL) as ws:
+        ws.send_text(json.dumps({"type": "selection", "guids": ["g-1"]}))
+        _expect_ws_close(ws, 4401)
+    assert viewer_core.viewer_hub.selection == []
+    await _wait_for(lambda: viewer_core.viewer.connected == 0)
+
+
+async def test_ws_rejects_bad_hello_token(viewer_core):
+    client = _http_client(viewer_core)
+    with client.websocket_connect(WS_URL) as ws:
+        ws.send_text(json.dumps({"type": "hello", "token": "wrong"}))
+        _expect_ws_close(ws, 4401)
+    await _wait_for(lambda: viewer_core.viewer.connected == 0)
+
+
+async def test_ws_rejects_cross_origin_upgrade(viewer_core):
     from starlette.websockets import WebSocketDisconnect
 
     client = _http_client(viewer_core)
     with (
         pytest.raises((WebSocketDisconnect, Exception)),  # denied before accept
-        client.websocket_connect("/ws") as ws,
+        client.websocket_connect(
+            "/ws", headers={"Origin": "https://evil.example"}
+        ) as ws,
     ):
         ws.receive_json()
-
-
-async def test_ws_rejects_bad_hello_token(viewer_core):
-    from starlette.websockets import WebSocketDisconnect
-
-    client = _http_client(viewer_core)
-    with client.websocket_connect(f"/ws?t={viewer_core.token}") as ws:
-        ws.send_text(json.dumps({"type": "hello", "token": "wrong"}))
-        try:
-            closed = ws.receive()
-            assert closed["type"] == "websocket.close"
-            assert closed.get("code") == 4401
-        except WebSocketDisconnect as exc:
-            assert exc.code == 4401
-    await _wait_for(lambda: viewer_core.viewer.connected == 0)
 
 
 # ------------------------------------------------------------------- MCP tools
@@ -267,6 +311,56 @@ async def test_highlight_elements_roundtrip(harness_factory, work_model: Path):
     assert cleared["ok"] is True
     assert cleared["data"]["cleared"] is True
     assert ws.frames("highlight")[-1]["clear"] is True
+
+
+async def test_apply_color_theme_paints_and_syncs_new_tabs(
+    harness_factory, work_model: Path
+):
+    h = await harness_factory(model=work_model)
+    h.core.enable_viewer()
+    ws = _attach_fake_tab(h.core)
+
+    def wall_guids() -> list[str]:
+        return [w.GlobalId for w in h.core.session.ifc.by_type("IfcWall")]
+
+    guids = await h.core.session.run(wall_guids)
+    out = await h.call(
+        "apply_color_theme",
+        title="Fire rating",
+        groups=[
+            {"label": "F30", "global_ids": [guids[0]]},
+            {"label": "unrated", "global_ids": guids[1:] + ["bogus"], "color": "#999999"},
+        ],
+    )
+    assert out["ok"] is True
+    legend = out["data"]["legend"]
+    assert [entry["label"] for entry in legend] == ["F30", "unrated"]
+    assert legend[0]["color"].startswith("#")  # palette-assigned
+    assert legend[1]["color"] == "#999999"  # explicit color respected
+    assert out["data"]["painted"] == 3
+    assert out["data"]["missing"] == ["bogus"]
+
+    frame = ws.frames("color_theme")[0]
+    assert frame["title"] == "Fire rating"
+    assert frame["groups"][0]["guids"] == [guids[0]]
+    # late tabs get the theme from the status payload
+    assert h.core.viewer_hub.status_payload()["color_theme"]["title"] == "Fire rating"
+
+    cleared = await h.call("apply_color_theme", clear=True)
+    assert cleared["ok"] is True
+    assert ws.frames("color_theme")[-1]["clear"] is True
+    assert h.core.viewer_hub.status_payload()["color_theme"] is None
+
+
+async def test_apply_color_theme_requires_groups_or_clear(
+    harness_factory, work_model: Path
+):
+    h = await harness_factory(model=work_model)
+    h.core.enable_viewer()
+    _attach_fake_tab(h.core)
+    out = await h.call("apply_color_theme")
+    assert out["ok"] is False
+    assert out["error"]["code"] == "INVALID_INPUT"
 
 
 async def test_highlight_works_in_ask_mode(harness_factory, work_model: Path):

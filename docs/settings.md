@@ -49,6 +49,7 @@ defaults < user file < project file < project local file < env vars < CLI flags
 | `files.allowed_dirs` | `[]` | standing allowed directories |
 | `files.backup_retention` | `20` | backups kept per model file |
 | `files.follow_symlinks` | `false` | resolve symlinks when listing |
+| `files.max_open_mb` | `4096` | refuse to open larger files instead of risking OOM (0 disables) |
 | `viewer.enabled_default` | `false` | start with the viewer on |
 | `viewer.max_model_mb` | `200` | refuse to serve larger models to the viewer |
 | `recents.max` | `20` | recents list length |

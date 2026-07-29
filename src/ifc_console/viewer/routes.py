@@ -8,6 +8,8 @@ no viewer surface at all.
 
 from __future__ import annotations
 
+import asyncio
+import hmac
 import json
 import logging
 from pathlib import Path
@@ -27,6 +29,9 @@ if TYPE_CHECKING:
 log = logging.getLogger("ifc-console.viewer")
 
 STATIC_DIR = Path(__file__).parent / "static"
+
+# How long a fresh socket may sit silent before the hello must have arrived.
+_HELLO_TIMEOUT = 5.0
 
 # The SPA makes zero non-localhost requests; the CSP makes that a guarantee.
 # script-src needs 'unsafe-eval': web-ifc's embind glue builds its invoker
@@ -143,17 +148,26 @@ def build_viewer_routes(core: AppCore) -> list[Any]:
         hub = core.viewer_hub
         client = None
         try:
-            # First frame should be the hello handshake (belt on top of the
-            # token check the middleware already did at the upgrade).
-            raw = await websocket.receive_text()
-            frame = json.loads(raw)
-            if frame.get("type") == "hello" and frame.get("token") != core.token:
+            # Browsers cannot attach an Authorization header to a WS upgrade,
+            # so the first frame MUST be a hello carrying the session token;
+            # nothing is served before it verifies.
+            try:
+                raw = await asyncio.wait_for(websocket.receive_text(), timeout=_HELLO_TIMEOUT)
+                frame = json.loads(raw)
+            except (asyncio.TimeoutError, json.JSONDecodeError):
+                await websocket.close(code=4401)
+                return
+            token = frame.get("token") if isinstance(frame, dict) else None
+            if (
+                not isinstance(frame, dict)
+                or frame.get("type") != "hello"
+                or not isinstance(token, str)
+                or not hmac.compare_digest(token, core.token)
+            ):
                 await websocket.close(code=4401)
                 return
             client = hub.register(websocket)
             await client.send(hub.status_payload())
-            if frame.get("type") != "hello":
-                await hub.handle_frame(client, frame)
             while True:
                 raw = await websocket.receive_text()
                 try:

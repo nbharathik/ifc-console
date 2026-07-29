@@ -131,6 +131,17 @@ def _mode_args(core: AppCore, rest: str, _files: FilesProvider | None) -> MenuSt
     return _choices("mode", rest, rows, context="mode")
 
 
+def _theme_args(core: AppCore, rest: str, _files: FilesProvider | None) -> MenuState:
+    current = core.ui_theme
+    rows = [
+        ("dark", "the default brand theme"),
+        ("light", "for bright terminals"),
+        ("auto", "follow the app default"),
+    ]
+    rows = [(v, note + (" · current" if v == current else "")) for v, note in rows]
+    return _choices("theme", rest, rows, context="theme")
+
+
 def _viewer_args(core: AppCore, rest: str, _files: FilesProvider | None) -> MenuState:
     state = _choices(
         "viewer",
@@ -271,6 +282,7 @@ Provider = Callable[["AppCore", str, "FilesProvider | None"], MenuState]
 
 _ARG_PROVIDERS: dict[str, Provider] = {
     "mode": _mode_args,
+    "theme": _theme_args,
     "viewer": _viewer_args,
     "copy": _copy_args,
     "connect": _connect_args,
