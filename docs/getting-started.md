@@ -9,21 +9,22 @@
 
 ## Install
 
-Install from source with git and [uv](https://docs.astral.sh/uv/):
+Install from [PyPI](https://pypi.org/project/ifc-console/) with
+[uv](https://docs.astral.sh/uv/) or pip:
 
 ```bash
-git clone https://github.com/nbharathik/ifc-console
-cd ifc-console
-uv tool install .
+uv tool install ifc-console
+# or: pip install ifc-console
 ```
 
 This puts the `ifc-console` command on your PATH, 3D viewer included. To
-update later, run `git pull` in the checkout, then `uv tool install . --force`.
+update later: `uv tool upgrade ifc-console` (pip:
+`pip install --upgrade ifc-console`). For a one-off run without installing
+anything, `uvx ifc-console` works too.
 
 !!! note "Working on ifc-console itself?"
-    Run `uv sync --extra dev` in the checkout instead and use
-    `uv run ifc-console` wherever these docs say `ifc-console`. See
-    [Development](development.md).
+    Clone the repo, run `uv sync --extra dev`, and use `uv run ifc-console`
+    wherever these docs say `ifc-console`. See [Development](development.md).
 
 Check the environment:
 

@@ -3,7 +3,7 @@
     <picture>
       <source media="(prefers-color-scheme: dark)" srcset="docs/assets/brand/horizontal-dark.svg">
       <source media="(prefers-color-scheme: light)" srcset="docs/assets/brand/horizontal-light.svg">
-      <img alt="IFC CONSOLE" src="docs/assets/brand/horizontal-light.svg" width="60%">
+      <img alt="IFC CONSOLE" src="https://raw.githubusercontent.com/nbharathik/ifc-console/main/docs/assets/brand/horizontal-light.svg" width="60%">
     </picture>
   </a>
 </p>
@@ -17,17 +17,16 @@ Docs: <https://nbharathik.github.io/ifc-console/>
 
 ## Install and run
 
-Install from source. Needs git and [uv](https://docs.astral.sh/uv/):
+Install from [PyPI](https://pypi.org/project/ifc-console/) with
+[uv](https://docs.astral.sh/uv/) or pip:
 
 ```bash
-git clone https://github.com/nbharathik/ifc-console
-cd ifc-console
-uv tool install .    # puts the ifc-console command on your PATH, viewer included
+uv tool install ifc-console    # puts the ifc-console command on your PATH, viewer included
+# or: pip install ifc-console
 ```
 
-To update later: `git pull`, then `uv tool install . --force`. Working on
-ifc-console itself? See
-[Development](https://nbharathik.github.io/ifc-console/development/).
+Or try it without installing: `uvx ifc-console`. To update later:
+`uv tool upgrade ifc-console`.
 
 Start it in the folder with your models:
 
@@ -85,6 +84,19 @@ Type `/viewer`. It runs entirely on localhost behind your session token:
 click an element and the LLM knows what "this wall" means; it highlights
 elements back and takes screenshots. Edits refresh the view live.
 
+## Install from source (for development)
+
+If  you would like to work on the code itself, clone the repo and install from your checkout (needs git and uv):
+```bash
+git clone https://github.com/nbharathik/ifc-console
+cd ifc-console
+uv tool install .
+```
+
+To update later: `git pull`, then `uv tool install . --force`. For working on
+the code itself, see
+[Development](https://nbharathik.github.io/ifc-console/development/).
+
 ## Docs
 
 - [Getting started](https://nbharathik.github.io/ifc-console/getting-started/)
@@ -96,3 +108,9 @@ elements back and takes screenshots. Edits refresh the view live.
 
 Apache-2.0. Bundles three.js (MIT) and web-ifc (MPL-2.0, unmodified); uses
 IfcOpenShell (LGPL-3.0-or-later) as a library.
+
+## Acknowledgments
+
+Inspired by [Bonsai MCP](https://github.com/Show2Instruct/bonsai-mcp). If you
+would like to work with the Bonsai viewer in Blender instead of a standalone
+terminal, check that project out.
