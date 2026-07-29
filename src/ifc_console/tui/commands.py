@@ -136,15 +136,10 @@ async def _open_path(console: ConsoleScreen, path: Path) -> None:
         return
     core.add_allowed_dir(path.parent)
     try:
+        # progress and the loaded line arrive via model_loading/model_loaded events
         await core.open_model(path)
     except Exception as exc:
         console.print(f"[red]could not load {escape(path.name)}: {escape(str(exc))}[/red]")
-        return
-    s = core.session
-    console.print(
-        f"[green]loaded[/green] {escape(s.name or '')} "
-        f"({s.schema}, {s.size_bytes / 1_048_576:.1f} MB)"
-    )
 
 
 def _mode_color(mode: str) -> str:
@@ -440,6 +435,7 @@ async def _model(console: ConsoleScreen, _args: str) -> None:
         rows.append(("IfcProduct (total)", len(ifc.by_type("IfcProduct"))))
         return rows
 
+    console.print("[dim]counting entities…[/dim]")
     try:
         rows = await core.session.run(job, timeout=60)
     except Exception as exc:
@@ -469,6 +465,7 @@ async def _save(console: ConsoleScreen, args: str) -> None:
         )
     ):
         return
+    console.print(f"[dim]saving {escape(target.name)}…[/dim]")
     try:
         result = await core.session.save(target, core.backups)
     except Exception as exc:
@@ -494,6 +491,7 @@ async def _reload(console: ConsoleScreen, _args: str) -> None:
         return
     if core.session.dirty and not await console.confirm("Reload and discard unsaved changes?"):
         return
+    console.print(f"[dim]reloading {escape(core.session.name or 'model')} from disk…[/dim]")
     try:
         if core.session.poisoned:
             await core.session.recover()
@@ -508,8 +506,8 @@ async def _reload(console: ConsoleScreen, _args: str) -> None:
         name=core.session.name,
         schema=core.session.schema,
         fingerprint=core.session.fingerprint,
+        size_bytes=core.session.size_bytes,
     )
-    console.print("[green]model reloaded from disk[/green]")
 
 
 @command("port", "/port <number>", "move the MCP server to another port", "server & clients")

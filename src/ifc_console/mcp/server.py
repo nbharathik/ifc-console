@@ -121,7 +121,13 @@ def build_mcp(core: AppCore) -> MCPServer:
         tools_query,
     )
 
-    mcp = MCPServer("ifc-console", instructions=INSTRUCTIONS)
+    # Stateless HTTP: session state lives in AppCore, not the transport, so
+    # clients survive ifc-console restarts without a "Session not found" 404
+    # (mcp-remote and friends never re-initialize a dead session).
+    try:
+        mcp = MCPServer("ifc-console", instructions=INSTRUCTIONS, stateless_http=True)
+    except TypeError:  # SDK without stateless_http: per-run sessions again
+        mcp = MCPServer("ifc-console", instructions=INSTRUCTIONS)
     tools_query.register(mcp, core)
     tools_analysis.register(mcp, core)
     tools_exec.register(mcp, core)

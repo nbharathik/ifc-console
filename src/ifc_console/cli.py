@@ -262,6 +262,8 @@ def _load_model_blocking(core: AppCore, raw_path: str) -> int:
         print(f"error: {path} does not exist", file=sys.stderr)
         return 4
     core.add_allowed_dir(path.parent)
+    size_mb = path.stat().st_size / 1_048_576
+    print(f"loading {path.name} ({size_mb:.1f} MB)...", flush=True)
     try:
         import asyncio
 

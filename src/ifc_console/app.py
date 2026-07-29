@@ -7,6 +7,7 @@ CLI, and viewer are all thin faces over it.
 from __future__ import annotations
 
 import secrets
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -233,7 +234,17 @@ class AppCore:
         )
 
     async def open_model(self, path: Path) -> None:
-        await self.session.open(path, max_mb=self.settings.files.max_open_mb)
+        try:
+            size_bytes = path.stat().st_size
+        except OSError:
+            size_bytes = 0
+        self.events.emit("model_loading", name=path.name, size_bytes=size_bytes)
+        t0 = time.perf_counter()
+        try:
+            await self.session.open(path, max_mb=self.settings.files.max_open_mb)
+        except Exception:
+            self.events.emit("model_load_failed", name=path.name)
+            raise
         assert self.session.path is not None
         self.add_allowed_dir(self.session.path.parent)
         self.recents.touch(
@@ -255,6 +266,8 @@ class AppCore:
             name=self.session.name,
             schema=self.session.schema,
             fingerprint=self.session.fingerprint,
+            size_bytes=self.session.size_bytes,
+            duration_ms=int((time.perf_counter() - t0) * 1000),
         )
 
     def set_mode(self, new_mode: Mode, *, by: str) -> None:

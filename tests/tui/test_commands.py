@@ -72,9 +72,14 @@ async def test_non_slash_text_gets_a_hint(console: FakeConsole) -> None:
 
 
 async def test_bare_ifc_path_opens_model(console: FakeConsole, work_model: Path) -> None:
+    events: list[dict] = []
+    console.core.events.subscribe(events.append)
     await commands.dispatch(console, str(work_model))
     assert console.core.session.loaded
-    assert "loaded" in console.text
+    # feedback flows through events: the console prints loading, then loaded
+    types = [e["type"] for e in events]
+    assert "model_loading" in types
+    assert "model_loaded" in types
 
 
 async def test_quoted_path_opens_model(console: FakeConsole, work_model: Path) -> None:

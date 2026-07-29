@@ -51,13 +51,17 @@ separately. Every launch after a warm cache starts instantly.
 
 ### Claude Desktop shows ifc-console as disconnected
 
-Claude Desktop connects to its MCP servers once, at app startup, and never
-retries on its own. If the ifc-console console was not running when Claude
-Desktop started, or you closed it while Claude Desktop was open, the entry
-stays disconnected until the app is relaunched. Nothing is misconfigured; the
-persistent token and port mean your config entry is still correct.
+Two different cases:
 
-Fix, in this order:
+**You closed and reopened ifc-console while Claude Desktop was running.**
+Since 0.1.2 this heals on its own: the MCP endpoint is stateless across
+restarts, so the already-connected bridge keeps working as soon as ifc-console
+is back on its port. Retry the tool call; no Claude Desktop restart needed.
+
+**ifc-console was not running when Claude Desktop started.** Claude Desktop
+connects to its MCP servers once, at app startup, and never retries a failed
+first connection. Nothing is misconfigured; the persistent token and port mean
+your config entry is still correct. Fix, in this order:
 
 1. Start ifc-console and leave it running.
 2. Fully quit Claude Desktop. Closing the window is not enough: quit it from

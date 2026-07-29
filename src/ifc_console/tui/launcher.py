@@ -6,6 +6,7 @@ filterable as you type.
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -115,10 +116,13 @@ class FilePickerModal(ModalScreen["Path | None"]):
                 classes="hint",
             )
 
-    def on_mount(self) -> None:
-        self._entries = discover_ifc_files(self.core)
-        self._apply_filter(self.initial_filter)
+    async def on_mount(self) -> None:
         self.query_one("#filter", Input).focus()
+        options = self.query_one("#files", OptionList)
+        options.add_option(Option("(scanning for IFC files…)", disabled=True))
+        # the scan hits the filesystem; keep it off the UI thread
+        self._entries = await asyncio.to_thread(discover_ifc_files, self.core)
+        self._apply_filter(self.query_one("#filter", Input).value)
 
     def _apply_filter(self, text: str) -> None:
         needle = text.strip().lower()

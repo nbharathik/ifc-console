@@ -13,7 +13,25 @@ your model with IfcOpenShell and serves it over MCP, so any LLM client
 (Claude Code, Claude Desktop, Cursor, VS Code, Codex) can query and edit it,
 while you stay in control from your terminal. No Blender, no host app.
 
-Docs: <https://nbharathik.github.io/ifc-console/>
+<div align="center">
+  <table align="center" width="90%">
+    <tr>
+      <th align="center" width="30%">Terminal console</th>
+      <th align="center" width="24%">AI assistant</th>
+      <th align="center" width="30%">3D viewer</th>
+    </tr>
+    <tr>
+      <td align="center"><img alt="The ifc-console terminal with a model loaded and the command menu open" width="92%" src="https://raw.githubusercontent.com/nbharathik/ifc-console/main/docs/assets/brand/console.png"></td>
+      <td align="center"><img alt="Claude Desktop summarising the loaded IFC model" width="92%" src="https://raw.githubusercontent.com/nbharathik/ifc-console/main/docs/assets/brand/claude.png"></td>
+      <td align="center"><img alt="The ifc-console 3D web viewer with model tree, 3D view and properties panel" width="92%" src="https://raw.githubusercontent.com/nbharathik/ifc-console/main/docs/assets/brand/viewer.png"></td>
+    </tr>
+    <tr>
+      <td align="center">The console to open an IFC file and decide what the AI is allowed to do.</td>
+      <td align="center">An AI assistant connected to ifc-console, answering questions about the open model.</td>
+      <td align="center">The optional viewer in the browser, showing the model tree, the 3D view, and element properties.</td>
+    </tr>
+  </table>
+</div>
 
 ## Install and run
 

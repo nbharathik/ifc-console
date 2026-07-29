@@ -157,6 +157,7 @@ class ConsoleScreen(Screen):
         self._menu_state = completion.MenuState()
         self._menu_suppressed = False
         self._files_cache: list[tuple[Path, str]] | None = None
+        self._loading: str | None = None
         self.refresh_status()
         self.query_one("#prompt", CommandInput).focus()
         app: IfcConsoleApp = self.app  # type: ignore[assignment]
@@ -183,11 +184,12 @@ class ConsoleScreen(Screen):
         color = _MODE_COLORS.get(mode, "white")
         dirty = " [red]* unsaved[/red]" if s.dirty else ""
         taint = " [red]! tainted[/red]" if s.tainted else ""
-        model = (
-            f"{escape(s.name or '')} · {s.schema} · {s.size_bytes / 1_048_576:.1f} MB"
-            if s.loaded
-            else "no model (/file)"
-        )
+        if self._loading:
+            model = f"[yellow]loading {escape(self._loading)}…[/yellow]"
+        elif s.loaded:
+            model = f"{escape(s.name or '')} · {s.schema} · {s.size_bytes / 1_048_576:.1f} MB"
+        else:
+            model = "no model (/file)"
         self.query_one("#statusbar", Static).update(
             f" {model}   MODE: [{color}]{mode.upper()}[/{color}]{dirty}{taint}"
         )
@@ -217,6 +219,17 @@ class ConsoleScreen(Screen):
             self.refresh_status()
             self.print(f"[red]server failed to start:[/red] {escape(str(event.get('reason')))}")
             self.print("  [dim]try /port <number> to use another port[/dim]")
+        elif etype == "model_loading":
+            self._loading = str(event.get("name") or "model")
+            size_mb = (event.get("size_bytes") or 0) / 1_048_576
+            self.print(
+                f"[dim]loading {escape(self._loading)} ({size_mb:.1f} MB), "
+                "the console stays usable…[/dim]"
+            )
+            self.refresh_status()
+        elif etype == "model_load_failed":
+            self._loading = None
+            self.refresh_status()
         elif etype in (
             "mode_changed",
             "model_saved",
@@ -226,15 +239,21 @@ class ConsoleScreen(Screen):
             "viewer_enabled",
             "viewer_disabled",
         ):
+            if etype == "model_loaded":
+                self._loading = None
             self.refresh_status()
             if etype == "mode_changed":
                 mode = event.get("mode", "?")
                 self.print(f"mode changed to [{_MODE_COLORS.get(mode, 'white')}]{mode}[/] "
                            f"[dim](by {event.get('by', '?')})[/dim]")
             elif etype == "model_loaded":
+                detail = str(event.get("schema"))
+                if event.get("size_bytes"):
+                    detail += f", {event['size_bytes'] / 1_048_576:.1f} MB"
+                if event.get("duration_ms"):
+                    detail += f", {event['duration_ms'] / 1000:.1f}s"
                 self.print(
-                    f"model loaded: [b]{escape(str(event.get('name')))}[/b] "
-                    f"({event.get('schema')})"
+                    f"[green]loaded[/green] [b]{escape(str(event.get('name')))}[/b] ({detail})"
                 )
             elif etype == "session_tainted":
                 self.print(
