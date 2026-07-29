@@ -90,12 +90,17 @@ async def dispatch(console: ConsoleScreen, line: str) -> None:
     line = line.strip()
     if not line:
         return
+    # Convenience: a bare path to an IFC file just opens it. POSIX absolute
+    # paths start with "/" like commands do, so an existing .ifc path wins
+    # over command parsing; "/open model.ifc" has no existing file behind it
+    # and falls through to the registry.
+    candidate = Path(_strip_quotes(line)).expanduser()
+    if candidate.suffix.lower() in _IFC_SUFFIXES and (
+        not line.startswith("/") or candidate.exists()
+    ):
+        await _open_path(console, candidate)
+        return
     if not line.startswith("/"):
-        # Convenience: a bare path to an IFC file just opens it.
-        candidate = Path(_strip_quotes(line)).expanduser()
-        if candidate.suffix.lower() in _IFC_SUFFIXES:
-            await _open_path(console, candidate)
-            return
         console.print(
             "[dim]commands start with / (try [b]/help[/b]); "
             "prompts belong in your MCP client, not here[/dim]"
