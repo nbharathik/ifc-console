@@ -1,0 +1,25 @@
+name: Docs
+
+# Deploys the docs site whenever docs change on main. Releases also deploy
+# (release.yml), so the site never lags a tagged version either.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docs/**"
+      - "mkdocs.yml"
+      - ".github/workflows/docs.yml"
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write  # push to gh-pages
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - name: Deploy docs to GitHub Pages
+        run: |
+          uv sync --extra docs
+          uv run mkdocs gh-deploy --force
