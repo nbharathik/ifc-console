@@ -280,4 +280,4 @@ async def test_viewer_url_requires_server(console: FakeConsole) -> None:
     console.core.server_running = True
     console.clear_log()
     await commands.dispatch(console, "/viewer url")
-    assert "/viewer?t=" in console.text
+    assert "/viewer#t=" in console.text

@@ -30,9 +30,11 @@ from __future__ import annotations
 from pathlib import Path
 
 __all__ = [
+    "CATEGORICAL",
     "TAGLINE",
     "WORDMARK",
     "PALETTE",
+    "categorical_color",
     "render_block",
     "block_lines",
     "top_right_markup",
@@ -55,6 +57,27 @@ PALETTE = {
     "bg_dark": BG_DARK,
     "paper": PAPER,
 }
+
+# ------------------------------------------------- data / review color system
+# Okabe-Ito categorical palette: distinguishable under the common color-vision
+# deficiencies. Used wherever elements are grouped by value (viewer color
+# themes and their legends); meaning never rides on color alone, every legend
+# entry carries a label and count.
+CATEGORICAL = (
+    "#0072B2",  # blue
+    "#E69F00",  # orange
+    "#009E73",  # bluish green
+    "#CC79A7",  # reddish purple
+    "#56B4E9",  # sky blue
+    "#D55E00",  # vermillion
+    "#F0E442",  # yellow
+    "#999999",  # neutral gray
+)
+
+
+def categorical_color(index: int) -> str:
+    """A stable palette color for group ``index`` (wraps past the end)."""
+    return CATEGORICAL[index % len(CATEGORICAL)]
 
 WORDMARK = "IFC CONSOLE"  # the logo, always upper case, split by a space
 TAGLINE = "a terminal interface to connect IFC files to LLMs"

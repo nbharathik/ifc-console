@@ -49,6 +49,9 @@ class FilesSettings(BaseModel):
     allowed_dirs: list[str] = Field(default_factory=list)
     backup_retention: int = Field(default=20, ge=1)
     follow_symlinks: bool = False
+    # Refuse to open files above this budget instead of risking an OOM crash;
+    # 0 disables the guard.
+    max_open_mb: int = Field(default=4096, ge=0)
 
 
 class ViewerSettings(BaseModel):

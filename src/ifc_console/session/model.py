@@ -19,8 +19,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, TypeVar
 
-import ifcopenshell
-
 from ifc_console.mcp.envelope import ToolError
 from ifc_console.session.backups import BackupStore
 
@@ -44,6 +42,8 @@ class ModelSession:
         # Monotonic change counter: bumped on load, save, and every mutation.
         # fingerprint+revision is the viewer's ETag for the in-memory model.
         self.revision: int = 0
+        # Remembered across reload()/recover(); 0 disables the size guard.
+        self._max_open_mb: int = 0
         self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ifc-model")
 
     @property
@@ -95,6 +95,10 @@ class ModelSession:
 
     # -- lifecycle -------------------------------------------------------------
     def _load_sync(self, path: Path) -> None:
+        # Imported here, not at module top: ifcopenshell costs about a second
+        # and `ifc-console --help` should never pay it.
+        import ifcopenshell
+
         ifc = ifcopenshell.open(str(path))
         stat = path.stat()
         self.ifc = ifc
@@ -109,7 +113,7 @@ class ModelSession:
         self.tainted = False
         self.revision += 1
 
-    async def open(self, path: Path) -> None:
+    async def open(self, path: Path, *, max_mb: int | None = None) -> None:
         path = path.resolve()
         if not path.exists():
             raise ToolError(
@@ -117,6 +121,19 @@ class ModelSession:
                 f"{path} does not exist.",
                 "Use list_ifc_files to see what is available.",
             )
+        if max_mb is not None:
+            self._max_open_mb = max_mb
+        if self._max_open_mb:
+            size_mb = path.stat().st_size / 1_048_576
+            if size_mb > self._max_open_mb:
+                raise ToolError(
+                    "MODEL_TOO_LARGE",
+                    f"{path.name} is {size_mb:.0f} MB, over the {self._max_open_mb} MB "
+                    "open budget (files.max_open_mb).",
+                    "Loading it could exhaust memory. If you really want to, ask the "
+                    "user to raise it: /settings files.max_open_mb <mb> in the "
+                    "ifc-console terminal.",
+                )
         try:
             await self.run(lambda: self._load_sync(path), timeout=_LOAD_TIMEOUT)
         except ToolError:

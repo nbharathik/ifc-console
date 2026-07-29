@@ -26,8 +26,93 @@
   --ease: 110ms ease-out;
 }
 
+/* Light theme: same token system, values flipped for bright rooms. The
+   console pushes the choice over the WS (see applyTheme in app.js). */
+:root[data-theme="light"] {
+  color-scheme: light;
+
+  --canvas: #e7edf3;
+  --chrome: #f5f8fb;
+  --surface: #eaeff5;
+  --surface-hover: #dfe6ee;
+  --surface-active: #d3dde8;
+  --text: #1f2831;
+  --text-muted: #55616d;
+  --text-quiet: #7c8894;
+  --line: #cfd8e1;
+  --line-strong: #b4c1cd;
+  --accent: #2f6fa3;
+  --accent-bright: #1d5c90;
+  --accent-wash: rgba(47, 111, 163, 0.12);
+  --accent-line: rgba(47, 111, 163, 0.45);
+  --ok: #1c7c4d;
+  --warn: #9a6b1a;
+  --danger: #b3383f;
+  --mode-ask: #1c7c4d;
+  --mode-edit: #b3383f;
+  --shadow-pop: 0 18px 42px rgba(30, 40, 50, 0.2), 0 2px 8px rgba(30, 40, 50, 0.12);
+}
+
 * { box-sizing: border-box; }
 [hidden] { display: none !important; }
+
+/* Color-theme legend (bottom-left of the canvas) ------------------------- */
+#legend {
+  position: absolute;
+  left: 12px;
+  bottom: 12px;
+  z-index: 20;
+  min-width: 160px;
+  max-width: 260px;
+  max-height: 45%;
+  overflow-y: auto;
+  padding: 8px 10px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  box-shadow: var(--shadow-pop);
+}
+#legend-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 4px;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+#legend-items {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+#legend-items li {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 2px 0;
+}
+.legend-chip {
+  flex: none;
+  width: 11px;
+  height: 11px;
+  border-radius: 3px;
+  border: 1px solid rgba(0, 0, 0, 0.25);
+}
+.legend-label {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.legend-count {
+  flex: none;
+  color: var(--text-quiet);
+  font-variant-numeric: tabular-nums;
+}
 
 html,
 body {
@@ -373,6 +458,70 @@ aside.collapsed,
 
 #settings-panel { top: 10px; }
 #help-panel { bottom: 10px; }
+
+/* View tools: floating launcher next to the model tree, panel below it. */
+#btn-tools {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  z-index: 20;
+  background: var(--surface);
+  border-color: var(--line-strong);
+  box-shadow: var(--shadow-pop);
+}
+
+#tools-panel {
+  top: 46px;
+  left: 10px;
+  right: auto;
+  min-width: 196px;
+}
+
+.popover .popover-title:not(:first-child) {
+  margin-top: 10px;
+  border-top: 1px solid var(--line);
+}
+
+.tool-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.tool-btn {
+  width: 100%;
+  justify-content: space-between;
+  padding: 4px 8px;
+  color: var(--text);
+}
+
+.tool-views {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 4px;
+}
+
+.tool-views button {
+  min-height: 25px;
+  padding: 2px 4px;
+  border: 1px solid var(--line);
+  font-size: 11px;
+}
+
+button:disabled {
+  color: var(--text-quiet);
+  background: transparent;
+  border-color: transparent;
+  cursor: default;
+}
+
+.tool-note {
+  margin-top: 8px;
+  color: var(--text-quiet);
+  font-size: 11px;
+}
+
+.tool-note:empty { display: none; }
 
 .popover-title {
   margin: 0 -12px 6px;

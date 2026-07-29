@@ -25,6 +25,9 @@ class Mode(str, enum.Enum):
 class OpClass(str, enum.Enum):
     QUERY = "QUERY"
     VIEW = "VIEW"
+    # Writes an output file (report, export); never touches the model, so it
+    # is allowed in ask mode. Still allowed-dir checked and audited.
+    ARTIFACT = "ARTIFACT"
     EDIT = "EDIT"
     SYSTEM = "SYSTEM"
 
@@ -54,7 +57,7 @@ class PolicyEngine:
 
     # -- gate matrix --------------------------------------------------------
     def decide(self, op_class: OpClass) -> Verdict:
-        if op_class in (OpClass.QUERY, OpClass.VIEW):
+        if op_class in (OpClass.QUERY, OpClass.VIEW, OpClass.ARTIFACT):
             return Verdict.ALLOW
         if self.mode is Mode.ASK:
             return Verdict.DENY_ASK

@@ -1,28 +1,35 @@
 """Command-line interface.
 
 Exit codes: 0 ok · 1 runtime error · 2 environment problem · 3 bad usage/no
-TTY · 4 file not found/unparseable.
+TTY · 4 file not found/unparseable · 5 check failed.
 """
 
 from __future__ import annotations
 
 import argparse
-import asyncio
 import json
 import logging
 import platform
 import shlex
-import subprocess
 import sys
 import time
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from ifc_console import __version__
-from ifc_console.app import AppCore
 from ifc_console.policy.modes import Mode
-from ifc_console.settings import SettingsStore
+
+if TYPE_CHECKING:
+    from ifc_console.app import AppCore
+    from ifc_console.settings import SettingsStore
+
+
+def _new_store(**kwargs) -> SettingsStore:
+    # Deferred import: pydantic costs ~0.3 s and --help must not pay it.
+    from ifc_console.settings import SettingsStore
+
+    return SettingsStore(**kwargs)
 
 log = logging.getLogger("ifc-console")
 
@@ -70,6 +77,29 @@ def build_parser() -> argparse.ArgumentParser:
     doctor.add_argument("--file", default=None, help="Also parse this IFC file.")
     doctor.add_argument("--json", action="store_true")
     doctor.set_defaults(func=_cmd_doctor)
+
+    check = sub.add_parser(
+        "check", help="Validate a model for CI: schema plus optional IDS files."
+    )
+    check.add_argument("model", help="IFC file to check.")
+    check.add_argument(
+        "--ids",
+        action="append",
+        default=[],
+        metavar="FILE",
+        help="buildingSMART IDS file to check against (repeatable).",
+    )
+    check.add_argument(
+        "--express-rules",
+        action="store_true",
+        help="Also run EXPRESS where-rules (slow on large models).",
+    )
+    check.add_argument("--max-issues", type=int, default=200)
+    check.add_argument("--format", choices=["text", "json", "sarif", "junit"], default="text")
+    check.add_argument(
+        "--output", default=None, metavar="FILE", help="Write the report to a file."
+    )
+    check.set_defaults(func=_cmd_check)
 
     st = sub.add_parser("settings", help="Inspect and edit user settings.")
     st_sub = st.add_subparsers(dest="settings_cmd", required=True)
@@ -143,10 +173,11 @@ def _add_run_flags(parser: argparse.ArgumentParser) -> None:
 
 
 def _version_line() -> str:
+    # metadata only: importing ifcopenshell itself costs seconds per launch
     try:
-        import ifcopenshell
+        from importlib.metadata import version
 
-        ios = ifcopenshell.version
+        ios = version("ifcopenshell")
     except Exception:
         ios = "missing"
     return f"ifc-console {__version__} (ifcopenshell {ios}, python {platform.python_version()})"
@@ -161,7 +192,7 @@ def _make_store(args: argparse.Namespace) -> SettingsStore:
         overrides["mode.default"] = args.mode
     if getattr(args, "log_level", None):
         overrides["logging.level"] = args.log_level
-    return SettingsStore(flag_overrides=overrides)
+    return _new_store(flag_overrides=overrides)
 
 
 def _make_core(args: argparse.Namespace, store: SettingsStore, transport: str) -> AppCore:
@@ -177,6 +208,8 @@ def _make_core(args: argparse.Namespace, store: SettingsStore, transport: str) -
                 file=sys.stderr,
             )
         viewer_flag = False
+    from ifc_console.app import AppCore
+
     return AppCore(
         store,
         mode=mode,
@@ -230,6 +263,8 @@ def _load_model_blocking(core: AppCore, raw_path: str) -> int:
         return 4
     core.add_allowed_dir(path.parent)
     try:
+        import asyncio
+
         asyncio.run(core.open_model(path))
     except Exception as exc:
         print(f"error: could not load {path.name}: {exc}", file=sys.stderr)
@@ -248,6 +283,11 @@ def _cmd_interactive(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 3
+    # instant feedback; the console takes over the screen once it is up
+    print(f"ifc-console {__version__} starting...", file=sys.stderr, flush=True)
+    from ifc_console import preload
+
+    preload.start()
     store = _make_store(args)
     _setup_logging(store, level=store.settings.logging.level)
     # the TUI owns the terminal: drop the stderr handler, keep the file log
@@ -266,6 +306,9 @@ def _cmd_interactive(args: argparse.Namespace) -> int:
 
 
 def _run_headless_http(args: argparse.Namespace) -> int:
+    from ifc_console import preload
+
+    preload.start()
     store = _make_store(args)
     _setup_logging(store, level=store.settings.logging.level)
     core = _make_core(args, store, transport="http")
@@ -302,6 +345,8 @@ def _run_headless_http(args: argparse.Namespace) -> int:
     # flush: piped/redirected stdout must show the token before the loop blocks
     print("\n".join(banner), flush=True)
     try:
+        import asyncio
+
         asyncio.run(server.serve())
     except KeyboardInterrupt:
         pass
@@ -320,6 +365,9 @@ def _cmd_serve(args: argparse.Namespace) -> int:
     if args.http:
         return _run_headless_http(args)
     # stdio: stdout belongs to the protocol; logs go to stderr + file only
+    from ifc_console import preload
+
+    preload.start()
     store = _make_store(args)
     _setup_logging(store, level=store.settings.logging.level)
     core = _make_core(args, store, transport="stdio")
@@ -389,9 +437,12 @@ def build_config_snippet(
         if transport == "http":
             return _claude_code_http_cmd(port, token or "<TOKEN>")
         argv = ["uvx", *stdio_args]
-        command = (
-            subprocess.list2cmdline(argv) if platform.system() == "Windows" else shlex.join(argv)
-        )
+        if platform.system() == "Windows":
+            import subprocess
+
+            command = subprocess.list2cmdline(argv)
+        else:
+            command = shlex.join(argv)
         return f"claude mcp add --scope user ifc-console -- {command}"
     if client == "claude-desktop":
         if transport == "stdio":
@@ -481,7 +532,7 @@ def _cmd_mcp_config(args: argparse.Namespace) -> int:
 
 
 def _cmd_token_show(_args: argparse.Namespace) -> int:
-    store = SettingsStore()
+    store = _new_store()
     if not store.settings.server.persistent_token:
         print(
             "per-run tokens are enabled (server.persistent_token=false); "
@@ -494,7 +545,7 @@ def _cmd_token_show(_args: argparse.Namespace) -> int:
 
 
 def _cmd_token_rotate(_args: argparse.Namespace) -> int:
-    store = SettingsStore()
+    store = _new_store()
     token = store.rotate_server_token()
     print(token)
     print(
@@ -506,8 +557,40 @@ def _cmd_token_rotate(_args: argparse.Namespace) -> int:
 
 
 def _cmd_token_path(_args: argparse.Namespace) -> int:
-    print(SettingsStore().token_file)
+    print(_new_store().token_file)
     return 0
+
+
+# --------------------------------------------------------------------------- check
+def _cmd_check(args: argparse.Namespace) -> int:
+    from ifc_console.checks import render, run_check
+    from ifc_console.mcp.envelope import ToolError
+
+    model = Path(args.model)
+    if not model.is_file():
+        print(f"error: {model} does not exist", file=sys.stderr)
+        return 4
+    try:
+        report = run_check(
+            model,
+            ids_paths=[Path(p) for p in args.ids],
+            express_rules=args.express_rules,
+            max_issues=args.max_issues,
+        )
+    except ToolError as exc:  # missing ifctester extra or unreadable IDS file
+        print(f"error: {exc.message}", file=sys.stderr)
+        print(f"hint: {exc.hint}", file=sys.stderr)
+        return 2
+    except Exception as exc:
+        print(f"error: could not parse {model.name}: {exc}", file=sys.stderr)
+        return 4
+    rendered = render(report, args.format)
+    if args.output:
+        Path(args.output).write_text(rendered, encoding="utf-8")
+        print(f"wrote {args.format} report to {args.output}")
+    else:
+        print(rendered)
+    return 0 if report["passed"] else 5
 
 
 # --------------------------------------------------------------------------- doctor
@@ -536,7 +619,7 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
             check(mod, "FAIL", str(exc))
             rc = 2
 
-    store = SettingsStore()
+    store = _new_store()
     try:
         store.ensure_dirs()
         home_ok = True
@@ -630,7 +713,7 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
 
 # --------------------------------------------------------------------------- settings/recents/sessions
 def _cmd_settings_list(args: argparse.Namespace) -> int:
-    store = SettingsStore()
+    store = _new_store()
     flat = store.flat()
     if args.json:
         payload = (
@@ -652,7 +735,7 @@ def _cmd_settings_list(args: argparse.Namespace) -> int:
 
 
 def _cmd_settings_get(args: argparse.Namespace) -> int:
-    store = SettingsStore()
+    store = _new_store()
     try:
         print(json.dumps(store.get(args.key), default=str))
         return 0
@@ -662,7 +745,7 @@ def _cmd_settings_get(args: argparse.Namespace) -> int:
 
 
 def _cmd_settings_set(args: argparse.Namespace) -> int:
-    store = SettingsStore()
+    store = _new_store()
     store.ensure_dirs()
     try:
         value = store.set_user(args.key, args.value)
@@ -677,19 +760,19 @@ def _cmd_settings_set(args: argparse.Namespace) -> int:
 
 
 def _cmd_settings_unset(args: argparse.Namespace) -> int:
-    store = SettingsStore()
+    store = _new_store()
     store.unset_user(args.key)
     print(f"{args.key} removed from {store.user_file}")
     return 0
 
 
 def _cmd_settings_path(_args: argparse.Namespace) -> int:
-    print(SettingsStore().user_file)
+    print(_new_store().user_file)
     return 0
 
 
 def _cmd_recents_list(args: argparse.Namespace) -> int:
-    store = SettingsStore()
+    store = _new_store()
     from ifc_console.recents import RecentsStore
 
     entries = RecentsStore(store.recents_file).entries()
@@ -709,7 +792,7 @@ def _cmd_recents_list(args: argparse.Namespace) -> int:
 
 
 def _cmd_recents_clear(_args: argparse.Namespace) -> int:
-    store = SettingsStore()
+    store = _new_store()
     from ifc_console.recents import RecentsStore
 
     RecentsStore(store.recents_file).clear()
@@ -718,7 +801,7 @@ def _cmd_recents_clear(_args: argparse.Namespace) -> int:
 
 
 def _cmd_sessions_list(args: argparse.Namespace) -> int:
-    store = SettingsStore()
+    store = _new_store()
     from ifc_console.audit import AuditLog
 
     ids = AuditLog(store.sessions_dir).list_sessions()
@@ -730,7 +813,7 @@ def _cmd_sessions_list(args: argparse.Namespace) -> int:
 
 
 def _cmd_sessions_show(args: argparse.Namespace) -> int:
-    store = SettingsStore()
+    store = _new_store()
     from ifc_console.audit import AuditLog
 
     records = AuditLog(store.sessions_dir).read_session(args.id)
@@ -743,7 +826,7 @@ def _cmd_sessions_show(args: argparse.Namespace) -> int:
 
 
 def _cmd_sessions_clear(_args: argparse.Namespace) -> int:
-    store = SettingsStore()
+    store = _new_store()
     from ifc_console.audit import AuditLog
 
     n = AuditLog(store.sessions_dir).clear()

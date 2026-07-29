@@ -1,15 +1,14 @@
-"""execute_ifc_code, the power tool, gated per call by classifier + mode."""
+﻿"""execute_ifc_code, the power tool, gated per call by classifier + mode."""
 
 from __future__ import annotations
 
 import time
 from typing import TYPE_CHECKING, Annotated
 
-from mcp.server.fastmcp import FastMCP
-from mcp.types import ToolAnnotations
 from pydantic import Field
 
-from ifc_console.mcp.envelope import ToolError, ok
+from ifc_console.mcp.compat import MCPServer, ToolAnnotations
+from ifc_console.mcp.envelope import Envelope, ToolError, ok
 from ifc_console.mcp.server import enveloped
 from ifc_console.policy.classify import classify
 from ifc_console.policy.guards import GuardError, build_namespace, entity_mutation_lock
@@ -38,7 +37,7 @@ _DESCRIPTION = (
 )
 
 
-def register(mcp: FastMCP, core: AppCore) -> None:
+def register(mcp: MCPServer, core: AppCore) -> None:
     settings = core.settings
 
     @mcp.tool(annotations=EXEC_ANN, description=_DESCRIPTION)
@@ -52,7 +51,7 @@ def register(mcp: FastMCP, core: AppCore) -> None:
                 description="One-line intent, shown in the user's terminal and audit log.",
             ),
         ] = "",
-    ) -> str:
+    ) -> Envelope:
         core.session.require_loaded()
 
         try:

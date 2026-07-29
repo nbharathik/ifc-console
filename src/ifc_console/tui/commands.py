@@ -229,6 +229,24 @@ async def _mode(console: ConsoleScreen, args: str) -> None:
     core.set_mode(new_mode, by="tui")
 
 
+@command("theme", "/theme [dark|light|auto]", "show or switch the console theme", "console")
+async def _theme(console: ConsoleScreen, args: str) -> None:
+    core = console.core
+    if not args:
+        console.print(f"theme: {core.ui_theme} (dark, light, or auto; /theme light to switch)")
+        return
+    value = args.strip().lower()
+    if value not in ("dark", "light", "auto"):
+        console.print(f"[red]unknown theme {escape(args)!r}[/red]; use dark, light, or auto")
+        return
+    apply = getattr(console.app, "apply_theme", None)
+    if apply is not None:
+        apply(value, persist=True)
+    else:
+        core.set_ui_theme(value, persist=True)
+    console.print(f"theme set to {value} (saved; open viewer tabs follow)")
+
+
 @command(
     "viewer",
     "/viewer [off|url]",

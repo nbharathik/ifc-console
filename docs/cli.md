@@ -3,6 +3,7 @@
 ```
 ifc-console [flags]                     interactive console (default)
 ifc-console serve --stdio|--http        run without the console
+ifc-console check MODEL [...]           validate a model for CI (schema + IDS)
 ifc-console doctor [--file X] [--json]  diagnose the environment
 ifc-console mcp-config [...]            print client wiring snippets
 ifc-console settings <subcommand>       inspect and edit user settings
@@ -37,6 +38,21 @@ ifc-console serve --http --file model.ifc --viewer
 stderr and the log file only. `--http` equals `--no-tui`: it prints the
 endpoint, token, and (with `--viewer`) the viewer URL, then serves until
 Ctrl+C.
+
+## check
+
+```bash
+ifc-console check model.ifc
+ifc-console check model.ifc --ids requirements.ids --format sarif --output report.sarif
+```
+
+One-shot validation for scripts and CI: schema validation (add
+`--express-rules` for the slow EXPRESS where-rules) plus any number of
+`--ids FILE` checks. `--format text|json|sarif|junit`; SARIF uploads straight
+to GitHub code scanning, JUnit to anything that ingests test reports.
+Exit code 0 when everything passes, **5** when the model fails a check, 4 for
+an unreadable file, 2 when an IDS file is given but the optional `ifctester`
+package is missing.
 
 ## doctor
 
@@ -97,6 +113,7 @@ ifc-console sessions clear             # remove all but the active session
 | 2 | environment problem (doctor failures, missing deps) |
 | 3 | bad usage, unknown setting, or no TTY for the console |
 | 4 | file not found or unparseable |
+| 5 | `check` found validation failures |
 
 ## Environment variables
 

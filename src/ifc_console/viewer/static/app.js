@@ -15,9 +15,12 @@ import { OrbitControls } from "./vendor/OrbitControls.js";
 import { IfcAPI } from "./vendor/web-ifc-api.js";
 
 // ---------------------------------------------------------------- token / api
-const params = new URLSearchParams(location.search);
-const token = params.get("t") || sessionStorage.getItem("ifc-console-token") || "";
+// The token arrives in the URL fragment so it never reaches the server or its
+// logs; keep it per-tab and scrub it from the address bar immediately.
+const hashParams = new URLSearchParams(location.hash.replace(/^#/, ""));
+const token = hashParams.get("t") || sessionStorage.getItem("ifc-console-token") || "";
 if (token) sessionStorage.setItem("ifc-console-token", token);
+if (hashParams.has("t")) history.replaceState(null, "", location.pathname);
 
 async function api(path, options = {}) {
   const headers = { Authorization: `Bearer ${token}`, ...(options.headers || {}) };
@@ -132,6 +135,24 @@ scene.add(grid);
 let axes = null;   // rebuilt per model so its size matches the model
 let groundY = 0;   // grid sits at the model's lowest point
 
+// Theme: the console pushes dark/light over the WS; the chrome follows via
+// CSS variables, the 3D canvas and grid via these colors.
+const THEME_COLORS = {
+  dark: { canvas: 0x101720, gridMinor: 0x24303d, gridMajor: 0x3c536a },
+  light: { canvas: 0xe7edf3, gridMinor: 0xc7d2dd, gridMajor: 0x9fb0c0 },
+};
+let uiTheme = "dark";
+
+function applyTheme(name) {
+  const theme = THEME_COLORS[name] ? name : "dark";
+  uiTheme = theme;
+  document.documentElement.dataset.theme = theme;
+  const colors = THEME_COLORS[theme];
+  scene.background.set(colors.canvas);
+  grid.material.uniforms.uMinor.value.set(colors.gridMinor);
+  grid.material.uniforms.uMajor.value.set(colors.gridMajor);
+}
+
 function updateGround() {
   const box = new THREE.Box3().setFromObject(modelRoot);
   const empty = box.isEmpty();
@@ -156,7 +177,6 @@ scene.add(modelRoot);
 
 let viewportWidth = 0;
 let viewportHeight = 0;
-let resizeFrame = 0;
 function resize() {
   const rect = canvas.parentElement.getBoundingClientRect();
   const w = Math.max(1, Math.floor(rect.width));
@@ -167,15 +187,11 @@ function resize() {
   renderer.setSize(w, h, false);
   camera.aspect = w / h;
   camera.updateProjectionMatrix();
+  // Re-render in the same frame; the observer fires before paint, so the
+  // resized buffer never appears blank or stretched while dragging a splitter.
+  renderer.render(scene, camera);
 }
-function scheduleResize() {
-  if (resizeFrame) return;
-  resizeFrame = requestAnimationFrame(() => {
-    resizeFrame = 0;
-    resize();
-  });
-}
-new ResizeObserver(scheduleResize).observe(canvas.parentElement);
+new ResizeObserver(resize).observe(canvas.parentElement);
 resize();
 
 renderer.setAnimationLoop(() => {
@@ -202,6 +218,14 @@ let highlightSet = new Set();     // expressIDs
 let highlightColor = "#ff3b30";
 let isolateSet = null;            // expressIDs visible during isolation, or null
 const hiddenByTree = new Set();   // expressIDs hidden via tree checkboxes
+let userIsolateSet = null;        // user-driven isolation from the view tools
+const hiddenManual = new Set();   // expressIDs hidden via the view tools
+
+// Color theme (LLM computes, viewer paints): GlobalId-keyed so it survives
+// scene rebuilds; unmatched ids simply paint nothing after a model switch.
+const themeByGuid = new Map();    // GlobalId -> hex
+let themeLegend = [];             // [{label, color, count}]
+let themeTitle = "";
 
 const materialCache = new Map();
 function materialFor(color, alpha) {
@@ -238,6 +262,18 @@ function highlightMaterialFor(hex) {
   return mat;
 }
 
+const themeMaterials = new Map();
+function themeMaterialFor(hex) {
+  let mat = themeMaterials.get(hex);
+  if (!mat) {
+    mat = new THREE.MeshLambertMaterial({
+      color: new THREE.Color(hex), side: THREE.DoubleSide,
+    });
+    themeMaterials.set(hex, mat);
+  }
+  return mat;
+}
+
 // ---------------------------------------------------------------- model load
 async function ensureIfcApi() {
   if (ifcApi) return ifcApi;
@@ -259,6 +295,8 @@ function disposeModel() {
   highlightSet.clear();
   isolateSet = null;
   hiddenByTree.clear();
+  userIsolateSet = null;
+  hiddenManual.clear();
   updateSelectionInfo();
   updateHighlightInfo();
 }
@@ -483,15 +521,13 @@ function buildTreeItem(node, depth) {
     toggle.addEventListener("click", () => setOpen(kids.hidden));
   }
 
+  // Clicking a name only selects; framing stays on F or the view tools.
   label.addEventListener("click", () => {
     if (spatial) {
       setOpen(true); // the label is a much bigger target than the arrow
-      const ids = descendantElements(node);
-      setSelection(ids, false);
-      if (ids.length) fitTo(ids);
+      setSelection(descendantElements(node), false);
     } else if (groups.has(node.expressID)) {
       setSelection([node.expressID], false);
-      fitTo([node.expressID]);
     }
   });
   ul.appendChild(li);
@@ -514,6 +550,10 @@ function applyAppearance() {
     let material = null;
     if (highlightSet.has(id)) material = highlightMaterialFor(highlightColor);
     else if (selection.has(id)) material = selectMaterial;
+    else {
+      const themed = themeByGuid.get(guidOf.get(id));
+      if (themed) material = themeMaterialFor(themed);
+    }
     for (const mesh of group.children) {
       mesh.material = material || mesh.userData.baseMaterial;
     }
@@ -522,9 +562,12 @@ function applyAppearance() {
 
 function applyVisibility() {
   for (const [id, group] of groups) {
-    const isolatedOut = isolateSet !== null && !isolateSet.has(id);
-    group.visible = !hiddenByTree.has(id) && !isolatedOut;
+    const isolatedOut =
+      (isolateSet !== null && !isolateSet.has(id))
+      || (userIsolateSet !== null && !userIsolateSet.has(id));
+    group.visible = !hiddenByTree.has(id) && !hiddenManual.has(id) && !isolatedOut;
   }
+  updateVisibilityInfo();
 }
 
 // ---------------------------------------------------------------- selection
@@ -548,6 +591,7 @@ function setSelection(ids, additive) {
 
 function updateSelectionInfo() {
   const n = selection.size;
+  updateToolButtons();
   if (!n) {
     $("sel-info").textContent = "No selection";
     return;
@@ -763,7 +807,7 @@ function scheduleReload() {
 
 function connect() {
   const scheme = location.protocol === "https:" ? "wss" : "ws";
-  ws = new WebSocket(`${scheme}://${location.host}/ws?t=${encodeURIComponent(token)}`);
+  ws = new WebSocket(`${scheme}://${location.host}/ws`);
 
   ws.addEventListener("open", () => {
     wsAttempts = 0;
@@ -796,17 +840,25 @@ function handleFrame(frame) {
   switch (frame.type) {
     case "status":
       setModelInfo(frame);
+      if (frame.theme) applyTheme(frame.theme);
       if (frame.etag && frame.etag !== currentEtag) scheduleReload();
       break;
     case "model_updated":
       if (frame.dirty !== undefined) $("dirty").hidden = !frame.dirty;
+      if (frame.reason === "loaded") applyColorThemeFrame({ clear: true });
       if (!frame.etag || frame.etag !== currentEtag) scheduleReload();
       break;
     case "mode_changed":
       setMode(frame.mode);
       break;
+    case "theme":
+      applyTheme(frame.theme);
+      break;
     case "highlight":
       applyHighlightFrame(frame);
+      break;
+    case "color_theme":
+      applyColorThemeFrame(frame);
       break;
     case "camera":
       if (frame.view && frame.view !== "current") setView(frame.view, fitTargetIds(frame.fit));
@@ -837,6 +889,51 @@ function applyHighlightFrame(frame) {
   applyVisibility();
   updateHighlightInfo();
   if (!frame.clear && frame.fit && highlightSet.size) fitTo([...highlightSet]);
+}
+
+function applyColorThemeFrame(frame) {
+  themeByGuid.clear();
+  themeLegend = [];
+  themeTitle = "";
+  if (!frame.clear) {
+    themeTitle = frame.title || "";
+    for (const group of frame.groups || []) {
+      let count = 0;
+      for (const guid of group.guids || []) {
+        themeByGuid.set(guid, group.color);
+        count++;
+      }
+      themeLegend.push({ label: group.label || "", color: group.color, count });
+    }
+  }
+  applyAppearance();
+  renderLegend();
+}
+
+function renderLegend() {
+  const legend = $("legend");
+  if (!themeLegend.length) {
+    legend.hidden = true;
+    return;
+  }
+  $("legend-title").textContent = themeTitle || "Color theme";
+  const list = $("legend-items");
+  list.textContent = "";
+  for (const entry of themeLegend) {
+    const item = document.createElement("li");
+    const chip = document.createElement("span");
+    chip.className = "legend-chip";
+    chip.style.background = entry.color;
+    const text = document.createElement("span");
+    text.className = "legend-label";
+    text.textContent = entry.label;
+    const count = document.createElement("span");
+    count.className = "legend-count";
+    count.textContent = String(entry.count);
+    item.append(chip, text, count);
+    list.append(item);
+  }
+  legend.hidden = false;
 }
 
 // ---------------------------------------------------------------- screenshots
@@ -897,6 +994,7 @@ function setModelInfo(status) {
     if (status.mode) setMode(status.mode);
     $("dirty").hidden = !status.dirty;
     if (status.highlight) applyHighlightFrame(status.highlight);
+    if (status.color_theme) applyColorThemeFrame(status.color_theme);
   } else {
     label.textContent = "no model";
     label.title = "";
@@ -920,6 +1018,58 @@ async function refreshStatus() {
 $("btn-clear-hl").addEventListener("click", () => {
   applyHighlightFrame({ clear: true });
 });
+$("legend-clear").addEventListener("click", () => {
+  applyColorThemeFrame({ clear: true });
+});
+
+// ---------------------------------------------------------------- view tools
+function updateToolButtons() {
+  const none = selection.size === 0;
+  $("tool-isolate").disabled = none;
+  $("tool-hide").disabled = none;
+  $("tool-fit-sel").disabled = none;
+}
+
+function updateVisibilityInfo() {
+  let hidden = 0;
+  for (const group of groups.values()) {
+    if (!group.visible) hidden++;
+  }
+  $("tool-hidden-info").textContent =
+    hidden ? `${hidden} of ${groups.size} elements hidden` : "";
+  $("tool-show-all").disabled = hidden === 0;
+}
+
+$("tool-isolate").addEventListener("click", () => {
+  if (!selection.size) return;
+  userIsolateSet = new Set(selection);
+  applyVisibility();
+});
+$("tool-hide").addEventListener("click", () => {
+  if (!selection.size) return;
+  for (const id of selection) hiddenManual.add(id);
+  setSelection([], false);
+  applyVisibility();
+});
+$("tool-show-all").addEventListener("click", () => {
+  userIsolateSet = null;
+  isolateSet = null;
+  hiddenManual.clear();
+  hiddenByTree.clear();
+  for (const box of document.querySelectorAll('#tree input[type="checkbox"]')) {
+    box.checked = true;
+  }
+  applyVisibility();
+});
+$("tool-fit-sel").addEventListener("click", () => {
+  if (selection.size) fitTo([...selection]);
+});
+$("tool-fit-all").addEventListener("click", () => fitTo(null));
+for (const btn of document.querySelectorAll("#tools-panel [data-view]")) {
+  btn.addEventListener("click", () => setView(btn.dataset.view, null));
+}
+updateToolButtons();
+updateVisibilityInfo();
 
 // ---------------------------------------------------------------- ui state
 // Panel widths/visibility and scene settings persist across sessions.
@@ -997,7 +1147,11 @@ function initSidePanel(panelId, splitId, btnId, widthKey, openKey, side) {
 initSidePanel("tree-panel", "split-tree", "btn-panel-tree", "treeWidth", "treeOpen", "left");
 initSidePanel("props-panel", "split-props", "btn-panel-props", "propsWidth", "propsOpen", "right");
 
-const POPOVERS = [["btn-settings", "settings-panel"], ["btn-help", "help-panel"]];
+const POPOVERS = [
+  ["btn-settings", "settings-panel"],
+  ["btn-help", "help-panel"],
+  ["btn-tools", "tools-panel"],
+];
 function closePopovers(exceptId) {
   for (const [btnId, panelId] of POPOVERS) {
     if (panelId === exceptId) continue;

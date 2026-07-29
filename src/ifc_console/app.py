@@ -7,8 +7,10 @@ CLI, and viewer are all thin faces over it.
 from __future__ import annotations
 
 import secrets
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from ifc_console import __version__
 from ifc_console.audit import AuditLog
@@ -68,6 +70,8 @@ class AppCore:
         self.server_running = False
         self._mcp = None  # set by attach_mcp once the tool server exists
         self._viewer_tools_registered = False
+        self._read_cache: dict[tuple, Any] = {}
+        self.ui_theme = s.tui.theme
 
         # viewer=True/False comes from the --viewer flag; None defers to
         # settings.
@@ -93,8 +97,12 @@ class AppCore:
 
     @property
     def viewer_url(self) -> str:
-        """Tokenized URL a browser needs to open the viewer."""
-        return f"http://127.0.0.1:{self.port}/viewer?t={self.token}"
+        """Tokenized URL a browser needs to open the viewer.
+
+        The token rides the fragment: it never reaches the server, its logs,
+        or a referrer, and the SPA scrubs it from the address bar on load.
+        """
+        return f"http://127.0.0.1:{self.port}/viewer#t={self.token}"
 
     # -- viewer lifecycle -------------------------------------------------------
     def attach_mcp(self, mcp) -> None:
@@ -149,6 +157,33 @@ class AppCore:
     def session_meta(self) -> dict:
         return self.session.meta(self.policy.mode.value)
 
+    # -- fingerprint-keyed read cache ----------------------------------------------
+    async def cached_read(
+        self,
+        name: str,
+        build: Callable[[], Any],
+        *,
+        key: tuple = (),
+        timeout: float | None = 120,
+    ) -> tuple[Any, bool]:
+        """Run a read builder on the model worker, cached per fingerprint+revision.
+
+        Returns (value, was_cached). The revision bumps on load, save, and
+        every mutation, so a hit can never be stale; entries from dead
+        revisions are pruned lazily to bound memory.
+        """
+        s = self.session
+        cache_key = (name, s.fingerprint, s.revision, *key)
+        if cache_key in self._read_cache:
+            return self._read_cache[cache_key], True
+        value = await s.run(build, timeout=timeout)
+        live = (s.fingerprint, s.revision)
+        if len(self._read_cache) >= 64:
+            for stale in [k for k in self._read_cache if k[1:3] != live]:
+                del self._read_cache[stale]
+        self._read_cache[cache_key] = value
+        return value, False
+
     # -- allowed directories ------------------------------------------------------
     def add_allowed_dir(self, directory: Path) -> None:
         try:
@@ -198,7 +233,7 @@ class AppCore:
         )
 
     async def open_model(self, path: Path) -> None:
-        await self.session.open(path)
+        await self.session.open(path, max_mb=self.settings.files.max_open_mb)
         assert self.session.path is not None
         self.add_allowed_dir(self.session.path.parent)
         self.recents.touch(
@@ -226,6 +261,18 @@ class AppCore:
         if new_mode is self.policy.mode:
             return
         self.policy.set_mode(new_mode, by=by)
+
+    def set_ui_theme(self, name: str, *, persist: bool = False) -> str:
+        """Record the theme choice and tell every surface (auto resolves dark).
+
+        Returns the resolved value the viewer should render ("dark"/"light").
+        """
+        self.ui_theme = name
+        if persist:
+            self.store.set_user("tui.theme", name)
+        resolved = "light" if name == "light" else "dark"
+        self.events.emit("theme_changed", theme=resolved)
+        return resolved
 
     def shutdown(self) -> None:
         self.audit.end()

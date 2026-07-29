@@ -68,6 +68,7 @@ class ViewerHub:
         self.selection: list[str] = []
         self.selected_at: str | None = None
         self.last_highlight: dict | None = None
+        self.last_color_theme: dict | None = None
         self._shots: dict[str, asyncio.Future] = {}
         self._shot_ids = itertools.count(1)
         self._ping_task: asyncio.Task | None = None
@@ -141,11 +142,13 @@ class ViewerHub:
             "model": s.name,
             "schema": s.schema,
             "mode": self.core.policy.mode.value,
+            "theme": "light" if self.core.ui_theme == "light" else "dark",
             "dirty": s.dirty,
             "fingerprint": s.fingerprint,
             "etag": self.model_etag(),
             "selection": list(self.selection),
             "highlight": self.last_highlight,
+            "color_theme": self.last_color_theme,
             "tabs": self.connected,
         }
 
@@ -174,7 +177,7 @@ class ViewerHub:
         elif ftype == "pong":
             pass
         elif ftype == "hello":
-            pass  # authentication already happened at the upgrade; see routes.py
+            pass  # the socket handshake in routes.py consumed the real hello
         else:
             log.debug("viewer client %s sent unknown frame type %r", client.id, ftype)
 
@@ -206,6 +209,13 @@ class ViewerHub:
             "clear": clear,
         }
         self.last_highlight = None if clear else frame
+        await self.broadcast(frame)
+
+    async def send_color_theme(
+        self, groups: list[dict], *, title: str, clear: bool
+    ) -> None:
+        frame = {"type": "color_theme", "title": title, "groups": groups, "clear": clear}
+        self.last_color_theme = None if clear else frame
         await self.broadcast(frame)
 
     # -- screenshots -----------------------------------------------------------------
@@ -305,6 +315,7 @@ class ViewerHub:
                 self.selection = []
                 self.core.viewer.selection = []
                 self.last_highlight = None
+                self.last_color_theme = None
             frame = {
                 "type": "model_updated",
                 "etag": self.model_etag(),
@@ -313,6 +324,8 @@ class ViewerHub:
             }
         elif etype == "mode_changed":
             frame = {"type": "mode_changed", "mode": event.get("mode")}
+        elif etype == "theme_changed":
+            frame = {"type": "theme", "theme": event.get("theme")}
         if frame is None:
             return
         try:

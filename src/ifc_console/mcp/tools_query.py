@@ -5,8 +5,6 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Annotated, Any, Literal
 
-from mcp.server.fastmcp import FastMCP
-from mcp.types import ToolAnnotations
 from pydantic import Field
 
 from ifc_console import __version__
@@ -15,7 +13,8 @@ from ifc_console.ifc.info import build_project_info
 from ifc_console.ifc.query import ALLOWED_FIELDS, DEFAULT_FIELDS, run_query
 from ifc_console.ifc.schema_docs import build_schema_docs
 from ifc_console.ifc.spatial import build_spatial_tree
-from ifc_console.mcp.envelope import ToolError, ok
+from ifc_console.mcp.compat import MCPServer, ToolAnnotations
+from ifc_console.mcp.envelope import Envelope, ToolError, ok
 from ifc_console.mcp.server import enveloped
 
 if TYPE_CHECKING:
@@ -36,7 +35,7 @@ def _validate_subset(values: list[str] | None, allowed: tuple[str, ...], param: 
         )
 
 
-def register(mcp: FastMCP, core: AppCore) -> None:
+def register(mcp: MCPServer, core: AppCore) -> None:
     limit_ = core.settings.exec.output_char_limit
 
     @mcp.tool(
@@ -49,7 +48,7 @@ def register(mcp: FastMCP, core: AppCore) -> None:
         ),
     )
     @enveloped(core, "get_session_status")
-    async def get_session_status() -> str:
+    async def get_session_status() -> Envelope:
         s = core.session
         model: dict[str, Any] = {"loaded": s.loaded}
         if s.loaded:
@@ -76,6 +75,86 @@ def register(mcp: FastMCP, core: AppCore) -> None:
     @mcp.tool(
         annotations=QUERY_ANN,
         description=(
+            "[QUERY] One-call orientation: session status, project summary, and "
+            "the spatial tree to depth 2, in a single round-trip. Start here on "
+            "a fresh connection; it replaces three separate calls."
+        ),
+    )
+    @enveloped(core, "orient")
+    async def orient() -> Envelope:
+        s = core.session
+        status: dict[str, Any] = {
+            "model": {"loaded": s.loaded, "name": s.name, "schema": s.schema},
+            "mode": core.policy.mode.value,
+            "dirty": s.dirty,
+            "viewer": {"enabled": core.viewer.enabled, "connected": core.viewer.connected},
+        }
+        data: dict[str, Any] = {"status": status}
+        if s.loaded:
+
+            def job() -> tuple[dict, dict]:
+                return (
+                    build_project_info(s.ifc, s.path),
+                    build_spatial_tree(s.ifc, None, 2, True),
+                )
+
+            (info, tree), cached = await core.cached_read("orient", job)
+            data["project"] = info
+            data["spatial_tree"] = tree
+            return ok(data, core.session_meta(), char_limit=limit_, cached=cached)
+        data["hint"] = "no model loaded; call list_ifc_files then open_ifc_file"
+        return ok(data, core.session_meta(), char_limit=limit_)
+
+    @mcp.tool(
+        annotations=QUERY_ANN,
+        description=(
+            "[QUERY] Live capability map: every currently registered tool with a "
+            "one-line purpose, the session mode and what it permits, viewer "
+            "state, and worked examples. The tool list changes at runtime (the "
+            "viewer category comes and goes), so this is the ground truth."
+        ),
+    )
+    @enveloped(core, "describe_capabilities")
+    async def describe_capabilities() -> Envelope:
+        def purpose(description: str | None) -> str:
+            text = description or ""
+            if text.startswith("["):  # drop the [QUERY]/[VIEW]/[ARTIFACT] tag
+                _, _, text = text.partition("] ")
+            return text.partition(". ")[0]
+
+        tools = sorted(await mcp.list_tools(), key=lambda t: t.name)
+        listing = [{"name": tool.name, "purpose": purpose(tool.description)} for tool in tools]
+        mode = core.policy.mode.value
+        data = {
+            "server": {"name": "ifc-console", "version": __version__},
+            "mode": {
+                "current": mode,
+                "meaning": (
+                    "queries only; mutations and saves are blocked"
+                    if mode == "ask"
+                    else "mutations and saves run; saves make automatic backups"
+                ),
+                "note": "only the user can change the mode (/mode in their terminal)",
+            },
+            "viewer": {
+                "enabled": core.viewer.enabled,
+                "connected": core.viewer.connected,
+                "note": "viewer tools join the tool list only while the viewer is on",
+            },
+            "tools": listing,
+            "examples": [
+                'query_elements(query="IfcWall, Pset_WallCommon.FireRating=F30")',
+                'compute_quantities(selector="IfcSlab", aggregate_by="storey")',
+                'validate_ids(ids_path="requirements.ids")',
+                'export_csv(selector="IfcDoor", path="doors.csv", '
+                'properties=["Pset_DoorCommon.FireRating"])',
+            ],
+        }
+        return ok(data, core.session_meta(), char_limit=limit_)
+
+    @mcp.tool(
+        annotations=QUERY_ANN,
+        description=(
             "[QUERY] Summary of the loaded IFC: schema, project name/description, "
             "units, counts of sites/buildings/storeys/spaces, entity counts for "
             "common classes, top materials and classifications, authoring-tool "
@@ -83,12 +162,13 @@ def register(mcp: FastMCP, core: AppCore) -> None:
         ),
     )
     @enveloped(core, "get_ifc_project_info")
-    async def get_ifc_project_info() -> str:
+    async def get_ifc_project_info() -> Envelope:
         core.session.require_loaded()
-        data = await core.session.run(
-            lambda: build_project_info(core.session.ifc, core.session.path), timeout=120
+        data, cached = await core.cached_read(
+            "project_info",
+            lambda: build_project_info(core.session.ifc, core.session.path),
         )
-        return ok(data, core.session_meta(), char_limit=limit_)
+        return ok(data, core.session_meta(), char_limit=limit_, cached=cached)
 
     @mcp.tool(
         annotations=QUERY_ANN,
@@ -105,15 +185,16 @@ def register(mcp: FastMCP, core: AppCore) -> None:
         ] = None,
         depth: Annotated[int, Field(ge=1, le=20)] = 10,
         include_element_counts: bool = True,
-    ) -> str:
+    ) -> Envelope:
         core.session.require_loaded()
-        tree = await core.session.run(
+        tree, cached = await core.cached_read(
+            "spatial_tree",
             lambda: build_spatial_tree(
                 core.session.ifc, root_global_id, depth, include_element_counts
             ),
-            timeout=120,
+            key=(root_global_id, depth, include_element_counts),
         )
-        return ok({"tree": tree}, core.session_meta(), char_limit=limit_)
+        return ok({"tree": tree}, core.session_meta(), char_limit=limit_, cached=cached)
 
     @mcp.tool(
         annotations=QUERY_ANN,
@@ -140,7 +221,7 @@ def register(mcp: FastMCP, core: AppCore) -> None:
             ),
         ] = None,
         order_by: Literal["class", "name", "storey"] = "class",
-    ) -> str:
+    ) -> Envelope:
         core.session.require_loaded()
         _validate_subset(fields, ALLOWED_FIELDS, "fields")
         use_fields = tuple(fields) if fields else DEFAULT_FIELDS
@@ -183,7 +264,7 @@ def register(mcp: FastMCP, core: AppCore) -> None:
                 f"Default: {list(INCLUDE_DEFAULT)}."
             ),
         ] = None,
-    ) -> str:
+    ) -> Envelope:
         core.session.require_loaded()
         _validate_subset(include, INCLUDE_ALLOWED, "include")
         use_include = tuple(include) if include else INCLUDE_DEFAULT
@@ -222,7 +303,7 @@ def register(mcp: FastMCP, core: AppCore) -> None:
         global_ids: Annotated[list[str], Field(min_length=1, max_length=100)],
         psets_only: bool = False,
         qtos_only: bool = False,
-    ) -> str:
+    ) -> Envelope:
         core.session.require_loaded()
         if psets_only and qtos_only:
             raise ToolError(
@@ -278,7 +359,7 @@ def register(mcp: FastMCP, core: AppCore) -> None:
     async def get_schema_docs(
         entity: Annotated[str, Field(description="e.g. IfcWall")],
         attribute: Annotated[str | None, Field(description="Optional attribute name.")] = None,
-    ) -> str:
+    ) -> Envelope:
         schema = core.session.schema if core.session.loaded else "IFC4"
         data = build_schema_docs(schema or "IFC4", entity, attribute)
         return ok(data, core.session_meta(), char_limit=limit_)

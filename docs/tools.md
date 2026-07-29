@@ -7,6 +7,11 @@ Every tool returns one JSON envelope:
   "schema": "IFC4", "dirty": false, "fingerprint": "ab12..." } }
 ```
 
+The envelope arrives twice: as machine-readable `structuredContent` (every
+tool advertises the envelope as its `outputSchema`) and as the same JSON in
+the text block for clients that only read text. Cached heavy reads carry
+`meta.cached: true`.
+
 Failures are never protocol errors. They come back as data the LLM can act on:
 
 ```json
@@ -23,8 +28,19 @@ the model to narrow the query.
 ### get_session_status
 
 No arguments. Server version, loaded model (name, path, schema, size), mode,
-dirty flag, and viewer state (enabled, connected tab count, URL). The place to
-orient.
+dirty flag, and viewer state (enabled, connected tab count, URL).
+
+### orient
+
+No arguments. One-call orientation: session status, the project summary, and
+the spatial tree to depth 2, in a single round-trip. The recommended first
+call on a fresh connection.
+
+### describe_capabilities
+
+No arguments. The live tool list with one-line purposes, the current mode and
+what it permits, viewer state, and worked examples. The tool surface changes
+at runtime (the viewer category comes and goes), so this is the ground truth.
 
 ### get_ifc_project_info
 
@@ -75,6 +91,64 @@ documentation: definition, attribute table with types and optionality,
 supertype chain, predefined types. Works with no model loaded (defaults to
 IFC4).
 
+## Analysis tools
+
+### validate_model
+
+| arg | type | default |
+| --- | ---- | ------- |
+| `express_rules` | bool | false |
+| `max_issues` | int 1-2000 | 200 |
+
+Schema validation via the bundled IfcOpenShell validator: pass/fail, issue
+counts by class and severity, and the first `max_issues` issues with entity
+ids. `express_rules` adds the EXPRESS where-rules (much slower on big models).
+
+### validate_ids
+
+| arg | type | default |
+| --- | ---- | ------- |
+| `ids_path` | path to an IDS XML file | required |
+| `max_failures` | int 1-500 | 50 |
+
+Checks the model against a buildingSMART IDS (Information Delivery
+Specification): per-specification pass/fail with the failing GlobalIds and
+the reason each requirement failed. Needs the optional `ifctester` package
+(`pip install 'ifc-console[validation]'`); without it the error hint explains
+the install.
+
+### compute_quantities
+
+| arg | type | default |
+| --- | ---- | ------- |
+| `selector` | selector string | required |
+| `aggregate_by` | class, type, storey, material, none | class |
+| `quantities` | list of quantity names | all numeric |
+
+Quantity takeoff from stored quantity sets (`Qto_*`): per-group sums and
+grand totals with the model's units. Elements without stored quantities are
+counted and reported; a geometry fallback is planned as an opt-in step.
+
+### get_georeferencing
+
+No arguments. Coordinate reference system, map conversion parameters, true
+and grid north. Answers "where is this model really".
+
+### export_csv
+
+| arg | type | default |
+| --- | ---- | ------- |
+| `selector` | selector string | required |
+| `path` | target path ending in `.csv` | required |
+| `fields` | list | name, storey, type_name |
+| `properties` | dotted pset columns, e.g. `Pset_WallCommon.FireRating` | [] |
+| `limit` | int 1-100000 | 10000 |
+| `overwrite` | bool | false |
+
+Writes query results to a CSV file. Allowed in ask mode: writing a report
+file is not editing the model. The path must lie inside the allowed
+directories, and every write is audited (`artifact_write`).
+
 ## Execution
 
 ### execute_ifc_code
@@ -121,7 +195,7 @@ removes them (clients pick up the change on their next tool refresh). Sessions
 without the viewer, including all stdio sessions, expose exactly the 11 core
 tools above.
 
-When registered, all three still need a connected browser tab, or they return
+When registered, all four still need a connected browser tab, or they return
 `VIEWER_NOT_CONNECTED` with a hint on how to start one.
 
 ### get_viewer_selection
@@ -141,6 +215,20 @@ No arguments. GlobalIds the user click-selected, one summary row each,
 
 Colors elements in the user's browser. `isolate` hides everything else; `clear`
 resets. Allowed in every mode (visual only).
+
+### apply_color_theme
+
+| arg | type | default |
+| --- | ---- | ------- |
+| `groups` | list of `{label, global_ids, color?}` (max 24) | required unless clearing |
+| `title` | str <= 80 | "" |
+| `clear` | bool | false |
+
+Paints elements by group with a legend: the LLM computes the grouping (by
+storey, type, material, a pset value, pass/fail), the viewer colors it, the
+user reads it. Groups without an explicit `color` get colorblind-safe palette
+colors; the legend always carries labels and counts, so meaning never rides
+on color alone. Late-joining tabs receive the active theme automatically.
 
 ### get_viewer_screenshot
 
@@ -167,6 +255,19 @@ Errors: `VIEWER_TIMEOUT` (10 s), `VIEWER_ERROR`, `RESULT_TOO_LARGE`.
 | `ASK_MODE_BLOCKED` | mutation or save attempted in ask mode; the AI should ask for /mode edit |
 | `EXEC_BLOCKED` / `EXEC_ERROR` / `EXEC_TIMEOUT` | code run gated, failed, or timed out |
 | `MODEL_BUSY` | session paused after a timeout; user reloads |
+| `MODEL_TOO_LARGE` | over the `files.max_open_mb` (or viewer) size budget |
+| `EXTRA_NOT_INSTALLED` | an optional package is needed; the hint names the install |
 | `VIEWER_NOT_CONNECTED` / `VIEWER_TIMEOUT` / `VIEWER_ERROR` | viewer tools without a healthy tab |
 | `RESULT_TOO_LARGE` | narrow the request |
 | `INTERNAL_ERROR` | a bug; the audit log has details |
+
+## Resources and prompts
+
+Beyond tools, the server exposes MCP **resources**, JSON views clients can
+attach as ambient context: `ifc://model/summary`, `ifc://model/spatial-tree`,
+`ifc://session/audit`, and the template `ifc://element/{global_id}`.
+
+It also ships a small **prompt library**, guided workflows that appear as
+slash-command-style prompts in capable clients: `model_audit`, `qto_report`,
+`explain_element`, `find_unclassified`, `validate_against_ids`, and
+`selector_help`.
