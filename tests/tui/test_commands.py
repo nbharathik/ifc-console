@@ -42,6 +42,9 @@ class FakeConsole:
     async def open_file_picker(self, initial_filter: str = "") -> None:
         self.picker_opened += 1
 
+    async def open_workspace_panel(self, initial_filter: str = "") -> None:
+        self.panel_opened = getattr(self, "panel_opened", 0) + 1
+
     def copy_to_clipboard(self, value: str) -> None:
         self.clipboard = value
 
@@ -130,15 +133,17 @@ async def test_mode_escalation_denied_by_confirm(console: FakeConsole) -> None:
     assert "unchanged" in console.text
 
 
-async def test_connect_includes_reusable_http_configs(
+async def test_connect_includes_reusable_configs(
     console: FakeConsole, work_model: Path
 ) -> None:
     await commands.dispatch(console, f"/open {work_model}")
     console.clear_log()
     await commands.dispatch(console, "/connect")
-    assert console.core.token in console.text
-    assert "http://127.0.0.1:" in console.text
-    assert "shared HTTP console" in console.text
+    # the default wiring is the stdio bridge: no token in the client config,
+    # and the client may start before ifc-console does
+    assert "bridge" in console.text
+    assert console.core.token not in console.text
+    assert "may start before ifc-console" in console.text
     assert work_model.name not in console.text
     assert console.clipboard.startswith("claude mcp add")
     assert "setup copied to clipboard" in console.text
@@ -164,9 +169,9 @@ async def test_connect_includes_reusable_http_configs(
 async def test_copy_command_is_user_scoped_and_reusable(console: FakeConsole) -> None:
     await commands.dispatch(console, "/copy cmd")
     legacy = console.clipboard
-    assert "--transport http" in console.clipboard
+    assert "bridge" in console.clipboard
     assert "--scope user" in console.clipboard
-    assert console.core.token in console.clipboard
+    assert console.core.token not in console.clipboard
     assert "--file" not in console.clipboard
     await commands.dispatch(console, "/copy claude-code")
     assert console.clipboard == legacy
@@ -188,33 +193,26 @@ async def test_copy_supports_every_client(
         token=console.core.token,
     )
     assert console.clipboard == expected
-    assert console.core.token in console.clipboard
     assert work_model.name not in console.clipboard
     assert f"{client} setup copied to clipboard" in console.text
 
 
-async def test_connect_respects_hidden_token_setting(console: FakeConsole) -> None:
-    console.core.settings.server.token_in_config_snippets = False
-    await commands.dispatch(console, "/connect codex")
-    assert console.core.token not in console.text
-    assert console.core.token not in console.clipboard
-    assert "<TOKEN>" in console.clipboard
-    assert "&lt;TOKEN&gt;" in console.text or "<TOKEN>" in console.text
-    assert "token is hidden" in console.text
+@pytest.mark.parametrize("client", CLIENTS)
+async def test_http_transport_still_honours_the_hidden_token_setting(client: str) -> None:
+    """The HTTP wiring keeps the token, so the placeholder path must survive."""
+    snippet = build_config_snippet(
+        client, "http", port=8383, file=None, mode="ask", token=None
+    )
+    assert "<TOKEN>" in snippet
 
 
-async def test_copy_warns_when_setup_contains_placeholder(console: FakeConsole) -> None:
-    console.core.settings.server.token_in_config_snippets = False
-    await commands.dispatch(console, "/copy codex")
-    assert console.core.token not in console.clipboard
-    assert "<TOKEN>" in console.clipboard
-    assert "copied setup contains <TOKEN>" in console.text
-
-
-async def test_connect_warns_when_token_is_not_persistent(console: FakeConsole) -> None:
+async def test_connect_embeds_and_warns_about_a_per_run_token(
+    console: FakeConsole,
+) -> None:
     console.core.settings.server.persistent_token = False
     await commands.dispatch(console, "/connect")
-    assert "refresh these client configs after every ifc-console restart" in console.text
+    assert console.core.token in console.text
+    assert "must be copied again after every restart" in console.text
 
 
 async def test_status_reports_model_and_mode(console: FakeConsole, work_model: Path) -> None:

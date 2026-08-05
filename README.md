@@ -57,7 +57,7 @@ The MCP server comes up right away. Then, in the console:
 
 ```
 > /file        pick a model from this folder
-> /connect all one-time HTTP setup for every supported LLM client
+> /connect all one-time bridge setup for every supported LLM client
 > /copy codex  copy one complete client config to the clipboard
 > /mode edit   let the AI change the model (ask = query-only, the default)
 > /viewer      3D view in your browser
@@ -86,12 +86,14 @@ Honest caveat: the guards stop accidents, not a determined adversary. Treat
 
 ## What the LLM gets
 
-**11 core tools**: project info, spatial tree, selector queries, element
-details, property sets, schema docs, file list/open/save, and a gated
-Python `execute_ifc_code` power tool.
+**24 core tools**: project info, spatial tree, selector queries, element
+details, property sets, schema docs, validation, quantities, clash detection,
+CSV export, file list/open/save, workspace tools for multi-file work
+(find, attach, switch), and a gated Python `execute_ifc_code` power tool.
 
-**3 more while the viewer runs**: read your click-selection, highlight
-elements, and screenshot the canvas so it can check its own work.
+**4 more while the viewer runs**: read your click-selection, highlight
+elements, apply color themes, and screenshot the canvas so it can check
+its own work.
 
 Every response is one JSON envelope with an actionable hint on failure.
 Full reference: [MCP tools](https://nbharathik.github.io/ifc-console/tools/).

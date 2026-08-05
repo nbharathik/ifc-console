@@ -61,13 +61,25 @@ def build_parser() -> argparse.ArgumentParser:
     _add_run_flags(serve)
     serve.set_defaults(func=_cmd_serve)
 
+    bridge = sub.add_parser(
+        "bridge",
+        help="stdio proxy to a running console; survives being started first.",
+    )
+    bridge.add_argument(
+        "--port", type=int, default=None, help="Console port (default from settings)."
+    )
+    bridge.add_argument(
+        "--token", default=None, help="Defaults to the persistent machine token."
+    )
+    bridge.set_defaults(func=_cmd_bridge)
+
     cfg = sub.add_parser("mcp-config", help="Print client wiring snippets.")
     cfg.add_argument(
         "--client",
         choices=["claude-code", "claude-desktop", "cursor", "vscode", "codex"],
         default="claude-code",
     )
-    cfg.add_argument("--transport", choices=["http", "stdio"], default=None)
+    cfg.add_argument("--transport", choices=["bridge", "http", "stdio"], default=None)
     cfg.add_argument("--file", default=None, help="Model path to pin in stdio snippets.")
     cfg.add_argument("--mode", choices=_MODES, default=None)
     cfg.add_argument("--port", type=int, default=None)
@@ -184,7 +196,7 @@ def _version_line() -> str:
 
 
 # --------------------------------------------------------------------------- helpers
-def _make_store(args: argparse.Namespace) -> SettingsStore:
+def _make_store(args: argparse.Namespace, *, include_project: bool = True) -> SettingsStore:
     overrides: dict[str, Any] = {}
     if getattr(args, "port", None):
         overrides["server.port"] = args.port
@@ -192,7 +204,7 @@ def _make_store(args: argparse.Namespace) -> SettingsStore:
         overrides["mode.default"] = args.mode
     if getattr(args, "log_level", None):
         overrides["logging.level"] = args.log_level
-    return _new_store(flag_overrides=overrides)
+    return _new_store(flag_overrides=overrides, include_project=include_project)
 
 
 def _make_core(args: argparse.Namespace, store: SettingsStore, transport: str) -> AppCore:
@@ -236,10 +248,10 @@ def _ensure_home(store: SettingsStore) -> None:
         raise SystemExit(2) from exc
 
 
-def _setup_logging(store: SettingsStore, *, level: str) -> None:
+def _setup_logging(store: SettingsStore, *, level: str, to_file: bool = True) -> None:
     _ensure_home(store)
     handlers: list[logging.Handler] = [logging.StreamHandler(sys.stderr)]
-    if store.settings.logging.file_enabled:
+    if to_file and store.settings.logging.file_enabled:
         handlers.append(
             RotatingFileHandler(
                 store.logs_dir / "ifc-console.log",
@@ -396,6 +408,39 @@ def _cmd_serve(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_bridge(args: argparse.Namespace) -> int:
+    """stdout is the protocol here; every log line goes to stderr."""
+    from ifc_console.bridge import Bridge
+
+    if args.port is not None and not 1024 <= args.port <= 65535:
+        print(f"error: --port must be 1024-65535, got {args.port}", file=sys.stderr)
+        return 2
+    # MCP clients launch the bridge with cwd inside an arbitrary repo. A
+    # cloned project's settings must not steer where this machine's token is
+    # sent, so project layers are ignored; mcp-config pins ports via --port.
+    store = _make_store(args, include_project=False)
+    # stderr only: the client owns this process, and a second writer would
+    # fight the console for the rotating log file handle on Windows.
+    _setup_logging(store, level=store.settings.logging.level, to_file=False)
+    port = args.port or store.settings.server.port
+    if not args.token and not store.settings.server.persistent_token:
+        print(
+            "error: bridge needs --token when server.persistent_token=false; "
+            "copy the token printed by the running console.",
+            file=sys.stderr,
+        )
+        return 2
+    token = args.token or store.load_server_token()
+    bridge = Bridge(
+        f"http://127.0.0.1:{port}/mcp", token, cache_file=store.home / "tools_cache.json"
+    )
+    log.info("ifc-console %s bridge to port %s", __version__, port)
+    try:
+        return bridge.run()
+    except KeyboardInterrupt:
+        return 0
+
+
 # --------------------------------------------------------------------------- mcp-config
 # Pinned so npx serves its cached install instead of asking the npm registry
 # for "latest" on every launch. The uncached first run downloads the package,
@@ -415,6 +460,32 @@ def _claude_code_http_cmd(port: int, token: str | None) -> str:
     return cmd
 
 
+def _bridge_argv(port: int, token: str | None = None) -> list[str]:
+    """How a client should launch the stdio bridge.
+
+    An absolute path when we can find one: GUI clients (Claude Desktop) do not
+    inherit the shell PATH, and "command not found" is the most common wiring
+    failure. uvx is the fallback for an ephemeral install.
+    """
+    import shutil
+
+    exe = shutil.which("ifc-console")
+    argv = [exe, "bridge"] if exe else ["uvx", "ifc-console", "bridge"]
+    if port != 8383:
+        argv += ["--port", str(port)]
+    if token:
+        argv += ["--token", token]
+    return argv
+
+
+def _quote_argv(argv: list[str]) -> str:
+    if platform.system() == "Windows":
+        import subprocess
+
+        return subprocess.list2cmdline(argv)
+    return shlex.join(argv)
+
+
 def build_config_snippet(
     client: str,
     transport: str | None,
@@ -423,6 +494,7 @@ def build_config_snippet(
     file: str | None,
     mode: str,
     token: str | None,
+    bridge_token: str | None = None,
 ) -> str:
     stdio_args = ["ifc-console", "serve", "--stdio", "--mode", mode]
     if file:
@@ -431,23 +503,25 @@ def build_config_snippet(
     headers = {"Authorization": f"Bearer {token or '<TOKEN>'}"}
 
     # Every default snippet attaches to the reusable terminal-owned session.
-    # A model path belongs only to an explicitly requested standalone stdio
-    # process; HTTP clients follow whatever the user opens with /file.
-    transport = transport or "http"
+    # The bridge is the default because it makes start order irrelevant: the
+    # client can launch before ifc-console and still connect. A model path
+    # belongs only to an explicitly requested standalone stdio process.
+    transport = transport or "bridge"
+    bridge_argv = _bridge_argv(port, bridge_token)
 
     if client == "claude-code":
         if transport == "http":
             return _claude_code_http_cmd(port, token or "<TOKEN>")
-        argv = ["uvx", *stdio_args]
-        if platform.system() == "Windows":
-            import subprocess
-
-            command = subprocess.list2cmdline(argv)
-        else:
-            command = shlex.join(argv)
-        return f"claude mcp add --scope user ifc-console -- {command}"
+        argv = bridge_argv if transport == "bridge" else ["uvx", *stdio_args]
+        return f"claude mcp add --scope user ifc-console -- {_quote_argv(argv)}"
     if client == "claude-desktop":
-        if transport == "stdio":
+        if transport == "bridge":
+            snippet = {
+                "mcpServers": {
+                    "ifc-console": {"command": bridge_argv[0], "args": bridge_argv[1:]}
+                }
+            }
+        elif transport == "stdio":
             snippet = {"mcpServers": {"ifc-console": {"command": "uvx", "args": stdio_args}}}
         else:
             # Claude Desktop starts local MCP entries over stdio. mcp-remote
@@ -472,13 +546,29 @@ def build_config_snippet(
             }
         return json.dumps(snippet, indent=2)
     if client == "cursor":
-        if transport == "stdio":
+        if transport == "bridge":
+            snippet = {
+                "mcpServers": {
+                    "ifc-console": {"command": bridge_argv[0], "args": bridge_argv[1:]}
+                }
+            }
+        elif transport == "stdio":
             snippet = {"mcpServers": {"ifc-console": {"command": "uvx", "args": stdio_args}}}
         else:
             snippet = {"mcpServers": {"ifc-console": {"url": url, "headers": headers}}}
         return json.dumps(snippet, indent=2)
     if client == "vscode":
-        if transport == "stdio":
+        if transport == "bridge":
+            snippet = {
+                "servers": {
+                    "ifc-console": {
+                        "type": "stdio",
+                        "command": bridge_argv[0],
+                        "args": bridge_argv[1:],
+                    }
+                }
+            }
+        elif transport == "stdio":
             snippet = {
                 "servers": {"ifc-console": {"type": "stdio", "command": "uvx", "args": stdio_args}}
             }
@@ -486,9 +576,14 @@ def build_config_snippet(
             snippet = {"servers": {"ifc-console": {"type": "http", "url": url, "headers": headers}}}
         return json.dumps(snippet, indent=2)
     if client == "codex":
-        if transport == "stdio":
-            arg_list = ", ".join(json.dumps(a, ensure_ascii=False) for a in stdio_args)
-            return f'[mcp_servers.ifc-console]\ncommand = "uvx"\nargs = [{arg_list}]'
+        if transport in ("bridge", "stdio"):
+            argv = bridge_argv if transport == "bridge" else ["uvx", *stdio_args]
+            arg_list = ", ".join(json.dumps(a, ensure_ascii=False) for a in argv[1:])
+            return (
+                f"[mcp_servers.ifc-console]\n"
+                f"command = {json.dumps(argv[0], ensure_ascii=False)}\n"
+                f"args = [{arg_list}]"
+            )
         authorization = json.dumps(headers["Authorization"])
         return (
             f"[mcp_servers.ifc-console]\n"
@@ -502,13 +597,22 @@ def _cmd_mcp_config(args: argparse.Namespace) -> int:
     store = _make_store(args)
     port = args.port or store.settings.server.port
     mode = args.mode or store.settings.mode.default
+    persistent = store.settings.server.persistent_token
+    if args.transport == "bridge" and not persistent:
+        print(
+            "error: bridge configs require server.persistent_token=true. Use "
+            "--transport stdio, or use --transport http with the current run's token.",
+            file=sys.stderr,
+        )
+        return 2
+    transport = args.transport or ("bridge" if persistent else "stdio")
     # With the (default) persistent token the snippet is complete and stays
     # valid across restarts: configure the client once, then just run ifc-console.
     token = None
-    if store.settings.server.persistent_token and store.settings.server.token_in_config_snippets:
+    if persistent and store.settings.server.token_in_config_snippets:
         token = store.load_server_token()
     snippet = build_config_snippet(
-        args.client, args.transport, port=port, file=args.file, mode=mode, token=token
+        args.client, transport, port=port, file=args.file, mode=mode, token=token
     )
     print(snippet)
     if "<TOKEN>" in snippet:
@@ -523,9 +627,9 @@ def _cmd_mcp_config(args: argparse.Namespace) -> int:
                 "can copy a complete setup with /copy <client>."
             )
         print(f"\nnote: {note}", file=sys.stderr)
-    elif args.transport != "stdio":
+    elif transport != "stdio":
         print(
-            "note: configure once; this HTTP setup follows whichever model you "
+            "note: configure once; this shared-console setup follows whichever model you "
             "open with /file and keeps working across ifc-console restarts (rotate "
             "the token with `ifc-console token rotate`).",
             file=sys.stderr,

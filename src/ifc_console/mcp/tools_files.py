@@ -1,4 +1,4 @@
-﻿"""File tools: list_ifc_files, open_ifc_file, save_ifc_file."""
+"""File tools: list_ifc_files, open_ifc_file, save_ifc_file."""
 
 from __future__ import annotations
 
@@ -164,13 +164,14 @@ def register(mcp: MCPServer, core: AppCore) -> None:
         ),
     )
     @enveloped(core, "save_ifc_file")
+    @core.active_model_operation
     async def save_ifc_file(
         output_path: Annotated[
             str | None, Field(description="Save-as path; omit to save in place.")
         ] = None,
         overwrite: bool = False,
     ) -> Envelope:
-        core.session.require_loaded()
+        session = core.session
         if core.policy.mode is Mode.ASK:
             raise ToolError(
                 "ASK_MODE_BLOCKED",
@@ -180,7 +181,7 @@ def register(mcp: MCPServer, core: AppCore) -> None:
             )
         if output_path is not None:
             target = core.require_path_allowed(Path(output_path))
-            in_place = core.session.path is not None and target == core.session.path
+            in_place = session.path is not None and target == session.path
             if target.exists() and not overwrite and not in_place:
                 raise ToolError(
                     "FILE_EXISTS",
@@ -189,14 +190,22 @@ def register(mcp: MCPServer, core: AppCore) -> None:
                     "another path.",
                 )
         else:
-            assert core.session.path is not None
-            target = core.session.path
+            assert session.path is not None
+            target = session.path
 
-        result = await core.session.save(target, core.backups)
+        owner_id = core.models.id_for_path(target)
+        if owner_id is not None and owner_id != session.model_id:
+            raise ToolError(
+                "FILE_EXISTS",
+                f"{target} belongs to resident model {owner_id!r}.",
+                "Detach that model first, or save to a different path.",
+            )
+
+        result = await session.save(target, core.backups)
         core.recents.touch(
             Path(result["path"]),
             size_bytes=result["size_bytes"],
-            schema=core.session.schema or "?",
+            schema=session.schema or "?",
             mode=core.policy.mode.value,
         )
         core.audit.record("save", **result)

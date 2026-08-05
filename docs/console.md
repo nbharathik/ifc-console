@@ -39,8 +39,8 @@ bottom, and modal cards when something needs your decision.
 ## The completion menu
 
 Everything is picked in place. Type `/` and every command appears with a
-one-line description. Keep typing to narrow the list (`/mo` leaves `/mode` and
-`/model`).
+one-line description. Keep typing to narrow the list (`/mo` leaves `/mode`,
+`/model`, and `/models`).
 
 - ++tab++ inserts the highlighted entry without running it.
 - ++up++ / ++down++ (or the mouse wheel) move the highlight.
@@ -67,11 +67,16 @@ nearby IFC files, filtered as you type.
 | `/help` | list all commands |
 | `/file [filter]` | pick an IFC file: recents + files near the working directory, filterable |
 | `/open <path>` | open a model by path (a bare path in the prompt works too) |
+| `/workspace [dir]` | browse a whole folder and check several files at once (`dir` sets the root) |
+| `/models` | list loaded models and attached files |
+| `/attach <path>` | load a file alongside the active model (extra IFC, or an IDS for the AI) |
+| `/detach <id>` | release an attached model or file |
+| `/use <id>` | make a loaded model the active one |
 | `/recent` | list recently opened models |
 | `/mode [ask\|edit]` | show or change what the AI may do (switching to edit asks to confirm) |
 | `/theme [dark\|light\|auto]` | switch the console theme (persists; open viewer tabs follow) |
 | `/viewer [off\|url]` | open the 3D viewer (its 4 MCP tools register live); `off` closes tabs and removes them, `url` prints the link |
-| `/connect [client\|all]` | shared-HTTP setup for claude-code, claude-desktop, cursor, vscode, codex |
+| `/connect [client\|all]` | shared-console bridge setup for claude-code, claude-desktop, cursor, vscode, codex |
 | `/copy [client\|url\|viewer\|token]` | copy a complete client setup, MCP URL, viewer URL, or token |
 | `/status` | session summary |
 | `/model` | entity counts for the loaded model |
@@ -110,6 +115,54 @@ models to scan.
 
 Start ifc-console in your project folder and both show exactly the models you care
 about, no paths to type.
+
+## Working with a folder (optional)
+
+One model at a time is the default and the normal way to work. When a job needs
+more than that, `/workspace` opens a panel over the whole folder:
+
+```
++--------------------------------------------------------------------+
+| Workspace                                                          |
+| One model is the default. Check extra files to load them alongside |
+| it: IFC models attach read-only, an IDS is handed to the LLM.      |
+| filter: _                                                          |
+| +----------------------------------------------------------------+ |
+| | [X] IFC  ABC-XYZ-ZZ-XX-M3-A-0001.ifc  ARC · 128 MB · IFC4      | |
+| | [X] IFC  ABC-XYZ-ZZ-XX-M3-S-0001.ifc  STR · 94 MB · IFC4       | |
+| | [X] IDS  employer-requirements.ids    12 specs                 | |
+| +----------------------------------------------------------------+ |
+| 3 of 27 indexed · checked: 2 model(s), 1 companion file(s)         |
+|       [ Check all ] [ Clear checks ] [ Open selection ] [ Cancel ] |
+| Tab check/uncheck · Enter open selection · Up/Down move            |
+| Ctrl+A check all · Ctrl+D clear · Ctrl+U other types · Esc cancel  |
++--------------------------------------------------------------------+
+```
+
+- The panel indexes files, it never loads them. Kind comes from the file
+  header, not the extension, so a mislabelled file is still recognized.
+- Only kinds ifc-console can use are listed; ++ctrl+u++ shows everything else.
+- ++tab++ (or a mouse click) checks or unchecks the highlighted row and moves
+  down, so a run of files is a run of Tabs. The **Check all** and **Clear
+  checks** buttons make larger selections easier; ++ctrl+a++ and ++ctrl+d++ are
+  their shortcuts.
+- ++enter++ opens what is checked; ++ctrl+o++ and the **Open selection** button
+  do the same thing. With nothing checked, opening takes the highlighted file,
+  exactly like `/file`, so filter then ++enter++ is the quick single-file path.
+- Applying gives you one **active** model plus read-only companions. `/models`
+  lists them, `/use <id>` moves the active focus, `/detach <id>` frees one.
+
+Only the active model can be changed or saved. Attached models are read-only,
+and the AI gets `MODEL_READ_ONLY` if it tries otherwise. Attached IDS and BCF
+files are not loaded at all: their paths are handed to the AI so it can call
+`validate_ids` without you pasting anything.
+
+Adding a folder to the allowed roots stays your decision. The AI can search
+the workspace and open files inside it, never widen it.
+
+`workspace.max_resident` (default 3) caps how many models are held at once;
+set it to 1 to restore strict single-model behaviour. `workspace.max_total_mb`
+caps their combined size. A model with unsaved changes is never evicted.
 
 ## The mode switch
 

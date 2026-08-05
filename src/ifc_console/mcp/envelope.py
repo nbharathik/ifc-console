@@ -18,6 +18,8 @@ from pydantic import BaseModel, Field
 # a code is a breaking change (enforced by the API snapshot test).
 ERROR_CODES = (
     "ASK_MODE_BLOCKED",
+    "CONSOLE_AUTH_FAILED",
+    "CONSOLE_NOT_RUNNING",
     "EXEC_BLOCKED",
     "EXEC_ERROR",
     "EXEC_TIMEOUT",
@@ -28,15 +30,22 @@ ERROR_CODES = (
     "INVALID_INPUT",
     "INVALID_QUERY",
     "MODEL_BUSY",
+    "MODEL_NOT_FOUND",
+    "MODEL_READ_ONLY",
     "MODEL_TOO_LARGE",
     "NOT_FOUND",
+    "NO_GEOMETRY",
+    "NO_MATCH",
     "NO_MODEL_LOADED",
     "PATH_NOT_ALLOWED",
     "RESULT_TOO_LARGE",
+    "TOO_MANY_ELEMENTS",
     "UNSAVED_CHANGES",
     "VIEWER_ERROR",
     "VIEWER_NOT_CONNECTED",
     "VIEWER_TIMEOUT",
+    "WORKSPACE_BUDGET",
+    "WORKSPACE_DISABLED",
 )
 
 

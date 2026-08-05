@@ -50,13 +50,18 @@ defaults < user file < project file < project local file < env vars < CLI flags
 | `files.backup_retention` | `20` | backups kept per model file |
 | `files.follow_symlinks` | `false` | resolve symlinks when listing |
 | `files.max_open_mb` | `4096` | refuse to open larger files instead of risking OOM (0 disables) |
+| `workspace.enabled` | `true` | index the allowed folders for `/workspace` and `find_files` (indexing only, nothing is loaded) |
+| `workspace.max_resident` | `3` | models held in memory at once, active included; `1` restores strict single-model |
+| `workspace.max_total_mb` | `6144` | combined size budget across resident models (0 disables) |
+| `workspace.scan_depth` | `3` | folder levels the index walks |
+| `workspace.scan_cap` | `10000` | files examined per scan |
 | `viewer.enabled_default` | `false` | start with the viewer on |
 | `viewer.max_model_mb` | `200` | refuse to serve larger models to the viewer |
 | `recents.max` | `20` | recents list length |
 | `sessions.retention` | `50` | audit sessions kept |
 | `logging.level` | `info` | log verbosity |
 | `logging.file_enabled` | `true` | write `~/.ifc-console/logs/ifc-console.log` |
-| `tui.theme` | `dark` | reserved for future theming |
+| `tui.theme` | `dark` | console and viewer theme; `/theme dark|light|auto` sets it |
 
 ## Changing settings
 

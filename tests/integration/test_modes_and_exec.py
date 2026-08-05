@@ -137,3 +137,19 @@ async def test_save_as_refuses_overwrite(harness_factory, work_model, tmp_path) 
     assert out["ok"] is False
     assert out["error"]["code"] == "FILE_EXISTS"
     assert existing.read_text() == "do not clobber"
+
+
+async def test_save_as_cannot_overwrite_another_resident_model(
+    harness_factory, work_model, tmp_path
+) -> None:
+    import shutil
+
+    h = await harness_factory(model=work_model, mode=Mode.EDIT)
+    annex = tmp_path / "annex.ifc"
+    shutil.copy2(work_model, annex)
+    await h.core.open_model(annex, attach=True)
+
+    out = await h.call("save_ifc_file", output_path=str(annex), overwrite=True)
+    assert out["ok"] is False
+    assert out["error"]["code"] == "FILE_EXISTS"
+    assert "resident model" in out["error"]["message"]

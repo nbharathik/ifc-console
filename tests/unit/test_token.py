@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -23,6 +24,14 @@ def test_token_persists_across_runs(tmp_path: Path) -> None:
     second = _store(tmp_path / "home").load_server_token()
     assert first == second
     assert len(first) == 32
+
+
+def test_concurrent_first_use_returns_one_token(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        tokens = list(pool.map(lambda _i: _store(home).load_server_token(), range(16)))
+    assert len(set(tokens)) == 1
+    assert _store(home).load_server_token() == tokens[0]
 
 
 def test_cores_share_the_machine_token(tmp_path: Path) -> None:
@@ -71,10 +80,23 @@ def test_corrupt_token_file_regenerates(tmp_path: Path) -> None:
 def test_mcp_config_embeds_persistent_token(tmp_path: Path, monkeypatch, capsys) -> None:
     monkeypatch.setenv("IFC_CONSOLE_HOME", str(tmp_path / "home"))
     expected = _store(tmp_path / "home").load_server_token()
-    assert main(["mcp-config", "--client", "claude-code"]) == 0
+    assert main(["mcp-config", "--client", "claude-code", "--transport", "http"]) == 0
     out = capsys.readouterr().out
     assert expected in out
     assert "<TOKEN>" not in out
+
+
+def test_default_mcp_config_keeps_the_token_out_of_client_files(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    """The bridge reads this machine's token itself, so no config holds it."""
+    monkeypatch.setenv("IFC_CONSOLE_HOME", str(tmp_path / "home"))
+    token = _store(tmp_path / "home").load_server_token()
+    assert main(["mcp-config", "--client", "claude-desktop"]) == 0
+    out = capsys.readouterr().out
+    assert token not in out
+    assert "<TOKEN>" not in out
+    assert "bridge" in out
 
 
 def test_mcp_config_respects_hidden_token_setting(tmp_path: Path, monkeypatch, capsys) -> None:
@@ -83,11 +105,39 @@ def test_mcp_config_respects_hidden_token_setting(tmp_path: Path, monkeypatch, c
     expected = store.load_server_token()
     store.set_user("server.token_in_config_snippets", "false")
     monkeypatch.setenv("IFC_CONSOLE_HOME", str(home))
-    assert main(["mcp-config", "--client", "codex"]) == 0
+    assert main(["mcp-config", "--client", "codex", "--transport", "http"]) == 0
     captured = capsys.readouterr()
     assert expected not in captured.out
     assert "<TOKEN>" in captured.out
     assert "token_in_config_snippets" in captured.err
+
+
+def test_per_run_token_defaults_mcp_config_to_stdio(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    home = tmp_path / "home"
+    store = _store(home)
+    store.ensure_dirs()
+    store.set_user("server.persistent_token", "false")
+    monkeypatch.setenv("IFC_CONSOLE_HOME", str(home))
+
+    assert main(["mcp-config", "--client", "codex"]) == 0
+    captured = capsys.readouterr()
+    assert "serve" in captured.out and "--stdio" in captured.out
+    assert "bridge" not in captured.out
+
+
+def test_per_run_token_rejects_unkeyed_bridge_config(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    home = tmp_path / "home"
+    store = _store(home)
+    store.ensure_dirs()
+    store.set_user("server.persistent_token", "false")
+    monkeypatch.setenv("IFC_CONSOLE_HOME", str(home))
+
+    assert main(["mcp-config", "--transport", "bridge"]) == 2
+    assert "persistent_token=true" in capsys.readouterr().err
 
 
 def test_token_cli_show_and_rotate(tmp_path: Path, monkeypatch, capsys) -> None:
@@ -111,13 +161,24 @@ def test_snippet_placeholder_without_token() -> None:
 
 
 @pytest.mark.parametrize("client", CLIENTS)
-@pytest.mark.parametrize("transport", [None, "http"])
-def test_default_snippets_share_http_session_and_ignore_file(
-    client: str, transport: str | None
-) -> None:
+def test_default_snippets_launch_the_bridge(client: str) -> None:
+    """The default wiring survives the client starting before the console."""
     model = r"C:\models\active.ifc"
     snippet = build_config_snippet(
-        client, transport, port=8383, file=model, mode="edit", token="abc123"
+        client, None, port=8383, file=model, mode="edit", token="abc123"
+    )
+    assert "bridge" in snippet
+    assert "abc123" not in snippet  # no secret written into a client config
+    assert "active.ifc" not in snippet
+    assert "--file" not in snippet
+    assert "--mode" not in snippet
+
+
+@pytest.mark.parametrize("client", CLIENTS)
+def test_http_snippets_share_the_session_and_ignore_file(client: str) -> None:
+    model = r"C:\models\active.ifc"
+    snippet = build_config_snippet(
+        client, "http", port=8383, file=model, mode="edit", token="abc123"
     )
     assert "http://127.0.0.1:8383/mcp" in snippet
     assert "abc123" in snippet
@@ -139,7 +200,7 @@ def test_explicit_stdio_snippets_may_pin_file(client: str) -> None:
 
 def test_claude_code_http_config_is_user_scoped() -> None:
     snippet = build_config_snippet(
-        "claude-code", None, port=8383, file=None, mode="ask", token="abc123"
+        "claude-code", "http", port=8383, file=None, mode="ask", token="abc123"
     )
     assert "--transport http" in snippet
     assert "--scope user" in snippet
@@ -147,7 +208,7 @@ def test_claude_code_http_config_is_user_scoped() -> None:
 
 def test_claude_desktop_http_config_uses_authenticated_bridge() -> None:
     snippet = build_config_snippet(
-        "claude-desktop", None, port=8383, file=None, mode="ask", token="abc123"
+        "claude-desktop", "http", port=8383, file=None, mode="ask", token="abc123"
     )
     server = json.loads(snippet)["mcpServers"]["ifc-console"]
     assert server["command"] == "npx"
@@ -162,7 +223,7 @@ def test_claude_desktop_http_config_uses_authenticated_bridge() -> None:
 
 
 def test_codex_http_config_has_static_authorization_header() -> None:
-    snippet = build_config_snippet("codex", None, port=8383, file=None, mode="ask", token="abc123")
+    snippet = build_config_snippet("codex", "http", port=8383, file=None, mode="ask", token="abc123")
     assert "[mcp_servers.ifc-console]" in snippet
     assert 'url = "http://127.0.0.1:8383/mcp"' in snippet
     assert 'http_headers = { Authorization = "Bearer abc123" }' in snippet

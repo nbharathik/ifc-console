@@ -81,7 +81,8 @@ async def test_loopback_origin_and_host_accepted(viewer_core):
 
 async def test_static_assets_are_public_and_complete(viewer_core):
     client = _http_client(viewer_core)
-    for asset in ("app.js", "app.css", "vendor/web-ifc-api.js", "vendor/web-ifc.wasm",
+    for asset in ("app.js", "app.css", "parser.js", "worker.js",
+                  "vendor/web-ifc-api.js", "vendor/web-ifc.wasm",
                   "vendor/three.module.min.js", "vendor/three.core.min.js",
                   "vendor/OrbitControls.js"):
         response = client.get(f"/viewer/static/{asset}")
@@ -284,6 +285,36 @@ async def test_get_viewer_selection_empty(harness_factory, work_model: Path):
     assert "note" in out["data"]
 
 
+async def test_get_viewer_selection_uses_the_tabs_model(
+    harness_factory, work_model: Path, tmp_path: Path
+):
+    import shutil
+
+    import ifcopenshell
+
+    h = await harness_factory(model=work_model)
+    h.core.enable_viewer()
+    ws = _attach_fake_tab(h.core)
+    attached_path = tmp_path / "annex.ifc"
+    shutil.copy2(work_model, attached_path)
+    annex = ifcopenshell.open(str(attached_path))
+    annex.by_type("IfcWall")[0].GlobalId = ifcopenshell.guid.new()
+    annex.write(str(attached_path))
+    model_id = await h.core.open_model(attached_path, attach=True, alias="annex")
+    attached = h.core.models.require(model_id)
+    guid = await attached.run(lambda: attached.ifc.by_type("IfcWall")[0].GlobalId)
+
+    await h.core.viewer_hub.handle_frame(
+        ws.client, {"type": "selection", "guids": [guid], "model_id": model_id}
+    )
+    out = await h.call("get_viewer_selection")
+
+    assert out["data"]["model_id"] == model_id
+    assert out["data"]["elements"][0]["global_id"] == guid
+    assert out["data"]["missing"] == []
+    assert out["meta"]["read_from"] == model_id
+
+
 async def test_highlight_elements_roundtrip(harness_factory, work_model: Path):
     h = await harness_factory(model=work_model)
     h.core.enable_viewer()
@@ -430,3 +461,248 @@ async def test_mutation_notifies_viewer_tabs(harness_factory, work_model: Path):
     await asyncio.sleep(0)  # scheduled broadcast task
     frames = ws.frames("model_updated")
     assert frames and frames[-1]["reason"] == "edited"
+
+
+# --------------------------------------------------- selection stays in sync
+async def test_closed_tab_leaves_no_stale_selection(harness_factory, work_model: Path):
+    """A closed or reloaded tab must not leave the LLM reading a selection
+    the user cannot see."""
+    h = await harness_factory(model=work_model)
+    h.core.enable_viewer()
+    ws = _attach_fake_tab(h.core)
+    guids = await h.core.session.run(
+        lambda: [w.GlobalId for w in h.core.session.ifc.by_type("IfcWall")]
+    )
+    await h.core.viewer_hub.handle_frame(ws.client, {"type": "selection", "guids": guids[:2]})
+    assert len(h.core.viewer_hub.selection) == 2
+
+    h.core.viewer_hub.unregister(ws.client)
+    assert h.core.viewer_hub.selection == []
+    assert h.core.viewer_hub.selected_at is None
+
+    # the tab comes back (F5) and resends whatever it really has
+    fresh = _attach_fake_tab(h.core)
+    out = await h.call("get_viewer_selection")
+    assert out["data"]["guids"] == []
+    await h.core.viewer_hub.handle_frame(fresh.client, {"type": "selection", "guids": guids[:1]})
+    out = await h.call("get_viewer_selection")
+    assert out["data"]["guids"] == guids[:1]
+
+
+async def test_every_status_frame_asks_the_tab_to_resend_its_selection(
+    viewer_core,
+):
+    """The browser owns the selection, so the connect handshake must carry it.
+
+    Guards the two halves of that contract that live in app.js: sending the
+    selection on a status frame, and again after a model rebuild.
+    """
+    from pathlib import Path as _Path
+
+    source = (
+        _Path(__file__).parents[2]
+        / "src/ifc_console/viewer/static/app.js"
+    ).read_text(encoding="utf-8")
+    status_case = source.split('case "status":', 1)[1].split("case ", 1)[0]
+    assert "sendSelection()" in status_case, "app.js must resend selection on (re)connect"
+    rebuild = source.split("for (const guid of keepSelection)", 1)[1].split("function ", 1)[0]
+    assert "sendSelection()" in rebuild, "app.js must resend selection after a rebuild"
+
+
+async def test_picker_follows_a_pinned_model_after_it_becomes_active(viewer_core):
+    from pathlib import Path as _Path
+
+    source = (
+        _Path(__file__).parents[2]
+        / "src/ifc_console/viewer/static/app.js"
+    ).read_text(encoding="utf-8")
+    picker = source.split("function renderModelPicker", 1)[1].split("function ", 1)[0]
+    assert "viewModelId === activeId" in picker
+    assert "viewModelId = null" in picker
+
+
+async def test_viewer_commits_complete_model_with_one_loading_state(viewer_core):
+    from pathlib import Path as _Path
+
+    static = _Path(__file__).parents[2] / "src/ifc_console/viewer/static"
+    source = (static / "app.js").read_text(encoding="utf-8")
+    shell = (static / "index.html").read_text(encoding="utf-8")
+
+    assert "progress-toast" not in source
+    assert "progress-toast" not in shell
+    assert shell.count('id="overlay"') == 1
+    assert "progressiveTick" not in source
+    assert "onChunk: (msg) => chunks.push(msg)" in source
+    assert "decideOrigin(parsed.chunks)" in source
+    assert source.index("decideOrigin(parsed.chunks)") < source.index(
+        "for (const chunk of parsed.chunks) ingestChunk(chunk)"
+    )
+
+
+async def test_static_assets_revalidate_so_upgrades_take_effect(viewer_core):
+    """Asset URLs never change, so a cached viewer would survive an upgrade."""
+    client = _http_client(viewer_core)
+    response = client.get("/viewer/static/app.js")
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "no-cache"
+
+
+async def test_section_planes_are_wired_to_every_patched_material(viewer_core):
+    """Clipping only works if the shared plane array reaches every material and
+    a plane-count change forces the recompile three.js needs."""
+    from pathlib import Path as _Path
+
+    static = _Path(__file__).parents[2] / "src/ifc_console/viewer/static"
+    source = (static / "app.js").read_text(encoding="utf-8")
+    shell = (static / "index.html").read_text(encoding="utf-8")
+
+    assert "patchedMaterials.add(mat)" in source
+    assert "mat.clippingPlanes = activeClipPlanes" in source
+    update = source.split("function updateClipping", 1)[1].split("\nfunction ", 1)[0]
+    assert "renderer.localClippingEnabled" in update
+    assert "mat.needsUpdate = true" in update
+    # the patched shader must keep the clipping include it replaces
+    assert "#include <clipping_planes_fragment>" in source
+    for axis in ("x", "y", "z"):
+        assert f'class="switch section-on" data-axis="{axis}"' in shell
+
+
+async def test_measurement_reads_depth_on_the_gpu_not_by_raycast(viewer_core):
+    """Merged chunks free their CPU arrays on upload (`freeUploadedArray`), so
+    THREE.Raycaster has no vertex data and throws. The surface point has to come
+    from the same 1x1 GPU pass the id picker uses."""
+    from pathlib import Path as _Path
+
+    static = _Path(__file__).parents[2] / "src/ifc_console/viewer/static"
+    source = (static / "app.js").read_text(encoding="utf-8")
+    shell = (static / "index.html").read_text(encoding="utf-8")
+
+    assert "attr.onUpload(freeUploadedArray)" in source, "the premise of this test"
+    surface = source.split("function surfacePointAt", 1)[1].split("\nfunction ", 1)[0]
+    assert "intersectObjects" not in surface, "raycasting cannot work on freed arrays"
+    assert "readRenderTargetPixels" in surface
+    assert "scene.overrideMaterial = depthMaterial" in surface
+    # both 1x1 passes clip, so a sectioned-away face is neither pickable nor
+    # measurable and the surface behind it answers instead
+    for material in ("pickMaterial", "depthMaterial"):
+        block = source.split(f"const {material} = new THREE.ShaderMaterial", 1)[1]
+        block = block.split("});", 1)[0]
+        assert "clipping: true" in block, material
+        assert "#include <clipping_planes_fragment>" in block, material
+
+    # a model rebuild invalidates every placed measurement
+    build = source.split("async function buildScene", 1)[1].split("\nfunction ", 1)[0]
+    assert "clearMeasurements()" in build
+    assert "updateClipping()" in build
+    assert 'id="tool-measure"' in shell
+    assert 'id="measure-card"' in shell
+
+
+async def test_escape_exits_the_active_tool_before_closing_popovers(viewer_core):
+    from pathlib import Path as _Path
+
+    source = (
+        _Path(__file__).parents[2] / "src/ifc_console/viewer/static/app.js"
+    ).read_text(encoding="utf-8")
+    handler = source.split('window.addEventListener("keydown"', 1)[1].split("});", 1)[0]
+    escape = handler.split('e.key === "Escape"', 1)[1].split("return;", 1)[0]
+    assert "setMeasureMode(false)" in escape
+    assert escape.index("setMeasureMode(false)") < escape.index("closePopovers()")
+
+
+async def test_wheel_zoom_always_invalidates_the_viewer_frame(viewer_core):
+    from pathlib import Path as _Path
+
+    static = _Path(__file__).parents[2] / "src/ifc_console/viewer/static"
+    source = (static / "app.js").read_text(encoding="utf-8")
+    css = (static / "app.css").read_text(encoding="utf-8")
+
+    assert 'controls.addEventListener("change", invalidate)' in source
+    canvas_rule = css.split("#canvas {", 1)[1].split("}", 1)[0]
+    assert "overscroll-behavior: contain" in canvas_rule
+    assert "touch-action: none" in canvas_rule
+
+
+# ------------------------------------------------- more than one model in view
+async def test_status_lists_every_resident_model(viewer_core, tmp_path: Path):
+    """The viewer picker is driven by this list; active leads."""
+    import shutil
+
+    second = tmp_path / "annex.ifc"
+    shutil.copy2(viewer_core.session.path, second)
+    await viewer_core.open_model(second, attach=True)
+
+    rows = viewer_core.viewer_hub.model_rows()
+    assert [r["active"] for r in rows] == [True, False]
+    assert rows[0]["name"] == "work.ifc"
+    assert rows[1]["id"] == "annex"
+    assert rows[0]["etag"] and rows[1]["etag"] != rows[0]["etag"]
+
+    payload = viewer_core.viewer_hub.status_payload()
+    assert [r["id"] for r in payload["models"]] == [r["id"] for r in rows]
+
+
+async def test_model_route_serves_an_attached_model(viewer_core, tmp_path: Path):
+    import shutil
+
+    second = tmp_path / "annex.ifc"
+    shutil.copy2(viewer_core.session.path, second)
+    await viewer_core.open_model(second, attach=True)
+    client = _http_client(viewer_core)
+
+    active = client.get("/api/model.ifc", headers=_auth(viewer_core))
+    attached = client.get("/api/model.ifc?model=annex", headers=_auth(viewer_core))
+    assert active.status_code == attached.status_code == 200
+    assert attached.headers["ETag"] != active.headers["ETag"]
+    assert attached.content.startswith(b"ISO-10303-21")
+
+    missing = client.get("/api/model.ifc?model=ghost", headers=_auth(viewer_core))
+    assert missing.status_code == 404
+    assert missing.json()["error"] == "MODEL_NOT_FOUND"
+
+
+async def test_element_route_reads_the_named_model(viewer_core, tmp_path: Path):
+    import shutil
+
+    second = tmp_path / "annex.ifc"
+    shutil.copy2(viewer_core.session.path, second)
+    await viewer_core.open_model(second, attach=True)
+    guid = (
+        await viewer_core.session.run(
+            lambda: viewer_core.session.ifc.by_type("IfcWall")[0].GlobalId
+        )
+    )
+    client = _http_client(viewer_core)
+    response = client.get(f"/api/elements/{guid}?model=annex", headers=_auth(viewer_core))
+    assert response.status_code == 200
+    assert response.json()["class"] == "IfcWall"
+
+
+async def test_attaching_a_model_refreshes_connected_tabs(viewer_core, tmp_path: Path):
+    import shutil
+
+    ws = _attach_fake_tab(viewer_core)
+    second = tmp_path / "annex.ifc"
+    shutil.copy2(viewer_core.session.path, second)
+    await viewer_core.open_model(second, attach=True)
+    await asyncio.sleep(0)  # the broadcast is scheduled on the loop
+
+    status = ws.frames("status")[-1]
+    assert [r["id"] for r in status["models"]] == ["work", "annex"]
+
+
+async def test_model_bytes_cache_survives_switching(viewer_core, tmp_path: Path):
+    """Two models must not evict each other's serialized bytes."""
+    import shutil
+
+    second = tmp_path / "annex.ifc"
+    shutil.copy2(viewer_core.session.path, second)
+    await viewer_core.open_model(second, attach=True)
+    hub = viewer_core.viewer_hub
+    active_etag = hub.model_etag(viewer_core.session)
+    annex_etag = hub.model_etag(viewer_core.models.require("annex"))
+
+    hub.cache_model_bytes(active_etag, b"active")
+    hub.cache_model_bytes(annex_etag, b"annex")
+    assert hub.cached_model_bytes(active_etag) == b"active"
+    assert hub.cached_model_bytes(annex_etag) == b"annex"

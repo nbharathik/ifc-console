@@ -20,6 +20,8 @@
       <span class="brand-name">ifc-console</span>
     </span>
     <span id="model-name" aria-label="Current model"></span>
+    <!-- Only shown once a second model is attached in the console. -->
+    <select id="model-select" aria-label="Model to view" hidden></select>
     <span id="schema" class="meta" hidden></span>
     <span id="mode" class="meta mode">...</span>
     <span id="dirty" class="meta warn" hidden>Unsaved</span>
@@ -76,7 +78,13 @@
 
     <section id="canvas-wrap">
       <canvas id="canvas"></canvas>
-      <div id="overlay" class="overlay"><div class="overlay-card">loading&hellip;</div></div>
+      <div id="overlay" class="overlay" data-state="loading"
+           role="status" aria-live="polite">
+        <div class="overlay-card loading-card">
+          <span class="loading-label">Loading model</span>
+          <div class="progress-track"><div class="loading-bar indeterminate"></div></div>
+        </div>
+      </div>
 
       <button id="btn-tools" class="icon-btn" aria-expanded="false"
               aria-controls="tools-panel" aria-label="View tools"
@@ -115,7 +123,63 @@
           <button data-view="right">Right</button>
           <button data-view="iso">Iso</button>
         </div>
+        <div class="popover-title">Section</div>
+        <div id="section-rows" class="section-rows">
+          <!-- one row per axis; the slider only appears once the axis is cut -->
+          <div class="section-row" data-axis="x">
+            <label class="section-head">
+              <input type="checkbox" class="switch section-on" data-axis="x">
+              <span class="section-label">X</span>
+            </label>
+            <input type="range" class="section-at" data-axis="x"
+                   min="0" max="1" step="0.001" value="1" aria-label="X section position" hidden>
+            <button class="section-flip" data-axis="x" title="Flip the cut side" hidden>⇄</button>
+          </div>
+          <div class="section-row" data-axis="z">
+            <label class="section-head">
+              <input type="checkbox" class="switch section-on" data-axis="z">
+              <span class="section-label">Y</span>
+            </label>
+            <input type="range" class="section-at" data-axis="z"
+                   min="0" max="1" step="0.001" value="1" aria-label="Y section position" hidden>
+            <button class="section-flip" data-axis="z" title="Flip the cut side" hidden>⇄</button>
+          </div>
+          <div class="section-row" data-axis="y">
+            <label class="section-head">
+              <input type="checkbox" class="switch section-on" data-axis="y">
+              <span class="section-label">Z</span>
+            </label>
+            <input type="range" class="section-at" data-axis="y"
+                   min="0" max="1" step="0.001" value="1" aria-label="Z section position" hidden>
+            <button class="section-flip" data-axis="y" title="Flip the cut side" hidden>⇄</button>
+          </div>
+        </div>
+        <div class="tool-list">
+          <button id="tool-section-clear" class="tool-btn" hidden
+                  title="Turn every section plane off">Clear sections</button>
+        </div>
+        <div class="popover-title">Measure</div>
+        <div class="tool-list">
+          <button id="tool-measure" class="tool-btn" aria-pressed="false"
+                  title="Measure between two points on the model">
+            Measure distance <kbd>M</kbd></button>
+        </div>
         <div id="tool-hidden-info" class="tool-note"></div>
+      </div>
+
+      <div id="measure-card" hidden>
+        <div id="measure-head">
+          <span>Measurements</span>
+          <button id="measure-clear" class="icon-btn" title="Clear measurements"
+                  aria-label="Clear measurements">
+            <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
+              <path d="m4 4 8 8m0-8-8 8" stroke="currentColor" stroke-width="1.4"
+                    stroke-linecap="square"/>
+            </svg>
+          </button>
+        </div>
+        <p id="measure-hint" class="tool-note" hidden></p>
+        <ul id="measure-list"></ul>
       </div>
 
       <div id="legend" hidden>
@@ -154,9 +218,11 @@
           <tr><td>ctrl+click</td><td>add to selection</td></tr>
           <tr><td><kbd>F</kbd></td><td>fit the whole model</td></tr>
           <tr><td><kbd>G</kbd></td><td>toggle the ground grid</td></tr>
+          <tr><td><kbd>M</kbd></td><td>measure between two points</td></tr>
+          <tr><td><kbd>Esc</kbd></td><td>leave the active tool</td></tr>
           <tr><td>tree click</td><td>select an element or branch</td></tr>
           <tr><td>tree checkbox</td><td>hide or show a branch</td></tr>
-          <tr><td>view tools</td><td>isolate, hide, show all, views</td></tr>
+          <tr><td>view tools</td><td>isolate, hide, section, measure, views</td></tr>
         </table>
       </div>
     </section>

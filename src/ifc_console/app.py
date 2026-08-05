@@ -6,12 +6,15 @@ CLI, and viewer are all thin faces over it.
 
 from __future__ import annotations
 
+import asyncio
 import secrets
 import time
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
+from functools import wraps
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from ifc_console import __version__
 from ifc_console.audit import AuditLog
@@ -23,6 +26,9 @@ from ifc_console.session.backups import BackupStore
 from ifc_console.session.model import ModelSession
 from ifc_console.settings import SettingsStore
 from ifc_console.viewer.hub import ViewerHub
+from ifc_console.workspace.index import WorkspaceIndex, guess_discipline, slug
+from ifc_console.workspace.kinds import describe_file, detect_kind, kind
+from ifc_console.workspace.registry import Attachment, ModelRegistry
 
 
 @dataclass
@@ -57,7 +63,18 @@ class AppCore:
             events=self.events,
             audit=self.audit,
         )
-        self.session = ModelSession()
+        # One active model is the default; the registry holds the optional
+        # extra read-only models and the attached companion files.
+        self.models = ModelRegistry(
+            max_resident=s.workspace.max_resident,
+            max_total_mb=s.workspace.max_total_mb,
+        )
+        self.workspace = WorkspaceIndex(
+            lambda: list(self.allowed_dirs),
+            cap=s.workspace.scan_cap,
+            depth=s.workspace.scan_depth,
+            enabled=lambda: self.settings.workspace.enabled,
+        )
         # Persistent by default: clients get configured once and reconnect
         # across restarts. server.persistent_token=false restores per-run
         # tokens for the stricter threat model.
@@ -72,6 +89,7 @@ class AppCore:
         self._mcp = None  # set by attach_mcp once the tool server exists
         self._viewer_tools_registered = False
         self._read_cache: dict[tuple, Any] = {}
+        self._model_lifecycle = asyncio.Lock()
         self.ui_theme = s.tui.theme
 
         # viewer=True/False comes from the --viewer flag; None defers to
@@ -91,6 +109,11 @@ class AppCore:
     @property
     def settings(self):
         return self.store.settings
+
+    @property
+    def session(self) -> ModelSession:
+        """The active model. Everything that says `core.session` means this one."""
+        return self.models.active
 
     @property
     def mcp_url(self) -> str:
@@ -156,7 +179,11 @@ class AppCore:
         self.events.emit("viewer_disabled")
 
     def session_meta(self) -> dict:
-        return self.session.meta(self.policy.mode.value)
+        """The active model's meta, plus workspace keys only once more than one
+        file is in play (model_id, models, attachments)."""
+        meta = self.session.meta(self.policy.mode.value)
+        meta.update(self.models.meta_extras())
+        return meta
 
     # -- fingerprint-keyed read cache ----------------------------------------------
     async def cached_read(
@@ -166,21 +193,28 @@ class AppCore:
         *,
         key: tuple = (),
         timeout: float | None = 120,
+        session: ModelSession | None = None,
     ) -> tuple[Any, bool]:
         """Run a read builder on the model worker, cached per fingerprint+revision.
 
         Returns (value, was_cached). The revision bumps on load, save, and
         every mutation, so a hit can never be stale; entries from dead
-        revisions are pruned lazily to bound memory.
+        revisions are pruned lazily to bound memory. Keyed on the model's own
+        fingerprint, so attached models never share the active model's entries.
         """
-        s = self.session
-        cache_key = (name, s.fingerprint, s.revision, *key)
+        s = session or self.session
+        cache_key = (name, id(s), s.fingerprint, s.revision, *key)
         if cache_key in self._read_cache:
             return self._read_cache[cache_key], True
         value = await s.run(build, timeout=timeout)
-        live = (s.fingerprint, s.revision)
         if len(self._read_cache) >= 64:
-            for stale in [k for k in self._read_cache if k[1:3] != live]:
+            # every resident model's current revision survives the prune
+            live = {
+                (id(m), m.fingerprint, m.revision)
+                for m in self.models.sessions.values()
+            }
+            live.add((id(s), s.fingerprint, s.revision))
+            for stale in [k for k in self._read_cache if k[1:4] not in live]:
                 del self._read_cache[stale]
         self._read_cache[cache_key] = value
         return value, False
@@ -195,6 +229,7 @@ class AppCore:
             resolved = resolved.parent
         if resolved not in self.allowed_dirs:
             self.allowed_dirs.append(resolved)
+            self.workspace.scanned_at = None  # a new root means a stale index
 
     def path_allowed(self, path: Path) -> bool:
         try:
@@ -233,42 +268,287 @@ class AppCore:
             }
         )
 
-    async def open_model(self, path: Path) -> None:
-        try:
-            size_bytes = path.stat().st_size
-        except OSError:
-            size_bytes = 0
-        self.events.emit("model_loading", name=path.name, size_bytes=size_bytes)
-        t0 = time.perf_counter()
-        try:
-            await self.session.open(path, max_mb=self.settings.files.max_open_mb)
-        except Exception:
-            self.events.emit("model_load_failed", name=path.name)
-            raise
-        assert self.session.path is not None
-        self.add_allowed_dir(self.session.path.parent)
-        self.recents.touch(
-            self.session.path,
-            size_bytes=self.session.size_bytes,
-            schema=self.session.schema or "?",
-            mode=self.policy.mode.value,
-        )
-        self.audit.record(
-            "model_open",
-            path=str(self.session.path),
-            schema=self.session.schema,
-            size_bytes=self.session.size_bytes,
-            fingerprint=self.session.fingerprint,
-        )
+    # Longer than this and a file stem stops being something an LLM retypes
+    # reliably; ISO 19650 codes are exactly that case.
+    _ALIAS_MAX = 20
+
+    def suggest_alias(self, path: Path) -> str | None:
+        """A model id worth typing. A readable stem wins; an opaque one falls
+        back to the discipline the name reveals (arc, str, mep)."""
+        stem = slug(path.stem)
+        if len(stem) <= self._ALIAS_MAX:
+            return stem
+        entry = self.workspace.get(str(path)) if self.workspace.scanned_at else None
+        discipline = entry.discipline if entry else guess_discipline(path.stem)
+        return discipline.lower() if discipline else None
+
+    async def open_model(
+        self,
+        path: Path,
+        *,
+        attach: bool | Literal["auto"] = False,
+        alias: str | None = None,
+        discard_dirty: bool = False,
+    ) -> str:
+        """Load an IFC file. The default replaces the active model, exactly as
+        before; attach=True adds it read-only alongside. "auto" resolves under
+        the lock (attach only if a model is already active), so two concurrent
+        calls cannot both decide to replace."""
+        path = path.resolve()
+        async with self._model_lifecycle:
+            if attach == "auto":
+                attach = self.models.active_id is not None
+            existing = self.models.id_for_path(path)
+            if existing is not None:
+                if not attach:
+                    previous_id = self.models.active_id
+                    self._guard_replacement(previous_id, existing, discard_dirty)
+                    if previous_id is not None and previous_id != existing:
+                        session = self.models.require(existing)
+                        self.models.set_active(existing)
+                        self.models.drop(previous_id, force=True)
+                        self.audit.record(
+                            "model_active", model_id=existing, path=str(session.path)
+                        )
+                        self.events.emit(
+                            "active_model_changed",
+                            model_id=existing,
+                            name=session.name,
+                            schema=session.schema,
+                            path=str(session.path),
+                        )
+                    else:
+                        self._set_active_model(existing)
+                return existing
+            try:
+                size_bytes = path.stat().st_size
+            except OSError:
+                size_bytes = 0
+
+            previous_id = self.models.active_id
+            replacing = () if attach or previous_id is None else (previous_id,)
+            self._guard_replacement(previous_id, None, discard_dirty or attach)
+            self.models.plan_room(size_bytes, replacing=replacing)
+            self.events.emit("model_loading", name=path.name, size_bytes=size_bytes)
+            t0 = time.perf_counter()
+            session = ModelSession()
+            try:
+                await session.open(path, max_mb=self.settings.files.max_open_mb)
+            except Exception:
+                session.close()
+                self.events.emit("model_load_failed", name=path.name)
+                raise
+            try:
+                evicted = self.models.plan_room(session.size_bytes, replacing=replacing)
+                model_id = self.models.make_id(path, alias or self.suggest_alias(path))
+                for evicted_id in evicted:
+                    evicted_session = self.models.drop(evicted_id)
+                    self.audit.record(
+                        "model_evict", model_id=evicted_id, path=str(evicted_session.path)
+                    )
+                    self.events.emit(
+                        "model_evicted", model_id=evicted_id, name=evicted_session.name
+                    )
+                if not attach and previous_id is not None:
+                    self.models.drop(previous_id, force=True)
+                self.models.add(model_id, session, active=not attach)
+            except Exception:
+                session.close()
+                raise
+
+            assert session.path is not None
+            self.add_allowed_dir(session.path.parent)
+            self.recents.touch(
+                session.path,
+                size_bytes=session.size_bytes,
+                schema=session.schema or "?",
+                mode=self.policy.mode.value,
+            )
+            self.audit.record(
+                "model_attach" if attach else "model_open",
+                path=str(session.path),
+                model_id=model_id,
+                schema=session.schema,
+                size_bytes=session.size_bytes,
+                fingerprint=session.fingerprint,
+            )
+            self.events.emit(
+                "model_attached" if attach else "model_loaded",
+                path=str(session.path),
+                name=session.name,
+                model_id=model_id,
+                schema=session.schema,
+                fingerprint=session.fingerprint,
+                size_bytes=session.size_bytes,
+                duration_ms=int((time.perf_counter() - t0) * 1000),
+            )
+            return model_id
+
+    def _guard_replacement(
+        self, previous_id: str | None, next_id: str | None, discard_dirty: bool
+    ) -> None:
+        if previous_id is None or previous_id == next_id or discard_dirty:
+            return
+        if self.models.require(previous_id).dirty:
+            raise ToolError(
+                "UNSAVED_CHANGES",
+                "the current model has unsaved changes.",
+                "Save it first, or confirm discarding changes in the ifc-console terminal.",
+            )
+
+    def _set_active_model(self, model_id: str) -> ModelSession:
+        """Switch focus while the caller holds the model lifecycle lock."""
+        session = self.models.require(model_id)
+        if self.models.active_id == model_id:
+            return session
+        self.models.set_active(model_id)
+        self.audit.record("model_active", model_id=model_id, path=str(session.path))
         self.events.emit(
-            "model_loaded",
-            path=str(self.session.path),
-            name=self.session.name,
-            schema=self.session.schema,
-            fingerprint=self.session.fingerprint,
-            size_bytes=self.session.size_bytes,
-            duration_ms=int((time.perf_counter() - t0) * 1000),
+            "active_model_changed",
+            model_id=model_id,
+            name=session.name,
+            schema=session.schema,
+            path=str(session.path),
         )
+        return session
+
+    async def set_active_model(self, model_id: str) -> ModelSession:
+        """Move the write focus. Allowed while another model is dirty: the
+        dirty model stays resident and unsaved work is never dropped."""
+        async with self._model_lifecycle:
+            return self._set_active_model(model_id)
+
+    async def detach_model(self, model_id: str) -> ModelSession:
+        async with self._model_lifecycle:
+            previous_active = self.models.active_id
+            session = self.models.drop(model_id)
+            self.audit.record("model_detach", model_id=model_id, path=str(session.path))
+            self.events.emit("model_detached", model_id=model_id, name=session.name)
+            promoted_id = self.models.active_id
+            if promoted_id is not None and promoted_id != previous_active:
+                promoted = self.models.sessions[promoted_id]
+                self.audit.record(
+                    "model_active", model_id=promoted_id, path=str(promoted.path)
+                )
+                self.events.emit(
+                    "active_model_changed",
+                    model_id=promoted_id,
+                    name=promoted.name,
+                    schema=promoted.schema,
+                    path=str(promoted.path),
+                )
+            return session
+
+    @asynccontextmanager
+    async def active_session(self) -> AsyncIterator[ModelSession]:
+        """Pin the active model while one operation is in flight."""
+        async with self._model_lifecycle:
+            session = self.session
+            session.require_loaded()
+            yield session
+
+    def active_model_operation(self, operation: Callable) -> Callable:
+        """Decorate an async operation that must keep one active model."""
+
+        @wraps(operation)
+        async def guarded(*args, **kwargs):
+            async with self.active_session():
+                return await operation(*args, **kwargs)
+
+        return guarded
+
+    def model_lifecycle_operation(self, operation: Callable) -> Callable:
+        """Decorate an operation that must not overlap model lifecycle changes."""
+
+        @wraps(operation)
+        async def guarded(*args, **kwargs):
+            async with self._model_lifecycle:
+                return await operation(*args, **kwargs)
+
+        return guarded
+
+    def resolve_session(self, model_id: str | None = None) -> ModelSession:
+        """The session a read tool should use: a named resident model, else the
+        active one."""
+        if not model_id:
+            self.session.require_loaded()
+            return self.session
+        session = self.models.require(model_id)
+        session.require_loaded()
+        return session
+
+    # -- companion files (IDS, BCF, schedules) ----------------------------------
+    async def attach_file(self, path: Path, alias: str | None = None) -> Attachment:
+        """Register a non-model file so the LLM can see and use it."""
+        path = self.require_path_allowed(path)
+        if not path.is_file():
+            raise ToolError(
+                "FILE_NOT_FOUND",
+                f"{path} does not exist.",
+                "Call find_files to see what the workspace holds.",
+            )
+        # sniffing and describing read from disk; keep them off the event loop
+        kind_name = await asyncio.to_thread(detect_kind, path)
+        if kind_name is None:
+            raise ToolError(
+                "INVALID_INPUT",
+                f"{path.name} is not a file kind ifc-console recognizes.",
+                "Supported companions: .ids, .bcf/.bcfzip, .csv. Models go "
+                "through open_ifc_file or attach.",
+            )
+        for existing in self.models.attachments.values():
+            if existing.path == path:
+                return existing
+        spec = kind(kind_name)
+        detail = await asyncio.to_thread(describe_file, path, kind_name)
+        attachment = Attachment(
+            alias=self.models.unique_attachment_alias(path, alias),
+            path=path,
+            kind=kind_name,
+            consumed_by=spec.consumed_by if spec else None,
+            detail=detail,
+        )
+        self.models.attach_file(attachment)
+        self.add_allowed_dir(path.parent)
+        self.audit.record("file_attach", path=str(path), kind=kind_name, alias=attachment.alias)
+        self.events.emit(
+            "file_attached", path=str(path), kind=kind_name, alias=attachment.alias
+        )
+        return attachment
+
+    def resolve_attachment(self, ref: str, *, kind: str | None = None) -> Path:
+        """Accept either a path or the alias of an attached companion file."""
+        attachment = self.models.attachments.get(ref.strip().lower())
+        if attachment is not None:
+            if kind is not None and attachment.kind != kind:
+                raise ToolError(
+                    "INVALID_INPUT",
+                    f"{attachment.path.name} does not look like a {kind.upper()} file.",
+                    f"Pass a {kind.upper()} file; find_files(kinds=['{kind}']) lists them.",
+                )
+            return attachment.path
+        path = self.require_path_allowed(Path(ref))
+        if not path.is_file():
+            aliases = ", ".join(sorted(self.models.attachments)) or "(none attached)"
+            raise ToolError(
+                "FILE_NOT_FOUND",
+                f"{path} does not exist.",
+                f"Pass a file path, or the alias of an attached file: {aliases}. "
+                "find_files searches the allowed folders.",
+            )
+        if kind is not None and detect_kind(path) != kind:
+            raise ToolError(
+                "INVALID_INPUT",
+                f"{path.name} does not look like a {kind.upper()} file.",
+                f"Pass a {kind.upper()} file; find_files(kinds=['{kind}']) lists them.",
+            )
+        return path
+
+    def detach_file(self, alias: str) -> Attachment:
+        attachment = self.models.detach_file(alias)
+        self.audit.record("file_detach", alias=alias, path=str(attachment.path))
+        self.events.emit("file_detached", alias=alias, kind=attachment.kind)
+        return attachment
 
     def set_mode(self, new_mode: Mode, *, by: str) -> None:
         if new_mode is self.policy.mode:
@@ -289,7 +569,7 @@ class AppCore:
 
     def shutdown(self) -> None:
         self.audit.end()
-        self.session.close()
+        self.models.close_all()
 
     # -- logging helper used by the tool wrapper ------------------------------------
     def tool_event(self, tool: str, *, ok: bool, duration_ms: int, detail: str = "") -> None:

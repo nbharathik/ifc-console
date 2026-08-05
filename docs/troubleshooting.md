@@ -21,11 +21,53 @@ console) and re-add the client once. stdio setups have no token.
 
 For Codex, `bearer_token_env_var = "IFC_CONSOLE_MCP_TOKEN"` stores the name of an
 environment variable, not its value. If that variable was missing when Codex
-started, its tools will not load. Replace the entry with the static
-`http_headers` output from `/connect codex`, or define the variable before
-starting Codex and restart it.
+started, its tools will not load. Replace the entry with the bridge snippet from
+`/connect codex` (it needs no token in the config at all), or define the
+variable before starting Codex and restart it.
 
-### Claude Desktop times out on its first launch
+### The client says ifc-console is disabled, failed, or not connected
+
+Almost always the same cause: **the client started before ifc-console did**.
+MCP clients connect to their servers once, at startup, and a client that could
+not reach the console marks the entry dead until it is fully restarted. The old
+workaround was the dance you may know: start ifc-console, quit the client
+completely (Task Manager on Windows, tray icon on macOS), start it again.
+
+You should not have to do that any more. The default wiring launches a small
+**stdio bridge** that the client owns, exactly like a Blender-attached server:
+the bridge always starts, so the client always connects, and it forwards to the
+console as soon as the console is up. Start order stops mattering, and the tool
+list refreshes on its own within a few seconds of ifc-console appearing.
+
+Check which wiring you have. If the entry contains a `url` (or `npx`, or
+`mcp-remote`), it is the older HTTP wiring. Re-add the client once:
+
+```bash
+ifc-console mcp-config --client claude-desktop   # or /connect claude-desktop
+```
+
+The entry should now be a `command` ending in `bridge`. Restart the client one
+last time and the problem is gone for good.
+
+While the console is not running, the bridge answers tool calls with
+`CONSOLE_NOT_RUNNING` and a hint to start it: the AI reads that and tells you,
+instead of the whole server disappearing.
+
+Two things the bridge does **not** paper over:
+
+- `server.persistent_token: false`. The bridge reads this machine's stored
+  token, and with per-run tokens there is nothing on disk to read, so calls
+  come back as `CONSOLE_AUTH_FAILED`. Keep persistent tokens on (the default),
+  or use `--transport http` and re-add the client after every restart.
+- A console on a non-default port. `mcp-config`/`/connect` bake the current
+  port into the bridge command, so re-run them after `settings set
+  server.port`.
+
+### Claude Desktop times out on its first launch (HTTP wiring only)
+
+This applies to the older `--transport http` wiring for Claude Desktop, which
+goes through `npx`. The default bridge wiring needs no Node.js at all.
+
 
 Symptom: the new ifc-console entry shows as failed or disconnected, its MCP log
 has a single `initialize` line followed by roughly 60 seconds of silence and a
@@ -58,25 +100,16 @@ Since 0.1.2 this heals on its own: the MCP endpoint is stateless across
 restarts, so the already-connected bridge keeps working as soon as ifc-console
 is back on its port. Retry the tool call; no Claude Desktop restart needed.
 
-**ifc-console was not running when Claude Desktop started.** Claude Desktop
-connects to its MCP servers once, at app startup, and never retries a failed
-first connection. Nothing is misconfigured; the persistent token and port mean
-your config entry is still correct. Fix, in this order:
-
-1. Start ifc-console and leave it running.
-2. Fully quit Claude Desktop. Closing the window is not enough: quit it from
-   the system tray, or end the "Claude" processes in Task Manager.
-3. Start Claude Desktop again. It reconnects on launch.
-
-Rule of thumb: have the ifc-console console up before you open Claude Desktop.
-Claude Code does not need this dance; its `/mcp` menu can reconnect a running
-session without a restart.
+**ifc-console was not running when Claude Desktop started.** This is the case
+the bridge fixes; see "The client says ifc-console is disabled" above. On the
+older HTTP wiring the only cure is to start ifc-console, fully quit Claude
+Desktop (tray icon, or the Claude processes in Task Manager), and reopen it.
 
 ### The client keeps opening an old IFC file
 
 The client is probably a standalone stdio server with `--file` in its arguments.
 That is a separate process and does not follow the console. Replace it with the
-default HTTP output from `/connect <client>`. The HTTP setup has no model path;
+default bridge output from `/connect <client>`. The bridge setup has no model path;
 use `/file` in the console to switch the model for every connected client.
 
 ### Port 8383 already in use

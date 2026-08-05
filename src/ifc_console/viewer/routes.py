@@ -75,10 +75,25 @@ def build_viewer_routes(core: AppCore) -> list[Any]:
             headers={"Content-Security-Policy": _CSP, "Cache-Control": "no-cache"},
         )
 
+    def _requested_session(request):
+        """The model the tab asked for; the active one unless it names another."""
+        model_id = request.query_params.get("model")
+        if not model_id:
+            return core.session
+        return core.models.get(model_id)
+
     async def model_ifc(request) -> Response:
         if not core.viewer.enabled:
             return _disabled_response()
-        session = core.session
+        session = _requested_session(request)
+        if session is None:
+            return JSONResponse(
+                {
+                    "error": "MODEL_NOT_FOUND",
+                    "hint": "the model was detached; reload the viewer",
+                },
+                status_code=404,
+            )
         if not session.loaded:
             return JSONResponse(
                 {"error": "NO_MODEL_LOADED", "hint": "open a model in the terminal"},
@@ -96,7 +111,7 @@ def build_viewer_routes(core: AppCore) -> list[Any]:
                 },
                 status_code=413,
             )
-        etag = core.viewer_hub.model_etag() or ""
+        etag = core.viewer_hub.model_etag(session) or ""
         if request.headers.get("if-none-match") == etag:
             return Response(status_code=304, headers={"ETag": etag})
         data = core.viewer_hub.cached_model_bytes(etag)
@@ -116,8 +131,8 @@ def build_viewer_routes(core: AppCore) -> list[Any]:
     async def element(request) -> Response:
         if not core.viewer.enabled:
             return _disabled_response()
-        session = core.session
-        if not session.loaded:
+        session = _requested_session(request)
+        if session is None or not session.loaded:
             return JSONResponse({"error": "NO_MODEL_LOADED"}, status_code=404)
         guid = request.path_params["guid"]
 
@@ -192,7 +207,21 @@ def build_viewer_routes(core: AppCore) -> list[Any]:
     ]
 
 
+class _RevalidatingStatic(StaticFiles):
+    """StaticFiles that always revalidates.
+
+    The asset URLs never change, so without this a browser keeps serving the
+    viewer it cached before an ifc-console upgrade. `no-cache` still allows a
+    304, which costs nothing on loopback.
+    """
+
+    def file_response(self, *args, **kwargs) -> Response:
+        response = super().file_response(*args, **kwargs)
+        response.headers["Cache-Control"] = "no-cache"
+        return response
+
+
 def build_static_app() -> StaticFiles:
     """Static assets (JS/CSS/WASM). Public by design: they are generic vendor
     code plus our SPA source and contain nothing session-specific."""
-    return StaticFiles(directory=STATIC_DIR)
+    return _RevalidatingStatic(directory=STATIC_DIR)

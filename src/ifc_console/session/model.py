@@ -32,6 +32,10 @@ class ModelSession:
     def __init__(self) -> None:
         self.path: Path | None = None
         self.ifc: Any = None
+        # Registry identity: set once the session joins a ModelRegistry.
+        # Only the active model is writable; attached ones are read-only.
+        self.model_id: str | None = None
+        self.read_only: bool = False
         self.schema: str | None = None
         self.size_bytes: int = 0
         self.loaded_at: str | None = None
@@ -61,6 +65,15 @@ class ModelSession:
                 "no IFC model is loaded in this session.",
                 "Call list_ifc_files then open_ifc_file, or ask the user to pick a "
                 "model in the ifc-console terminal.",
+            )
+
+    def require_writable(self) -> None:
+        if self.read_only:
+            raise ToolError(
+                "MODEL_READ_ONLY",
+                f"{self.name} is attached read-only; only the active model can change.",
+                "Call set_active_model to make it the active model first, or ask the "
+                "user to run /use in the ifc-console terminal.",
             )
 
     # -- serialized execution ------------------------------------------------
@@ -203,6 +216,7 @@ class ModelSession:
 
     async def save(self, target: Path, backups: BackupStore) -> dict[str, Any]:
         self.require_loaded()
+        self.require_writable()
         return await self.run(
             lambda: self._save_sync(target.resolve(), backups), timeout=_SAVE_TIMEOUT
         )

@@ -72,6 +72,8 @@
   },
   "error_codes": [
     "ASK_MODE_BLOCKED",
+    "CONSOLE_AUTH_FAILED",
+    "CONSOLE_NOT_RUNNING",
     "EXEC_BLOCKED",
     "EXEC_ERROR",
     "EXEC_TIMEOUT",
@@ -82,15 +84,22 @@
     "INVALID_INPUT",
     "INVALID_QUERY",
     "MODEL_BUSY",
+    "MODEL_NOT_FOUND",
+    "MODEL_READ_ONLY",
     "MODEL_TOO_LARGE",
     "NOT_FOUND",
+    "NO_GEOMETRY",
+    "NO_MATCH",
     "NO_MODEL_LOADED",
     "PATH_NOT_ALLOWED",
     "RESULT_TOO_LARGE",
+    "TOO_MANY_ELEMENTS",
     "UNSAVED_CHANGES",
     "VIEWER_ERROR",
     "VIEWER_NOT_CONNECTED",
-    "VIEWER_TIMEOUT"
+    "VIEWER_TIMEOUT",
+    "WORKSPACE_BUDGET",
+    "WORKSPACE_DISABLED"
   ],
   "tools": [
     {
@@ -249,6 +258,109 @@
       "destructive": false,
       "input_schema": {
         "properties": {
+          "alias": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Short name to refer to it by; defaults to the stem.",
+            "title": "Alias"
+          },
+          "path": {
+            "description": "Path to the file; see find_files.",
+            "title": "Path",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "title": "attachArguments",
+        "type": "object"
+      },
+      "name": "attach",
+      "output_schema": {
+        "$defs": {
+          "ErrorInfo": {
+            "properties": {
+              "code": {
+                "description": "Stable machine-readable code; see ERROR_CODES.",
+                "title": "Code",
+                "type": "string"
+              },
+              "hint": {
+                "description": "What to do next; follow it instead of retrying blindly.",
+                "title": "Hint",
+                "type": "string"
+              },
+              "message": {
+                "description": "What went wrong, in one sentence.",
+                "title": "Message",
+                "type": "string"
+              }
+            },
+            "required": [
+              "code",
+              "message",
+              "hint"
+            ],
+            "title": "ErrorInfo",
+            "type": "object"
+          }
+        },
+        "description": "The public tool-result contract.",
+        "properties": {
+          "data": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Data"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ErrorInfo"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "meta": {
+            "additionalProperties": true,
+            "title": "Meta",
+            "type": "object"
+          },
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok"
+        ],
+        "title": "Envelope",
+        "type": "object"
+      },
+      "read_only": false
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
           "aggregate_by": {
             "default": "class",
             "enum": [
@@ -260,6 +372,19 @@
             ],
             "title": "Aggregate By",
             "type": "string"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "model_id of an attached model (see list_models); omit for the active model.",
+            "title": "Model"
           },
           "quantities": {
             "anyOf": [
@@ -371,6 +496,270 @@
         "type": "object"
       },
       "name": "describe_capabilities",
+      "output_schema": {
+        "$defs": {
+          "ErrorInfo": {
+            "properties": {
+              "code": {
+                "description": "Stable machine-readable code; see ERROR_CODES.",
+                "title": "Code",
+                "type": "string"
+              },
+              "hint": {
+                "description": "What to do next; follow it instead of retrying blindly.",
+                "title": "Hint",
+                "type": "string"
+              },
+              "message": {
+                "description": "What went wrong, in one sentence.",
+                "title": "Message",
+                "type": "string"
+              }
+            },
+            "required": [
+              "code",
+              "message",
+              "hint"
+            ],
+            "title": "ErrorInfo",
+            "type": "object"
+          }
+        },
+        "description": "The public tool-result contract.",
+        "properties": {
+          "data": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Data"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ErrorInfo"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "meta": {
+            "additionalProperties": true,
+            "title": "Meta",
+            "type": "object"
+          },
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok"
+        ],
+        "title": "Envelope",
+        "type": "object"
+      },
+      "read_only": true
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
+          "id": {
+            "description": "A model_id or an attachment alias.",
+            "title": "Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "title": "detachArguments",
+        "type": "object"
+      },
+      "name": "detach",
+      "output_schema": {
+        "$defs": {
+          "ErrorInfo": {
+            "properties": {
+              "code": {
+                "description": "Stable machine-readable code; see ERROR_CODES.",
+                "title": "Code",
+                "type": "string"
+              },
+              "hint": {
+                "description": "What to do next; follow it instead of retrying blindly.",
+                "title": "Hint",
+                "type": "string"
+              },
+              "message": {
+                "description": "What went wrong, in one sentence.",
+                "title": "Message",
+                "type": "string"
+              }
+            },
+            "required": [
+              "code",
+              "message",
+              "hint"
+            ],
+            "title": "ErrorInfo",
+            "type": "object"
+          }
+        },
+        "description": "The public tool-result contract.",
+        "properties": {
+          "data": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Data"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ErrorInfo"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "meta": {
+            "additionalProperties": true,
+            "title": "Meta",
+            "type": "object"
+          },
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok"
+        ],
+        "title": "Envelope",
+        "type": "object"
+      },
+      "read_only": false
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
+          "max_elements": {
+            "default": 1000,
+            "maximum": 5000,
+            "minimum": 1,
+            "title": "Max Elements",
+            "type": "integer"
+          },
+          "max_results": {
+            "default": 200,
+            "maximum": 1000,
+            "minimum": 1,
+            "title": "Max Results",
+            "type": "integer"
+          },
+          "mode": {
+            "default": "overlap",
+            "enum": [
+              "overlap",
+              "clearance"
+            ],
+            "title": "Mode",
+            "type": "string"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "model_id of an attached model (see list_models); omit for the active model.",
+            "title": "Model"
+          },
+          "other_model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Model that set_b comes from; omit to use the same model.",
+            "title": "Other Model"
+          },
+          "physical_only": {
+            "default": true,
+            "title": "Physical Only",
+            "type": "boolean"
+          },
+          "precision": {
+            "default": "exact",
+            "enum": [
+              "exact",
+              "fast"
+            ],
+            "title": "Precision",
+            "type": "string"
+          },
+          "set_a": {
+            "description": "Selector for the first set, e.g. `IfcDuctSegment`.",
+            "title": "Set A",
+            "type": "string"
+          },
+          "set_b": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Selector for the second set; omit to clash set_a with itself.",
+            "title": "Set B"
+          },
+          "tolerance": {
+            "default": 0.01,
+            "description": "Metres. Overlap tolerance, or the clearance gap.",
+            "maximum": 10.0,
+            "minimum": 0.0,
+            "title": "Tolerance",
+            "type": "number"
+          }
+        },
+        "required": [
+          "set_a"
+        ],
+        "title": "detect_clashes_toolArguments",
+        "type": "object"
+      },
+      "name": "detect_clashes",
       "output_schema": {
         "$defs": {
           "ErrorInfo": {
@@ -686,6 +1075,130 @@
       "destructive": false,
       "input_schema": {
         "properties": {
+          "kinds": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Restrict to these kinds. Allowed: ['ifc', 'ids', 'bcf', 'csv', 'ifcjson'].",
+            "title": "Kinds"
+          },
+          "limit": {
+            "default": 30,
+            "maximum": 200,
+            "minimum": 1,
+            "title": "Limit",
+            "type": "integer"
+          },
+          "query": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Free text, e.g. 'architecture', 'ids', 'rev3'. Omit to list.",
+            "title": "Query"
+          },
+          "refresh": {
+            "default": false,
+            "description": "Re-walk the folders first.",
+            "title": "Refresh",
+            "type": "boolean"
+          }
+        },
+        "title": "find_filesArguments",
+        "type": "object"
+      },
+      "name": "find_files",
+      "output_schema": {
+        "$defs": {
+          "ErrorInfo": {
+            "properties": {
+              "code": {
+                "description": "Stable machine-readable code; see ERROR_CODES.",
+                "title": "Code",
+                "type": "string"
+              },
+              "hint": {
+                "description": "What to do next; follow it instead of retrying blindly.",
+                "title": "Hint",
+                "type": "string"
+              },
+              "message": {
+                "description": "What went wrong, in one sentence.",
+                "title": "Message",
+                "type": "string"
+              }
+            },
+            "required": [
+              "code",
+              "message",
+              "hint"
+            ],
+            "title": "ErrorInfo",
+            "type": "object"
+          }
+        },
+        "description": "The public tool-result contract.",
+        "properties": {
+          "data": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Data"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ErrorInfo"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "meta": {
+            "additionalProperties": true,
+            "title": "Meta",
+            "type": "object"
+          },
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok"
+        ],
+        "title": "Envelope",
+        "type": "object"
+      },
+      "read_only": true
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
           "global_ids": {
             "items": {
               "type": "string"
@@ -710,6 +1223,19 @@
             "default": null,
             "description": "Sections to include. Allowed: ['attributes', 'psets', 'qtos', 'materials', 'type', 'container', 'openings', 'decomposition']. Default: ['attributes', 'psets', 'type', 'container'].",
             "title": "Include"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "model_id of an attached model (see list_models); omit for the active model.",
+            "title": "Model"
           }
         },
         "required": [
@@ -795,7 +1321,21 @@
     {
       "destructive": false,
       "input_schema": {
-        "properties": {},
+        "properties": {
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "model_id of an attached model (see list_models); omit for the active model.",
+            "title": "Model"
+          }
+        },
         "title": "get_georeferencingArguments",
         "type": "object"
       },
@@ -876,7 +1416,21 @@
     {
       "destructive": false,
       "input_schema": {
-        "properties": {},
+        "properties": {
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "model_id of an attached model (see list_models); omit for the active model.",
+            "title": "Model"
+          }
+        },
         "title": "get_ifc_project_infoArguments",
         "type": "object"
       },
@@ -966,6 +1520,19 @@
             "minItems": 1,
             "title": "Global Ids",
             "type": "array"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "model_id of an attached model (see list_models); omit for the active model.",
+            "title": "Model"
           },
           "psets_only": {
             "default": false,
@@ -1257,6 +1824,19 @@
             "default": true,
             "title": "Include Element Counts",
             "type": "boolean"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "model_id of an attached model (see list_models); omit for the active model.",
+            "title": "Model"
           },
           "root_global_id": {
             "anyOf": [
@@ -1726,6 +2306,87 @@
     {
       "destructive": false,
       "input_schema": {
+        "properties": {},
+        "title": "list_modelsArguments",
+        "type": "object"
+      },
+      "name": "list_models",
+      "output_schema": {
+        "$defs": {
+          "ErrorInfo": {
+            "properties": {
+              "code": {
+                "description": "Stable machine-readable code; see ERROR_CODES.",
+                "title": "Code",
+                "type": "string"
+              },
+              "hint": {
+                "description": "What to do next; follow it instead of retrying blindly.",
+                "title": "Hint",
+                "type": "string"
+              },
+              "message": {
+                "description": "What went wrong, in one sentence.",
+                "title": "Message",
+                "type": "string"
+              }
+            },
+            "required": [
+              "code",
+              "message",
+              "hint"
+            ],
+            "title": "ErrorInfo",
+            "type": "object"
+          }
+        },
+        "description": "The public tool-result contract.",
+        "properties": {
+          "data": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Data"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ErrorInfo"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "meta": {
+            "additionalProperties": true,
+            "title": "Meta",
+            "type": "object"
+          },
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok"
+        ],
+        "title": "Envelope",
+        "type": "object"
+      },
+      "read_only": true
+    },
+    {
+      "destructive": false,
+      "input_schema": {
         "properties": {
           "path": {
             "description": "Path to an .ifc/.ifczip/.ifcxml file.",
@@ -1920,6 +2581,19 @@
             "minimum": 1,
             "title": "Limit",
             "type": "integer"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "model_id of an attached model (see list_models); omit for the active model.",
+            "title": "Model"
           },
           "offset": {
             "default": 0,
@@ -2127,8 +2801,98 @@
       "destructive": false,
       "input_schema": {
         "properties": {
+          "model_id": {
+            "description": "A model_id from list_models.",
+            "title": "Model Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "model_id"
+        ],
+        "title": "set_active_modelArguments",
+        "type": "object"
+      },
+      "name": "set_active_model",
+      "output_schema": {
+        "$defs": {
+          "ErrorInfo": {
+            "properties": {
+              "code": {
+                "description": "Stable machine-readable code; see ERROR_CODES.",
+                "title": "Code",
+                "type": "string"
+              },
+              "hint": {
+                "description": "What to do next; follow it instead of retrying blindly.",
+                "title": "Hint",
+                "type": "string"
+              },
+              "message": {
+                "description": "What went wrong, in one sentence.",
+                "title": "Message",
+                "type": "string"
+              }
+            },
+            "required": [
+              "code",
+              "message",
+              "hint"
+            ],
+            "title": "ErrorInfo",
+            "type": "object"
+          }
+        },
+        "description": "The public tool-result contract.",
+        "properties": {
+          "data": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Data"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ErrorInfo"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "meta": {
+            "additionalProperties": true,
+            "title": "Meta",
+            "type": "object"
+          },
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok"
+        ],
+        "title": "Envelope",
+        "type": "object"
+      },
+      "read_only": false
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
           "ids_path": {
-            "description": "Path to an IDS XML file.",
+            "description": "Path to an IDS XML file, or the alias of an attached one.",
             "title": "Ids Path",
             "type": "string"
           },
@@ -2139,6 +2903,19 @@
             "minimum": 1,
             "title": "Max Failures",
             "type": "integer"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "model_id of an attached model (see list_models); omit for the active model.",
+            "title": "Model"
           }
         },
         "required": [
@@ -2236,6 +3013,19 @@
             "minimum": 1,
             "title": "Max Issues",
             "type": "integer"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "model_id of an attached model (see list_models); omit for the active model.",
+            "title": "Model"
           }
         },
         "title": "validate_modelArguments",

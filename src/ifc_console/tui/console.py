@@ -23,6 +23,7 @@ from ifc_console import branding
 from ifc_console.tui import commands, completion
 from ifc_console.tui.launcher import FilePickerModal, discover_ifc_files
 from ifc_console.tui.modals import ConfirmModal
+from ifc_console.tui.workspace import WorkspaceModal
 
 if TYPE_CHECKING:
     from ifc_console.app import AppCore
@@ -190,8 +191,14 @@ class ConsoleScreen(Screen):
             model = f"{escape(s.name or '')} · {s.schema} · {s.size_bytes / 1_048_576:.1f} MB"
         else:
             model = "no model (/file)"
+        extra = ""
+        attached = len(core.models.sessions) - 1 if core.models.sessions else 0
+        if attached > 0:
+            extra += f"  +{attached} model{'s' if attached > 1 else ''}"
+        if core.models.attachments:
+            extra += f"  +{len(core.models.attachments)} file(s)"
         self.query_one("#statusbar", Static).update(
-            f" {model}   MODE: [{color}]{mode.upper()}[/{color}]{dirty}{taint}"
+            f" {model}{extra}   MODE: [{color}]{mode.upper()}[/{color}]{dirty}{taint}"
         )
         server = f"MCP {core.mcp_url}" if core.server_running else "MCP starting…"
         if not core.viewer.enabled:
@@ -260,6 +267,40 @@ class ConsoleScreen(Screen):
                     "[red]session tainted[/red]: guarded code changed the in-memory "
                     "model; /reload restores a pristine copy"
                 )
+        elif etype in (
+            "model_attached",
+            "model_detached",
+            "model_evicted",
+            "active_model_changed",
+            "file_attached",
+            "file_detached",
+        ):
+            self._loading = None
+            self.refresh_status()
+            name = escape(str(event.get("name") or event.get("alias") or ""))
+            model_id = escape(str(event.get("model_id") or event.get("alias") or ""))
+            if etype == "model_attached":
+                self.print(
+                    f"[green]attached[/green] [b]{name}[/b] as [cyan]{model_id}[/cyan] "
+                    "[dim](read-only; /use to make it active)[/dim]"
+                )
+            elif etype == "model_detached":
+                self.print(f"detached [cyan]{model_id}[/cyan] [dim]({name})[/dim]")
+            elif etype == "model_evicted":
+                self.print(
+                    f"[yellow]evicted[/yellow] [cyan]{model_id}[/cyan] [dim]({name}; "
+                    "made room in the workspace budget, /attach brings it back)[/dim]"
+                )
+            elif etype == "active_model_changed":
+                self.print(f"[green]active model[/green] is now [b]{name}[/b] ({model_id})")
+            elif etype == "file_attached":
+                kind = escape(str(event.get("kind", "?")).upper())
+                self.print(
+                    f"[green]attached[/green] {kind} [b]{model_id}[/b] "
+                    "[dim](the LLM can now use its path)[/dim]"
+                )
+            else:
+                self.print(f"detached [b]{model_id}[/b]")
         elif etype in ("viewer_connected", "viewer_disconnected"):
             self.refresh_status()
             tabs = event.get("tabs", "?")
@@ -407,3 +448,18 @@ class ConsoleScreen(Screen):
         )
         if picked is not None:
             await commands._open_path(self, picked)
+
+    async def open_workspace_panel(self) -> bool:
+        """True when a panel choice was applied, False on cancel."""
+        # The panel scans on mount, which raises when indexing is off.
+        if not self.core.settings.workspace.enabled:
+            self.print(
+                "[red]workspace indexing is disabled[/red]; /settings "
+                "workspace.enabled true turns it on"
+            )
+            return False
+        choice = await self.app.push_screen_wait(WorkspaceModal(self.core))
+        if choice:
+            await commands.apply_workspace_choice(self, choice)
+            return True
+        return False

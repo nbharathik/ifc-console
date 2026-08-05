@@ -22,6 +22,16 @@ if TYPE_CHECKING:
 
 QUERY_ANN = ToolAnnotations(readOnlyHint=True, destructiveHint=False)
 
+MODEL_ARG = "model_id of an attached model (see list_models); omit for the active model."
+
+
+def read_meta(core: AppCore, session: Any) -> dict[str, Any]:
+    """`read_from` only when a read targeted something other than the active
+    model; meta.model keeps meaning the active model, always."""
+    if session is core.session:
+        return {}
+    return {"read_from": session.model_id}
+
 
 def _validate_subset(values: list[str] | None, allowed: tuple[str, ...], param: str) -> None:
     if not values:
@@ -89,6 +99,14 @@ def register(mcp: MCPServer, core: AppCore) -> None:
             "dirty": s.dirty,
             "viewer": {"enabled": core.viewer.enabled, "connected": core.viewer.connected},
         }
+        # Attached models and companion files are session state the LLM cannot
+        # guess; surface them here rather than making it call list_models.
+        if len(core.models.sessions) > 1 or core.models.attachments:
+            status["workspace"] = {
+                "active": core.models.active_id,
+                "attached_models": core.models.attached_ids,
+                "attachments": [a.to_dict() for a in core.models.attachments.values()],
+            }
         data: dict[str, Any] = {"status": status}
         if s.loaded:
 
@@ -146,6 +164,7 @@ def register(mcp: MCPServer, core: AppCore) -> None:
                 'query_elements(query="IfcWall, Pset_WallCommon.FireRating=F30")',
                 'compute_quantities(selector="IfcSlab", aggregate_by="storey")',
                 'validate_ids(ids_path="requirements.ids")',
+                'find_files(query="architecture", kinds=["ifc"])',
                 'export_csv(selector="IfcDoor", path="doors.csv", '
                 'properties=["Pset_DoorCommon.FireRating"])',
             ],
@@ -162,13 +181,16 @@ def register(mcp: MCPServer, core: AppCore) -> None:
         ),
     )
     @enveloped(core, "get_ifc_project_info")
-    async def get_ifc_project_info() -> Envelope:
-        core.session.require_loaded()
+    async def get_ifc_project_info(
+        model: Annotated[str | None, Field(description=MODEL_ARG)] = None,
+    ) -> Envelope:
+        s = core.resolve_session(model)
         data, cached = await core.cached_read(
             "project_info",
-            lambda: build_project_info(core.session.ifc, core.session.path),
+            lambda: build_project_info(s.ifc, s.path),
+            session=s,
         )
-        return ok(data, core.session_meta(), char_limit=limit_, cached=cached)
+        return ok(data, core.session_meta(), char_limit=limit_, cached=cached, **read_meta(core, s))
 
     @mcp.tool(
         annotations=QUERY_ANN,
@@ -185,16 +207,22 @@ def register(mcp: MCPServer, core: AppCore) -> None:
         ] = None,
         depth: Annotated[int, Field(ge=1, le=20)] = 10,
         include_element_counts: bool = True,
+        model: Annotated[str | None, Field(description=MODEL_ARG)] = None,
     ) -> Envelope:
-        core.session.require_loaded()
+        s = core.resolve_session(model)
         tree, cached = await core.cached_read(
             "spatial_tree",
-            lambda: build_spatial_tree(
-                core.session.ifc, root_global_id, depth, include_element_counts
-            ),
+            lambda: build_spatial_tree(s.ifc, root_global_id, depth, include_element_counts),
             key=(root_global_id, depth, include_element_counts),
+            session=s,
         )
-        return ok({"tree": tree}, core.session_meta(), char_limit=limit_, cached=cached)
+        return ok(
+            {"tree": tree},
+            core.session_meta(),
+            char_limit=limit_,
+            cached=cached,
+            **read_meta(core, s),
+        )
 
     @mcp.tool(
         annotations=QUERY_ANN,
@@ -221,13 +249,14 @@ def register(mcp: MCPServer, core: AppCore) -> None:
             ),
         ] = None,
         order_by: Literal["class", "name", "storey"] = "class",
+        model: Annotated[str | None, Field(description=MODEL_ARG)] = None,
     ) -> Envelope:
-        core.session.require_loaded()
+        s = core.resolve_session(model)
         _validate_subset(fields, ALLOWED_FIELDS, "fields")
         use_fields = tuple(fields) if fields else DEFAULT_FIELDS
-        rows, total = await core.session.run(
+        rows, total = await s.run(
             lambda: run_query(
-                core.session.ifc,
+                s.ifc,
                 query,
                 limit=limit,
                 offset=offset,
@@ -243,6 +272,7 @@ def register(mcp: MCPServer, core: AppCore) -> None:
             total=total,
             returned=len(rows),
             offset=offset,
+            **read_meta(core, s),
         )
 
     @mcp.tool(
@@ -264,8 +294,9 @@ def register(mcp: MCPServer, core: AppCore) -> None:
                 f"Default: {list(INCLUDE_DEFAULT)}."
             ),
         ] = None,
+        model: Annotated[str | None, Field(description=MODEL_ARG)] = None,
     ) -> Envelope:
-        core.session.require_loaded()
+        s = core.resolve_session(model)
         _validate_subset(include, INCLUDE_ALLOWED, "include")
         use_include = tuple(include) if include else INCLUDE_DEFAULT
 
@@ -273,7 +304,7 @@ def register(mcp: MCPServer, core: AppCore) -> None:
             found, missing = [], []
             for gid in global_ids:
                 try:
-                    e = core.session.ifc.by_guid(gid)
+                    e = s.ifc.by_guid(gid)
                 except Exception:
                     e = None
                 if e is None:
@@ -282,12 +313,13 @@ def register(mcp: MCPServer, core: AppCore) -> None:
                     found.append(element_detail(e, use_include))
             return found, missing
 
-        elements, missing = await core.session.run(job, timeout=120)
+        elements, missing = await s.run(job, timeout=120)
         return ok(
             {"elements": elements, "missing": missing},
             core.session_meta(),
             char_limit=limit_,
             returned=len(elements),
+            **read_meta(core, s),
         )
 
     @mcp.tool(
@@ -303,8 +335,9 @@ def register(mcp: MCPServer, core: AppCore) -> None:
         global_ids: Annotated[list[str], Field(min_length=1, max_length=100)],
         psets_only: bool = False,
         qtos_only: bool = False,
+        model: Annotated[str | None, Field(description=MODEL_ARG)] = None,
     ) -> Envelope:
-        core.session.require_loaded()
+        s = core.resolve_session(model)
         if psets_only and qtos_only:
             raise ToolError(
                 "INVALID_INPUT",
@@ -318,7 +351,7 @@ def register(mcp: MCPServer, core: AppCore) -> None:
             results = []
             for gid in global_ids:
                 try:
-                    e = core.session.ifc.by_guid(gid)
+                    e = s.ifc.by_guid(gid)
                 except Exception:
                     e = None
                 if e is None:
@@ -337,12 +370,13 @@ def register(mcp: MCPServer, core: AppCore) -> None:
                 results.append(entry)
             return results
 
-        results = await core.session.run(job, timeout=120)
+        results = await s.run(job, timeout=120)
         return ok(
             {"results": results},
             core.session_meta(),
             char_limit=limit_,
             returned=len(results),
+            **read_meta(core, s),
         )
 
     @mcp.tool(

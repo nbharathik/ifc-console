@@ -39,9 +39,10 @@ zero-setup bridge between an LLM client and an IFC file.
 
 ## Highlights
 
-- **11 core MCP tools, plus an optional 3-tool viewer.** Structured queries
+- **24 core MCP tools, plus an optional 4-tool viewer.** Structured queries
   (project info, spatial tree, selectors, element details, psets, schema docs),
-  file handling, and a gated Python `execute_ifc_code` power tool.
+  file handling, multi-file workspace tools, and a gated Python
+  `execute_ifc_code` power tool.
 - **Interactive console** styled after coding-agent CLIs: slash commands
   (`/file`, `/mode`, `/viewer`, `/connect`), a completion menu, command history,
   and a live feed of every MCP call.
@@ -55,7 +56,7 @@ zero-setup bridge between an LLM client and an IFC file.
 
 ```console
 $ ifc-console
-IFC CONSOLE  v0.1.0
+IFC CONSOLE  v0.2.0
 a terminal interface to connect IFC files to LLMs
   model  /file to pick
   mode   ask  (AI is query-only; /mode edit lets it change the model)

@@ -21,10 +21,10 @@ def test_slash_alone_lists_every_command(core) -> None:
 
 def test_prefix_filters_and_exact_name_ranks_first(core) -> None:
     state = completion.complete("/mo", core)
-    assert set(inserts(state)) == {"/mode", "/model"}
+    assert set(inserts(state)) == {"/mode", "/model", "/models"}
     # "model" starts with "mode" too; the exactly-typed name must win the top
     state = completion.complete("/mode", core)
-    assert inserts(state) == ["/mode", "/model"]
+    assert inserts(state) == ["/mode", "/model", "/models"]
 
 
 def test_command_flags_decide_enter_behavior(core) -> None:

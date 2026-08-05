@@ -53,6 +53,10 @@ class ViewerClient:
         self.id = next(self._ids)
         self.connected_at = _utcnow()
         self.last_active = next(self._activity)
+        self.selection: list[str] = []
+        self.selection_model_id: str | None = None
+        self.selected_at: str | None = None
+        self.selection_order = 0
 
     def touch(self) -> None:
         self.last_active = next(self._activity)
@@ -66,15 +70,18 @@ class ViewerHub:
         self.core = core
         self.clients: list[ViewerClient] = []
         self.selection: list[str] = []
+        self.selection_model_id: str | None = None
         self.selected_at: str | None = None
+        self._selection_client: ViewerClient | None = None
+        self._selection_updates = itertools.count(1)
         self.last_highlight: dict | None = None
         self.last_color_theme: dict | None = None
         self._shots: dict[str, asyncio.Future] = {}
         self._shot_ids = itertools.count(1)
         self._ping_task: asyncio.Task | None = None
-        # Model bytes are cached per ETag so several tabs (or a reconnect) do
-        # not re-serialize the same revision.
-        self._model_cache: tuple[str, bytes] | None = None
+        # Model bytes cached per ETag so several tabs (or a reconnect) do not
+        # re-serialize the same revision; a few entries cover model switching.
+        self._model_cache: dict[str, bytes] = {}
         core.events.subscribe(self._on_event)
 
     # -- connection registry ---------------------------------------------------
@@ -91,6 +98,40 @@ class ViewerHub:
             self._ping_task = asyncio.ensure_future(self._ping_loop())
         return client
 
+    def _clear_selection(self) -> None:
+        self.selection = []
+        self.selection_model_id = None
+        self.selected_at = None
+        self._selection_client = None
+        self.core.viewer.selection = []
+
+    def _adopt_selection(self, client: ViewerClient) -> None:
+        self.selection = list(client.selection)
+        self.selection_model_id = client.selection_model_id
+        self.selected_at = client.selected_at
+        self._selection_client = client
+        self.core.viewer.selection = list(client.selection)
+
+    def _restore_latest_selection(self) -> None:
+        candidates = [client for client in self.clients if client.selection_order]
+        if candidates:
+            self._adopt_selection(max(candidates, key=lambda client: client.selection_order))
+        else:
+            self._clear_selection()
+
+    def _prune_selection_models(self) -> None:
+        changed = False
+        for client in self.clients:
+            model_id = client.selection_model_id
+            if model_id is None or self.core.models.get(model_id) is None:
+                client.selection = []
+                client.selection_model_id = None
+                client.selected_at = None
+                client.selection_order = 0
+                changed = True
+        if changed:
+            self._restore_latest_selection()
+
     def unregister(self, client: ViewerClient) -> None:
         # close_all() unregisters first and the socket's finally block
         # unregisters again; only the first call may emit.
@@ -99,9 +140,16 @@ class ViewerHub:
         self.clients.remove(client)
         self.core.viewer.connected = self.connected
         self.core.events.emit("viewer_disconnected", client_id=client.id, tabs=self.connected)
-        if not self.clients and self._ping_task is not None:
-            self._ping_task.cancel()
-            self._ping_task = None
+        if not self.clients:
+            # No tab means nothing is selected. A closed or reloaded tab must
+            # not leave a selection the LLM would read as still on screen;
+            # every tab resends its own selection on connect.
+            self._clear_selection()
+            if self._ping_task is not None:
+                self._ping_task.cancel()
+                self._ping_task = None
+        elif self._selection_client is client:
+            self._restore_latest_selection()
 
     async def close_all(self) -> int:
         """Disconnect every tab (used by /viewer off). Returns tabs closed."""
@@ -129,17 +177,34 @@ class ViewerHub:
             )
 
     # -- state payloads ----------------------------------------------------------
-    def model_etag(self) -> str | None:
-        s = self.core.session
+    def model_etag(self, session: Any = None) -> str | None:
+        s = session or self.core.session
         if not s.loaded:
             return None
         return f"{s.fingerprint}-{s.revision}"
+
+    def model_rows(self) -> list[dict]:
+        """Every resident model the viewer may show; the active one leads."""
+        rows = []
+        for model_id, session in self.core.models.sessions.items():
+            rows.append(
+                {
+                    "id": model_id,
+                    "name": session.name,
+                    "schema": session.schema,
+                    "active": model_id == self.core.models.active_id,
+                    "etag": self.model_etag(session),
+                }
+            )
+        rows.sort(key=lambda r: (not r["active"], r["id"]))
+        return rows
 
     def status_payload(self) -> dict:
         s = self.core.session
         return {
             "type": "status",
             "model": s.name,
+            "models": self.model_rows(),
             "schema": s.schema,
             "mode": self.core.policy.mode.value,
             "theme": "light" if self.core.ui_theme == "light" else "dark",
@@ -153,12 +218,18 @@ class ViewerHub:
         }
 
     def cache_model_bytes(self, etag: str, data: bytes) -> None:
-        self._model_cache = (etag, data)
+        # Keyed by etag and bounded: with several models resident a single
+        # slot would re-serialize on every switch. The byte budget keeps a few
+        # small models cached without ever holding several large ones.
+        self._model_cache.pop(etag, None)
+        self._model_cache[etag] = data
+        budget = self.core.settings.viewer.max_model_mb * 1_048_576
+        total = sum(len(v) for v in self._model_cache.values())
+        while len(self._model_cache) > 1 and (len(self._model_cache) > 3 or total > budget):
+            total -= len(self._model_cache.pop(next(iter(self._model_cache))))
 
     def cached_model_bytes(self, etag: str) -> bytes | None:
-        if self._model_cache and self._model_cache[0] == etag:
-            return self._model_cache[1]
-        return None
+        return self._model_cache.get(etag)
 
     # -- incoming frames -----------------------------------------------------------
     async def handle_frame(self, client: ViewerClient, frame: dict) -> None:
@@ -166,10 +237,24 @@ class ViewerHub:
         client.touch()
         if ftype == "selection":
             guids = [g for g in frame.get("guids", []) if isinstance(g, str)][:500]
-            self.selection = guids
-            self.selected_at = _utcnow()
-            self.core.viewer.selection = guids
-            self.core.events.emit("viewer_selection", guids=guids, count=len(guids))
+            requested_model = frame.get("model_id")
+            if requested_model is None:
+                model_id = self.core.models.active_id
+            elif isinstance(requested_model, str) and self.core.models.get(
+                requested_model
+            ) is not None:
+                model_id = requested_model
+            else:
+                guids = []
+                model_id = None
+            client.selection = guids
+            client.selection_model_id = model_id
+            client.selected_at = _utcnow()
+            client.selection_order = next(self._selection_updates)
+            self._adopt_selection(client)
+            self.core.events.emit(
+                "viewer_selection", guids=guids, count=len(guids), model_id=model_id
+            )
         elif ftype == "screenshot_response":
             fut = self._shots.get(str(frame.get("id")))
             if fut is not None and not fut.done():
@@ -312,8 +397,7 @@ class ViewerHub:
         frame: dict | None = None
         if etype in reasons:
             if etype == "model_loaded":
-                self.selection = []
-                self.core.viewer.selection = []
+                self._prune_selection_models()
                 self.last_highlight = None
                 self.last_color_theme = None
             frame = {
@@ -322,6 +406,16 @@ class ViewerHub:
                 "reason": reasons[etype],
                 "dirty": self.core.session.dirty,
             }
+        elif etype in (
+            "model_attached",
+            "model_detached",
+            "model_evicted",
+            "active_model_changed",
+        ):
+            # The set of models a tab may show changed; status carries the list.
+            if etype in ("model_detached", "model_evicted"):
+                self._prune_selection_models()
+            frame = self.status_payload()
         elif etype == "mode_changed":
             frame = {"type": "mode_changed", "mode": event.get("mode")}
         elif etype == "theme_changed":
@@ -335,6 +429,8 @@ class ViewerHub:
             # dropping a refresh frame is harmless, the next status resyncs.
             return
         loop.create_task(self.broadcast(frame))
+        if etype == "model_loaded":
+            loop.create_task(self.broadcast(self.status_payload()))
 
     # -- keepalive ---------------------------------------------------------------------
     async def _ping_loop(self) -> None:

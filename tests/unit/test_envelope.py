@@ -50,6 +50,28 @@ def test_error_code_registry_is_sorted_and_unique() -> None:
     assert list(ERROR_CODES) == sorted(set(ERROR_CODES))
 
 
+def test_every_raised_code_is_registered() -> None:
+    import ast
+    from pathlib import Path
+
+    src = Path(__file__).resolve().parents[2] / "src"
+    raised = set()
+    for path in src.rglob("*.py"):
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8-sig"))):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "ToolError"
+                and node.args
+                and isinstance(node.args[0], ast.Constant)
+                and isinstance(node.args[0].value, str)
+            ):
+                raised.add(node.args[0].value)
+    assert raised, "no ToolError call sites found; the scan is broken"
+    unregistered = raised - set(ERROR_CODES)
+    assert not unregistered, f"codes raised but missing from ERROR_CODES: {sorted(unregistered)}"
+
+
 def test_envelope_schema_names_the_contract() -> None:
     schema = Envelope.model_json_schema()
     assert set(schema["properties"]) == {"ok", "data", "error", "meta"}

@@ -1,7 +1,8 @@
-﻿"""MCP server construction: MCPServer instance, transports, token auth."""
+"""MCP server construction: MCPServer instance, transports, token auth."""
 
 from __future__ import annotations
 
+import contextlib
 import functools
 import hmac
 import json
@@ -11,6 +12,7 @@ from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 
+from ifc_console import __version__
 from ifc_console.mcp.compat import MCPServer
 from ifc_console.mcp.envelope import Envelope, ToolError, err, from_tool_error
 
@@ -21,7 +23,7 @@ log = logging.getLogger("ifc-console.mcp")
 
 INSTRUCTIONS = """\
 You are connected to ifc-console, a standalone IFC (BIM) workbench. One IFC file
-is loaded per session; every response's `meta` tells you the model, schema,
+is the active model; every response's `meta` tells you the model, schema,
 mode, dirty flag, and fingerprint (if the fingerprint changes, re-orient).
 
 Session modes (the USER controls them in their terminal; you cannot):
@@ -48,6 +50,21 @@ Workflow:
    with save_ifc_file. Don't save after every micro-edit.
 6. Errors come back as {ok:false, error:{code, message, hint}}; follow the
    hint instead of retrying blindly.
+
+Working with more than one file (the optional second mode; one active model
+stays the norm):
+- find_files searches the user's allowed folders for IFC, IDS, BCF, and CSV
+  files and returns paths. It opens nothing. When it reports ambiguous, ask
+  the user which file they meant; never guess between similar revisions.
+- attach adds a file alongside the active model: an IFC becomes an extra
+  read-only model, an IDS or BCF becomes a companion file whose path you pass
+  to the tool that reads it (validate_ids for IDS).
+- list_models shows what is resident, which model is active, and the memory
+  budget. Read tools take an optional `model` parameter naming a model_id;
+  omit it for the active model.
+- Only the active model can be changed or saved; a write aimed at an attached
+  model fails with MODEL_READ_ONLY. set_active_model moves that focus.
+  Adding a folder to the allowed roots is the user's job (/workspace <dir>).
 
 Selector examples for query_elements: `IfcWall` or `IfcWall, IfcSlab` or
 `IfcWall, material=concrete` or `IfcWall, Pset_WallCommon.FireRating=F30` or
@@ -119,6 +136,7 @@ def build_mcp(core: AppCore) -> MCPServer:
         tools_exec,
         tools_files,
         tools_query,
+        tools_workspace,
     )
 
     # Stateless HTTP: session state lives in AppCore, not the transport, so
@@ -128,10 +146,14 @@ def build_mcp(core: AppCore) -> MCPServer:
         mcp = MCPServer("ifc-console", instructions=INSTRUCTIONS, stateless_http=True)
     except TypeError:  # SDK without stateless_http: per-run sessions again
         mcp = MCPServer("ifc-console", instructions=INSTRUCTIONS)
+    # FastMCP takes no version, so initialize would advertise the SDK's.
+    with contextlib.suppress(AttributeError):
+        mcp._mcp_server.version = __version__
     tools_query.register(mcp, core)
     tools_analysis.register(mcp, core)
     tools_exec.register(mcp, core)
     tools_files.register(mcp, core)
+    tools_workspace.register(mcp, core)
     resources.register(mcp, core)
     prompts.register(mcp, core)
     core.attach_mcp(mcp)
@@ -264,6 +286,7 @@ def build_http_app(core: AppCore, mcp: MCPServer) -> Any:
                 "server": {"name": "ifc-console"},
                 "meta": core.session_meta(),
                 "model": s.name,
+                "models": core.viewer_hub.model_rows(),
                 "schema": s.schema,
                 "mode": core.policy.mode.value,
                 "dirty": s.dirty,

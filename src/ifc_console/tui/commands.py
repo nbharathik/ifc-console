@@ -7,6 +7,7 @@ gives /help, completion, and the docs one source of truth.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -15,8 +16,9 @@ from typing import TYPE_CHECKING, Any
 
 from rich.markup import escape
 
-from ifc_console.cli import MCP_REMOTE_SPEC
+from ifc_console.mcp.envelope import ToolError
 from ifc_console.policy.modes import Mode
+from ifc_console.workspace.kinds import detect_kind
 
 if TYPE_CHECKING:
     from ifc_console.tui.console import ConsoleScreen
@@ -27,12 +29,7 @@ _IFC_SUFFIXES = (".ifc", ".ifczip", ".ifcxml")
 _CONNECT_CLIENTS = ("claude-code", "claude-desktop", "cursor", "vscode", "codex")
 _CONNECT_TARGETS = {
     "claude-code": "run this command once; it is saved at user scope",
-    "claude-desktop": (
-        "merge into claude_desktop_config.json; requires Node.js 18+ and npx; "
-        f"warm the npx cache once with `npx -y {MCP_REMOTE_SPEC} --help` "
-        "(an uncached first launch can exceed Claude Desktop's 60 second "
-        "startup timeout); then restart Claude Desktop"
-    ),
+    "claude-desktop": "merge into claude_desktop_config.json; then restart Claude Desktop",
     "cursor": "merge into the global ~/.cursor/mcp.json; then reload MCP servers",
     "vscode": "merge into MCP: Open User Configuration; then start the MCP server",
     "codex": "merge into ~/.codex/config.toml; then restart Codex",
@@ -71,7 +68,7 @@ def _strip_quotes(text: str) -> str:
 
 
 def _client_config(core: Any, client: str) -> str:
-    """Build one copy-ready shared HTTP client configuration."""
+    """Build one copy-ready configuration for the shared console."""
     from ifc_console.cli import build_config_snippet
 
     return build_config_snippet(
@@ -82,6 +79,15 @@ def _client_config(core: Any, client: str) -> str:
         file=None,
         mode=core.policy.mode.value,
         token=(core.token if core.settings.server.token_in_config_snippets else None),
+        bridge_token=(
+            None
+            if core.settings.server.persistent_token
+            else (
+                core.token
+                if core.settings.server.token_in_config_snippets
+                else "<TOKEN>"
+            )
+        ),
     )
 
 
@@ -124,22 +130,80 @@ async def dispatch(console: ConsoleScreen, line: str) -> None:
 
 
 # --------------------------------------------------------------------- helpers
-async def _open_path(console: ConsoleScreen, path: Path) -> None:
+async def _open_path(console: ConsoleScreen, path: Path) -> bool:
     core = console.core
     path = path.expanduser().resolve()
     if not path.exists():
         console.print(f"[red]{escape(str(path))} does not exist[/red]")
-        return
-    if core.session.dirty and not await console.confirm(
-        "Discard unsaved changes and open another model?"
-    ):
-        return
+        return False
+    discard_dirty = core.session.dirty
+    if discard_dirty and not await console.confirm("Discard unsaved changes and open another model?"):
+        return False
     core.add_allowed_dir(path.parent)
     try:
         # progress and the loaded line arrive via model_loading/model_loaded events
-        await core.open_model(path)
+        await core.open_model(path, discard_dirty=discard_dirty)
+    except ToolError as exc:
+        console.print(
+            f"[red]could not load {escape(path.name)}: {escape(exc.message)}[/red] "
+            f"[dim]{escape(exc.hint)}[/dim]"
+        )
+        return False
     except Exception as exc:
         console.print(f"[red]could not load {escape(path.name)}: {escape(str(exc))}[/red]")
+        return False
+    return True
+
+
+async def _attach_path(console: ConsoleScreen, path: Path) -> bool:
+    """Load one extra file alongside the active model. True when it landed."""
+    core = console.core
+    path = path.expanduser().resolve()
+    if not path.exists():
+        console.print(f"[red]{escape(str(path))} does not exist[/red]")
+        return False
+    core.add_allowed_dir(path.parent)
+    try:
+        if await asyncio.to_thread(detect_kind, path) == "ifc":
+            # "auto" attaches only if a model is active, decided under the lock
+            await core.open_model(path, attach="auto")
+        else:
+            await core.attach_file(path)
+    except ToolError as exc:
+        console.print(
+            f"[red]could not attach {escape(path.name)}: {escape(exc.message)}[/red] "
+            f"[dim]{escape(exc.hint)}[/dim]"
+        )
+        return False
+    except Exception as exc:
+        console.print(f"[red]could not attach {escape(path.name)}: {escape(str(exc))}[/red]")
+        return False
+    return True
+
+
+async def apply_workspace_choice(console: ConsoleScreen, choice) -> None:
+    """Apply a workspace panel selection: one active model, the rest attached."""
+    core = console.core
+    models = list(choice.models)
+    landed = 0
+    if models and not core.session.loaded:
+        while models and not core.session.loaded:
+            first = models.pop(0)
+            if await _open_path(console, first):
+                landed += 1
+    for path in models:
+        if core.session.path == path:
+            continue
+        if await _attach_path(console, path):
+            landed += 1
+    for path in choice.files:
+        if await _attach_path(console, path):
+            landed += 1
+    if landed:
+        console.print(
+            "[dim]attached files stay read-only; the LLM sees them through "
+            "list_models[/dim]"
+        )
 
 
 def _mode_color(mode: str) -> str:
@@ -181,6 +245,115 @@ async def _open(console: ConsoleScreen, args: str) -> None:
         await console.open_file_picker()
         return
     await _open_path(console, Path(_strip_quotes(args)))
+
+
+@command(
+    "workspace",
+    "/workspace [dir]",
+    "browse a folder and pick several files (dir sets the root)",
+    "model",
+)
+async def _workspace(console: ConsoleScreen, args: str) -> None:
+    core = console.core
+    if not core.settings.workspace.enabled:
+        console.print(
+            "[red]workspace indexing is disabled[/red]; /settings "
+            "workspace.enabled true turns it on"
+        )
+        return
+    previous_root = core.workspace.primary_root
+    if args:
+        root = Path(_strip_quotes(args)).expanduser().resolve()
+        if not root.is_dir():
+            console.print(f"[red]{escape(str(root))} is not a directory[/red]")
+            return
+        core.add_allowed_dir(root)
+        core.workspace.primary_root = root
+        console.print(
+            f"workspace root: {escape(str(root))} [dim](added to the allowed "
+            "directories; the AI can read it, not widen it)[/dim]"
+        )
+    else:
+        core.workspace.primary_root = None
+    applied = await console.open_workspace_panel()
+    if not applied:
+        # a cancelled panel must not leave find_files scoped to another root
+        core.workspace.primary_root = previous_root
+
+
+@command("models", "/models", "list loaded models and attached files", "model")
+async def _models(console: ConsoleScreen, _args: str) -> None:
+    core = console.core
+    rows = core.models.model_rows()
+    if not rows and not core.models.attachments:
+        console.print("no model loaded; /file to pick one, /workspace to browse a folder")
+        return
+    lines = ["[b]models[/b]"]
+    for row in rows:
+        marker = "[green]active[/green]" if row["active"] else "[dim]read-only[/dim]"
+        dirty = " [red]* unsaved[/red]" if row["dirty"] else ""
+        size_mb = (row["size_bytes"] or 0) / 1_048_576
+        lines.append(
+            f"  [cyan]{row['model_id']:<16}[/cyan] {escape(str(row['name']))}  "
+            f"[dim]({row['schema']}, {size_mb:.1f} MB)[/dim]  {marker}{dirty}"
+        )
+    if core.models.attachments:
+        lines.append("[b]attached files[/b]")
+        for attachment in core.models.attachments.values():
+            used = attachment.consumed_by or "no tool reads this kind yet"
+            lines.append(
+                f"  [cyan]{attachment.alias:<16}[/cyan] {escape(attachment.path.name)}  "
+                f"[dim]({attachment.kind}, {used})[/dim]"
+            )
+    lines.append(
+        f"[dim]resident {len(core.models.sessions)}/{core.models.max_resident} · "
+        "/use <id> switches the active model · /detach <id> frees one[/dim]"
+    )
+    console.print("\n".join(lines))
+
+
+@command("attach", "/attach <path>", "load a file alongside the active model", "model")
+async def _attach(console: ConsoleScreen, args: str) -> None:
+    if not args:
+        await console.open_workspace_panel()
+        return
+    await _attach_path(console, Path(_strip_quotes(args)))
+
+
+@command("detach", "/detach <id>", "release an attached model or file", "model")
+async def _detach(console: ConsoleScreen, args: str) -> None:
+    core = console.core
+    key = _strip_quotes(args)
+    if not key:
+        console.print("[red]usage: /detach <model_id|alias>[/red]; /models lists them")
+        return
+    try:
+        if key in core.models.attachments:
+            core.detach_file(key)
+        else:
+            await core.detach_model(key)
+    except ToolError as exc:
+        console.print(f"[red]{escape(exc.message)}[/red] [dim]{escape(exc.hint)}[/dim]")
+    except Exception as exc:
+        console.print(f"[red]{escape(str(exc))}[/red]")
+
+
+@command("use", "/use <id>", "make a loaded model the active one", "model")
+async def _use(console: ConsoleScreen, args: str) -> None:
+    core = console.core
+    key = _strip_quotes(args)
+    if not key:
+        console.print("[red]usage: /use <model_id>[/red]; /models lists them")
+        return
+    try:
+        already_active = core.models.active_id == key
+        await core.set_active_model(key)
+        if already_active:
+            console.print(f"[dim]{escape(key)} is already the active model[/dim]")
+    except ToolError as exc:
+        console.print(f"[red]{escape(exc.message)}[/red] [dim]{escape(exc.hint)}[/dim]")
+    except Exception as exc:
+        console.print(f"[red]{escape(str(exc))}[/red]")
 
 
 @command("recent", "/recent", "list recently opened models", "model")
@@ -258,7 +431,7 @@ async def _viewer(console: ConsoleScreen, args: str) -> None:
         closed = await core.viewer_hub.close_all()
         console.print(
             f"viewer disabled ({closed} tab{'s' if closed != 1 else ''} closed); "
-            "the 3 viewer tools left the MCP tool list"
+            "the 4 viewer tools left the MCP tool list"
         )
         console.refresh_status()
         return
@@ -310,8 +483,13 @@ async def _connect(console: ConsoleScreen, args: str) -> None:
     for client in wanted:
         snippet = snippets[client] = _client_config(core, client)
         console.print(
-            f"[b]{client} (shared HTTP console)[/b]\n"
+            f"[b]{client} (shared console via stdio bridge)[/b]\n"
             f"[dim]{escape(_CONNECT_TARGETS[client])}[/dim]\n{escape(snippet)}"
+        )
+    if not core.settings.server.persistent_token:
+        console.print(
+            "[yellow]server.persistent_token is off: these setups embed the "
+            "current run's token and stop working when this console exits[/yellow]"
         )
     if len(wanted) == 1:
         client = wanted[0]
@@ -325,6 +503,11 @@ async def _connect(console: ConsoleScreen, args: str) -> None:
             "[dim]copy one complete setup with /copy <client>, for example /copy codex[/dim]"
         )
     console.print(
+        "[dim]this setup launches a small stdio bridge, so the client may start "
+        "before ifc-console does: it connects on its own once the console is "
+        "up, with no client restart.[/dim]"
+    )
+    console.print(
         "[dim]model paths are intentionally omitted. Start ifc-console and use "
         "/file to open or switch models without changing the client setup.[/dim]"
     )
@@ -332,20 +515,18 @@ async def _connect(console: ConsoleScreen, args: str) -> None:
         "[dim]Merge the ifc-console entry with any existing config; do not replace "
         "unrelated server entries.[/dim]"
     )
-    if not core.settings.server.token_in_config_snippets:
-        console.print(
-            "[yellow]the token is hidden by server.token_in_config_snippets; "
-            "replace <TOKEN> manually or use /copy token[/yellow]"
-        )
-    elif core.settings.server.persistent_token:
-        console.print(
-            "[dim]configure once: the token persists until `ifc-console token rotate`.[/dim]"
-        )
-    else:
-        console.print(
-            "[yellow]persistent tokens are disabled; refresh these client "
-            "configs after every ifc-console restart[/yellow]"
-        )
+    if not core.settings.server.persistent_token:
+        if core.settings.server.token_in_config_snippets:
+            console.print(
+                "[yellow]server.persistent_token is off, so this setup includes the "
+                "current run's token and must be copied again after every restart. "
+                "Turn persistence on for a one-time setup.[/yellow]"
+            )
+        else:
+            console.print(
+                "[yellow]replace <TOKEN> with the current run's token. This setup "
+                "must be refreshed after every restart.[/yellow]"
+            )
 
 
 @command(
@@ -374,10 +555,15 @@ async def _copy(console: ConsoleScreen, args: str) -> None:
         return
     console.app.copy_to_clipboard(value)
     console.print(f"{label} copied to clipboard")
-    if copied_client and not core.settings.server.token_in_config_snippets:
+    if copied_client and "<TOKEN>" in value:
         console.print(
             "[yellow]the copied setup contains <TOKEN>; replace it manually or "
             "use /copy token[/yellow]"
+        )
+    elif copied_client and not core.settings.server.persistent_token:
+        console.print(
+            "[yellow]server.persistent_token is off: this setup embeds the current "
+            "run's token and stops working when this console exits[/yellow]"
         )
 
 

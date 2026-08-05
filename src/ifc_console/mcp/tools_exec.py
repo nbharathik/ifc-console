@@ -1,4 +1,4 @@
-﻿"""execute_ifc_code, the power tool, gated per call by classifier + mode."""
+"""execute_ifc_code, the power tool, gated per call by classifier + mode."""
 
 from __future__ import annotations
 
@@ -42,6 +42,7 @@ def register(mcp: MCPServer, core: AppCore) -> None:
 
     @mcp.tool(annotations=EXEC_ANN, description=_DESCRIPTION)
     @enveloped(core, "execute_ifc_code")
+    @core.active_model_operation
     async def execute_ifc_code(
         code: Annotated[str, Field(description="Python source. No bpy; this is not Blender.")],
         description: Annotated[
@@ -52,7 +53,7 @@ def register(mcp: MCPServer, core: AppCore) -> None:
             ),
         ] = "",
     ) -> Envelope:
-        core.session.require_loaded()
+        session = core.session
 
         try:
             cls = classify(
@@ -95,7 +96,7 @@ def register(mcp: MCPServer, core: AppCore) -> None:
             raise ToolError("EXEC_ERROR", f"syntax error: {exc}", "Fix and resubmit.") from exc
 
         namespace = build_namespace(
-            core.session.ifc,
+            session.ifc,
             allow_mutation=allow_mutation,
             allow_system=allow_system,
             allowed_dirs=list(core.allowed_dirs),
@@ -103,17 +104,17 @@ def register(mcp: MCPServer, core: AppCore) -> None:
         )
 
         def job() -> tuple[executor.ExecResult, int | None, int | None]:
-            pre = core.session.max_id()
+            pre = session.max_id()
             with entity_mutation_lock(enabled=not allow_mutation):
                 result = executor.run(
                     compiled, namespace, output_limit=settings.exec.output_char_limit
                 )
-            post = core.session.max_id()
+            post = session.max_id()
             return result, pre, post
 
         start = time.perf_counter()
         try:
-            result, pre, post = await core.session.run(
+            result, pre, post = await session.run(
                 job, timeout=settings.exec.timeout_seconds, timeout_code="EXEC_TIMEOUT"
             )
         except ToolError:
@@ -133,7 +134,7 @@ def register(mcp: MCPServer, core: AppCore) -> None:
             if allow_mutation:
                 # The crashed code may have mutated before raising; a false
                 # dirty costs a save prompt, a false clean loses edits.
-                core.session.mark_dirty()
+                session.mark_dirty()
                 core.events.emit("model_mutated", tool="execute_ifc_code")
             core.audit.record(
                 "exec", ok=False, op_class=cls.op_class.value, error=repr(exc), code=code
@@ -148,13 +149,13 @@ def register(mcp: MCPServer, core: AppCore) -> None:
 
         mutated = False
         if allow_mutation:
-            core.session.mark_dirty()
+            session.mark_dirty()
             mutated = True
             # Lets live consumers (the web viewer) refresh their copy.
             core.events.emit("model_mutated", tool="execute_ifc_code")
         elif pre is not None and post is not None and post > pre:
             # a guarded run grew the model: classifier false negative
-            core.session.tainted = True
+            session.tainted = True
             core.audit.record("taint", pre_max_id=pre, post_max_id=post, code=code)
             core.events.emit("session_tainted", pre=pre, post=post)
 

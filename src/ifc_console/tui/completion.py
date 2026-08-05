@@ -187,9 +187,9 @@ def _connect_args(_core: AppCore, rest: str, _files: FilesProvider | None) -> Me
         [
             ("claude-code", "user-scoped HTTP command · default"),
             ("claude-desktop", "HTTP bridge config"),
-            ("cursor", "global HTTP config"),
-            ("vscode", "user-profile HTTP config"),
-            ("codex", "shared HTTP config.toml"),
+            ("cursor", "global bridge config"),
+            ("vscode", "user-profile bridge config"),
+            ("codex", "shared bridge config.toml"),
             ("all", "show every client at once"),
         ],
         context="connect",
@@ -280,8 +280,32 @@ def _settings_args(core: AppCore, rest: str, _files: FilesProvider | None) -> Me
 
 Provider = Callable[["AppCore", str, "FilesProvider | None"], MenuState]
 
+def _loaded_args(core: AppCore, rest: str, _files: FilesProvider | None) -> MenuState:
+    """Ids of what is already loaded: models first, then attached files."""
+    rows: list[tuple[str, str]] = []
+    for row in core.models.model_rows():
+        note = "active" if row["active"] else "attached, read-only"
+        rows.append((row["model_id"], f"{row['name']} ({note})"))
+    for attachment in core.models.attachments.values():
+        rows.append((attachment.alias, f"{attachment.path.name} ({attachment.kind})"))
+    return _choices("detach", rest, rows, context="loaded")
+
+
+def _use_args(core: AppCore, rest: str, files: FilesProvider | None) -> MenuState:
+    state = _loaded_args(core, rest, files)
+    # only models can become active; attachments are not models
+    ids = {row["model_id"] for row in core.models.model_rows()}
+    return MenuState(
+        prefix="/use ",
+        candidates=tuple(c for c in state.candidates if c.insert in ids),
+        context="loaded",
+    )
+
+
 _ARG_PROVIDERS: dict[str, Provider] = {
     "mode": _mode_args,
+    "detach": _loaded_args,
+    "use": _use_args,
     "theme": _theme_args,
     "viewer": _viewer_args,
     "copy": _copy_args,

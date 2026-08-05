@@ -48,6 +48,17 @@ def test_flags_override_env(tmp_path: Path) -> None:
     assert store.provenance["server.port"] == "flag"
 
 
+def test_include_project_false_ignores_project_layers(tmp_path: Path) -> None:
+    # The bridge runs with cwd inside arbitrary repos: a cloned project must
+    # not be able to redirect the machine token to another port.
+    _write(tmp_path / ".ifc-console" / "settings.json", {"server": {"port": 31337}})
+    store = SettingsStore(
+        home=tmp_path / "h", project_dir=tmp_path, env={}, include_project=False
+    )
+    assert store.settings.server.port == 8383
+    assert store.provenance["server.port"] == "default"
+
+
 def test_project_file_may_set_safe_key(tmp_path: Path) -> None:
     _write(tmp_path / ".ifc-console" / "settings.json", {"tui": {"theme": "light"}})
     store = SettingsStore(home=tmp_path / "h", project_dir=tmp_path, env={})

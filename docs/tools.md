@@ -8,9 +8,9 @@ Every tool returns one JSON envelope:
 ```
 
 The envelope arrives twice: as machine-readable `structuredContent` (every
-tool advertises the envelope as its `outputSchema`) and as the same JSON in
-the text block for clients that only read text. Cached heavy reads carry
-`meta.cached: true`.
+tool except `get_viewer_screenshot`, which returns image content, advertises
+the envelope as its `outputSchema`) and as the same JSON in the text block for
+clients that only read text. Cached heavy reads carry `meta.cached: true`.
 
 Failures are never protocol errors. They come back as data the LLM can act on:
 
@@ -129,6 +129,44 @@ Quantity takeoff from stored quantity sets (`Qto_*`): per-group sums and
 grand totals with the model's units. Elements without stored quantities are
 counted and reported; a geometry fallback is planned as an opt-in step.
 
+### detect_clashes
+
+| arg | type | default |
+| --- | ---- | ------- |
+| `set_a` | selector string | required |
+| `set_b` | selector string | set_a against itself |
+| `mode` | overlap, clearance | overlap |
+| `tolerance` | metres, 0 to 10 | 0.01 |
+| `precision` | exact, fast | exact |
+| `physical_only` | bool | true |
+| `max_elements` | int 1-5000 | 1000 |
+| `max_results` | int 1-1000 | 200 |
+| `model` | model id for `set_a` | active model |
+| `other_model` | model id for `set_b` | same as `model` |
+
+Geometric clash detection between two element sets, optionally across two open
+models for federated coordination. `overlap` reports solids that share space,
+each with the shared volume in cubic metres, the deepest penetration, and the
+centre of the overlap. `clearance` reports pairs that do not touch but sit
+closer than `tolerance`.
+
+Openings, spaces, annotations, grids and virtual elements are skipped by
+default: they share space with real elements by design. Set
+`physical_only=false` to include them.
+
+`precision="exact"` tests the actual solids and is the default.
+`precision="fast"` stops at bounding boxes, which is quicker on very large sets
+but reports every box overlap, including pairs that do not really touch.
+
+The response carries a `global_ids` list, so the usual next call is
+`highlight_elements` with it to see the clashes in the viewer.
+
+!!! note "Why this is computed here"
+    IfcOpenShell's own `tree.clash_*` functions need an OpenCASCADE build, and
+    the wheels ifc-console installs do not ship one (`ifcopenshell.geom.has_occ`
+    is false). Overlap is therefore computed from world-space triangle meshes,
+    which needs no extra dependency.
+
 ### get_georeferencing
 
 No arguments. Coordinate reference system, map conversion parameters, true
@@ -186,13 +224,82 @@ timestamped backup of anything replaced, clears the dirty flag. Refused in ask
 mode (`ASK_MODE_BLOCKED`). Output: `path`, `size_bytes`, `backup_path`,
 `fingerprint`.
 
+## Workspace (more than one file)
+
+One active model is the default. These tools cover the optional second mode:
+finding files in the user's folders, and holding extra models and companion
+files alongside the active one. **Only the active model is writable**; a write
+aimed at anything else fails with `MODEL_READ_ONLY`.
+
+Every read tool above (`get_ifc_project_info`, `get_spatial_structure`,
+`query_elements`, `get_element`, `get_psets`, `validate_model`, `validate_ids`,
+`compute_quantities`, `detect_clashes`, `get_georeferencing`) takes an optional
+`model` argument naming a `model_id`. Omit it and you read the active model, as
+always. When a read targets another model the envelope carries
+`meta.read_from`; `meta.model` keeps naming the active one.
+
+`detect_clashes` goes further and takes a second `other_model`, so one call can
+clash the architectural model against the structural one. Each set is read on
+the worker that owns its model, so a cross-model check never reaches into
+another model's thread.
+
+### find_files
+
+| arg | type | default |
+| --- | ---- | ------- |
+| `query` | str or null | null (list everything) |
+| `kinds` | list of ifc, ids, bcf, csv, ifcjson | all |
+| `limit` | int 1-200 | 30 |
+| `refresh` | bool | false |
+
+Ranked candidates from the allowed folders with path, kind, size, IFC schema or
+IDS spec count, and a guessed discipline (ARC, STR, MEP) parsed from ISO 19650
+style names. Searching by discipline word works: `architecture` finds a file
+whose only clue is the role letter `A`.
+
+This tool **opens nothing**. When two candidates score about equally it sets
+`meta.ambiguous: true`; ask the user which file they meant rather than guessing
+between revisions.
+
+### list_models
+
+No arguments. Every resident model (`model_id`, name, schema, active, writable,
+dirty) plus every attached companion file, and the memory budget.
+
+### attach
+
+| arg | type | default |
+| --- | ---- | ------- |
+| `path` | str | required |
+| `alias` | str or null | derived from the file name |
+
+Adds a file alongside the active model without replacing it. An IFC becomes an
+extra read-only model; an IDS, BCF, or CSV becomes a companion file whose path
+the tools that read it can use. Allowed in ask mode: attaching is reading.
+
+`model_id` values are meant to be retyped, so a readable stem is kept
+(`tower-structure`) and an opaque code falls back to its discipline
+(`ABC-XYZ-ZZ-XX-M3-S-0001.ifc` becomes `str`).
+
+### detach
+
+`id`: a `model_id` or an attachment alias. Refuses a model with unsaved changes.
+
+### set_active_model
+
+`model_id`. Moves the write focus. The model that was active stays resident,
+read-only, and keeps any unsaved changes.
+
+`validate_ids` accepts an attachment alias wherever it takes `ids_path`, so an
+attached IDS needs no path repeated.
+
 ## Viewer (optional category)
 
-The viewer is not part of the core surface. These three tools are **registered
+The viewer is not part of the core surface. These four tools are **registered
 only while the viewer is enabled** (`--viewer` at launch or `/viewer` in the
 console). Enable it mid-session and they join the tool list live; `/viewer off`
 removes them (clients pick up the change on their next tool refresh). Sessions
-without the viewer, including all stdio sessions, expose exactly the 11 core
+without the viewer, including all stdio sessions, expose exactly the 24 core
 tools above.
 
 When registered, all four still need a connected browser tab, or they return
@@ -256,6 +363,14 @@ Errors: `VIEWER_TIMEOUT` (10 s), `VIEWER_ERROR`, `RESULT_TOO_LARGE`.
 | `EXEC_BLOCKED` / `EXEC_ERROR` / `EXEC_TIMEOUT` | code run gated, failed, or timed out |
 | `MODEL_BUSY` | session paused after a timeout; user reloads |
 | `MODEL_TOO_LARGE` | over the `files.max_open_mb` (or viewer) size budget |
+| `MODEL_NOT_FOUND` | no resident model with that `model_id`; call `list_models` |
+| `MODEL_READ_ONLY` | write aimed at an attached model; only the active one is writable |
+| `NOT_FOUND` | a named thing (element root, schema entity, attachment) does not exist |
+| `NO_MATCH` / `NO_GEOMETRY` | a clash selector matched nothing, or nothing with solid geometry |
+| `TOO_MANY_ELEMENTS` | a clash selector matched more than `max_elements`; narrow it |
+| `WORKSPACE_BUDGET` | over `workspace.max_resident` or `workspace.max_total_mb` |
+| `WORKSPACE_DISABLED` | workspace indexing is disabled in settings |
+| `CONSOLE_NOT_RUNNING` / `CONSOLE_AUTH_FAILED` | the stdio bridge cannot reach or authenticate to the console |
 | `EXTRA_NOT_INSTALLED` | an optional package is needed; the hint names the install |
 | `VIEWER_NOT_CONNECTED` / `VIEWER_TIMEOUT` / `VIEWER_ERROR` | viewer tools without a healthy tab |
 | `RESULT_TOO_LARGE` | narrow the request |

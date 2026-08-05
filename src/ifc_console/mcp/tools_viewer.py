@@ -1,10 +1,10 @@
-﻿"""Viewer tools: selection, highlight, screenshot.
+"""Viewer tools: selection, highlight, screenshot.
 
 This is the optional tool category: it is registered only while the viewer
 is enabled (AppCore._sync_viewer_tools adds and removes it as /viewer
-toggles), so sessions without the viewer expose the lean 11-tool core.
+toggles), so sessions without the viewer expose the lean 24-tool core.
 
-All three need at least one connected browser tab; without one they return
+All four need at least one connected browser tab; without one they return
 VIEWER_NOT_CONNECTED with a hint that tells the LLM how the user can start
 the viewer. They are visual-only: none of them can mutate the model, so they
 are allowed in every session mode.
@@ -62,16 +62,22 @@ def register(mcp: MCPServer, core: AppCore) -> None:
         ),
     )
     @enveloped(core, "get_viewer_selection")
+    @core.model_lifecycle_operation
     async def get_viewer_selection() -> Envelope:
         hub = core.viewer_hub
         hub.require_connected()
         guids = list(hub.selection)
+        session = core.session
+        if hub.selection_model_id:
+            selected_session = core.models.get(hub.selection_model_id)
+            if selected_session is not None:
+                session = selected_session
 
         def job() -> tuple[list[dict], list[str]]:
             rows, missing = [], []
             for gid in guids:
                 try:
-                    entity = core.session.ifc.by_guid(gid)
+                    entity = session.ifc.by_guid(gid)
                 except Exception:
                     entity = None
                 if entity is None:
@@ -82,10 +88,11 @@ def register(mcp: MCPServer, core: AppCore) -> None:
 
         rows: list[dict] = []
         missing: list[str] = []
-        if guids and core.session.loaded:
-            rows, missing = await core.session.run(job, timeout=60)
+        if guids and session.loaded:
+            rows, missing = await session.run(job, timeout=60)
         data = {
             "connected": hub.connected,
+            "model_id": session.model_id,
             "guids": guids,
             "elements": rows,
             "missing": missing,
@@ -93,7 +100,8 @@ def register(mcp: MCPServer, core: AppCore) -> None:
         }
         if not guids:
             data["note"] = "nothing is selected; ask the user to click elements in the viewer"
-        return ok(data, core.session_meta(), char_limit=limit_)
+        extra_meta = {} if session is core.session else {"read_from": session.model_id}
+        return ok(data, core.session_meta(), char_limit=limit_, **extra_meta)
 
     @mcp.tool(
         annotations=VIEW_ANN,
@@ -105,6 +113,7 @@ def register(mcp: MCPServer, core: AppCore) -> None:
         ),
     )
     @enveloped(core, "highlight_elements")
+    @core.model_lifecycle_operation
     async def highlight_elements(
         global_ids: Annotated[list[str] | None, Field(max_length=500)] = None,
         color: Annotated[str, Field(pattern="^#[0-9a-fA-F]{6}$")] = "#ff3b30",
@@ -122,19 +131,20 @@ def register(mcp: MCPServer, core: AppCore) -> None:
                 char_limit=limit_,
             )
         guids = list(dict.fromkeys(global_ids or []))  # dedupe, keep order
-        core.session.require_loaded()
+        session = core.session
+        session.require_loaded()
 
         def job() -> tuple[list[str], list[str]]:
             found, missing = [], []
             for gid in guids:
                 try:
-                    entity = core.session.ifc.by_guid(gid)
+                    entity = session.ifc.by_guid(gid)
                 except Exception:
                     entity = None
                 (missing if entity is None else found).append(gid)
             return found, missing
 
-        found, missing = await core.session.run(job, timeout=60)
+        found, missing = await session.run(job, timeout=60)
         await hub.send_highlight(found, color=color, isolate=isolate, fit=fit, clear=False)
         data: dict[str, Any] = {"highlighted": len(found), "missing": missing}
         if not found:
@@ -152,6 +162,7 @@ def register(mcp: MCPServer, core: AppCore) -> None:
         ),
     )
     @enveloped(core, "apply_color_theme")
+    @core.model_lifecycle_operation
     async def apply_color_theme(
         groups: Annotated[
             list[ColorGroup] | None,
@@ -171,7 +182,8 @@ def register(mcp: MCPServer, core: AppCore) -> None:
                 "groups is required unless clear=true.",
                 "Pass groups=[{label, global_ids, color?}] or clear=true.",
             )
-        core.session.require_loaded()
+        session = core.session
+        session.require_loaded()
         wanted = [list(dict.fromkeys(g.global_ids)) for g in groups]
 
         def job() -> tuple[list[list[str]], list[str]]:
@@ -180,14 +192,14 @@ def register(mcp: MCPServer, core: AppCore) -> None:
                 found = []
                 for gid in gids:
                     try:
-                        entity = core.session.ifc.by_guid(gid)
+                        entity = session.ifc.by_guid(gid)
                     except Exception:
                         entity = None
                     (found if entity is not None else missing).append(gid)
                 resolved.append(found)
             return resolved, missing
 
-        resolved, missing = await core.session.run(job, timeout=60)
+        resolved, missing = await session.run(job, timeout=60)
         frame_groups, legend = [], []
         for index, group in enumerate(groups):
             color = group.color or categorical_color(index)

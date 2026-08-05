@@ -11,6 +11,9 @@ import contextlib
 import json
 import os
 import secrets
+import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -54,6 +57,18 @@ class FilesSettings(BaseModel):
     max_open_mb: int = Field(default=4096, ge=0)
 
 
+class WorkspaceSettings(BaseModel):
+    """The optional multi-file mode. One active model stays the default."""
+
+    enabled: bool = True  # indexing only; nothing is loaded until asked
+    # Models held in memory at once, active included. 1 restores strict
+    # single-model behaviour.
+    max_resident: int = Field(default=3, ge=1, le=16)
+    max_total_mb: int = Field(default=6144, ge=0)
+    scan_depth: int = Field(default=3, ge=1, le=10)
+    scan_cap: int = Field(default=10_000, ge=100)
+
+
 class ViewerSettings(BaseModel):
     enabled_default: bool = False
     max_model_mb: int = Field(default=200, ge=1)
@@ -82,6 +97,7 @@ class Settings(BaseModel):
     server: ServerSettings = Field(default_factory=ServerSettings)
     exec: ExecSettings = Field(default_factory=ExecSettings)
     files: FilesSettings = Field(default_factory=FilesSettings)
+    workspace: WorkspaceSettings = Field(default_factory=WorkspaceSettings)
     viewer: ViewerSettings = Field(default_factory=ViewerSettings)
     recents: RecentsSettings = Field(default_factory=RecentsSettings)
     sessions: SessionsSettings = Field(default_factory=SessionsSettings)
@@ -154,6 +170,47 @@ def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
     os.replace(tmp, path)
 
 
+def _valid_token(path: Path) -> str | None:
+    try:
+        token = path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    if len(token) >= 16 and all(c in "0123456789abcdef" for c in token):
+        return token
+    return None
+
+
+@contextmanager
+def _token_lock(path: Path) -> Iterator[None]:
+    lock_path = path.with_name(path.name + ".lock")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    deadline = time.monotonic() + 5
+    fd: int | None = None
+    while fd is None:
+        try:
+            fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        # Windows reports a concurrent unlink as EACCES (delete pending),
+        # not EEXIST; both mean the lock is (or just was) held, so retry.
+        except (FileExistsError, PermissionError):
+            with contextlib.suppress(OSError):
+                if time.time() - lock_path.stat().st_mtime > 30:
+                    # rename first so two waiters cannot both judge the lock
+                    # stale and the loser unlink the winner's fresh lock
+                    stale = lock_path.with_name(lock_path.name + ".stale")
+                    os.replace(lock_path, stale)
+                    stale.unlink()
+                    continue
+            if time.monotonic() >= deadline:
+                raise TimeoutError(f"timed out waiting for {lock_path}") from None
+            time.sleep(0.01)
+    try:
+        yield
+    finally:
+        os.close(fd)
+        with contextlib.suppress(OSError):
+            lock_path.unlink()
+
+
 class SettingsStore:
     """Merged settings with per-key provenance."""
 
@@ -163,11 +220,13 @@ class SettingsStore:
         project_dir: Path | None = None,
         env: dict[str, str] | None = None,
         flag_overrides: dict[str, Any] | None = None,
+        include_project: bool = True,
     ) -> None:
         self.home = home or user_dir()
         self.project_dir = project_dir or Path.cwd()
         self._env = dict(os.environ) if env is None else env
         self._flags = dict(flag_overrides or {})
+        self.include_project = include_project
         self.settings = Settings()
         self.provenance: dict[str, str] = {}
         self.warnings: list[str] = []
@@ -205,18 +264,31 @@ class SettingsStore:
         Keeping it stable across runs means MCP clients are configured once.
         Rotate with `ifc-console token rotate` if it ever leaks.
         """
-        try:
-            token = self.token_file.read_text(encoding="utf-8").strip()
-            if len(token) >= 16 and all(c in "0123456789abcdef" for c in token):
+        with _token_lock(self.token_file):
+            token = _valid_token(self.token_file)
+            if token is not None:
                 return token
-        except OSError:
-            pass
-        return self.rotate_server_token()
+            return self._write_server_token()
 
     def rotate_server_token(self) -> str:
+        with _token_lock(self.token_file):
+            return self._write_server_token()
+
+    def _write_server_token(self) -> str:
         token = secrets.token_hex(16)
         self.home.mkdir(parents=True, exist_ok=True)
-        self.token_file.write_text(token + "\n", encoding="utf-8")
+        tmp = self.token_file.with_name(
+            f".{self.token_file.name}.{secrets.token_hex(6)}.tmp"
+        )
+        try:
+            # owner-only from the first byte, not only after the chmod below
+            tmp_fd = os.open(tmp, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+            with os.fdopen(tmp_fd, "w", encoding="utf-8") as fh:
+                fh.write(token + "\n")
+            os.replace(tmp, self.token_file)
+        finally:
+            with contextlib.suppress(OSError):
+                tmp.unlink()
         # Owner-only on POSIX; Windows user-profile ACLs already scope it.
         with contextlib.suppress(OSError):
             os.chmod(self.token_file, 0o600)
@@ -268,14 +340,15 @@ class SettingsStore:
                 provenance[key] = label
 
         apply(_flatten(self._read_layer(self.user_file, "user")), "user", safe_only=False)
-        proj = self.project_dir / ".ifc-console" / "settings.json"
-        proj_local = self.project_dir / ".ifc-console" / "settings.local.json"
-        apply(_flatten(self._read_layer(proj, "project")), "project", safe_only=True)
-        apply(
-            _flatten(self._read_layer(proj_local, "project-local")),
-            "project-local",
-            safe_only=True,
-        )
+        if self.include_project:
+            proj = self.project_dir / ".ifc-console" / "settings.json"
+            proj_local = self.project_dir / ".ifc-console" / "settings.local.json"
+            apply(_flatten(self._read_layer(proj, "project")), "project", safe_only=True)
+            apply(
+                _flatten(self._read_layer(proj_local, "project-local")),
+                "project-local",
+                safe_only=True,
+            )
 
         env_flat = {}
         for key in known:

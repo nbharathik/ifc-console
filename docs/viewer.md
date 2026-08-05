@@ -60,6 +60,16 @@ also restyles the viewer live, 3D canvas included.
 - **View tools** (the stack icon, top left of the canvas): isolate or hide the
   selection, show all, zoom to the selection or the whole model, and jump to
   view presets (top, front, iso, ...).
+- **Section planes.** Cut the model on X, Y, or Z. Tick an axis and a slider
+  appears; drag it to move the cut, or use the flip button to keep the other
+  side. Axes combine, so X plus Z gives a corner cut and Z alone gives the
+  storey slice you usually want. "Clear sections" turns every cut off, and the
+  cuts persist per browser.
+- **Measure.** Press ++m++ or pick "Measure distance", then click two points on
+  the model. Each measurement shows the straight-line distance plus the X, Y and
+  Z components in the model's own axes, and stays on screen until you clear it.
+  Sectioned-away surfaces cannot be measured, so a cut behaves like the real
+  edge. ++esc++ leaves the tool.
 - **Properties** (right): attributes, type, container chain, and property sets of
   the last clicked element, straight from the server (same source as
   `get_element`). Each section folds.
@@ -69,11 +79,19 @@ also restyles the viewer live, 3D canvas included.
 - **Viewer settings** (the gear, top right): toggle the ground grid (++g++) and
   the origin axes. The grid is infinite, fades with distance, and sits at the
   model's lowest level.
+- **Switch model.** When the console holds more than one model (`/workspace`,
+  `/attach`), a picker appears next to the model name listing every resident
+  model, the active one first and marked. Choosing another shows it instead;
+  the viewer follows the active model again as soon as you pick it back. One
+  model is drawn at a time: this is a switcher, not an overlay.
 
 ## What the LLM can do
 
+- `get_viewer_selection`: read the elements you have click-selected, including
+  which resident model owns them.
 - `highlight_elements`: color any set of elements, optionally isolating them and
   fitting the camera. Its way of pointing at things for you.
+- `apply_color_theme`: paint labeled element groups and show a matching legend.
 - `get_viewer_screenshot`: set a view preset (top, front, iso, ...), fit, and
   capture the canvas. The image returns inline in the conversation, so the model
   can verify visual claims it just made.
@@ -93,8 +111,12 @@ most recently active tab.
 
 - `viewer.max_model_mb` (default 200) guards the model download. Beyond it the
   viewer shows "model too large" (raise the setting if you mean it).
-- Geometry is built per product; very large models will be draw-call-bound.
-  Section boxes, measurements, and clipping planes are out of scope for v1.
+- Parsing and geometry generation run in a worker. Repeated geometry is
+  deduplicated and instanced, while hide and highlight state stays on the GPU.
+  Section planes and measurement are built in; section boxes (a full 3D crop)
+  are out of scope for v1.
+- One model is rendered at a time. Attached models are shown by switching to
+  them, not overlaid; federated overlay is a later change.
 - The viewer is deliberately unprivileged: it can read the model and report
   selection. There is no edit surface and no way to change the session mode from
   the browser.

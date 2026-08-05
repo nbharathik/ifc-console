@@ -55,7 +55,7 @@ Useful first commands:
 | ------- | ------ |
 | `/file` | pick and load an IFC model |
 | `/status` | model, mode, server, viewer summary |
-| `/connect <client>` | show and copy one client's complete one-time HTTP setup |
+| `/connect <client>` | show and copy one client's complete bridge setup |
 | `/mode edit` | let the AI change the model (`ask`, the default, is query-only) |
 | `/viewer` | open the 3D viewer in your browser |
 | `/help` | everything else |
@@ -67,7 +67,7 @@ configs keep working across restarts and model changes. Type `/connect codex`,
 `/connect cursor`, or another client name in a running console. The complete
 setup is copied automatically, ready to paste into the location the TUI shows.
 Use `/connect all` for an overview and `/copy <client>` to copy one again. No
-HTTP config contains an IFC path; `/file` selects the model for every client.
+client config contains an IFC path; `/file` selects the model for every client.
 
 You can also generate one client setup any time:
 
@@ -78,9 +78,12 @@ ifc-console mcp-config --client claude-code
 Then run the printed command:
 
 ```bash
-claude mcp add --transport http --scope user ifc-console http://127.0.0.1:8383/mcp \
-  --header "Authorization: Bearer <your machine token>"
+claude mcp add --scope user ifc-console -- /path/to/ifc-console bridge
 ```
+
+That entry starts a small stdio bridge, so it does not matter whether your AI
+client or ifc-console starts first: the client connects either way and picks up
+the console as soon as it is running.
 
 From now on your daily flow is: `ifc-console`, `/file`, chat. Then ask your LLM
 something:

@@ -3,6 +3,7 @@
 ```
 ifc-console [flags]                     interactive console (default)
 ifc-console serve --stdio|--http        run without the console
+ifc-console bridge                      stdio proxy to a running console
 ifc-console check MODEL [...]           validate a model for CI (schema + IDS)
 ifc-console doctor [--file X] [--json]  diagnose the environment
 ifc-console mcp-config [...]            print client wiring snippets
@@ -25,7 +26,7 @@ Accepted by the bare command and by `serve`:
 | `--viewer` | enable the 3D web viewer at startup (`/viewer` works any time) |
 | `--allow-dir PATH` | extra directory the LLM may open/save models in (repeatable) |
 | `--log-level debug\|info\|warning\|error` | log verbosity |
-| `--no-tui` | headless HTTP daemon instead of the console |
+| `--no-tui` | headless HTTP daemon instead of the console (bare command only) |
 
 ## serve
 
@@ -65,12 +66,33 @@ machines. Exit code 0 only if everything essential is ok.
 
 ```bash
 ifc-console mcp-config --client claude-code|claude-desktop|cursor|vscode|codex \
-                    [--transport http|stdio] [--file X] [--mode M] [--port N]
+                    [--transport bridge|http|stdio] [--file X] [--mode M] [--port N]
 ```
 
-Prints a paste-ready snippet for the chosen client, including the machine's
-persistent token. It works without a running server and stays valid across
-restarts. (`/connect` in the console prints the same thing.)
+Prints a paste-ready snippet for the chosen client. With persistent tokens, it
+works without a running server and stays valid across restarts. (`/connect` in
+the console prints the same thing.)
+
+With the default persistent-token setting, `bridge` is the default transport.
+It launches `ifc-console bridge`, so the client can start before the console,
+and reads the machine token itself. `http` points the client straight at the
+endpoint and embeds the machine token. `stdio` is a separate, client-owned
+server. When `server.persistent_token` is false, `mcp-config` defaults to
+`stdio` and refuses `--transport bridge`; only `/connect` inside the running
+console can hand out a bridge snippet then, embedding the current run's token.
+
+## bridge
+
+```bash
+ifc-console bridge [--port N] [--token T]
+```
+
+A stdio MCP proxy to the console on this machine, meant to be launched by an MCP
+client rather than by hand. It always starts, so the client always connects, and
+it forwards to the console as soon as one is running; while there is none, tool
+calls come back as `CONSOLE_NOT_RUNNING` with a hint. The token defaults to this
+machine's stored one when persistence is enabled; otherwise pass `--token` from
+the running console.
 
 ## token
 
