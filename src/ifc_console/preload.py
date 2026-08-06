@@ -11,9 +11,14 @@ import threading
 
 _lock = threading.Lock()
 _thread: threading.Thread | None = None
+# Held shut until the main thread is done with its own first-time imports.
+# pydantic (and other lazy-__getattr__ packages) are not safe to enter from
+# two threads at once: the loser sees a half-built module and raises.
+_gate = threading.Event()
 
 
 def _import_backend() -> None:
+    _gate.wait()
     try:
         import starlette.requests  # noqa: F401
         import starlette.responses  # noqa: F401
@@ -48,6 +53,13 @@ def start() -> threading.Thread:
         return _thread
 
 
+def release() -> None:
+    """Let the warm-up proceed. Call once the caller's own imports are done."""
+    _gate.set()
+
+
 def wait() -> None:
     """Block until the warm-up finishes (starts it if needed)."""
-    start().join()
+    thread = start()
+    release()
+    thread.join()

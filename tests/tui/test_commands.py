@@ -223,6 +223,44 @@ async def test_status_reports_model_and_mode(console: FakeConsole, work_model: P
     assert "ask" in console.text
 
 
+async def test_status_names_where_the_next_code_run_goes(
+    console: FakeConsole, work_model: Path
+) -> None:
+    await commands.dispatch(console, f"/open {work_model}")
+    console.clear_log()
+    await commands.dispatch(console, "/status")
+    assert "sandbox" in console.text
+
+
+async def test_sandbox_reports_state_without_a_model(console: FakeConsole) -> None:
+    await commands.dispatch(console, "/sandbox")
+    assert "auto" in console.text
+    assert "no model is loaded" in console.text
+
+
+async def test_sandbox_explains_the_next_run(console: FakeConsole, work_model: Path) -> None:
+    await commands.dispatch(console, f"/open {work_model}")
+    console.clear_log()
+    await commands.dispatch(console, "/sandbox")
+    assert "sandboxed" in console.text
+    assert "not running" in console.text  # started lazily, on the first code run
+
+
+async def test_sandbox_mode_change_persists(console: FakeConsole) -> None:
+    await commands.dispatch(console, "/sandbox off")
+    assert console.core.settings.sandbox.mode == "off"
+    assert console.core.store.provenance["sandbox.mode"] == "user"
+    console.clear_log()
+    await commands.dispatch(console, "/sandbox auto")
+    assert console.core.settings.sandbox.mode == "auto"
+
+
+async def test_sandbox_rejects_an_unknown_option(console: FakeConsole) -> None:
+    await commands.dispatch(console, "/sandbox banana")
+    assert "unknown option" in console.text
+    assert console.core.settings.sandbox.mode == "auto"
+
+
 async def test_model_counts(console: FakeConsole, work_model: Path) -> None:
     await commands.dispatch(console, f"/open {work_model}")
     console.clear_log()

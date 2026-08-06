@@ -81,8 +81,21 @@ One switch, owned by you; the LLM cannot change it. Anything finer-grained
 Switch with `/mode`. Every mutation path is gated, saves are atomic with
 timestamped backups, and each session writes an audit log.
 
-Honest caveat: the guards stop accidents, not a determined adversary. Treat
-`edit` mode plus untrusted prompts like running a stranger's script.
+## The code sandbox
+
+The mode switch decides whether generated code may change your model. The
+sandbox decides what it can do to everything else.
+
+Read-only runs, which is everything in `ask` mode, execute in a separate process
+with **no network, no subprocesses, no credentials in its environment**, a
+memory cap, and read access limited to your model directories. Enforcement sits
+on CPython audit hooks, so even code that escapes the namespace guards and
+reaches the real builtins still cannot open a socket or start a process. Check
+it any time with `/sandbox`.
+
+Honest caveat: mutating code still runs in-process behind the guards, because
+the edit has to land in the live model. Treat `edit` mode plus untrusted prompts
+like running a stranger's script.
 
 ## What the LLM gets
 
@@ -121,7 +134,7 @@ the code itself, see
 
 - [Getting started](https://nbharathik.github.io/ifc-console/getting-started/)
 - [The console](https://nbharathik.github.io/ifc-console/console/) and [connecting clients](https://nbharathik.github.io/ifc-console/clients/)
-- [Safety model](https://nbharathik.github.io/ifc-console/safety/) and [3D viewer](https://nbharathik.github.io/ifc-console/viewer/)
+- [Safety model](https://nbharathik.github.io/ifc-console/safety/), [code sandbox](https://nbharathik.github.io/ifc-console/sandbox/), and [3D viewer](https://nbharathik.github.io/ifc-console/viewer/)
 - [Development](https://nbharathik.github.io/ifc-console/development/)
 
 ## License

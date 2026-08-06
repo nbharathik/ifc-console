@@ -8,12 +8,14 @@ gives /help, completion, and the docs one source of truth.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from pydantic import ValidationError
 from rich.markup import escape
 
 from ifc_console.mcp.envelope import ToolError
@@ -47,6 +49,18 @@ class Command:
 
 REGISTRY: dict[str, Command] = {}
 ALIASES = {"exit": "quit"}
+
+
+def resolve_prefix(prefix: str) -> set[str]:
+    """Real command names a typed prefix could mean, aliases included.
+
+    Aliases resolve to the command they name, so /ex finds /quit instead of
+    reporting an unknown command.
+    """
+    names = {name: name for name in REGISTRY}
+    names.update(ALIASES)
+    return {names[n] for n in names if n.startswith(prefix)}
+
 
 # Display order for /help.
 _GROUPS = ("model", "session", "server & clients", "console")
@@ -116,7 +130,7 @@ async def dispatch(console: ConsoleScreen, line: str) -> None:
     name = ALIASES.get(name.lower(), name.lower())
     cmd = REGISTRY.get(name)
     if cmd is None:
-        matches = [c for c in REGISTRY if c.startswith(name)]
+        matches = sorted(resolve_prefix(name))
         if len(matches) == 1:
             cmd = REGISTRY[matches[0]]
         else:
@@ -130,6 +144,22 @@ async def dispatch(console: ConsoleScreen, line: str) -> None:
 
 
 # --------------------------------------------------------------------- helpers
+
+# ToolError hints are written for the LLM and name MCP tools a person in the
+# terminal cannot call. These are the same instructions as slash commands.
+_TUI_HINTS = {
+    "MODEL_NOT_FOUND": "/models lists what is loaded",
+    "MODEL_READ_ONLY": "/use <id> makes a model writable first",
+    "UNSAVED_CHANGES": "/save first, or /reload to discard the changes",
+    "INVALID_INPUT": "supported companions: .ids, .bcf/.bcfzip, .csv",
+    "WORKSPACE_DISABLED": "/settings workspace.enabled true turns indexing on",
+}
+
+
+def _console_hint(exc: ToolError) -> str:
+    return _TUI_HINTS.get(exc.code, exc.hint)
+
+
 async def _open_path(console: ConsoleScreen, path: Path) -> bool:
     core = console.core
     path = path.expanduser().resolve()
@@ -146,7 +176,7 @@ async def _open_path(console: ConsoleScreen, path: Path) -> bool:
     except ToolError as exc:
         console.print(
             f"[red]could not load {escape(path.name)}: {escape(exc.message)}[/red] "
-            f"[dim]{escape(exc.hint)}[/dim]"
+            f"[dim]{escape(_console_hint(exc))}[/dim]"
         )
         return False
     except Exception as exc:
@@ -172,7 +202,7 @@ async def _attach_path(console: ConsoleScreen, path: Path) -> bool:
     except ToolError as exc:
         console.print(
             f"[red]could not attach {escape(path.name)}: {escape(exc.message)}[/red] "
-            f"[dim]{escape(exc.hint)}[/dim]"
+            f"[dim]{escape(_console_hint(exc))}[/dim]"
         )
         return False
     except Exception as exc:
@@ -333,7 +363,7 @@ async def _detach(console: ConsoleScreen, args: str) -> None:
         else:
             await core.detach_model(key)
     except ToolError as exc:
-        console.print(f"[red]{escape(exc.message)}[/red] [dim]{escape(exc.hint)}[/dim]")
+        console.print(f"[red]{escape(exc.message)}[/red] [dim]{escape(_console_hint(exc))}[/dim]")
     except Exception as exc:
         console.print(f"[red]{escape(str(exc))}[/red]")
 
@@ -351,7 +381,7 @@ async def _use(console: ConsoleScreen, args: str) -> None:
         if already_active:
             console.print(f"[dim]{escape(key)} is already the active model[/dim]")
     except ToolError as exc:
-        console.print(f"[red]{escape(exc.message)}[/red] [dim]{escape(exc.hint)}[/dim]")
+        console.print(f"[red]{escape(exc.message)}[/red] [dim]{escape(_console_hint(exc))}[/dim]")
     except Exception as exc:
         console.print(f"[red]{escape(str(exc))}[/red]")
 
@@ -382,7 +412,7 @@ async def _mode(console: ConsoleScreen, args: str) -> None:
         )
         return
     try:
-        new_mode = Mode(args)
+        new_mode = Mode(args.strip().lower())
     except ValueError:
         console.print(f"[red]unknown mode {escape(args)!r}[/red]; use ask or edit")
         return
@@ -423,6 +453,7 @@ async def _theme(console: ConsoleScreen, args: str) -> None:
 )
 async def _viewer(console: ConsoleScreen, args: str) -> None:
     core = console.core
+    args = args.strip().lower()
     if args == "off":
         if not core.viewer.enabled:
             console.print("viewer is already off")
@@ -467,6 +498,7 @@ async def _viewer(console: ConsoleScreen, args: str) -> None:
 )
 async def _connect(console: ConsoleScreen, args: str) -> None:
     core = console.core
+    args = args.strip().lower()
     wanted = (
         [args]
         if args and args != "all"
@@ -485,11 +517,6 @@ async def _connect(console: ConsoleScreen, args: str) -> None:
         console.print(
             f"[b]{client} (shared console via stdio bridge)[/b]\n"
             f"[dim]{escape(_CONNECT_TARGETS[client])}[/dim]\n{escape(snippet)}"
-        )
-    if not core.settings.server.persistent_token:
-        console.print(
-            "[yellow]server.persistent_token is off: these setups embed the "
-            "current run's token and stop working when this console exits[/yellow]"
         )
     if len(wanted) == 1:
         client = wanted[0]
@@ -537,7 +564,7 @@ async def _connect(console: ConsoleScreen, args: str) -> None:
 )
 async def _copy(console: ConsoleScreen, args: str) -> None:
     core = console.core
-    what = args or "cmd"
+    what = args.strip().lower() or "cmd"
     copied_client: str | None = None
     if what == "url":
         value, label = core.mcp_url, "MCP URL"
@@ -589,6 +616,71 @@ async def _status(console: ConsoleScreen, _args: str) -> None:
         lines.append(f"  viewer   {core.viewer.connected} tab(s)  {core.viewer.url}")
     else:
         lines.append("  viewer   off (/viewer to start)")
+    sandbox = core.sandbox.status()
+    where = "sandboxed" if sandbox["would_sandbox"] else "in-process"
+    lines.append(f"  sandbox  {sandbox['mode']}; next code run {where} (/sandbox)")
+    console.print("\n".join(lines))
+
+
+_SANDBOX_MODES = {
+    "auto": "sandbox read-only code; fall back to in-process guards when it cannot",
+    "strict": "refuse a read-only run that cannot be sandboxed",
+    "off": "never sandbox; in-process guards only",
+}
+
+
+@command(
+    "sandbox",
+    "/sandbox [auto|strict|off|restart]",
+    "where AI-generated code runs, and what it is allowed to do",
+    "session",
+)
+async def _sandbox(console: ConsoleScreen, args: str) -> None:
+    core = console.core
+    arg = args.strip().lower()
+
+    if arg == "restart":
+        await core.sandbox.aclose()
+        console.print("sandbox worker stopped; the next code run starts a fresh one")
+        return
+    if arg in _SANDBOX_MODES:
+        core.store.set_user("sandbox.mode", arg)
+        await core.sandbox.aclose()
+        console.print(
+            f"sandbox mode [b]{arg}[/b] - {_SANDBOX_MODES[arg]} [dim](saved)[/dim]"
+        )
+        return
+    if arg:
+        console.print(
+            f"[red]unknown option {escape(arg)}[/red]; use /sandbox "
+            "[auto|strict|off|restart]"
+        )
+        return
+
+    info = core.sandbox.status()
+    lines = ["[b]sandbox[/b]"]
+    lines.append(f"  mode     {info['mode']} - {_SANDBOX_MODES[info['mode']]}")
+    if info["running"]:
+        lines.append(f"  worker   running (pid {info['pid']})")
+        controls = ", ".join(info["controls"]) or "none"
+        lines.append(f"  controls {escape(controls)}")
+        if info["limits"]:
+            lines.append(f"  limits   {escape(', '.join(info['limits']))}")
+    else:
+        lines.append("  worker   not running (starts on the next code run)")
+    lines.append(f"  memory   {info['memory_mb']} MB cap")
+    if info["would_sandbox"]:
+        lines.append("  next run [green]sandboxed[/green]")
+    else:
+        reason = info["reason"] or "not applicable"
+        colour = "red" if info["mode"] == "strict" else "yellow"
+        lines.append(f"  next run [{colour}]in-process[/{colour}] - {escape(reason)}")
+    if info["last_error"]:
+        lines.append(f"  [red]last error {escape(info['last_error'])}[/red]")
+    lines.append(
+        "[dim]  mutating code always runs in-process; the sandbox holds a "
+        "read-only copy[/dim]"
+    )
     console.print("\n".join(lines))
 
 
@@ -759,14 +851,43 @@ async def _settings(console: ConsoleScreen, args: str) -> None:
     except KeyError:
         console.print(f"[red]unknown setting {escape(key)!r}[/red]")
         return
+    except ValidationError as exc:
+        detail = exc.errors()[0].get("msg", str(exc))
+        console.print(f"[red]invalid value for {escape(key)}: {escape(str(detail))}[/red]")
+        return
     except Exception as exc:
         console.print(f"[red]invalid value: {escape(str(exc))}[/red]")
         return
+    _apply_live_setting(console.core, key)
     console.print(
         f"{key} = {json.dumps(parsed, default=str)}  "
         f"[dim](written to {escape(str(store.user_file))})[/dim]"
     )
-    console.print("[dim]note: mode/port changes need /mode or /port to affect this session[/dim]")
+    if key not in _LIVE_SETTINGS:
+        console.print(
+            "[dim]note: mode and port need /mode or /port; anything not listed here "
+            "applies on the next start[/dim]"
+        )
+
+
+# Settings held in a constructor-captured attribute rather than read per use.
+# Writing the attribute back keeps /settings honest for the keys an LLM hint
+# is most likely to name.
+_LIVE_SETTINGS: dict[str, Callable[[Any, Any], None]] = {
+    "workspace.max_resident": lambda core, v: setattr(core.models, "max_resident", max(1, v)),
+    "workspace.max_total_mb": lambda core, v: setattr(core.models, "max_total_mb", max(0, v)),
+    "workspace.scan_cap": lambda core, v: setattr(core.workspace, "cap", v),
+    "workspace.scan_depth": lambda core, v: setattr(core.workspace, "depth", v),
+    "exec.allow_system_access": lambda core, v: setattr(core.policy, "allow_system_access", v),
+}
+
+
+def _apply_live_setting(core, key: str) -> None:
+    apply = _LIVE_SETTINGS.get(key)
+    if apply is None:
+        return
+    with contextlib.suppress(Exception):
+        apply(core, core.store.get(key))
 
 
 @command("clear", "/clear", "clear the log", "console")

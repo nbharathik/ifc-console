@@ -201,6 +201,15 @@ def register(mcp: MCPServer, core: AppCore) -> None:
                 f"nothing attached with id {id!r}.",
                 f"Known ids: {known or '(none)'}. Call list_models.",
             )
+        # The tool description promises this; without it detaching the active
+        # model silently moves the write focus to whichever model was promoted.
+        if id == core.models.active_id and core.models.attached_ids:
+            raise ToolError(
+                "INVALID_INPUT",
+                f"{id} is the active model and other models are attached.",
+                "Call set_active_model on the model you want to keep writable, "
+                "then detach this one.",
+            )
         await core.detach_model(id)
         return ok(
             {"detached": "model", "model_id": id, "active": core.models.active_id},

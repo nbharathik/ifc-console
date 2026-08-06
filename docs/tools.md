@@ -148,7 +148,8 @@ Geometric clash detection between two element sets, optionally across two open
 models for federated coordination. `overlap` reports solids that share space,
 each with the shared volume in cubic metres, the deepest penetration, and the
 centre of the overlap. `clearance` reports pairs that do not touch but sit
-closer than `tolerance`.
+closer than `tolerance`, measured between bounding boxes; touching pairs are
+included at gap 0.
 
 Openings, spaces, annotations, grids and virtual elements are skipped by
 default: they share space with real elements by design. Set
@@ -156,7 +157,9 @@ default: they share space with real elements by design. Set
 
 `precision="exact"` tests the actual solids and is the default.
 `precision="fast"` stops at bounding boxes, which is quicker on very large sets
-but reports every box overlap, including pairs that do not really touch.
+but reports every box overlap, including pairs that do not really touch. It
+applies to `overlap` only: `clearance` is always a bounding-box measurement,
+and reports `precision: "bounding_box"` to say so.
 
 The response carries a `global_ids` list, so the usual next call is
 `highlight_elements` with it to see the clashes in the viewer.
@@ -199,10 +202,18 @@ directories, and every write is audited (`artifact_write`).
 Runs Python against the loaded model with `ifc`, `ifcopenshell`, `ifc_api`,
 `element_util`, `selector_util`, `unit_util`, `query(sel)`, and `get_ifc_file()`
 pre-injected. stdout is captured; a final bare expression is returned like a
-REPL. Gating per the [safety model](safety.md). Output fields: `stdout`,
-`result`, `classification`, `mutated`, `duration_ms`. Errors:
-`ASK_MODE_BLOCKED`, `EXEC_BLOCKED`, `EXEC_ERROR` (with traceback),
-`EXEC_TIMEOUT`.
+REPL. Gating per the [safety model](safety.md).
+
+Read-only runs execute in an isolated process with no network, no subprocesses,
+and no file access outside the model directories; mutating runs stay in-process
+so the edit reaches the live model. `sandboxed` in the output says which path
+ran, and `note` explains any fallback. See [Code sandbox](sandbox.md).
+
+Output fields: `stdout`, `result`, `classification`, `mutated`, `sandboxed`,
+`duration_ms`, and `note` when there is something to say. Errors:
+`ASK_MODE_BLOCKED`, `EXEC_BLOCKED` (guard or sandbox policy), `EXEC_ERROR`
+(with traceback), `EXEC_TIMEOUT`, `SANDBOX_UNAVAILABLE` (only when
+`sandbox.mode` is `strict`).
 
 ## Files
 
@@ -228,8 +239,9 @@ mode (`ASK_MODE_BLOCKED`). Output: `path`, `size_bytes`, `backup_path`,
 
 One active model is the default. These tools cover the optional second mode:
 finding files in the user's folders, and holding extra models and companion
-files alongside the active one. **Only the active model is writable**; a write
-aimed at anything else fails with `MODEL_READ_ONLY`.
+files alongside the active one. **Only the active model is writable**:
+`save_ifc_file` and `execute_ifc_code` take no `model` argument, so
+`set_active_model` is how you choose what a write affects.
 
 Every read tool above (`get_ifc_project_info`, `get_spatial_structure`,
 `query_elements`, `get_element`, `get_psets`, `validate_model`, `validate_ids`,
@@ -361,6 +373,7 @@ Errors: `VIEWER_TIMEOUT` (10 s), `VIEWER_ERROR`, `RESULT_TOO_LARGE`.
 | `INVALID_INPUT` / `INVALID_QUERY` | bad arguments; query errors include a cheat sheet |
 | `ASK_MODE_BLOCKED` | mutation or save attempted in ask mode; the AI should ask for /mode edit |
 | `EXEC_BLOCKED` / `EXEC_ERROR` / `EXEC_TIMEOUT` | code run gated, failed, or timed out |
+| `SANDBOX_UNAVAILABLE` | `sandbox.mode` is strict and this run could not be sandboxed |
 | `MODEL_BUSY` | session paused after a timeout; user reloads |
 | `MODEL_TOO_LARGE` | over the `files.max_open_mb` (or viewer) size budget |
 | `MODEL_NOT_FOUND` | no resident model with that `model_id`; call `list_models` |

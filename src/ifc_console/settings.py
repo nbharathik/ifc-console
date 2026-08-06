@@ -48,6 +48,24 @@ class ExecSettings(BaseModel):
     system_modules_extra: list[str] = Field(default_factory=list)
 
 
+class SandboxSettings(BaseModel):
+    """Where generated code runs. See docs/sandbox.md."""
+
+    # auto: sandbox whenever it can, fall back to in-process guards otherwise.
+    # strict: refuse the run instead of falling back. off: never sandbox.
+    mode: str = Field(default="auto", pattern="^(auto|strict|off)$")
+    memory_mb: int = Field(default=2048, ge=256)
+    # Models above this are not copied into the sandbox; a second copy of a
+    # very large file costs more than the isolation is worth.
+    max_model_mb: int = Field(default=512, ge=0)
+    startup_timeout: float = Field(default=120.0, gt=0)
+    load_timeout: float = Field(default=600.0, gt=0)
+    # Start the worker when a model loads, so the first code run is not the
+    # one that pays for it. Off by default: it holds a second copy of the
+    # model, which is not worth it for sessions that never run code.
+    warm_on_load: bool = False
+
+
 class FilesSettings(BaseModel):
     allowed_dirs: list[str] = Field(default_factory=list)
     backup_retention: int = Field(default=20, ge=1)
@@ -96,6 +114,7 @@ class Settings(BaseModel):
     mode: ModeSettings = Field(default_factory=ModeSettings)
     server: ServerSettings = Field(default_factory=ServerSettings)
     exec: ExecSettings = Field(default_factory=ExecSettings)
+    sandbox: SandboxSettings = Field(default_factory=SandboxSettings)
     files: FilesSettings = Field(default_factory=FilesSettings)
     workspace: WorkspaceSettings = Field(default_factory=WorkspaceSettings)
     viewer: ViewerSettings = Field(default_factory=ViewerSettings)
@@ -161,6 +180,17 @@ def _parse_env_value(raw: str) -> Any:
         return json.loads(raw)
     except (ValueError, json.JSONDecodeError):
         return raw
+
+
+def _coerce(current: Any, raw: str) -> Any:
+    """Parse a text value for the field it is going into.
+
+    Without the target type, `sandbox.mode off` would parse as the boolean
+    False and fail validation. String-valued settings take the text as typed.
+    """
+    if isinstance(current, str):
+        return raw.strip()
+    return _parse_env_value(raw)
 
 
 def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
@@ -350,11 +380,12 @@ class SettingsStore:
                 safe_only=True,
             )
 
+        flat_defaults = _flatten(Settings().model_dump())
         env_flat = {}
         for key in known:
             env_name = ENV_PREFIX + key.replace(".", "_").upper()
             if env_name in self._env:
-                env_flat[key] = _parse_env_value(self._env[env_name])
+                env_flat[key] = _coerce(flat_defaults.get(key), self._env[env_name])
         apply(env_flat, "env", safe_only=False)
         apply(dict(self._flags), "flag", safe_only=False)
 
@@ -368,10 +399,11 @@ class SettingsStore:
 
     # -- user-file editing (`ifc-console settings set/unset`) -----------------
     def set_user(self, key: str, raw_value: str) -> Any:
-        known = set(_flatten(Settings().model_dump()))
+        defaults = _flatten(Settings().model_dump())
+        known = set(defaults)
         if key not in known:
             raise KeyError(f"unknown setting {key!r}")
-        value = _parse_env_value(raw_value)
+        value = _coerce(defaults[key], raw_value)
         current = self._read_layer(self.user_file, "user")
         _set_dot(current, key, value)
         base = Settings().model_dump()

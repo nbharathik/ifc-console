@@ -25,3 +25,11 @@ load, click-select, highlight, and screenshot.
 Note on web-ifc (MPL-2.0): the files are distributed unmodified with their
 license text; MPL file-level copyleft is satisfied. Do not edit
 `web-ifc-api.js` or `web-ifc.wasm` in place.
+
+`web-ifc-api.js` carries a multithreaded runtime (~200 KB) that never runs
+here: it needs `crossOriginIsolated`, which the viewer does not set, and
+`web-ifc-mt.wasm` is deliberately not vendored. Stripping it would break the
+byte-identical guarantee the MPL note above depends on, so it stays.
+
+`three.core.min.js` is not dead weight either: `three.module.min.js` re-exports
+from it, so both files are required.

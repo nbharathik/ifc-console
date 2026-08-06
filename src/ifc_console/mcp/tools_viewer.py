@@ -145,11 +145,26 @@ def register(mcp: MCPServer, core: AppCore) -> None:
             return found, missing
 
         found, missing = await session.run(job, timeout=60)
-        await hub.send_highlight(found, color=color, isolate=isolate, fit=fit, clear=False)
-        data: dict[str, Any] = {"highlighted": len(found), "missing": missing}
         if not found:
-            data["note"] = "no valid GlobalIds to highlight; nothing changed in the viewer"
-        return ok(data, core.session_meta(), char_limit=limit_)
+            # Broadcasting an empty set would clear the current highlight, which
+            # is the opposite of "nothing changed".
+            return ok(
+                {
+                    "highlighted": 0,
+                    "missing": missing,
+                    "note": "no valid GlobalIds for the active model; nothing "
+                    "changed in the viewer. Ids from an attached model must be "
+                    "highlighted after set_active_model.",
+                },
+                core.session_meta(),
+                char_limit=limit_,
+            )
+        await hub.send_highlight(found, color=color, isolate=isolate, fit=fit, clear=False)
+        return ok(
+            {"highlighted": len(found), "missing": missing},
+            core.session_meta(),
+            char_limit=limit_,
+        )
 
     @mcp.tool(
         annotations=VIEW_ANN,
@@ -200,6 +215,21 @@ def register(mcp: MCPServer, core: AppCore) -> None:
             return resolved, missing
 
         resolved, missing = await session.run(job, timeout=60)
+        if not any(resolved):
+            # An all-empty theme would wipe the current one; say so instead.
+            return ok(
+                {
+                    "title": title,
+                    "legend": [],
+                    "painted": 0,
+                    "missing": missing[:50],
+                    "note": "no valid GlobalIds for the active model; nothing was "
+                    "painted and the existing theme is unchanged. Ids from an "
+                    "attached model need set_active_model first.",
+                },
+                core.session_meta(),
+                char_limit=limit_,
+            )
         frame_groups, legend = [], []
         for index, group in enumerate(groups):
             color = group.color or categorical_color(index)

@@ -97,6 +97,17 @@ try {
 }
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 
+// Merged geometry frees its CPU-side arrays after upload, so a lost context
+// cannot be repainted from what is still in memory. Drop the model at loss and
+// refetch on restore; without this the canvas freezes until the user hits F5.
+canvas.addEventListener("webglcontextlost", (event) => {
+  event.preventDefault();
+  disposeModel();
+  currentEtag = null;
+  showOverlay("the 3D context was lost\nrebuilding the view");
+});
+canvas.addEventListener("webglcontextrestored", () => { loadModel(); });
+
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x101720);
 
@@ -807,10 +818,12 @@ class InstEntry {
     this.material = alpha < 0.999
       ? instancedTransparentMaterialFor(alpha) : instancedMaterial;
     // The source attributes are shared by every generation of the mesh; only
-    // the per-instance arrays are reallocated on growth.
-    this.posAttr = new THREE.BufferAttribute(geom.positions, 3);
-    this.norAttr = new THREE.BufferAttribute(geom.normals, 3);
-    this.idxAttr = new THREE.BufferAttribute(geom.indices, 1);
+    // the per-instance arrays are reallocated on growth. Copied out of the
+    // parser chunk: a subarray view would pin the whole 8 MB chunk for the
+    // life of the model.
+    this.posAttr = new THREE.BufferAttribute(geom.positions.slice(), 3);
+    this.norAttr = new THREE.BufferAttribute(geom.normals.slice(), 3);
+    this.idxAttr = new THREE.BufferAttribute(geom.indices.slice(), 1);
     this.sphere = new THREE.Sphere();
     this.mesh = null;
     this.elementIndexAttr = null;
@@ -1127,11 +1140,16 @@ function parseBuffer(buffer) {
       },
     };
     activeHandlers = handlers;
+    if (typeof Worker === "undefined") {
+      // No worker to lose: parse the original buffer with no copy at all.
+      handlers.onWorkerLost();
+      return;
+    }
     try {
       if (!worker) spawnWorker();
       workerBusy = true;
-      // The buffer transfers to the worker (zero copy); the inline fallback
-      // path in onWorkerLost gets its own copy first.
+      // A copy is transferred, not the original: onWorkerLost still needs
+      // readable bytes to fall back to the inline parser.
       const copy = buffer.slice();
       worker.postMessage({ seq, buffer: copy.buffer }, [copy.buffer]);
     } catch {
@@ -1210,6 +1228,11 @@ async function loadModel() {
       return;
     }
     const nextEtag = res.headers.get("ETag");
+    // Boot the worker (and its 5.9 MB web-ifc module) while the body streams
+    // in, instead of serializing the two.
+    if (!worker) {
+      try { spawnWorker(); } catch { /* parseBuffer falls back to inline */ }
+    }
     const buffer = await fetchModelBytes(res);
     await buildScene(buffer);
     currentEtag = nextEtag;
@@ -1229,6 +1252,10 @@ async function loadModel() {
   }
 }
 
+function nextFrame() {
+  return new Promise((resolve) => requestAnimationFrame(() => resolve()));
+}
+
 async function buildScene(buffer) {
   // Live edits trigger rebuilds; carry selection and highlights across so a
   // refresh does not silently drop what the user (or the LLM) marked.
@@ -1241,9 +1268,21 @@ async function buildScene(buffer) {
 
   const parsed = await parseBuffer(buffer);
   showProgress("Preparing complete model", null);
+  // Yield once so the label above actually paints: everything below is one
+  // long synchronous block on a big model.
+  await nextFrame();
   for (const chunk of parsed.chunks) registerChunkGeometry(chunk);
   decideOrigin(parsed.chunks);
-  for (const chunk of parsed.chunks) ingestChunk(chunk);
+  let done = 0;
+  for (const chunk of parsed.chunks) {
+    ingestChunk(chunk);
+    // Batching dominates the wait on a large model; give the browser a frame
+    // every so often so the progress bar advances instead of freezing.
+    if ((++done % 24) === 0) {
+      showProgress("Preparing complete model", done / parsed.chunks.length);
+      await nextFrame();
+    }
+  }
   finalizeAllAccumulators();
   productCount = parsed.products;
   if (parsed.maps) {
@@ -1274,6 +1313,9 @@ async function buildScene(buffer) {
   markTreeSelection();
   updateSelectionInfo();
   updateHighlightInfo();
+  // Express ids are not stable across rebuilds, so any open result list is
+  // stale; re-running it keeps the panel honest after an edit.
+  refreshSearch();
   // A rebuild resets the server's selection; tell it what survived.
   sendSelection();
   if (!userMovedCamera) fitTo(null);
@@ -1398,6 +1440,7 @@ function markTreeSelection() {
     const label = document.querySelector(`.tree-label[data-express-id="${id}"]`);
     if (label) label.classList.add("selected");
   }
+  markSearchSelection();
 }
 
 // ---------------------------------------------------------------- appearance
@@ -1488,8 +1531,16 @@ function updateHighlightInfo() {
   $("btn-clear-hl").hidden = n === 0;
 }
 
+// The hub keeps the first 500; sending more just inflates the frame.
+const SELECTION_WIRE_MAX = 500;
+
 function sendSelection() {
-  const guids = [...selection].map((id) => guidOf.get(id)).filter(Boolean);
+  const guids = [];
+  for (const id of selection) {
+    const guid = guidOf.get(id);
+    if (guid) guids.push(guid);
+    if (guids.length >= SELECTION_WIRE_MAX) break;
+  }
   const row = currentModelRow();
   wsSend({ type: "selection", guids, model_id: row ? row.id : null });
 }
@@ -1508,6 +1559,7 @@ function pickElementAt(clientX, clientY) {
   const prevOverride = scene.overrideMaterial;
   const gridWasVisible = grid.visible;
   const axesWasVisible = axes ? axes.visible : false;
+  const measureWasVisible = measureGroup.visible;
   const prevTarget = renderer.getRenderTarget();
   const prevClearColor = renderer.getClearColor(new THREE.Color()).clone();
   const prevClearAlpha = renderer.getClearAlpha();
@@ -1515,6 +1567,9 @@ function pickElementAt(clientX, clientY) {
     scene.background = null;
     grid.visible = false;
     if (axes) axes.visible = false;
+    // markers carry no element index, so leaving them in makes a click on one
+    // decode as element 0
+    measureGroup.visible = false;
     scene.overrideMaterial = pickMaterial;
     camera.setViewOffset(size.x, size.y, x, y, 1, 1);
     renderer.setRenderTarget(pickTarget);
@@ -1530,6 +1585,7 @@ function pickElementAt(clientX, clientY) {
     scene.background = prevBackground;
     grid.visible = gridWasVisible;
     if (axes) axes.visible = axesWasVisible;
+    measureGroup.visible = measureWasVisible;
     invalidate();
   }
 
@@ -1907,6 +1963,11 @@ async function showProperties(guid) {
   if (detail.type && detail.type.name) {
     panel.appendChild(sectionTable("Type", { class: detail.type.class, name: detail.type.name }));
   }
+  const materials = materialRows(detail.materials);
+  if (materials) panel.appendChild(sectionTable("Material", materials));
+  if (detail.decomposition && detail.decomposition.length) {
+    panel.appendChild(partsList("Parts", detail.decomposition));
+  }
   for (const [pset, props] of Object.entries(detail.psets || {})) {
     if (props && typeof props === "object") {
       const { id: _id, ...rest } = props;
@@ -1919,6 +1980,50 @@ async function showProperties(guid) {
       panel.appendChild(sectionTable(`${qto} (quantities)`, rest));
     }
   }
+}
+
+// element_detail returns one of several material shapes; flatten whichever
+// arrived into plain key/value rows.
+function materialRows(material) {
+  if (!material) return null;
+  if (material.kind === "material") return material.name ? { Name: material.name } : null;
+  if (material.kind === "layer_set") {
+    const rows = {};
+    if (material.name) rows["Layer set"] = material.name;
+    (material.layers || []).forEach((layer, i) => {
+      const thickness = typeof layer.thickness === "number"
+        ? ` · ${Number(layer.thickness.toFixed(4))}` : "";
+      rows[`Layer ${i + 1}`] = `${layer.name || "?"}${thickness}`;
+    });
+    return Object.keys(rows).length ? rows : null;
+  }
+  const list = material.constituents || material.profiles || material.materials;
+  if (Array.isArray(list) && list.length) {
+    return Object.fromEntries(
+      list.filter(Boolean).map((name, i) => [`Material ${i + 1}`, String(name)]));
+  }
+  return null;
+}
+
+// Parts are navigable, so they are links into the model rather than a table.
+function partsList(titleText, parts) {
+  const details = el("details");
+  details.open = false;
+  details.appendChild(el("summary", null, `${titleText} (${parts.length})`));
+  const list = el("div", "part-list");
+  for (const part of parts) {
+    const id = expressOf.get(part.global_id);
+    const row = el("div", "part-row", `${part.name || part.class}`);
+    row.appendChild(el("span", "cls", ` ${part.class}`));
+    if (id !== undefined) {
+      row.classList.add("clickable");
+      row.title = "Select this part";
+      row.addEventListener("click", () => setSelection([id], false));
+    }
+    list.appendChild(row);
+  }
+  details.appendChild(list);
+  return details;
 }
 
 function sectionTable(titleText, obj) {
@@ -1982,9 +2087,19 @@ function connect() {
     handleFrame(frame);
   });
 
-  ws.addEventListener("close", () => {
+  ws.addEventListener("close", (event) => {
     $("live").classList.add("off");
     $("live").setAttribute("aria-label", "Server disconnected");
+    // 4401 (bad token) and 4404 (viewer switched off) are verdicts, not
+    // outages: retrying cannot change either answer.
+    if (event.code === 4401) {
+      showOverlay("unauthorized\nre-open the viewer from the ifc-console terminal (/viewer)");
+      return;
+    }
+    if (event.code === 4404) {
+      showOverlay("the viewer was turned off\ntype /viewer in the ifc-console terminal");
+      return;
+    }
     wsAttempts += 1;
     const delay = Math.min(15000, 1000 * 2 ** Math.min(wsAttempts, 4));
     setTimeout(connect, delay);
@@ -2002,10 +2117,12 @@ function handleFrame(frame) {
       const want = viewModelId && frame.models
         ? (frame.models.find((m) => m.id === viewModelId) || {}).etag
         : frame.etag;
-      if (want && want !== currentEtag) scheduleReload();
       // The tab owns the selection. Resending it on every (re)connect stops
-      // the LLM reading a selection the user cannot see, or missing one they can.
-      sendSelection();
+      // the LLM reading a selection the user cannot see, or missing one they
+      // can. While a reload is pending the selection belongs to the old model,
+      // so buildScene resends it instead.
+      if (want && want !== currentEtag) scheduleReload();
+      else sendSelection();
       break;
     }
     case "model_updated":
@@ -2364,6 +2481,228 @@ $("measure-clear").addEventListener("click", () => {
 updateToolButtons();
 updateVisibilityInfo();
 
+// ---------------------------------------------------------------- search
+// The server does the matching: the client only ever learns GlobalIds and
+// express ids for the geometry it drew, never names or types.
+const SEARCH_DEBOUNCE = 250;
+let searchTimer = null;
+let searchRequest = 0;
+let searchHits = [];  // expressIDs of the current result set, in row order
+
+function searchIds() {
+  return searchHits.filter((id) => elements.has(id));
+}
+
+function clearSearch(refocus) {
+  searchRequest++;
+  if (searchTimer) clearTimeout(searchTimer);
+  searchTimer = null;
+  searchHits = [];
+  $("search-input").value = "";
+  $("search-clear").hidden = true;
+  $("search-results").hidden = true;
+  $("search-results").textContent = "";
+  $("tree").hidden = false;
+  if (refocus) $("search-input").focus();
+}
+
+function renderSearch(payload) {
+  const box = $("search-results");
+  box.textContent = "";
+  searchHits = [];
+
+  const head = el("div", "search-head");
+  const found = payload.truncated
+    ? `${payload.results.length} of ${payload.total}`
+    : `${payload.total} match${payload.total === 1 ? "" : "es"}`;
+  head.appendChild(el("span", null, found));
+  head.appendChild(el("span", "spacer"));
+  const selectAll = el("button", null, "Select");
+  selectAll.title = "Select every element in the result list";
+  const isolate = el("button", null, "Isolate");
+  isolate.title = "Show only the elements in the result list";
+  head.appendChild(selectAll);
+  head.appendChild(isolate);
+  box.appendChild(head);
+
+  if (!payload.total) {
+    box.appendChild(el("p", "hint", "no elements match"));
+  }
+
+  for (const row of payload.results) {
+    const id = expressOf.get(row.global_id);
+    if (id !== undefined) searchHits.push(id);
+    const hit = el("div", "search-hit");
+    hit.appendChild(el("div", "name", row.name || row.class));
+    const detail = [row.class, row.storey, row.type_name].filter(Boolean).join(" · ");
+    hit.appendChild(el("div", "meta-line", detail));
+    if (id === undefined) {
+      hit.title = "no geometry in this model";
+    } else {
+      hit.dataset.expressId = id;
+      hit.addEventListener("click", () => setSelection([id], false));
+      hit.addEventListener("dblclick", () => fitTo([id]));
+    }
+    box.appendChild(hit);
+  }
+
+  const ids = searchIds();
+  selectAll.disabled = isolate.disabled = ids.length === 0;
+  selectAll.addEventListener("click", () => setSelection(searchIds(), false));
+  isolate.addEventListener("click", () => {
+    const targets = searchIds();
+    if (!targets.length) return;
+    userIsolateSet = new Set(targets);
+    applyVisibility();
+  });
+
+  markSearchSelection();
+  box.hidden = false;
+  $("tree").hidden = true;
+}
+
+function markSearchSelection() {
+  for (const hit of document.querySelectorAll(".search-hit")) {
+    const id = Number(hit.dataset.expressId);
+    hit.classList.toggle("selected", selection.has(id));
+  }
+}
+
+async function runSearch(term) {
+  const request = ++searchRequest;
+  const box = $("search-results");
+  box.textContent = "";
+  box.appendChild(el("p", "hint", "searching…"));
+  box.hidden = false;
+  $("tree").hidden = true;
+  let payload;
+  try {
+    const res = await api(`/api/search?q=${encodeURIComponent(term)}${modelQuery().replace("?", "&")}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    payload = await res.json();
+  } catch (err) {
+    if (request !== searchRequest) return;
+    box.textContent = "";
+    box.appendChild(el("p", "hint", `search failed (${err.message})`));
+    return;
+  }
+  if (request !== searchRequest) return;
+  renderSearch(payload);
+}
+
+$("search-input").addEventListener("input", () => {
+  const term = $("search-input").value.trim();
+  $("search-clear").hidden = !term;
+  if (searchTimer) clearTimeout(searchTimer);
+  if (term.length < 2) {
+    searchRequest++;
+    searchHits = [];
+    $("search-results").hidden = true;
+    $("tree").hidden = false;
+    return;
+  }
+  searchTimer = setTimeout(() => runSearch(term), SEARCH_DEBOUNCE);
+});
+
+$("search-input").addEventListener("keydown", (e) => {
+  if (e.key === "Escape") {
+    e.stopPropagation();
+    clearSearch(true);
+  } else if (e.key === "Enter") {
+    if (searchTimer) clearTimeout(searchTimer);
+    const term = $("search-input").value.trim();
+    if (term.length >= 2) runSearch(term);
+  }
+});
+
+$("search-clear").addEventListener("click", () => clearSearch(true));
+
+function refreshSearch() {
+  searchHits = [];
+  const term = $("search-input").value.trim();
+  if (term.length >= 2) runSearch(term);
+}
+
+// ---------------------------------------------------------------- saved views
+// Camera poses live in localStorage next to the panel layout: they belong to
+// this browser, not to the model, and survive reloads and model edits.
+const MAX_SAVED_VIEWS = 12;
+
+function savedViews() {
+  return Array.isArray(uiState.views) ? uiState.views : (uiState.views = []);
+}
+
+function captureView(name) {
+  return {
+    name,
+    pos: camera.position.toArray(),
+    target: controls.target.toArray(),
+    near: camera.near,
+    far: camera.far,
+  };
+}
+
+function restoreView(view) {
+  camera.position.fromArray(view.pos);
+  controls.target.fromArray(view.target);
+  if (typeof view.near === "number") camera.near = view.near;
+  if (typeof view.far === "number") camera.far = view.far;
+  camera.updateProjectionMatrix();
+  controls.update();
+  // A restored view is a deliberate choice; the next model load must not
+  // silently fit over it.
+  userMovedCamera = true;
+  invalidate();
+}
+
+function renderSavedViews() {
+  const box = $("saved-views");
+  box.textContent = "";
+  const views = savedViews();
+  if (!views.length) {
+    box.appendChild(el("div", "tool-note empty", "none saved yet"));
+    return;
+  }
+  views.forEach((view, index) => {
+    const row = el("div", "saved-view");
+    const go = el("button", "tool-btn go", view.name);
+    go.title = `Go to ${view.name}`;
+    go.addEventListener("click", () => restoreView(view));
+    const drop = el("button", "drop", "×");
+    drop.title = `Delete ${view.name}`;
+    drop.setAttribute("aria-label", `Delete ${view.name}`);
+    drop.addEventListener("click", () => {
+      views.splice(index, 1);
+      saveUi();
+      renderSavedViews();
+    });
+    row.appendChild(go);
+    row.appendChild(drop);
+    box.appendChild(row);
+  });
+}
+
+function saveCurrentView() {
+  const views = savedViews();
+  const input = $("view-name");
+  const name = input.value.trim() || `View ${views.length + 1}`;
+  const existing = views.findIndex((v) => v.name === name);
+  if (existing >= 0) {
+    views[existing] = captureView(name);
+  } else {
+    views.push(captureView(name));
+    if (views.length > MAX_SAVED_VIEWS) views.shift();
+  }
+  input.value = "";
+  saveUi();
+  renderSavedViews();
+}
+
+$("tool-save-view").addEventListener("click", saveCurrentView);
+$("view-name").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") saveCurrentView();
+});
+
 // ---------------------------------------------------------------- ui state
 // Panel widths/visibility and scene settings persist across sessions.
 const uiState = (() => {
@@ -2493,6 +2832,7 @@ axesBox.addEventListener("change", () => {
   applySceneSettings();
 });
 applySceneSettings();
+renderSavedViews();
 
 window.addEventListener("keydown", (e) => {
   if (e.key === "Escape") {

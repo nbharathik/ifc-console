@@ -275,6 +275,15 @@ def register(mcp: MCPServer, core: AppCore) -> None:
         _validate_subset(fields, ALLOWED_FIELDS, "fields")
         use_fields = tuple(fields) if fields else DEFAULT_FIELDS
         props = list(dict.fromkeys(properties or []))
+        for dotted in props:
+            pset, dot, prop = dotted.partition(".")
+            if not (dot and pset and prop):
+                raise ToolError(
+                    "INVALID_INPUT",
+                    f"property column {dotted!r} is not in 'Pset_Name.Property' form.",
+                    "Use the dotted form, e.g. Pset_WallCommon.FireRating. "
+                    "get_element_details shows the psets an element carries.",
+                )
 
         def job() -> tuple[list[dict], int]:
             import ifcopenshell.util.element as element_util
@@ -289,6 +298,9 @@ def register(mcp: MCPServer, core: AppCore) -> None:
                     "See query_elements for selector examples.",
                 ) from exc
             total = len(elements)
+            # filter_elements returns a set; an unsorted slice would export a
+            # different subset on every run
+            elements.sort(key=lambda e: e.id())
             rows = []
             for element in elements[:limit]:
                 row = element_row(element, use_fields)

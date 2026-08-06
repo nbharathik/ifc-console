@@ -32,6 +32,18 @@ NON_PHYSICAL = (
 MAX_ELEMENTS = 5000
 MAX_RESULTS = 1000
 
+# Rows of the broad-phase pair matrix built at a time.
+_BROAD_PHASE_ROWS = 256
+
+
+def _non_physical(element, cache: dict[str, bool]) -> bool:
+    name = element.is_a()
+    hit = cache.get(name)
+    if hit is None:
+        hit = any(element.is_a(cls) for cls in NON_PHYSICAL)
+        cache[name] = hit
+    return hit
+
 # Triangles per element above this are dropped: an element that dense is a
 # rendering mesh, not something a coordinator clashes by hand.
 _MAX_TRIANGLES = 20_000
@@ -98,11 +110,16 @@ def _boxes(meshes: dict[int, tuple[np.ndarray, np.ndarray]], ids: list[int]):
 def _candidates(lo_a, hi_a, lo_b, hi_b, mode: str, tolerance: float):
     """Broad phase: index pairs whose boxes overlap, or sit within tolerance."""
     # gap > 0 means separated on that axis; gap < 0 means they interpenetrate.
-    gap = np.maximum(
-        lo_a[:, None, :] - hi_b[None, :, :],
-        lo_b[None, :, :] - hi_a[:, None, :],
-    )
-    worst = gap.max(axis=2)
+    # Built in row blocks: the full (n_a, n_b, 3) temporary is ~1.8 GB at the
+    # 5000-element cap, while the result itself is only (n_a, n_b).
+    worst = np.empty((len(lo_a), len(lo_b)))
+    for start in range(0, len(lo_a), _BROAD_PHASE_ROWS):
+        stop = min(start + _BROAD_PHASE_ROWS, len(lo_a))
+        block = np.maximum(
+            lo_a[start:stop, None, :] - hi_b[None, :, :],
+            lo_b[None, :, :] - hi_a[start:stop, None, :],
+        )
+        worst[start:stop] = block.max(axis=2)
     hits = (
         worst < -tolerance
         if mode == "overlap"
@@ -229,7 +246,10 @@ def prepare_set(
     elements = _selected(ifc, selector)
     matched = len(elements)
     if physical_only:
-        elements = [e for e in elements if e.is_a() not in NON_PHYSICAL]
+        # is_a(cls) matches subtypes; an exact name test misses IFC4 cases like
+        # IfcOpeningStandardCase. Verdicts are cached per class name.
+        verdict: dict[str, bool] = {}
+        elements = [e for e in elements if not _non_physical(e, verdict)]
     dropped = matched - len(elements)
 
     if len(elements) > max_elements:
@@ -362,6 +382,8 @@ def compare_sets(
                 "type": "clearance",
                 "gap": round(gap, 6),
                 "point": [round(v, 6) for v in ((centre_a + centre_b) / 2.0).tolist()],
+                # clearance measures box to box; precision='exact' has no effect
+                "basis": "bounding_box",
             }
 
         entry["a"] = by_id_a[id_a]
@@ -392,7 +414,9 @@ def compare_sets(
 
     return {
         "mode": mode,
-        "precision": precision,
+        # Reporting the precision actually used, not the one requested: the
+        # clearance pass is bounding-box only.
+        "precision": precision if mode == "overlap" else "bounding_box",
         "tolerance": tolerance,
         "set_a": {"selector": prep_a["selector"], "elements": len(ids_a)},
         "set_b": {

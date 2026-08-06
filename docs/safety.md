@@ -38,13 +38,20 @@ the one thing the client cannot: whether the model file can change at all.
 2. **Gate** (policy matrix): QUERY runs in both modes. EDIT is blocked in ask
    and runs in edit. SYSTEM also needs `exec.allow_system_access`, and never
    runs in ask.
-3. **Guard** (runtime): guarded runs use a curated namespace: import allowlist,
+3. **Isolate** (process): read-only runs, which is everything in ask mode, go to
+   a separate sandbox process with no network, no subprocesses, no credentials
+   in its environment, and read access limited to the model directories. Only
+   mutating code stays in-process, because the edit has to land in the model the
+   console is holding. See [Code sandbox](sandbox.md).
+4. **Guard** (runtime): guarded runs use a curated namespace: import allowlist,
    a write-blocking `open`, a raising `ifc_api` proxy, and a model object that
-   rejects mutation methods. Guards catch what the classifier missed.
-4. **Verify** (canary): the model's max entity id is compared before and after
-   every guarded run. If guarded code still grew the model, the session is
-   marked **tainted**, the event is audited, and the status bar tells you to
-   `/reload` a pristine copy.
+   rejects mutation methods. Guards catch what the classifier missed, in the
+   sandbox and in-process alike.
+5. **Verify** (canary): the model's max entity id is compared before and after
+   every guarded run. In-process, code that still grew the model marks the
+   session **tainted**, audits the event, and the status bar tells you to
+   `/reload` a pristine copy. In the sandbox the growth lands on a throwaway
+   copy, so it is recorded as contained and your model is untouched.
 
 ## Files, backups, audit
 
@@ -99,17 +106,24 @@ flag, and review files from untrusted sources in `ask` mode first.
 ## What this does not guarantee
 
 In-process guards stop accidents and default behavior, **not a determined
-adversary**. CPython cannot truly sandbox itself, and a creative enough payload
-can escape object-graph confinement. The test suite documents a known bypass on
-purpose. So:
+adversary**. CPython cannot sandbox itself: a creative enough payload can escape
+object-graph confinement, and the test suite documents one such bypass on
+purpose.
 
-- Treat `ask` as a strong safety rail against mistakes, not a security boundary
-  against malicious prompt-injected code.
-- The disk-integrity promise is stronger than the in-memory one: the suite
-  asserts the file on disk stays byte-identical under a battery of bypass
-  attempts.
-- A subprocess executor with real isolation is the first item on the hardening
-  roadmap.
+That is exactly why read-only code no longer runs in-process. In the
+[sandbox](sandbox.md) the same escape is worthless, because the operations it
+would reach for fail at a level the object graph cannot touch: no network, no
+subprocesses, no credentials, no files outside the model directories. So:
 
-Also: a run that exceeds `exec.timeout_seconds` cannot be killed mid-C-call. The
-session pauses ("poisoned") and `/reload` recovers it.
+- In `ask` mode, the default, generated code is contained by a process
+  boundary, not only by the namespace it was handed.
+- Mutating code still runs in-process behind the guards alone. Treat `edit` mode
+  as a deliberate grant, and review models from untrusted sources in `ask` first.
+- The disk-integrity promise remains the strongest one: the suite asserts the
+  file on disk stays byte-identical under a battery of bypass attempts.
+- The sandbox is a containment boundary, not a virtual machine. It does not
+  defend against a kernel or interpreter vulnerability.
+
+Also: an in-process run that exceeds `exec.timeout_seconds` cannot be killed
+mid-C-call, so the session pauses ("poisoned") and `/reload` recovers it. A
+sandboxed run is a process and is simply killed; nothing to recover.

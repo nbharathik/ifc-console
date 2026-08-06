@@ -56,7 +56,7 @@ zero-setup bridge between an LLM client and an IFC file.
 
 ```console
 $ ifc-console
-IFC CONSOLE  v0.2.0
+IFC CONSOLE  v0.1.4
 a terminal interface to connect IFC files to LLMs
   model  /file to pick
   mode   ask  (AI is query-only; /mode edit lets it change the model)
@@ -77,4 +77,5 @@ Then, in your LLM client:
 - [Connecting clients](clients.md): Claude Code, Claude Desktop, Cursor,
   VS Code, Codex.
 - [Safety model](safety.md): what each mode guarantees.
+- [Code sandbox](sandbox.md): where AI-generated code runs, and what it cannot reach.
 - [MCP tools](tools.md): the full tool reference.

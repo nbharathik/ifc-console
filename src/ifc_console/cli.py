@@ -37,6 +37,12 @@ _MODES = [m.value for m in Mode]
 
 
 # --------------------------------------------------------------------------- parser
+class _VersionAction(argparse.Action):
+    def __call__(self, parser, namespace, values, option_string=None):
+        print(_version_line())
+        parser.exit()
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="ifc-console",
@@ -46,7 +52,8 @@ def build_parser() -> argparse.ArgumentParser:
             "/file, /mode, /viewer, /connect, /help)."
         ),
     )
-    parser.add_argument("--version", action="version", version=_version_line())
+    # _version_line() reads package metadata; only --version should pay for it
+    parser.add_argument("--version", action=_VersionAction, nargs=0, help="Show the version.")
     _add_run_flags(parser)
     parser.add_argument(
         "--no-tui", action="store_true", help="Headless HTTP daemon instead of the TUI."
@@ -310,6 +317,7 @@ def _cmd_interactive(args: argparse.Namespace) -> int:
         if isinstance(h, logging.StreamHandler) and not isinstance(h, RotatingFileHandler):
             root.removeHandler(h)
     core = _make_core(args, store, transport="http")
+    preload.release()
     from ifc_console.tui.app import run_tui
 
     initial_file = Path(args.file).expanduser().resolve() if args.file else None
@@ -326,6 +334,7 @@ def _run_headless_http(args: argparse.Namespace) -> int:
     store = _make_store(args)
     _setup_logging(store, level=store.settings.logging.level)
     core = _make_core(args, store, transport="http")
+    preload.release()
     core.start_audit()
     if args.file:
         rc = _load_model_blocking(core, args.file)
@@ -385,6 +394,7 @@ def _cmd_serve(args: argparse.Namespace) -> int:
     store = _make_store(args)
     _setup_logging(store, level=store.settings.logging.level)
     core = _make_core(args, store, transport="stdio")
+    preload.release()
     core.start_audit()
     if args.file:
         rc = _load_model_blocking(core, args.file)
@@ -756,6 +766,19 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
     else:
         wasm_mb = (STATIC_DIR / "vendor/web-ifc.wasm").stat().st_size / 1_048_576
         check("viewer assets", "ok", f"{STATIC_DIR} (web-ifc.wasm {wasm_mb:.1f} MB)")
+
+    mode = store.settings.sandbox.mode
+    if mode == "off":
+        check("sandbox", "warn", "off; generated code runs with in-process guards only")
+    else:
+        from ifc_console.sandbox.client import worker_executable
+
+        check(
+            "sandbox",
+            "ok",
+            f"{mode}; read-only code runs isolated "
+            f"({store.settings.sandbox.memory_mb} MB cap, {Path(worker_executable()).name})",
+        )
 
     from ifc_console.portcheck import FOREIGN, FREE, IFC_CONSOLE, conflict_hint, port_status
 

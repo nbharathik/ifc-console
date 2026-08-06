@@ -83,8 +83,8 @@ def _resolve(name: str) -> commands.Command | None:
     cmd = commands.REGISTRY.get(name)
     if cmd is not None:
         return cmd
-    matches = [c for c in commands.REGISTRY if c.startswith(name)]
-    return commands.REGISTRY[matches[0]] if len(matches) == 1 else None
+    matches = commands.resolve_prefix(name)
+    return commands.REGISTRY[matches.pop()] if len(matches) == 1 else None
 
 
 # ------------------------------------------------------------- command names
@@ -162,6 +162,18 @@ def _viewer_args(core: AppCore, rest: str, _files: FilesProvider | None) -> Menu
     )
 
 
+def _sandbox_args(core: AppCore, rest: str, _files: FilesProvider | None) -> MenuState:
+    current = core.settings.sandbox.mode
+    rows = [
+        ("auto", "sandbox read-only code, fall back when it cannot"),
+        ("strict", "refuse a read-only run that cannot be sandboxed"),
+        ("off", "in-process guards only"),
+        ("restart", "stop the worker; the next run starts a fresh one"),
+    ]
+    rows = [(v, note + (" · current" if v == current else "")) for v, note in rows]
+    return _choices("sandbox", rest, rows, context="sandbox")
+
+
 def _copy_args(_core: AppCore, rest: str, _files: FilesProvider | None) -> MenuState:
     return _choices(
         "copy",
@@ -197,7 +209,12 @@ def _connect_args(_core: AppCore, rest: str, _files: FilesProvider | None) -> Me
 
 
 def _open_args(_core: AppCore, rest: str, files: FilesProvider | None) -> MenuState:
-    entries = list(files()) if files is not None else []
+    entries = files() if files is not None else []
+    if entries is None:
+        # the scan runs on a thread; the console refreshes the menu when it lands
+        scanning = Candidate(insert="", display="(scanning for IFC files…)", disabled=True)
+        return MenuState(prefix="/open ", candidates=(scanning,), context="open")
+    entries = list(entries)
     token = rest.strip().lower()
     cwd = Path.cwd()
     out = []
@@ -226,6 +243,7 @@ def _port_args(core: AppCore, rest: str, _files: FilesProvider | None) -> MenuSt
 # Values for settings whose schema is a fixed choice (see settings.py).
 _SETTING_VALUES = {
     "mode.default": ("ask", "edit"),
+    "sandbox.mode": ("auto", "strict", "off"),
     "logging.level": ("debug", "info", "warning", "error"),
     "tui.theme": ("dark", "light", "auto"),
 }
@@ -306,6 +324,7 @@ _ARG_PROVIDERS: dict[str, Provider] = {
     "mode": _mode_args,
     "detach": _loaded_args,
     "use": _use_args,
+    "sandbox": _sandbox_args,
     "theme": _theme_args,
     "viewer": _viewer_args,
     "copy": _copy_args,

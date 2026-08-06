@@ -22,6 +22,7 @@ from ifc_console.events import EventBus
 from ifc_console.mcp.envelope import ToolError
 from ifc_console.policy.modes import Mode, PolicyEngine
 from ifc_console.recents import RecentsStore
+from ifc_console.sandbox.runner import SandboxRunner
 from ifc_console.session.backups import BackupStore
 from ifc_console.session.model import ModelSession
 from ifc_console.settings import SettingsStore
@@ -85,6 +86,7 @@ class AppCore:
         self.transport = transport
         self.viewer = ViewerState()
         self.viewer_hub = ViewerHub(self)
+        self.sandbox = SandboxRunner(self)
         self.server_running = False
         self._mcp = None  # set by attach_mcp once the tool server exists
         self._viewer_tools_registered = False
@@ -526,6 +528,13 @@ class AppCore:
                     f"{attachment.path.name} does not look like a {kind.upper()} file.",
                     f"Pass a {kind.upper()} file; find_files(kinds=['{kind}']) lists them.",
                 )
+            if not attachment.path.is_file():
+                raise ToolError(
+                    "FILE_NOT_FOUND",
+                    f"{attachment.path} (alias {attachment.alias!r}) no longer exists.",
+                    "The file moved or was deleted. Call attach again with the "
+                    "current path, or detach the stale alias.",
+                )
             return attachment.path
         path = self.require_path_allowed(Path(ref))
         if not path.is_file():
@@ -569,6 +578,7 @@ class AppCore:
 
     def shutdown(self) -> None:
         self.audit.end()
+        self.sandbox.close()
         self.models.close_all()
 
     # -- logging helper used by the tool wrapper ------------------------------------

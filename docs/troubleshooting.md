@@ -170,6 +170,30 @@ the model. `/mode edit` (with a y/n confirm) lets it make changes; `/mode ask`
 locks the model again. For per-change prompts, use your AI client's own
 permission settings.
 
+### Code runs say `sandboxed: false`
+
+The sandbox reads the model from disk, so it steps aside whenever the copy on
+disk is not the model the console is holding. `/sandbox` tells you which reason
+applies. The usual ones:
+
+- **Unsaved changes.** Save the model and the sandbox comes back.
+- **Mutating code.** Edits always run in-process, by design; there is nothing to
+  fix.
+- **The model is over `sandbox.max_model_mb`** (512 MB by default). Raise it if
+  the extra memory is acceptable.
+- **The worker could not start.** `/sandbox` shows the last error. Run
+  `/sandbox restart` to try again.
+
+Set `sandbox.mode` to `strict` if you would rather a read-only run fail than
+quietly run with in-process guards only.
+
+### The first code run after opening a model is slow
+
+The sandbox worker starts on demand and reads its own copy of the model, so the
+first `execute_ifc_code` call pays for both. Set `sandbox.warm_on_load true` to
+move that cost to model-open time instead. It costs a second resident copy of
+the model for the whole session, which is why it is off by default.
+
 ### Windows: firewall prompt on startup
 
 ifc-console binds to 127.0.0.1 only, which normally avoids firewall prompts. If one

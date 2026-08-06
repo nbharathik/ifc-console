@@ -16,6 +16,13 @@ One process, one active model, several faces over one core.
             |  ModelRegistry: one worker thread per resident model    |
             |  SettingsStore  RecentsStore  BackupStore  AuditLog     |
             +---------------------------------------------------------+
+                                     |
+                        pipe, length-prefixed JSON
+                                     v
+            +---------------------------------------------------------+
+            |  Sandbox worker process (read-only copy of the model)   |
+            |  audit-hook policy: no network, no processes, no creds  |
+            +---------------------------------------------------------+
 ```
 
 ## Key decisions
@@ -40,6 +47,12 @@ One process, one active model, several faces over one core.
 - **The revision counter.** Every load, mutation, and save bumps
   `ModelSession.revision`. `fingerprint-revision` is the ETag for the live
   model, which is how viewer tabs know when to refetch.
+- **The sandbox is a process, and the policy is an audit hook.** Namespace
+  guards can be escaped; CPython audit hooks cannot be removed and fire inside
+  the C implementation of each dangerous call, so that is where the boundary
+  lives. The worker holds a read-only copy read from disk, which is why only
+  non-mutating runs can use it, and why a mutation that slips past the
+  classifier lands on a copy nobody keeps.
 - **Build-free viewer.** The SPA is plain ES modules plus vendored three.js and
   web-ifc WASM, served from package data. No Node in the build, no CDN at
   runtime.

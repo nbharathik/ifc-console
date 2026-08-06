@@ -208,8 +208,13 @@ def _inside_any(path: Path, roots: list[Path]) -> bool:
     return False
 
 
-def make_open_guard(allowed_dirs: list[Path], allow_system: bool) -> Callable:
+def make_open_guard(
+    allowed_dirs: list[Path],
+    allow_system: bool,
+    deny_dirs: list[Path] | None = None,
+) -> Callable:
     real_open = _builtins.open
+    denied = list(deny_dirs or ())
 
     def guarded_open(file: Any, mode: str = "r", *args: Any, **kwargs: Any):
         if allow_system:
@@ -223,6 +228,11 @@ def make_open_guard(allowed_dirs: list[Path], allow_system: bool) -> Callable:
             p = Path(os.fspath(file)).resolve()
         except TypeError as exc:
             raise GuardError("only path-based, read-mode open() is allowed") from exc
+        # Mirrors the sandbox deny list: the console home holds the bearer
+        # token, and a session launched from the home directory would
+        # otherwise have it inside an allowed root.
+        if _inside_any(p, denied):
+            raise GuardError(f"reading {p} is blocked: it is inside the ifc-console home")
         if not _inside_any(p, allowed_dirs):
             allowed = ", ".join(str(r) for r in allowed_dirs) or "(none)"
             raise GuardError(f"reading {p} is outside the allowed directories: {allowed}")
@@ -287,12 +297,13 @@ def build_namespace(
     allow_system: bool,
     allowed_dirs: list[Path],
     extra_system_modules: tuple[str, ...] = (),
+    deny_dirs: list[Path] | None = None,
 ) -> dict[str, Any]:
     """Fresh globals dict for one execute_ifc_code run."""
     ns_builtins = {
         k: v for k, v in vars(_builtins).items() if k not in _REMOVED_BUILTINS
     }
-    ns_builtins["open"] = make_open_guard(allowed_dirs, allow_system)
+    ns_builtins["open"] = make_open_guard(allowed_dirs, allow_system, deny_dirs)
     ns_builtins["__import__"] = make_import_guard(
         allow_system=allow_system,
         allow_mutation=allow_mutation,

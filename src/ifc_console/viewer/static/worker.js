@@ -17,6 +17,10 @@ function ensureApi() {
   return apiPromise;
 }
 
+// Fetch and instantiate the wasm now: the main thread is still downloading the
+// model, so this costs nothing and the first parse starts immediately.
+ensureApi().catch(() => { /* surfaced when a parse actually arrives */ });
+
 let queue = Promise.resolve();
 
 self.onmessage = (event) => {

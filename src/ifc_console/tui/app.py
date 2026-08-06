@@ -137,14 +137,17 @@ class IfcConsoleApp(App):
         app = build_http_app(self.core, mcp)
         self._server = make_uvicorn_server(app, port)
         self._server_task = asyncio.create_task(self._serve())
-        for _ in range(100):  # wait up to ~5s for the port to come up
+        # ~5 s budget. The first ticks are short because a loopback server is
+        # usually up in about 10 ms, and create_task means the first check runs
+        # before _serve has executed a single line.
+        for attempt in range(280):
+            await asyncio.sleep(0.002 if attempt < 50 else 0.02)
             if getattr(self._server, "started", False):
                 self.core.server_running = True
                 self.core.events.emit("server_started", url=self.core.mcp_url, port=port)
                 return True
             if self._server_task.done():
                 break
-            await asyncio.sleep(0.05)
         exc = self._server_task.exception() if self._server_task.done() else None
         if exc is not None:
             reason = str(exc)

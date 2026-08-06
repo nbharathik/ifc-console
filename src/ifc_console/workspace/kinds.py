@@ -47,6 +47,13 @@ _BY_SUFFIX = {suffix: k for k in KINDS for suffix in k.suffixes}
 
 SUPPORTED_SUFFIXES = tuple(sorted(_BY_SUFFIX))
 
+# Suffixes worth opening to identify. Anything else is decided by extension
+# alone, so a workspace scan does not read the head of every file in the tree.
+SNIFFABLE_SUFFIXES = frozenset(
+    {*SUPPORTED_SUFFIXES, "", ".txt", ".dat", ".xml", ".json", ".zip", ".step", ".stp",
+     ".spf", ".p21"}
+)
+
 
 def kind(name: str) -> FileKind | None:
     return _BY_NAME.get(name)
@@ -98,7 +105,11 @@ def detect_kind(path: Path) -> str | None:
     The sniff wins over the extension: a .ifc holding XML is IFC either way,
     but a .txt holding an SPF header is still an IFC model.
     """
-    by_suffix = _BY_SUFFIX.get(path.suffix.lower())
+    suffix = path.suffix.lower()
+    by_suffix = _BY_SUFFIX.get(suffix)
+    if suffix not in SNIFFABLE_SUFFIXES:
+        # A suffix we neither support nor mistrust: no read, no kind.
+        return by_suffix.name if by_suffix else None
     sniffed = _sniff(_head(path), path)
     if sniffed is not None:
         return sniffed

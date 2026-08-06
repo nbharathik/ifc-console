@@ -9,6 +9,7 @@ instead of in extra windows. Only confirmations appear as modal cards.
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
@@ -86,8 +87,11 @@ class CommandInput(Input):
 
     def _recall(self, line: str) -> None:
         # recalled lines are for editing or resubmitting; popping the menu
-        # over every history step would fight the browsing
-        self.console.suppress_menu()
+        # over every history step would fight the browsing. Only arm the flag
+        # when the value really changes, or the Input.Changed that clears it
+        # never fires and the next completion is swallowed.
+        if self.value != line:
+            self.console.suppress_menu()
         self.value = line
         self.cursor_position = len(line)
 
@@ -158,6 +162,7 @@ class ConsoleScreen(Screen):
         self._menu_state = completion.MenuState()
         self._menu_suppressed = False
         self._files_cache: list[tuple[Path, str]] | None = None
+        self._files_scanning = False
         self._loading: str | None = None
         self.refresh_status()
         self.query_one("#prompt", CommandInput).focus()
@@ -243,6 +248,7 @@ class ConsoleScreen(Screen):
             "model_loaded",
             "model_mutated",
             "session_tainted",
+            "sandbox_contained",
             "viewer_enabled",
             "viewer_disabled",
         ):
@@ -266,6 +272,11 @@ class ConsoleScreen(Screen):
                 self.print(
                     "[red]session tainted[/red]: guarded code changed the in-memory "
                     "model; /reload restores a pristine copy"
+                )
+            elif etype == "sandbox_contained":
+                self.print(
+                    "[yellow]sandbox contained a change[/yellow]: read-only code "
+                    "mutated the sandbox's throwaway copy. Your model is untouched"
                 )
         elif etype in (
             "model_attached",
@@ -318,11 +329,23 @@ class ConsoleScreen(Screen):
         """Skip the next auto-refresh (history recall must not pop the menu)."""
         self._menu_suppressed = True
 
-    def _files(self) -> list[tuple[Path, str]]:
-        # one filesystem scan per /open menu session, not one per keystroke
-        if self._files_cache is None:
-            self._files_cache = list(discover_ifc_files(self.core))
+    def _files(self) -> list[tuple[Path, str]] | None:
+        """Cached IFC scan for the /open menu, or None while it is running.
+
+        The scan hits the filesystem, so it goes to a thread exactly as the
+        file picker does; a synchronous call here freezes the prompt.
+        """
+        if self._files_cache is None and not self._files_scanning:
+            self._files_scanning = True
+            self.run_worker(self._scan_files(), exclusive=True, group="open-scan")
         return self._files_cache
+
+    async def _scan_files(self) -> None:
+        try:
+            self._files_cache = await asyncio.to_thread(discover_ifc_files, self.core)
+        finally:
+            self._files_scanning = False
+        self.refresh_menu()
 
     def refresh_menu(self) -> None:
         prompt = self.query_one("#prompt", CommandInput)

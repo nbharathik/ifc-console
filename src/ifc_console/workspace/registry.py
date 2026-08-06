@@ -233,14 +233,8 @@ class ModelRegistry:
         return attachment
 
     def unique_attachment_alias(self, path: Path, alias: str | None = None) -> str:
-        base = slug(alias or path.stem)
-        occupied = self.sessions.keys() | self.attachments.keys()
-        if base not in occupied:
-            return base
-        n = 2
-        while f"{base}-{n}" in occupied:
-            n += 1
-        return f"{base}-{n}"
+        # Models and attachments share one id space, so this is make_id.
+        return self.make_id(path, alias)
 
     # -- reporting ------------------------------------------------------------
     def model_rows(self) -> list[dict[str, Any]]:

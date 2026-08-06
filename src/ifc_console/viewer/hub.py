@@ -82,6 +82,9 @@ class ViewerHub:
         # Model bytes cached per ETag so several tabs (or a reconnect) do not
         # re-serialize the same revision; a few entries cover model switching.
         self._model_cache: dict[str, bytes] = {}
+        # Serializes the cache-miss path so N tabs opening together queue one
+        # serialization on the model worker, not N.
+        self.model_bytes_lock = asyncio.Lock()
         core.events.subscribe(self._on_event)
 
     # -- connection registry ---------------------------------------------------
@@ -388,10 +391,9 @@ class ViewerHub:
         """EventBus subscriber: translate core events into protocol frames.
 
         Emission is synchronous on the caller's thread; sends are scheduled on
-        the running loop. With no clients connected this is a no-op.
+        the running loop. Housekeeping runs even with no clients connected, so
+        a tab opened later does not inherit the previous model's state.
         """
-        if not self.clients:
-            return
         etype = event.get("type")
         reasons = {"model_loaded": "loaded", "model_saved": "saved", "model_mutated": "edited"}
         frame: dict | None = None
@@ -420,7 +422,7 @@ class ViewerHub:
             frame = {"type": "mode_changed", "mode": event.get("mode")}
         elif etype == "theme_changed":
             frame = {"type": "theme", "theme": event.get("theme")}
-        if frame is None:
+        if frame is None or not self.clients:
             return
         try:
             loop = asyncio.get_running_loop()

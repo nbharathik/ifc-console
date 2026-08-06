@@ -78,6 +78,7 @@ nearby IFC files, filtered as you type.
 | `/viewer [off\|url]` | open the 3D viewer (its 4 MCP tools register live); `off` closes tabs and removes them, `url` prints the link |
 | `/connect [client\|all]` | shared-console bridge setup for claude-code, claude-desktop, cursor, vscode, codex |
 | `/copy [client\|url\|viewer\|token]` | copy a complete client setup, MCP URL, viewer URL, or token |
+| `/sandbox [auto\|strict\|off\|restart]` | show or change where AI-generated code runs, and what it may touch |
 | `/status` | session summary |
 | `/model` | entity counts for the loaded model |
 | `/save [path]` | save in place, or save-as to a new path |

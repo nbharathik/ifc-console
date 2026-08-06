@@ -54,6 +54,7 @@ nav:
       - The console: console.md
       - Connecting clients: clients.md
       - Safety model: safety.md
+      - Code sandbox: sandbox.md
       - 3D viewer: viewer.md
   - Reference:
       - MCP tools: tools.md

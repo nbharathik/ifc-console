@@ -99,9 +99,11 @@ async def test_use_and_detach_complete_loaded_ids(console: FakeConsole, project:
 async def test_use_and_detach_report_unknown_ids(console: FakeConsole, work_model: Path) -> None:
     await commands.dispatch(console, str(work_model))
     await commands.dispatch(console, "/use ghost")
-    # the message and the hint both land, so the user knows what to do next
+    # the message and the hint both land, so the user knows what to do next.
+    # The hint is the console wording, not the MCP tool name the LLM is told.
     assert "no resident model" in console.text
-    assert "list_models" in console.text
+    assert "/models" in console.text
+    assert "list_models" not in console.text
     console.lines.clear()
     await commands.dispatch(console, "/detach ghost")
     assert "no resident model" in console.text

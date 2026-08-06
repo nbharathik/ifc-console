@@ -92,9 +92,6 @@ class FileEntry:
         k = kind(self.kind)
         return k.opens_as if k else "unknown"
 
-    @property
-    def is_model(self) -> bool:
-        return self.opens_as == "model" and self.kind == "ifc"
 
     def to_dict(self) -> dict[str, Any]:
         k = kind(self.kind)
@@ -152,12 +149,17 @@ class WorkspaceIndex:
         except OSError:
             return []
 
-        def contained(path: Path) -> bool:
+        def contained(path: Path) -> Path | None:
+            """The resolved path if it really sits under root, else None.
+
+            Returns the resolution so the caller does not repeat the syscall.
+            """
             try:
-                path.resolve().relative_to(root)
-                return True
+                resolved = path.resolve()
+                resolved.relative_to(root)
+                return resolved
             except (OSError, ValueError):
-                return False
+                return None
 
         found: list[Path] = []
         stack: list[tuple[Path, int]] = [(root, 0)]
@@ -174,14 +176,17 @@ class WorkspaceIndex:
                     # a symlinked directory could smuggle an outside tree into
                     # the index; the allowed-dir check stays the real gate
                     is_junction = getattr(child, "is_junction", lambda: False)
-                    if child.is_symlink() or is_junction() or not contained(child):
+                    if child.is_symlink() or is_junction():
+                        continue
+                    resolved = contained(child)
+                    if resolved is None:
                         continue
                     if child.is_dir():
                         if level + 1 < self.depth and not child.name.startswith((".", "__")):
                             stack.append((child, level + 1))
                         continue
                     if child.is_file():
-                        found.append(child)
+                        found.append(resolved)
                 except OSError:
                     continue
         return found
@@ -205,11 +210,13 @@ class WorkspaceIndex:
                 resolved_root = root.resolve()
             except OSError:
                 continue
-            for path in self._walk(root, self.cap - len(candidates)):
+            for resolved in self._walk(root, self.cap - len(candidates)):
+                # _walk already resolved and range-checked against its own
+                # root; this guard covers the primary_root case where the two
+                # roots differ.
                 try:
-                    resolved = path.resolve()
                     resolved.relative_to(resolved_root)
-                except (OSError, ValueError):
+                except ValueError:
                     continue
                 if resolved not in seen:
                     seen.add(resolved)
@@ -248,10 +255,6 @@ class WorkspaceIndex:
         self.entries = entries
         self.scanned_at = datetime.now(timezone.utc).isoformat()
         return entries
-
-    def ensure_scanned(self) -> None:
-        if self.scanned_at is None:
-            self.scan()
 
     # -- lookup --------------------------------------------------------------
     def by_kind(self, kinds: Iterable[str] | None = None) -> list[FileEntry]:

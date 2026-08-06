@@ -30,9 +30,9 @@ defaults < user file < project file < project local file < env vars < CLI flags
     files may only set a safe subset: `mode.default`, `server.port`,
     `exec.timeout_seconds`, `exec.output_char_limit`, `viewer.enabled_default`,
     `viewer.max_model_mb`, `logging.level`, `tui.theme`. Anything else in a
-    project file is ignored with a warning. In particular, `files.allowed_dirs`
-    and `exec.allow_system_access` can only come from your own user file,
-    environment, or flags.
+    project file is ignored with a warning. In particular, `files.allowed_dirs`,
+    `exec.allow_system_access`, and every `sandbox.*` key can only come from
+    your own user file, environment, or flags.
 
 ## All keys
 
@@ -46,6 +46,12 @@ defaults < user file < project file < project local file < env vars < CLI flags
 | `exec.output_char_limit` | `40000` | envelope size cap before truncation |
 | `exec.allow_system_access` | `false` | permit SYSTEM-class code in edit mode |
 | `exec.system_modules_extra` | `[]` | extra module names to treat as SYSTEM |
+| `sandbox.mode` | `auto` | where read-only code runs: `auto` (sandbox, fall back if it cannot), `strict` (refuse instead of falling back), `off` |
+| `sandbox.memory_mb` | `2048` | memory cap for the sandbox worker |
+| `sandbox.max_model_mb` | `512` | models above this are not copied into the sandbox |
+| `sandbox.startup_timeout` | `120` | seconds to wait for the worker to start |
+| `sandbox.load_timeout` | `600` | seconds to wait for the worker to read the model |
+| `sandbox.warm_on_load` | `false` | start the worker when a model loads, so the first code run is not the slow one |
 | `files.allowed_dirs` | `[]` | standing allowed directories |
 | `files.backup_retention` | `20` | backups kept per model file |
 | `files.follow_symlinks` | `false` | resolve symlinks when listing |

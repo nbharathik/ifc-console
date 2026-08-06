@@ -62,8 +62,8 @@ stays the norm):
 - list_models shows what is resident, which model is active, and the memory
   budget. Read tools take an optional `model` parameter naming a model_id;
   omit it for the active model.
-- Only the active model can be changed or saved; a write aimed at an attached
-  model fails with MODEL_READ_ONLY. set_active_model moves that focus.
+- Writes always target the active model: save_ifc_file and execute_ifc_code
+  take no `model` argument. set_active_model moves that focus.
   Adding a folder to the allowed roots is the user's job (/workspace <dir>).
 
 Selector examples for query_elements: `IfcWall` or `IfcWall, IfcSlab` or

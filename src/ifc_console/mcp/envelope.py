@@ -39,6 +39,7 @@ ERROR_CODES = (
     "NO_MODEL_LOADED",
     "PATH_NOT_ALLOWED",
     "RESULT_TOO_LARGE",
+    "SANDBOX_UNAVAILABLE",
     "TOO_MANY_ELEMENTS",
     "UNSAVED_CHANGES",
     "VIEWER_ERROR",
@@ -75,7 +76,8 @@ class Envelope(BaseModel):
     meta: dict[str, Any] = Field(default_factory=dict)
 
 
-def _dump(obj: Any) -> str:
+def dump(obj: Any) -> str:
+    """The canonical JSON rendering for every MCP payload."""
     return json.dumps(obj, indent=2, ensure_ascii=False, default=str)
 
 
@@ -89,7 +91,7 @@ def ok(
 ) -> Envelope:
     payload = _jsonable(data)
     merged = _jsonable({**meta, **extra_meta})
-    dumped = _dump({"ok": True, "data": payload, "meta": merged})
+    dumped = dump({"ok": True, "data": payload, "meta": merged})
     if len(dumped) > char_limit:
         payload = {
             "preview": dumped[:char_limit],

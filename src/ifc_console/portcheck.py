@@ -43,21 +43,43 @@ def port_status(port: int, token: str | None = None) -> tuple[str, str]:
         except OSError:
             pass
 
+    # Ask anonymously first. Whoever holds the port is not trusted yet, and the
+    # token is the credential for this machine's console.
+    status, body = _probe(port, None)
+    if status is None:
+        return FOREIGN, "an application that is not ifc-console (no HTTP answer)"
+    if not token or "ifc-console" not in body:
+        return classify_http(status, body)
+    # It identifies as ifc-console, so it is worth asking whether it is ours.
+    status, body = _probe(port, token)
+    if status is None:
+        return FOREIGN, "an application that is not ifc-console (no HTTP answer)"
+    return classify_http(status, body)
+
+
+class _NoRedirects(urllib.request.HTTPRedirectHandler):
+    """A redirect would carry the Authorization header to another host."""
+
+    def redirect_request(self, *args, **kwargs):
+        return None
+
+
+def _probe(port: int, token: str | None) -> tuple[int | None, str]:
     request = urllib.request.Request(f"http://127.0.0.1:{port}/api/status")
     if token:
         request.add_header("Authorization", f"Bearer {token}")
+    opener = urllib.request.build_opener(_NoRedirects)
     try:
-        with urllib.request.urlopen(request, timeout=2) as response:
-            body = response.read(4096).decode("utf-8", errors="replace")
-            return classify_http(response.status, body)
+        with opener.open(request, timeout=2) as response:
+            return response.status, response.read(4096).decode("utf-8", errors="replace")
     except urllib.error.HTTPError as exc:
         try:
             body = exc.read(4096).decode("utf-8", errors="replace")
         except Exception:
             body = ""
-        return classify_http(exc.code, body)
+        return exc.code, body
     except Exception:
-        return FOREIGN, "an application that is not ifc-console (no HTTP answer)"
+        return None, ""
 
 
 def conflict_hint(kind: str, port: int) -> str:

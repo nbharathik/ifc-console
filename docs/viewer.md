@@ -57,9 +57,22 @@ also restyles the viewer live, 3D canvas included.
   toggling whole branches. Clicking a node selects its elements without moving
   the camera. Long names never truncate: the panel scrolls and shows a hover
   tooltip.
+- **Search** (the box above the tree): type a name, or an IFC class such as
+  `IfcDoor`. Two or more characters replace the tree with a result list showing
+  name, class, storey, and type. Click a hit to select it, double-click to zoom
+  to it, or use **Select** and **Isolate** to act on the whole result set.
+  ++esc++ or the × clears it and brings the tree back. The matching happens on
+  the server against the live model, so results include unsaved edits. Anything
+  with an `=` in it, or a bare `IfcSomething`, goes through the full IfcOpenShell
+  selector grammar, so `Pset_WallCommon.FireRating=F30` works too.
 - **View tools** (the stack icon, top left of the canvas): isolate or hide the
   selection, show all, zoom to the selection or the whole model, and jump to
   view presets (top, front, iso, ...).
+- **Saved views.** Park the camera somewhere useful, name it, and press Save.
+  The view reappears in the same panel and restores the exact camera position
+  and target on one click. Saving under an existing name replaces it; the ×
+  deletes it. Views are stored per browser (up to 12) and survive reloads and
+  model edits, so "the entrance from the north" stays one click away.
 - **Section planes.** Cut the model on X, Y, or Z. Tick an axis and a slider
   appears; drag it to move the cut, or use the flip button to keep the other
   side. Axes combine, so X plus Z gives a corner cut and Z alone gives the
@@ -70,9 +83,11 @@ also restyles the viewer live, 3D canvas included.
   Z components in the model's own axes, and stays on screen until you clear it.
   Sectioned-away surfaces cannot be measured, so a cut behaves like the real
   edge. ++esc++ leaves the tool.
-- **Properties** (right): attributes, type, container chain, and property sets of
-  the last clicked element, straight from the server (same source as
-  `get_element`). Each section folds.
+- **Properties** (right): attributes, type, container chain, material (including
+  layer sets with thicknesses), property sets, quantities, and the element's
+  parts, all for the last clicked element and straight from the server (same
+  source as `get_element`). Each section folds; a part with geometry selects when
+  clicked.
 - **Arrange the layout.** Drag the divider next to a panel to resize it
   (double-click resets), or hide either panel with the two toggle buttons. Sizes
   persist per browser.

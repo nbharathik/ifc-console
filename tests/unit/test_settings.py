@@ -107,6 +107,39 @@ def test_invalid_value_rejected(tmp_path: Path) -> None:
         pass
 
 
+def test_string_settings_keep_boolean_looking_words(tmp_path: Path) -> None:
+    """`off`, `on`, `no` are values, not booleans, when the field is a string."""
+    home = tmp_path / "h"
+    store = SettingsStore(home=home, project_dir=tmp_path, env={})
+    store.ensure_dirs()
+    store.set_user("sandbox.mode", "off")
+    assert store.settings.sandbox.mode == "off"
+    reread = SettingsStore(home=home, project_dir=tmp_path, env={})
+    assert reread.settings.sandbox.mode == "off"
+
+
+def test_env_layer_coerces_per_field_type(tmp_path: Path) -> None:
+    store = SettingsStore(
+        home=tmp_path / "h",
+        project_dir=tmp_path,
+        env={
+            "IFC_CONSOLE_SANDBOX_MODE": "off",
+            "IFC_CONSOLE_SANDBOX_WARM_ON_LOAD": "on",
+            "IFC_CONSOLE_SANDBOX_MEMORY_MB": "4096",
+        },
+    )
+    assert store.settings.sandbox.mode == "off"
+    assert store.settings.sandbox.warm_on_load is True
+    assert store.settings.sandbox.memory_mb == 4096
+
+
+def test_project_files_cannot_weaken_the_sandbox(tmp_path: Path) -> None:
+    _write(tmp_path / ".ifc-console" / "settings.json", {"sandbox": {"mode": "off"}})
+    store = SettingsStore(home=tmp_path / "h", project_dir=tmp_path, env={})
+    assert store.settings.sandbox.mode == "auto"
+    assert any("sandbox.mode" in w for w in store.warnings)
+
+
 def test_unknown_key_warns(tmp_path: Path) -> None:
     _write(tmp_path / "h" / "settings.json", {"nope": {"x": 1}})
     store = SettingsStore(home=tmp_path / "h", project_dir=tmp_path, env={})

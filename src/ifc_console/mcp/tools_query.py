@@ -10,7 +10,12 @@ from pydantic import Field
 from ifc_console import __version__
 from ifc_console.ifc.elements import INCLUDE_ALLOWED, INCLUDE_DEFAULT, element_detail
 from ifc_console.ifc.info import build_project_info
-from ifc_console.ifc.query import ALLOWED_FIELDS, DEFAULT_FIELDS, run_query
+from ifc_console.ifc.query import (
+    ALLOWED_FIELDS,
+    DEFAULT_FIELDS,
+    run_query,
+    unknown_classes,
+)
 from ifc_console.ifc.schema_docs import build_schema_docs
 from ifc_console.ifc.spatial import build_spatial_tree
 from ifc_console.mcp.compat import MCPServer, ToolAnnotations
@@ -265,8 +270,19 @@ def register(mcp: MCPServer, core: AppCore) -> None:
             ),
             timeout=120,
         )
+        data: dict[str, Any] = {"rows": rows}
+        if not total:
+            # An empty result and a misspelled class look identical; say which.
+            unknown = await s.run(lambda: unknown_classes(s.ifc, query), timeout=30)
+            if unknown:
+                data["unknown_classes"] = unknown
+                data["schema"] = s.schema
+                data["note"] = (
+                    f"{', '.join(unknown)} is not defined in {s.schema}; check the "
+                    "spelling with get_schema_docs."
+                )
         return ok(
-            {"rows": rows},
+            data,
             core.session_meta(),
             char_limit=limit_,
             total=total,

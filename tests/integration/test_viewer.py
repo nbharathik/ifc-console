@@ -144,6 +144,21 @@ async def test_model_ifc_serves_unsaved_edits(viewer_core):
     assert "RenamedLive" in response.text
 
 
+async def test_model_ifc_streams_the_file_while_it_matches_the_model(viewer_core):
+    """A clean .ifc is served straight from disk: no re-serialization."""
+    client = _http_client(viewer_core)
+    assert viewer_core.session.matches_disk()
+    response = client.get("/api/model.ifc", headers=_auth(viewer_core))
+    assert response.status_code == 200
+    assert response.content == viewer_core.session.path.read_bytes()
+    # nothing was serialized, so the byte cache stayed empty
+    assert viewer_core.viewer_hub.cached_model_bytes(response.headers["etag"]) is None
+
+    # once the model diverges from the file, the fast path must switch off
+    viewer_core.session.mark_dirty()
+    assert not viewer_core.session.matches_disk()
+
+
 async def test_model_ifc_no_model_404(core):
     core.enable_viewer()
     client = _http_client(core)
@@ -177,6 +192,67 @@ async def test_element_endpoint(viewer_core):
 
     missing = client.get("/api/elements/notaguid1234", headers=_auth(viewer_core))
     assert missing.status_code == 404
+
+
+async def test_element_endpoint_includes_materials_and_parts(viewer_core):
+    client = _http_client(viewer_core)
+
+    def first_wall_guid() -> str:
+        return viewer_core.session.ifc.by_type("IfcWall")[0].GlobalId
+
+    guid = await viewer_core.session.run(first_wall_guid)
+    detail = client.get(f"/api/elements/{guid}", headers=_auth(viewer_core)).json()
+    assert "materials" in detail
+    assert isinstance(detail["decomposition"], list)
+
+
+# ---------------------------------------------------------------------- search
+async def test_search_matches_a_class_through_the_selector(viewer_core):
+    client = _http_client(viewer_core)
+    payload = client.get("/api/search?q=IfcWall", headers=_auth(viewer_core)).json()
+    assert payload["mode"] == "selector"
+    assert payload["total"] == 3
+    assert {row["class"] for row in payload["results"]} == {"IfcWall"}
+    assert all("global_id" in row for row in payload["results"])
+
+
+async def test_search_falls_back_to_substring_text(viewer_core):
+    client = _http_client(viewer_core)
+    payload = client.get("/api/search?q=wall", headers=_auth(viewer_core)).json()
+    assert payload["mode"] == "text"
+    assert payload["total"] >= 3
+
+
+async def test_search_ignores_too_short_a_term(viewer_core):
+    client = _http_client(viewer_core)
+    payload = client.get("/api/search?q=a", headers=_auth(viewer_core)).json()
+    assert payload["results"] == [] and payload["total"] == 0
+
+
+async def test_search_reports_truncation_without_dropping_the_count(viewer_core):
+    client = _http_client(viewer_core)
+    payload = client.get("/api/search?q=IfcWall&limit=1", headers=_auth(viewer_core)).json()
+    assert payload["total"] == 3
+    assert payload["truncated"] is True
+    assert len(payload["results"]) == 1
+
+
+async def test_search_survives_nonsense_selector_syntax(viewer_core):
+    client = _http_client(viewer_core)
+    response = client.get("/api/search?q=Ifc%3D%3D%3D", headers=_auth(viewer_core))
+    assert response.status_code == 200
+    assert response.json()["total"] == 0
+
+
+async def test_search_requires_a_token(viewer_core):
+    client = _http_client(viewer_core)
+    assert client.get("/api/search?q=IfcWall").status_code == 401
+
+
+async def test_search_404s_while_the_viewer_is_disabled(core, work_model: Path):
+    await core.open_model(work_model)
+    client = _http_client(core)
+    assert client.get("/api/search?q=IfcWall", headers=_auth(core)).status_code == 404
 
 
 async def test_api_status_shape(viewer_core):
@@ -534,9 +610,8 @@ async def test_viewer_commits_complete_model_with_one_loading_state(viewer_core)
     assert "progressiveTick" not in source
     assert "onChunk: (msg) => chunks.push(msg)" in source
     assert "decideOrigin(parsed.chunks)" in source
-    assert source.index("decideOrigin(parsed.chunks)") < source.index(
-        "for (const chunk of parsed.chunks) ingestChunk(chunk)"
-    )
+    # the origin must be fixed before any chunk is ingested against it
+    assert source.index("decideOrigin(parsed.chunks)") < source.index("\n    ingestChunk(chunk);")
 
 
 async def test_static_assets_revalidate_so_upgrades_take_effect(viewer_core):

@@ -40,6 +40,10 @@ class ModelSession:
         self.size_bytes: int = 0
         self.loaded_at: str | None = None
         self.fingerprint: str | None = None
+        # (size, mtime_ns) of the file at the last load or save. While it still
+        # matches and nothing is dirty, the bytes on disk ARE the model, so the
+        # viewer can stream the file instead of re-serializing it.
+        self.disk_key: tuple[int, int] | None = None
         self.dirty: bool = False
         self.tainted: bool = False
         self.poisoned: bool = False
@@ -48,6 +52,9 @@ class ModelSession:
         self.revision: int = 0
         # Remembered across reload()/recover(); 0 disables the size guard.
         self._max_open_mb: int = 0
+        # Bumped by recover(); a job from an older generation must not write
+        # its results back into the session.
+        self._generation: int = 0
         self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ifc-model")
 
     @property
@@ -57,6 +64,20 @@ class ModelSession:
     @property
     def name(self) -> str | None:
         return self.path.name if self.path else None
+
+    def matches_disk(self) -> bool:
+        """True when the file on disk is byte-identical to the loaded model.
+
+        Lets a reader stream the file rather than pay a full re-serialization.
+        Deliberately conservative: any doubt answers False.
+        """
+        if self.dirty or self.tainted or self.path is None or self.disk_key is None:
+            return False
+        try:
+            stat = self.path.stat()
+        except OSError:
+            return False
+        return (stat.st_size, stat.st_mtime_ns) == self.disk_key
 
     def require_loaded(self) -> None:
         if not self.loaded:
@@ -107,13 +128,15 @@ class ModelSession:
             raise ToolError(timeout_code, message, hint) from None
 
     # -- lifecycle -------------------------------------------------------------
-    def _load_sync(self, path: Path) -> None:
+    def _load_sync(self, path: Path, generation: int) -> None:
         # Imported here, not at module top: ifcopenshell costs about a second
         # and `ifc-console --help` should never pay it.
         import ifcopenshell
 
         ifc = ifcopenshell.open(str(path))
         stat = path.stat()
+        if generation != self._generation:
+            return  # a recover() superseded this job; its result is stale
         self.ifc = ifc
         self.path = path
         self.schema = getattr(ifc, "schema", None)
@@ -122,6 +145,7 @@ class ModelSession:
         self.fingerprint = hashlib.sha256(
             f"{path}|{stat.st_size}|{stat.st_mtime_ns}".encode()
         ).hexdigest()[:12]
+        self.disk_key = (stat.st_size, stat.st_mtime_ns)
         self.dirty = False
         self.tainted = False
         self.revision += 1
@@ -148,7 +172,10 @@ class ModelSession:
                     "ifc-console terminal.",
                 )
         try:
-            await self.run(lambda: self._load_sync(path), timeout=_LOAD_TIMEOUT)
+            generation = self._generation
+            await self.run(
+                lambda: self._load_sync(path, generation), timeout=_LOAD_TIMEOUT
+            )
         except ToolError:
             raise
         except Exception as exc:
@@ -165,6 +192,10 @@ class ModelSession:
 
     async def recover(self) -> None:
         """Replace a poisoned worker and reload from disk (console /reload)."""
+        # Fence the abandoned job: it keeps running on the old pool and would
+        # otherwise write a stale fingerprint, revision and dirty flag into the
+        # freshly reloaded session minutes later.
+        self._generation += 1
         old = self._pool
         self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ifc-model")
         old.shutdown(wait=False, cancel_futures=True)
@@ -188,7 +219,9 @@ class ModelSession:
             return None
 
     # -- saving ---------------------------------------------------------------
-    def _save_sync(self, target: Path, backups: BackupStore) -> dict[str, Any]:
+    def _save_sync(
+        self, target: Path, backups: BackupStore, generation: int
+    ) -> dict[str, Any]:
         backup_path = backups.backup(target)  # a failed backup aborts the save
         tmp = target.with_name(f".{target.name}.{secrets.token_hex(4)}.tmp")
         try:
@@ -202,9 +235,23 @@ class ModelSession:
         with target.open("rb") as fh:
             for chunk in iter(lambda: fh.read(1 << 20), b""):
                 digest.update(chunk)
-        self.fingerprint = digest.hexdigest()[:12]
+        fingerprint = digest.hexdigest()[:12]
+        saved_stat = target.stat()
+        if generation != self._generation:
+            # The file is written, but a recover() has replaced this session's
+            # model since. Reporting the write back would mark the reloaded
+            # model clean and hand the viewer a fingerprint it is not holding.
+            return {
+                "path": str(target),
+                "size_bytes": saved_stat.st_size,
+                "backup_path": str(backup_path) if backup_path else None,
+                "fingerprint": fingerprint,
+                "superseded": True,
+            }
+        self.fingerprint = fingerprint
         self.path = target
-        self.size_bytes = target.stat().st_size
+        self.size_bytes = saved_stat.st_size
+        self.disk_key = (saved_stat.st_size, saved_stat.st_mtime_ns)
         self.dirty = False
         self.revision += 1
         return {
@@ -217,8 +264,10 @@ class ModelSession:
     async def save(self, target: Path, backups: BackupStore) -> dict[str, Any]:
         self.require_loaded()
         self.require_writable()
+        generation = self._generation
         return await self.run(
-            lambda: self._save_sync(target.resolve(), backups), timeout=_SAVE_TIMEOUT
+            lambda: self._save_sync(target.resolve(), backups, generation),
+            timeout=_SAVE_TIMEOUT,
         )
 
     # -- envelope meta -----------------------------------------------------------

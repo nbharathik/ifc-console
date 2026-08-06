@@ -17,12 +17,15 @@ from ifc_console.policy.guards import GuardError, build_namespace, entity_mutati
 from ifc_console.session import executor
 
 
-def _run(code: str, ifc, *, allow_mutation: bool, allow_system: bool = False, allowed=()):
+def _run(
+    code: str, ifc, *, allow_mutation: bool, allow_system: bool = False, allowed=(), denied=()
+):
     ns = build_namespace(
         ifc,
         allow_mutation=allow_mutation,
         allow_system=allow_system,
         allowed_dirs=[Path(p) for p in allowed],
+        deny_dirs=[Path(p) for p in denied],
     )
     return executor.run(executor.prepare(code), ns, output_limit=40_000)
 
@@ -176,6 +179,34 @@ def test_system_import_allowed_only_with_system_flag(ifc4) -> None:
         _run("import os", ifc4, allow_mutation=True, allow_system=False)
     # with the system flag, the import goes through (edit-approved SYSTEM run)
     _run("import os\nos.getcwd()", ifc4, allow_mutation=True, allow_system=True)
+
+
+def test_denied_dirs_beat_an_allowed_root(ifc4, tmp_path) -> None:
+    """The console home holds the bearer token. Launching from a directory that
+    contains it must not make it readable."""
+    home = tmp_path / ".ifc-console"
+    home.mkdir()
+    (home / "token").write_text("SECRET-TOKEN")
+
+    with pytest.raises(GuardError):
+        _run(
+            f"print(open(r'{home / 'token'}').read())",
+            ifc4,
+            allow_mutation=False,
+            allowed=[tmp_path],
+            denied=[home],
+        )
+
+    readable = tmp_path / "plain.txt"
+    readable.write_text("fine")
+    ok = _run(
+        f"print(open(r'{readable}').read())",
+        ifc4,
+        allow_mutation=False,
+        allowed=[tmp_path],
+        denied=[home],
+    )
+    assert "fine" in ok.stdout
 
 
 class TestKnownBypasses:

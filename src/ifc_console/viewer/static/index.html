@@ -70,7 +70,23 @@
   <main id="layout">
     <aside id="tree-panel">
       <div class="panel-title">Model tree</div>
-      <div class="panel-body"><div id="tree" role="tree"></div></div>
+      <div class="panel-search">
+        <input id="search-input" type="search" autocomplete="off" spellcheck="false"
+               placeholder="Search name or IfcWall"
+               title="Type a name, or an IFC class / selector such as IfcWall or Name=/W.*/"
+               aria-label="Search elements">
+        <button id="search-clear" class="icon-btn" hidden
+                aria-label="Clear search" title="Clear search (Esc)">
+          <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
+            <path d="M4.5 4.5 11.5 11.5M11.5 4.5 4.5 11.5" stroke="currentColor"
+                  stroke-width="1.4" stroke-linecap="round"/>
+          </svg>
+        </button>
+      </div>
+      <div class="panel-body">
+        <div id="search-results" hidden></div>
+        <div id="tree" role="tree"></div>
+      </div>
     </aside>
     <div id="split-tree" class="splitter" role="separator" aria-orientation="vertical"
          aria-label="Resize model tree"
@@ -122,6 +138,14 @@
           <button data-view="left">Left</button>
           <button data-view="right">Right</button>
           <button data-view="iso">Iso</button>
+        </div>
+        <div class="popover-title">Saved views</div>
+        <div id="saved-views" class="saved-views"></div>
+        <div class="save-view-row">
+          <input id="view-name" type="text" autocomplete="off" spellcheck="false"
+                 placeholder="Name this view" aria-label="Saved view name">
+          <button id="tool-save-view" class="tool-btn"
+                  title="Store the current camera position">Save</button>
         </div>
         <div class="popover-title">Section</div>
         <div id="section-rows" class="section-rows">

@@ -173,6 +173,15 @@ class TestAgainstAModel:
         classes = {info["class"] for info in report["info"].values()}
         assert not classes & set(NON_PHYSICAL)
 
+    def test_non_physical_subtypes_are_excluded_too(self, ifc4):
+        """IFC4 adds IfcOpeningStandardCase; an exact class-name test misses it."""
+        from ifc_console.ifc.clash import _non_physical
+
+        standard = ifc4.create_entity("IfcOpeningStandardCase")
+        cache: dict[str, bool] = {}
+        assert _non_physical(standard, cache)
+        assert not _non_physical(ifc4.by_type("IfcWall")[0], cache)
+
     def test_element_cap_is_enforced(self, ifc4):
         with pytest.raises(ToolError) as excinfo:
             prepare_set(ifc4, "IfcWall", max_elements=1)
