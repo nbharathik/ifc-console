@@ -86,6 +86,7 @@ class IfcConsoleApp(App):
             self.register_theme(theme)
         self.apply_theme(self.core.ui_theme)
         self.core.start_audit()
+        self.core.start_knowledge()
         self._unsubscribe = self.core.events.subscribe(self._on_event)
         await self.push_screen(ConsoleScreen())
 
@@ -144,6 +145,7 @@ class IfcConsoleApp(App):
             await asyncio.sleep(0.002 if attempt < 50 else 0.02)
             if getattr(self._server, "started", False):
                 self.core.server_running = True
+                self.core.server_error = None
                 self.core.events.emit("server_started", url=self.core.mcp_url, port=port)
                 return True
             if self._server_task.done():
@@ -162,6 +164,7 @@ class IfcConsoleApp(App):
                 reason = f"port {port} is in use by {detail}; {conflict_hint(kind, port)}"
         self._server = None
         self._server_task = None
+        self.core.server_error = reason
         self.core.events.emit("server_failed", reason=reason, port=port)
         return False
 

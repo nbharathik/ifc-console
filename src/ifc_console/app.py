@@ -7,7 +7,9 @@ CLI, and viewer are all thin faces over it.
 from __future__ import annotations
 
 import asyncio
+import logging
 import secrets
+import threading
 import time
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
@@ -18,7 +20,9 @@ from typing import Any, Literal
 
 from ifc_console import __version__
 from ifc_console.audit import AuditLog
+from ifc_console.chat import ChatState
 from ifc_console.events import EventBus
+from ifc_console.knowledge import KnowledgeBase
 from ifc_console.mcp.envelope import ToolError
 from ifc_console.policy.modes import Mode, PolicyEngine
 from ifc_console.recents import RecentsStore
@@ -50,6 +54,7 @@ class AppCore:
         extra_allowed_dirs: tuple[Path, ...] = (),
         transport: str = "http",
         viewer: bool | None = None,
+        chat: bool | None = None,
     ) -> None:
         store.ensure_dirs()
         self.store = store
@@ -85,9 +90,20 @@ class AppCore:
         self.port = port or s.server.port
         self.transport = transport
         self.viewer = ViewerState()
+        self.chat = ChatState(
+            provider=s.chat.provider, model=s.chat.model, base_url=s.chat.base_url
+        )
         self.viewer_hub = ViewerHub(self)
         self.sandbox = SandboxRunner(self)
+        self.knowledge = KnowledgeBase(store.home, schemas=tuple(s.knowledge.schemas))
+        self._knowledge_thread: threading.Thread | None = None
         self.server_running = False
+        # Why the last start attempt failed, so /viewer and /chat can say more
+        # than "not running" (a port conflict is the usual reason).
+        self.server_error: str | None = None
+        # Every enveloped tool, by name. The MCP layer fills this in as it
+        # registers; the SDK calls straight into it.
+        self.tool_functions: dict[str, Callable] = {}
         self._mcp = None  # set by attach_mcp once the tool server exists
         self._viewer_tools_registered = False
         self._read_cache: dict[tuple, Any] = {}
@@ -99,6 +115,9 @@ class AppCore:
         want_viewer = s.viewer.enabled_default if viewer is None else viewer
         if want_viewer:
             self.enable_viewer()
+        want_chat = s.chat.enabled_default if chat is None else chat
+        if want_chat:
+            self.enable_chat()
 
         self.allowed_dirs: list[Path] = []
         for d in s.files.allowed_dirs:
@@ -168,6 +187,30 @@ class AppCore:
         self._sync_viewer_tools()
         self.audit.record("viewer_enabled", url=self.viewer.url)
         self.events.emit("viewer_enabled", url=self.viewer.url)
+
+    # -- chat panel -----------------------------------------------------------
+    @property
+    def chat_url(self) -> str:
+        return f"http://127.0.0.1:{self.port}/chat#t={self.token}"
+
+    def enable_chat(self) -> None:
+        """Turn the chat panel on (idempotent). No key is read or stored here."""
+        if self.chat.enabled:
+            return
+        self.chat.enabled = True
+        self.chat.url = self.chat_url
+        self.audit.record("chat_enabled", provider=self.chat.provider, model=self.chat.model)
+        self.events.emit("chat_enabled", url=self.chat.url)
+
+    def disable_chat(self) -> None:
+        """Turn it off: routes 404 again and any session key is dropped."""
+        if not self.chat.enabled:
+            return
+        self.chat.enabled = False
+        self.chat.url = None
+        self.chat.keys.clear()
+        self.audit.record("chat_disabled")
+        self.events.emit("chat_disabled")
 
     def disable_viewer(self) -> None:
         """Turn the viewer surface off: routes 404 again and the viewer tools
@@ -576,10 +619,38 @@ class AppCore:
         self.events.emit("theme_changed", theme=resolved)
         return resolved
 
+    # -- knowledge base -------------------------------------------------------
+    def start_knowledge(self) -> None:
+        """Build the reference index in the background if it is missing.
+
+        It reads only the installed ifcopenshell, so there is nothing to fetch
+        and nothing to wait for; searches before it lands just return empty.
+        """
+        s = self.settings.knowledge
+        if not (s.enabled and s.autobuild) or self.knowledge.ready:
+            return
+        if self._knowledge_thread is not None and self._knowledge_thread.is_alive():
+            return
+
+        def job() -> None:
+            try:
+                info = self.knowledge.build()
+                self.events.emit("knowledge_ready", **{"total": info.get("total", 0)})
+            except Exception:
+                logging.getLogger("ifc-console.knowledge").warning(
+                    "knowledge index build failed", exc_info=True
+                )
+
+        self._knowledge_thread = threading.Thread(
+            target=job, name="ifc-console-knowledge", daemon=True
+        )
+        self._knowledge_thread.start()
+
     def shutdown(self) -> None:
         self.audit.end()
         self.sandbox.close()
         self.models.close_all()
+        self.knowledge.close()
 
     # -- logging helper used by the tool wrapper ------------------------------------
     def tool_event(self, tool: str, *, ok: bool, duration_ms: int, detail: str = "") -> None:

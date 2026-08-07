@@ -12,7 +12,6 @@ import asyncio
 import hmac
 import json
 import logging
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from starlette.responses import FileResponse, JSONResponse, Response
@@ -23,13 +22,15 @@ from starlette.websockets import WebSocket, WebSocketDisconnect
 from ifc_console.ifc.elements import element_detail
 from ifc_console.ifc.query import element_row, search_elements
 from ifc_console.mcp.envelope import ToolError
+from ifc_console.viewer import assets
 
 if TYPE_CHECKING:
     from ifc_console.app import AppCore
 
 log = logging.getLogger("ifc-console.viewer")
 
-STATIC_DIR = Path(__file__).parent / "static"
+# Resolved through the companion package; None when the extra is missing.
+STATIC_DIR = assets.static_dir()
 
 # How long a fresh socket may sit silent before the hello must have arrived.
 _HELLO_TIMEOUT = 5.0
@@ -77,8 +78,11 @@ def build_viewer_routes(core: AppCore) -> list[Any]:
     async def viewer_shell(request) -> Response:
         if not core.viewer.enabled:
             return _disabled_response()
+        directory = assets.static_dir()
+        if directory is None:
+            return JSONResponse({"error": "viewer_not_installed", "hint": assets.INSTALL_HINT}, 501)
         return FileResponse(
-            STATIC_DIR / "index.html",
+            directory / "index.html",
             headers={"Content-Security-Policy": _CSP, "Cache-Control": "no-cache"},
         )
 
@@ -282,4 +286,4 @@ class _RevalidatingStatic(StaticFiles):
 def build_static_app() -> StaticFiles:
     """Static assets (JS/CSS/WASM). Public by design: they are generic vendor
     code plus our SPA source and contain nothing session-specific."""
-    return _RevalidatingStatic(directory=STATIC_DIR)
+    return _RevalidatingStatic(directory=assets.require_static_dir())

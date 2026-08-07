@@ -158,6 +158,22 @@ def build_parser() -> argparse.ArgumentParser:
     tok_path = tok_sub.add_parser("path", help="Print where the token is stored.")
     tok_path.set_defaults(func=_cmd_token_path)
 
+    kb = sub.add_parser("knowledge", help="The offline IFC reference index.")
+    kb_sub = kb.add_subparsers(dest="knowledge_cmd", required=True)
+    kb_build = kb_sub.add_parser("build", help="Build or rebuild the index.")
+    kb_build.add_argument("--force", action="store_true", help="Rebuild even if it exists.")
+    kb_build.set_defaults(func=_cmd_knowledge_build)
+    kb_status = kb_sub.add_parser("status", help="Show where the index is and what it holds.")
+    kb_status.add_argument("--json", action="store_true")
+    kb_status.set_defaults(func=_cmd_knowledge_status)
+    kb_search = kb_sub.add_parser("search", help="Search the index from the shell.")
+    kb_search.add_argument("query", nargs="+")
+    kb_search.add_argument("--kind", action="append", default=None, metavar="KIND")
+    kb_search.add_argument("--schema", default=None)
+    kb_search.add_argument("--limit", type=int, default=10)
+    kb_search.add_argument("--json", action="store_true")
+    kb_search.set_defaults(func=_cmd_knowledge_search)
+
     ses = sub.add_parser("sessions", help="Audit-log sessions.")
     ses_sub = ses.add_subparsers(dest="sessions_cmd", required=True)
     ses_list = ses_sub.add_parser("list")
@@ -180,6 +196,11 @@ def _add_run_flags(parser: argparse.ArgumentParser) -> None:
         "--viewer",
         action="store_true",
         help="Enable the local 3D web viewer (needs the HTTP server: TUI or --http).",
+    )
+    parser.add_argument(
+        "--chat",
+        action="store_true",
+        help="Enable the browser chat panel (talks to the LLM provider you configure).",
     )
     parser.add_argument(
         "--allow-dir",
@@ -227,6 +248,10 @@ def _make_core(args: argparse.Namespace, store: SettingsStore, transport: str) -
                 file=sys.stderr,
             )
         viewer_flag = False
+    # the chat panel is served over the same HTTP surface as the viewer
+    chat_flag = True if getattr(args, "chat", False) else None
+    if transport == "stdio":
+        chat_flag = False
     from ifc_console.app import AppCore
 
     return AppCore(
@@ -236,6 +261,7 @@ def _make_core(args: argparse.Namespace, store: SettingsStore, transport: str) -
         extra_allowed_dirs=extra,
         transport=transport,
         viewer=viewer_flag,
+        chat=chat_flag,
     )
 
 
@@ -336,6 +362,7 @@ def _run_headless_http(args: argparse.Namespace) -> int:
     core = _make_core(args, store, transport="http")
     preload.release()
     core.start_audit()
+    core.start_knowledge()
     if args.file:
         rc = _load_model_blocking(core, args.file)
         if rc:
@@ -396,6 +423,7 @@ def _cmd_serve(args: argparse.Namespace) -> int:
     core = _make_core(args, store, transport="stdio")
     preload.release()
     core.start_audit()
+    core.start_knowledge()
     if args.file:
         rc = _load_model_blocking(core, args.file)
         if rc:
@@ -756,16 +784,18 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
     else:
         check("token", "ok", "per-run (server.persistent_token=false)")
 
-    from ifc_console.viewer.routes import STATIC_DIR
+    from ifc_console.viewer import assets as viewer_assets
 
+    static_dir = viewer_assets.static_dir()
     wanted = ("index.html", "app.js", "vendor/web-ifc.wasm", "vendor/three.module.min.js")
-    missing = [n for n in wanted if not (STATIC_DIR / n).exists()]
-    if missing:
-        check("viewer assets", "FAIL", f"missing: {', '.join(missing)}; reinstall ifc-console")
+    if static_dir is None:
+        check("viewer assets", "optional", viewer_assets.INSTALL_HINT)
+    elif missing := [n for n in wanted if not (static_dir / n).exists()]:
+        check("viewer assets", "FAIL", f"missing: {', '.join(missing)}; reinstall the viewer extra")
         rc = rc or 2
     else:
-        wasm_mb = (STATIC_DIR / "vendor/web-ifc.wasm").stat().st_size / 1_048_576
-        check("viewer assets", "ok", f"{STATIC_DIR} (web-ifc.wasm {wasm_mb:.1f} MB)")
+        wasm_mb = (static_dir / "vendor/web-ifc.wasm").stat().st_size / 1_048_576
+        check("viewer assets", "ok", f"{static_dir} (web-ifc.wasm {wasm_mb:.1f} MB)")
 
     mode = store.settings.sandbox.mode
     if mode == "off":
@@ -960,6 +990,66 @@ def _cmd_sessions_clear(_args: argparse.Namespace) -> int:
 
     n = AuditLog(store.sessions_dir).clear()
     print(f"removed {n} session(s)")
+    return 0
+
+
+# --------------------------------------------------------------------------- knowledge
+def _knowledge():
+    from ifc_console.knowledge import KnowledgeBase
+
+    store = _new_store()
+    store.ensure_dirs()
+    return KnowledgeBase(store.home, schemas=tuple(store.settings.knowledge.schemas))
+
+
+def _cmd_knowledge_build(args: argparse.Namespace) -> int:
+    kb = _knowledge()
+    print(f"building the reference index at {kb.path} …")
+    info = kb.build(force=args.force)
+    if not info.get("built"):
+        print("already built; --force rebuilds it")
+        return 0
+    counts = ", ".join(f"{k} {v}" for k, v in sorted(info["counts"].items()))
+    print(f"indexed {info['total']} records ({counts}), {info['size_bytes'] / 1e6:.1f} MB")
+    return 0
+
+
+def _cmd_knowledge_status(args: argparse.Namespace) -> int:
+    kb = _knowledge()
+    stats = kb.stats()
+    if args.json:
+        print(json.dumps({"path": str(kb.path), **stats}, indent=2, default=str))
+        return 0
+    if not stats["ready"]:
+        print(f"not built ({kb.path})\nbuild it with: ifc-console knowledge build")
+        return 1
+    counts = ", ".join(f"{k} {v}" for k, v in sorted(stats["counts"].items()))
+    print(f"index    {kb.path}")
+    print(f"records  {stats['total']} ({counts})")
+    print(f"search   {stats['search']}   ifcopenshell {stats.get('ifcopenshell', '?')}")
+    return 0
+
+
+def _cmd_knowledge_search(args: argparse.Namespace) -> int:
+    kb = _knowledge()
+    if not kb.ready:
+        print("the index is not built; run: ifc-console knowledge build")
+        return 1
+    hits = kb.search(
+        " ".join(args.query),
+        kind=tuple(args.kind) if args.kind else None,
+        schema=args.schema,
+        limit=args.limit,
+    )
+    if args.json:
+        print(json.dumps(hits, indent=2, default=str))
+        return 0
+    if not hits:
+        print("no matches")
+        return 1
+    for hit in hits:
+        schema = f" [{hit['schema']}]" if hit.get("schema") else ""
+        print(f"{hit['kind']:9} {hit['name']}{schema}\n    {hit['summary'][:100]}")
     return 0
 
 

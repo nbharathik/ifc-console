@@ -44,8 +44,14 @@ validation = [
     # and `ifc-console check --ids`.
     "ifctester>=0.8",
 ]
+viewer = [
+    # 8 MB of three.js, web-ifc WASM, and the viewer SPA. Optional so an
+    # install that only needs the MCP tools, the CLI, or the SDK stays small.
+    "ifc-console-viewer>=0.2,<1",
+]
 dev = [
     "httpx>=0.27",
+    "ifc-console-viewer",
     "ifctester>=0.8",
     "pytest>=8",
     "pytest-asyncio>=0.23",
@@ -74,7 +80,22 @@ packages = ["src/ifc_console"]
 [tool.hatch.build.targets.sdist]
 # tests stay in so packagers can run the suite; the lockfile and the README
 # screenshots are not used by any installer.
-exclude = ["uv.lock", "docs/assets/brand/*.png", "dev", "dist", ".github"]
+exclude = [
+    "uv.lock",
+    "docs/assets/brand/*.png",
+    "dev",
+    "dist",
+    ".github",
+    ".tmp",
+    "packages",
+    "site",
+]
+
+[tool.uv.workspace]
+members = ["packages/*"]
+
+[tool.uv.sources]
+ifc-console-viewer = { workspace = true }
 
 [tool.ruff]
 line-length = 100

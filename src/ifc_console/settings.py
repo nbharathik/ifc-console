@@ -92,6 +92,36 @@ class ViewerSettings(BaseModel):
     max_model_mb: int = Field(default=200, ge=1)
 
 
+class ChatSettings(BaseModel):
+    """The optional in-browser chat panel. Off unless you turn it on."""
+
+    enabled_default: bool = False
+    # openai | anthropic | openrouter | local
+    provider: str = Field(default="openai", pattern="^(openai|anthropic|openrouter|local)$")
+    model: str = ""
+    base_url: str = ""  # overrides the provider preset (a local vLLM, say)
+    # Lend the model the ifc-console tools. The ask/edit gate still applies.
+    tools: bool = True
+    max_tool_rounds: int = Field(default=8, ge=1, le=32)
+    # Refuse any provider URL that is not on this machine.
+    local_only: bool = False
+    # Covers the wait for the first token, not just the connect: a local model
+    # prefilling a long prompt can be quiet for a while.
+    timeout_s: int = Field(default=300, ge=10, le=3600)
+
+
+class KnowledgeSettings(BaseModel):
+    """The offline reference index. Built from the installed ifcopenshell."""
+
+    enabled: bool = True
+    # Build in the background on the first session that needs it. Off means
+    # the index is only built when asked (ifc-console knowledge build).
+    autobuild: bool = True
+    max_results: int = Field(default=10, ge=1, le=50)
+    # Index fewer schemas for a smaller, faster index.
+    schemas: list[str] = Field(default_factory=lambda: ["IFC2X3", "IFC4", "IFC4X3"])
+
+
 class RecentsSettings(BaseModel):
     max: int = Field(default=20, ge=1)
 
@@ -118,6 +148,8 @@ class Settings(BaseModel):
     files: FilesSettings = Field(default_factory=FilesSettings)
     workspace: WorkspaceSettings = Field(default_factory=WorkspaceSettings)
     viewer: ViewerSettings = Field(default_factory=ViewerSettings)
+    chat: ChatSettings = Field(default_factory=ChatSettings)
+    knowledge: KnowledgeSettings = Field(default_factory=KnowledgeSettings)
     recents: RecentsSettings = Field(default_factory=RecentsSettings)
     sessions: SessionsSettings = Field(default_factory=SessionsSettings)
     logging: LoggingSettings = Field(default_factory=LoggingSettings)
@@ -278,6 +310,10 @@ class SettingsStore:
     @property
     def backups_dir(self) -> Path:
         return self.home / "backups"
+
+    @property
+    def knowledge_dir(self) -> Path:
+        return self.home / "knowledge"
 
     @property
     def recents_file(self) -> Path:

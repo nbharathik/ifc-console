@@ -39,11 +39,16 @@ Workflow:
 2. Prefer structured tools (query_elements, get_element, get_psets,
    get_spatial_structure, validate_model, compute_quantities) over code; they
    are cheaper and safer.
-3. Check get_schema_docs before writing code against unfamiliar entities.
+3. Before writing code or a selector against anything unfamiliar, look it up:
+   get_schema_docs (entity, pset, or property), search_ifc_knowledge (plain
+   words across the schema, property sets, the ifcopenshell API, and verified
+   recipes), and get_api_docs (exact signature of an ifcopenshell.api call).
+   These are offline and cheap; guessing a property or API name is not.
 4. execute_ifc_code for anything the tools don't cover. Namespace: ifc,
    ifcopenshell, ifc_api, element_util, selector_util, unit_util, query(sel),
    by_class(name), psets(e), qtos(e), container(e), get_ifc_file(). stdout is
-   captured; a final bare expression is returned.
+   captured; a final bare expression is returned. In edit mode reach the API
+   as ifc_api.<module>.<function>(ifc, ...), e.g. ifc_api.pset.add_pset.
    For mutating runs, fill `description` with one line of intent; the user
    sees it in their terminal and audit log.
 5. After mutations the model is dirty (meta.dirty=true); finish the batch
@@ -92,7 +97,11 @@ only ever happen in the user's terminal.
 
 
 def enveloped(core: AppCore, tool_name: str) -> Callable:
-    """Wrap a tool coroutine: ToolError becomes an err envelope; audit + event on every call."""
+    """Wrap a tool coroutine: ToolError becomes an err envelope; audit + event on every call.
+
+    The wrapper is also recorded on the core, which is how the SDK calls the
+    very same function the MCP layer serves without a server or a socket.
+    """
 
     def decorate(fn: Callable[..., Awaitable[Any]]) -> Callable[..., Awaitable[Any]]:
         @functools.wraps(fn)
@@ -121,6 +130,7 @@ def enveloped(core: AppCore, tool_name: str) -> Callable:
                     detail=detail,
                 )
 
+        core.tool_functions[tool_name] = wrapper
         return wrapper
 
     return decorate
@@ -135,6 +145,7 @@ def build_mcp(core: AppCore) -> MCPServer:
         tools_analysis,
         tools_exec,
         tools_files,
+        tools_knowledge,
         tools_query,
         tools_workspace,
     )
@@ -150,6 +161,7 @@ def build_mcp(core: AppCore) -> MCPServer:
     with contextlib.suppress(AttributeError):
         mcp._mcp_server.version = __version__
     tools_query.register(mcp, core)
+    tools_knowledge.register(mcp, core)
     tools_analysis.register(mcp, core)
     tools_exec.register(mcp, core)
     tools_files.register(mcp, core)
@@ -186,9 +198,11 @@ class TokenAuthMiddleware:
     generic vendor JS/WASM plus our SPA source, nothing session-specific.
     """
 
-    PROTECTED = ("/mcp", "/api", "/ws", "/viewer")
+    PROTECTED = ("/mcp", "/api", "/ws", "/viewer", "/chat")
     PUBLIC = ("/viewer/static",)
-    TOKEN_EXEMPT = ("/viewer", "/ws")  # exact paths; boundary check still applies
+    # exact paths a browser navigates to; the page authenticates itself with
+    # the fragment token. The boundary check still applies.
+    TOKEN_EXEMPT = ("/viewer", "/chat", "/ws")
 
     def __init__(self, app: Any, token: str, protected: tuple[str, ...] = PROTECTED):
         self.app = app
@@ -275,6 +289,8 @@ def build_http_app(core: AppCore, mcp: MCPServer) -> Any:
     from starlette.responses import JSONResponse
     from starlette.routing import Mount, Route
 
+    from ifc_console.chat.routes import build_chat_routes
+    from ifc_console.viewer import assets as viewer_assets
     from ifc_console.viewer.routes import build_static_app, build_viewer_routes
 
     app = mcp.streamable_http_app()
@@ -302,7 +318,9 @@ def build_http_app(core: AppCore, mcp: MCPServer) -> Any:
 
     extra: list[Any] = [Route("/api/status", status, methods=["GET"])]
     extra.extend(build_viewer_routes(core))
-    extra.append(Mount("/viewer/static", app=build_static_app(), name="viewer-static"))
+    extra.extend(build_chat_routes(core))
+    if viewer_assets.available():
+        extra.append(Mount("/viewer/static", app=build_static_app(), name="viewer-static"))
     app.router.routes[0:0] = extra
     return TokenAuthMiddleware(app, core.token)
 

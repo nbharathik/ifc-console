@@ -86,10 +86,50 @@ Up to 100 GlobalIds. `psets_only` / `qtos_only` filters. Lighter than
 
 ### get_schema_docs
 
-`entity` (e.g. `IfcWall`) and optional `attribute`. Official schema
-documentation: definition, attribute table with types and optionality,
-supertype chain, predefined types. Works with no model loaded (defaults to
-IFC4).
+| arg | type | default |
+| --- | ---- | ------- |
+| `entity` | e.g. `IfcWall` | none |
+| `attribute` | attribute of that entity | none |
+| `pset` | e.g. `Pset_WallCommon` | none |
+| `property` | e.g. `FireRating` | none |
+| `schema` | IFC2X3, IFC4, IFC4X3 | the loaded model, else IFC4 |
+
+Official schema documentation, three ways. `entity` returns the definition, the
+attribute table with types and optionality, the supertype chain, the predefined
+types, and the property sets that apply to it. `pset` returns one property set:
+every property with its data type, enumerated values, and the entities it
+applies to. `property` is the reverse lookup, naming the property sets that
+define a property. Name at least one of the three. Works with no model loaded.
+
+## Knowledge tools
+
+Offline reference built from the installed ifcopenshell. No network. See
+[Knowledge index](knowledge.md).
+
+### search_ifc_knowledge
+
+| arg | type | default |
+| --- | ---- | ------- |
+| `query` | plain words | required |
+| `kind` | entity, pset, property, type, api, recipe | all |
+| `schema` | IFC2X3, IFC4, IFC4X3 | the loaded model |
+| `limit` | int 1-50 | 10 |
+
+Ranked hits across the IFC schema, property sets, every `ifcopenshell.api`
+function, and the verified recipe cookbook. Each hit carries a `key`, a
+summary, and a snippet. Fails with `KNOWLEDGE_NOT_READY` while the index is
+still building.
+
+### get_knowledge_record
+
+`key` from a search hit (e.g. `api:pset.add_pset`, `recipe:rename-elements`).
+Returns the full text.
+
+### get_api_docs
+
+`function` as `module.function` (e.g. `pset.add_pset`), or `search` in plain
+words, or neither to list the API modules. Returns the exact call signature and
+docstring. An unknown name comes back with the closest matches in the hint.
 
 ## Analysis tools
 

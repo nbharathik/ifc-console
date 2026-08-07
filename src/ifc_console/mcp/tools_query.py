@@ -16,7 +16,7 @@ from ifc_console.ifc.query import (
     run_query,
     unknown_classes,
 )
-from ifc_console.ifc.schema_docs import build_schema_docs
+from ifc_console.ifc.schema_docs import build_pset_docs, build_schema_docs, find_property
 from ifc_console.ifc.spatial import build_spatial_tree
 from ifc_console.mcp.compat import MCPServer, ToolAnnotations
 from ifc_console.mcp.envelope import Envelope, ToolError, ok
@@ -398,18 +398,47 @@ def register(mcp: MCPServer, core: AppCore) -> None:
     @mcp.tool(
         annotations=QUERY_ANN,
         description=(
-            "[QUERY] Official IFC schema documentation for an entity (and "
-            "optionally one attribute): definition text, attribute list with types "
-            "and optionality, supertype chain, predefined-type values. Use before "
-            "writing execute_ifc_code against unfamiliar classes. Works without a "
-            "loaded model (defaults to IFC4)."
+            "[QUERY] Official IFC schema documentation, three ways. `entity` "
+            "gives the definition, attributes with types and optionality, the "
+            "supertype chain, predefined-type values, and the property sets that "
+            "apply to it. `pset` gives one property set: every property with its "
+            "data type, enumerated values, and which entities it applies to. "
+            "`property` is the reverse lookup, naming the property sets that "
+            "define a property such as FireRating. Use before writing "
+            "execute_ifc_code or a selector against unfamiliar classes. Works "
+            "without a loaded model (defaults to IFC4)."
         ),
     )
     @enveloped(core, "get_schema_docs")
     async def get_schema_docs(
-        entity: Annotated[str, Field(description="e.g. IfcWall")],
+        entity: Annotated[str | None, Field(description="e.g. IfcWall")] = None,
         attribute: Annotated[str | None, Field(description="Optional attribute name.")] = None,
+        pset: Annotated[
+            str | None,
+            Field(description="Property or quantity set name, e.g. Pset_WallCommon."),
+        ] = None,
+        property: Annotated[
+            str | None,
+            Field(description="Property name to look up, e.g. FireRating."),
+        ] = None,
+        schema: Annotated[
+            str | None,
+            Field(description="IFC2X3, IFC4, or IFC4X3. Defaults to the loaded model."),
+        ] = None,
     ) -> Envelope:
-        schema = core.session.schema if core.session.loaded else "IFC4"
-        data = build_schema_docs(schema or "IFC4", entity, attribute)
+        target = schema or (core.session.schema if core.session.loaded else "IFC4") or "IFC4"
+        if not (entity or pset or property):
+            raise ToolError(
+                "INVALID_INPUT",
+                "name one of entity, pset, or property.",
+                "get_schema_docs(entity='IfcWall'), get_schema_docs(pset='Pset_WallCommon'), "
+                "or get_schema_docs(property='FireRating').",
+            )
+        data: dict[str, Any] = {}
+        if entity:
+            data.update(build_schema_docs(target, entity, attribute))
+        if pset:
+            data["property_set"] = build_pset_docs(target, pset)
+        if property:
+            data["property_lookup"] = find_property(target, property)
         return ok(data, core.session_meta(), char_limit=limit_)

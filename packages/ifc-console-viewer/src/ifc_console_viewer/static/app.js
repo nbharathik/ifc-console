@@ -25,9 +25,11 @@ import { OrbitControls } from "./vendor/OrbitControls.js";
 // The token arrives in the URL fragment so it never reaches the server or its
 // logs; keep it per-tab and scrub it from the address bar immediately.
 const hashParams = new URLSearchParams(location.hash.replace(/^#/, ""));
+// read the query before scrubbing; ?chat=1 opens the split view on load
+const queryParams = new URLSearchParams(location.search);
 const token = hashParams.get("t") || sessionStorage.getItem("ifc-console-token") || "";
 if (token) sessionStorage.setItem("ifc-console-token", token);
-if (hashParams.has("t")) history.replaceState(null, "", location.pathname);
+if (hashParams.has("t")) history.replaceState(null, "", location.pathname + location.search);
 
 async function api(path, options = {}) {
   const headers = { Authorization: `Bearer ${token}`, ...(options.headers || {}) };
@@ -2339,6 +2341,8 @@ function setModelInfo(status) {
   }
   document.title = status && status.model
     ? `${status.model} · ifc-console viewer` : "ifc-console viewer";
+  // the chat header names the open file and the mode; keep it in step
+  chatPanel?.refresh();
 }
 
 async function refreshStatus() {
@@ -2834,6 +2838,62 @@ axesBox.addEventListener("change", () => {
 applySceneSettings();
 renderSavedViews();
 
+// ---------------------------------------------------------------- chat dock
+// The panel is a separate module and only loaded when asked for, so a viewer
+// session that never opens the chat pays nothing for it.
+const chatDock = $("chat-dock");
+const chatResize = $("chat-dock-resize");
+const chatBtn = $("btn-chat");
+let chatPanel = null;
+
+async function setChat(open) {
+  if (open && !chatPanel) {
+    const { mountChat } = await import("/viewer/static/chat.js");
+    chatPanel = mountChat(chatDock, { onClose: () => setChat(false) });
+  }
+  chatDock.hidden = !open;
+  chatResize.hidden = !open;
+  chatBtn.setAttribute("aria-pressed", String(open));
+  // three panels plus the 3D view do not fit a normal window; the properties
+  // panel is the one the chat replaces, so fold it away rather than letterbox
+  // the model.
+  const props = $("btn-panel-props");
+  if (open && window.innerWidth < 1500 && props.getAttribute("aria-pressed") === "true") {
+    props.click();
+  }
+  uiState.chatOpen = open;
+  saveUi();
+  if (open) {
+    if (uiState.chatWidth) chatDock.style.width = uiState.chatWidth + "px";
+    chatPanel.focus();
+  }
+  resize();
+}
+
+chatBtn.addEventListener("click", () => setChat(chatDock.hidden));
+
+chatResize.addEventListener("pointerdown", (e) => {
+  e.preventDefault();
+  chatResize.setPointerCapture(e.pointerId);
+  const startX = e.clientX;
+  const startWidth = chatDock.getBoundingClientRect().width;
+  const move = (ev) => {
+    const width = Math.max(280, Math.min(window.innerWidth * 0.6, startWidth - (ev.clientX - startX)));
+    chatDock.style.width = width + "px";
+    uiState.chatWidth = Math.round(width);
+    resize();
+  };
+  const up = () => {
+    chatResize.removeEventListener("pointermove", move);
+    chatResize.removeEventListener("pointerup", up);
+    saveUi();
+  };
+  chatResize.addEventListener("pointermove", move);
+  chatResize.addEventListener("pointerup", up);
+});
+
+if (uiState.chatOpen || queryParams.get("chat") === "1") setChat(true);
+
 window.addEventListener("keydown", (e) => {
   if (e.key === "Escape") {
     // an active tool owns Escape first, then the popovers
@@ -2846,6 +2906,8 @@ window.addEventListener("keydown", (e) => {
     setMeasureMode(!measureMode);
   } else if (e.key === "f") {
     fitTo(null);
+  } else if (e.key === "c") {
+    setChat(chatDock.hidden);
   } else if (e.key === "g") {
     uiState.grid = uiState.grid !== true;
     gridBox.checked = uiState.grid;

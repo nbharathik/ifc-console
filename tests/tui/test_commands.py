@@ -264,7 +264,7 @@ async def test_sandbox_rejects_an_unknown_option(console: FakeConsole) -> None:
 async def test_model_counts(console: FakeConsole, work_model: Path) -> None:
     await commands.dispatch(console, f"/open {work_model}")
     console.clear_log()
-    await commands.dispatch(console, "/model")
+    await commands.dispatch(console, "/info")
     assert "IfcWall" in console.text
 
 
@@ -317,8 +317,120 @@ async def test_settings_list_and_set(console: FakeConsole) -> None:
 
 async def test_viewer_url_requires_server(console: FakeConsole) -> None:
     await commands.dispatch(console, "/viewer url")
-    assert "server is not running" in console.text
+    assert "server is still starting" in console.text
     console.core.server_running = True
     console.clear_log()
     await commands.dispatch(console, "/viewer url")
     assert "/viewer#t=" in console.text
+
+
+# ------------------------------------------------------- 0.2 command rework
+async def test_renamed_commands_still_work_and_say_where_they_went(console) -> None:
+    await commands.dispatch(console, "/model")
+    assert "/model is now /info" in console.text
+
+
+async def test_file_with_a_path_opens_it_and_without_one_opens_the_picker(
+    console, work_model: Path
+) -> None:
+    await commands.dispatch(console, "/file")
+    assert console.picker_opened == 1
+    await commands.dispatch(console, f"/file {work_model}")
+    assert console.core.session.loaded
+
+
+async def test_file_with_a_plain_word_filters_the_picker(console) -> None:
+    await commands.dispatch(console, "/file tower")
+    assert console.picker_opened == 1
+
+
+async def test_help_explains_one_command(console) -> None:
+    await commands.dispatch(console, "/help file")
+    assert "/file [path|filter]" in console.text
+    assert "examples" in console.text
+
+
+async def test_help_names_the_old_command_name(console) -> None:
+    await commands.dispatch(console, "/help info")
+    assert "also answers to /model" in console.text
+
+
+async def test_help_groups_every_command(console) -> None:
+    await commands.dispatch(console, "/help")
+    for group in commands._GROUPS:
+        assert group in console.text
+    ungrouped = [c.name for c in commands.REGISTRY.values() if c.group not in commands._GROUPS]
+    assert not ungrouped, f"commands missing from the help groups: {ungrouped}"
+
+
+async def test_kb_reports_when_the_index_is_missing(console) -> None:
+    await commands.dispatch(console, "/kb")
+    assert "not built" in console.text or "building" in console.text
+
+
+# ------------------------------------------------------------- the chat panel
+async def test_chat_enables_the_panel_and_warns_about_the_network(console) -> None:
+    console.core.server_running = True
+    await commands.dispatch(console, "/chat")
+    assert console.core.chat.enabled is True
+    assert "talks to the internet" in console.text
+    assert "/chat" in console.clipboard or "chat" in console.clipboard
+
+
+async def test_chat_split_turns_the_viewer_on_too(console) -> None:
+    console.core.server_running = True
+    await commands.dispatch(console, "/chat split")
+    assert console.core.viewer.enabled is True
+    assert "chat=1" in console.clipboard
+
+
+async def test_chat_off_drops_the_session_key(console) -> None:
+    console.core.server_running = True
+    await commands.dispatch(console, "/chat")
+    console.core.chat.keys["openai"] = "sk-test"
+    await commands.dispatch(console, "/chat off")
+    assert console.core.chat.enabled is False
+    assert console.core.chat.keys == {}
+
+
+async def test_chat_picks_a_provider(console) -> None:
+    console.core.server_running = True
+    await commands.dispatch(console, "/chat anthropic")
+    assert console.core.chat.provider == "anthropic"
+
+
+async def test_chat_rejects_an_unknown_option(console) -> None:
+    await commands.dispatch(console, "/chat nonsense")
+    assert "unknown option" in console.text
+    assert console.core.chat.enabled is False
+
+
+async def test_status_reports_the_chat_panel(console) -> None:
+    await commands.dispatch(console, "/status")
+    assert "chat     off" in console.text
+
+
+# ------------------------------------------------ when the server never bound
+async def test_browser_commands_explain_a_port_conflict(console) -> None:
+    """"server is not running" is useless on its own; say what is holding it."""
+    console.core.server_running = False
+    console.core.server_error = "port 8383 is in use by an ifc-console session"
+    for line in ("/chat", "/viewer"):
+        console.clear_log()
+        await commands.dispatch(console, line)
+        assert "port 8383 is in use" in console.text
+        assert "/port 8384" in console.text
+    assert console.core.chat.enabled is False
+
+
+async def test_browser_commands_say_when_the_server_is_still_starting(console) -> None:
+    console.core.server_running = False
+    console.core.server_error = None
+    await commands.dispatch(console, "/chat")
+    assert "still starting" in console.text
+
+
+async def test_status_shows_why_the_server_is_missing(console) -> None:
+    console.core.server_error = "port 8383 is in use by an ifc-console session"
+    await commands.dispatch(console, "/status")
+    assert "not running" in console.text and "port 8383" in console.text

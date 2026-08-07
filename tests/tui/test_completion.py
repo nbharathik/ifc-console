@@ -21,10 +21,10 @@ def test_slash_alone_lists_every_command(core) -> None:
 
 def test_prefix_filters_and_exact_name_ranks_first(core) -> None:
     state = completion.complete("/mo", core)
-    assert set(inserts(state)) == {"/mode", "/model", "/models"}
-    # "model" starts with "mode" too; the exactly-typed name must win the top
+    assert set(inserts(state)) == {"/mode", "/models"}
+    # "models" starts with "mode" too; the exactly-typed name must win the top
     state = completion.complete("/mode", core)
-    assert inserts(state) == ["/mode", "/model", "/models"]
+    assert inserts(state) == ["/mode", "/models"]
 
 
 def test_command_flags_decide_enter_behavior(core) -> None:
@@ -34,14 +34,14 @@ def test_command_flags_decide_enter_behavior(core) -> None:
     assert by_insert["/status"].terminal
     # argument values exist: Enter advances to them instead of running
     assert not by_insert["/mode"].terminal and by_insert["/mode"].advance
-    assert not by_insert["/open"].terminal
+    assert not by_insert["/use"].terminal
     # required freeform argument: advance, never auto-run
     assert not by_insert["/port"].terminal and by_insert["/port"].advance
 
 
 def test_unknown_and_ambiguous_names_offer_nothing(core) -> None:
     assert completion.complete("/nope ", core).empty
-    assert completion.complete("/mo x", core).empty  # /mode or /model? unclear
+    assert completion.complete("/mo x", core).empty  # /mode or /models? unclear
     assert completion.complete("hello", core).empty
     assert completion.complete("", core).empty
 
@@ -104,7 +104,7 @@ def test_open_lists_discovered_files(core, minimal_ifc4_path: Path, tmp_path: Pa
 
     state = completion.complete("/open bet", core, files)
     assert inserts(state) == [str(Path("sub") / "beta.ifc")]
-    assert state.apply(state.candidates[0]) == f"/open {Path('sub') / 'beta.ifc'}"
+    assert state.apply(state.candidates[0]) == f"/file {Path('sub') / 'beta.ifc'}"
 
 
 def test_port_shows_only_a_hint(core) -> None:

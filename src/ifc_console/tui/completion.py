@@ -87,6 +87,11 @@ def _resolve(name: str) -> commands.Command | None:
     return commands.REGISTRY[matches.pop()] if len(matches) == 1 else None
 
 
+# Commands that do something useful with no argument, so Enter runs them even
+# though Tab can still complete an argument. /file opens the file picker.
+_RUN_ON_ENTER = frozenset({"file"})
+
+
 # ------------------------------------------------------------- command names
 def _command_menu(token: str) -> MenuState:
     token = token.lower()
@@ -98,7 +103,7 @@ def _command_menu(token: str) -> MenuState:
         cmd = commands.REGISTRY[name]
         # a command whose argument can be completed (or is required) is not
         # done yet: picking it advances to the argument instead of running
-        has_more = name in _ARG_PROVIDERS or "<" in cmd.usage
+        has_more = (name in _ARG_PROVIDERS and name not in _RUN_ON_ENTER) or "<" in cmd.usage
         out.append(
             Candidate(
                 insert=f"/{name}",
@@ -213,7 +218,7 @@ def _open_args(_core: AppCore, rest: str, files: FilesProvider | None) -> MenuSt
     if entries is None:
         # the scan runs on a thread; the console refreshes the menu when it lands
         scanning = Candidate(insert="", display="(scanning for IFC files…)", disabled=True)
-        return MenuState(prefix="/open ", candidates=(scanning,), context="open")
+        return MenuState(prefix="/file ", candidates=(scanning,), context="open")
     entries = list(entries)
     token = rest.strip().lower()
     cwd = Path.cwd()
@@ -226,7 +231,7 @@ def _open_args(_core: AppCore, rest: str, files: FilesProvider | None) -> MenuSt
         except ValueError:
             shown = str(path)
         out.append(Candidate(insert=shown, annotation=detail, terminal=True))
-    return MenuState(prefix="/open ", candidates=tuple(out), context="open")
+    return MenuState(prefix="/file ", candidates=tuple(out), context="open")
 
 
 def _port_args(core: AppCore, rest: str, _files: FilesProvider | None) -> MenuState:
@@ -329,7 +334,7 @@ _ARG_PROVIDERS: dict[str, Provider] = {
     "viewer": _viewer_args,
     "copy": _copy_args,
     "connect": _connect_args,
-    "open": _open_args,
+    "file": _open_args,
     "port": _port_args,
     "settings": _settings_args,
 }

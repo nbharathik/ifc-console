@@ -21,13 +21,14 @@ jobs:
       - name: Sync dependencies
         run: uv sync --extra dev
       - name: Lint
-        run: uv run ruff check src tests
+        run: uv run ruff check src tests packages
       - name: Tests
         run: uv run pytest
-      - name: Wheel builds and contains viewer assets
+      - name: Both wheels build and the viewer stays out of the base one
         run: |
           uv build
-          uv run python -c "import zipfile,glob; names=zipfile.ZipFile(glob.glob('dist/*.whl')[0]).namelist(); assert any('web-ifc.wasm' in n for n in names), 'viewer assets missing from wheel'"
+          uv build --package ifc-console-viewer
+          uv run python scripts/check_wheels.py
 
   docs:
     runs-on: ubuntu-latest

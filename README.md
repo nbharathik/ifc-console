@@ -39,7 +39,8 @@ Install from [PyPI](https://pypi.org/project/ifc-console/) with
 [uv](https://docs.astral.sh/uv/) or pip:
 
 ```bash
-uv tool install ifc-console    # puts the ifc-console command on your PATH, viewer included
+uv tool install ifc-console            # the console, the MCP server, the SDK
+uv tool install "ifc-console[viewer]"  # and the optional 3D viewer bundle
 # or: pip install ifc-console
 ```
 
@@ -56,11 +57,12 @@ ifc-console
 The MCP server comes up right away. Then, in the console:
 
 ```
-> /file        pick a model from this folder
+> /file        pick a model from this folder (or /file <path>)
 > /connect all one-time bridge setup for every supported LLM client
 > /copy codex  copy one complete client config to the clipboard
 > /mode edit   let the AI change the model (ask = query-only, the default)
 > /viewer      3D view in your browser
+> /kb          search the offline IFC reference
 > /help        everything else
 ```
 
@@ -99,10 +101,11 @@ like running a stranger's script.
 
 ## What the LLM gets
 
-**24 core tools**: project info, spatial tree, selector queries, element
+**27 core tools**: project info, spatial tree, selector queries, element
 details, property sets, schema docs, validation, quantities, clash detection,
 CSV export, file list/open/save, workspace tools for multi-file work
-(find, attach, switch), and a gated Python `execute_ifc_code` power tool.
+(find, attach, switch), the offline knowledge search, and a gated Python
+`execute_ifc_code` power tool.
 
 **4 more while the viewer runs**: read your click-selection, highlight
 elements, apply color themes, and screenshot the canvas so it can check
@@ -111,11 +114,55 @@ its own work.
 Every response is one JSON envelope with an actionable hint on failure.
 Full reference: [MCP tools](https://nbharathik.github.io/ifc-console/tools/).
 
+## The offline knowledge index
+
+The most common way an AI gets IFC wrong is a confident guess: a property set
+that does not exist, an `ifcopenshell.api` call with the wrong name. So the
+model gets a searchable reference instead, built on your machine from the
+ifcopenshell package you already installed: 2,300 entities, 1,600 property
+sets, 8,500 properties, every API function, and 25 code recipes that the test
+suite actually executes. No download, no network, no embeddings, about 23 MB of
+SQLite. Search it yourself with `/kb`, or
+`ifc-console knowledge search "which pset carries fire rating"`.
+
+## The SDK
+
+Everything the LLM can do, from a script. No server, no terminal, no port.
+
+```python
+from ifc_console import Workbench
+
+with Workbench.open("tower.ifc") as wb:
+    walls = wb.query("IfcWall, Pset_WallCommon.FireRating=F30")
+    issues = wb.validate()
+    tools = wb.tools()            # JSON Schema tool definitions, any provider
+    wb.call("query_elements", query="IfcDoor")
+```
+
+`tools()` plus `call()` is a complete agent binding, and it is deliberately
+vendor neutral: no LLM client, no API key, no provider SDK. The ask/edit gate
+still applies. Full reference: [Python SDK](https://nbharathik.github.io/ifc-console/sdk/).
+
 ## The 3D viewer
 
-Type `/viewer`. It runs entirely on localhost behind your session token:
+Install it with the `viewer` extra, then type `/viewer`. It runs entirely on
+localhost behind your session token:
 click an element and the LLM knows what "this wall" means; it highlights
 elements back and takes screenshots. Edits refresh the view live.
+
+## The chat panel (optional)
+
+Type `/chat` and a small chat window opens in your browser; `/chat split` puts
+it beside the 3D view. It drives the same tools an MCP client gets, under the
+same ask/edit gate, and shows every tool call it made under the answer.
+
+Bring your own model: **OpenAI**, **Claude**, **OpenRouter**, or any
+OpenAI-compatible local server (**vLLM**, LM Studio, Ollama). The key comes
+from the usual environment variable or from the panel, and is never written to
+disk. This is the one part of ifc-console that talks to the internet, so it is
+off until you turn it on; `chat.local_only true` keeps it on your machine.
+
+The same loop is one SDK call: `wb.ask("which walls have no fire rating?")`.
 
 ## Install from source (for development)
 
@@ -133,6 +180,7 @@ the code itself, see
 ## Docs
 
 - [Getting started](https://nbharathik.github.io/ifc-console/getting-started/)
+- [Python SDK](https://nbharathik.github.io/ifc-console/sdk/), [knowledge index](https://nbharathik.github.io/ifc-console/knowledge/), and [chat panel](https://nbharathik.github.io/ifc-console/chat/)
 - [The console](https://nbharathik.github.io/ifc-console/console/) and [connecting clients](https://nbharathik.github.io/ifc-console/clients/)
 - [Safety model](https://nbharathik.github.io/ifc-console/safety/), [code sandbox](https://nbharathik.github.io/ifc-console/sandbox/), and [3D viewer](https://nbharathik.github.io/ifc-console/viewer/)
 - [Development](https://nbharathik.github.io/ifc-console/development/)

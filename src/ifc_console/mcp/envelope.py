@@ -29,6 +29,8 @@ ERROR_CODES = (
     "INTERNAL_ERROR",
     "INVALID_INPUT",
     "INVALID_QUERY",
+    "KNOWLEDGE_DISABLED",
+    "KNOWLEDGE_NOT_READY",
     "MODEL_BUSY",
     "MODEL_NOT_FOUND",
     "MODEL_READ_ONLY",
@@ -92,6 +94,14 @@ def ok(
     payload = _jsonable(data)
     merged = _jsonable({**meta, **extra_meta})
     dumped = dump({"ok": True, "data": payload, "meta": merged})
+    # Model-derived text is attacker controllable; say so when it reads like
+    # instructions rather than like building data.
+    from ifc_console.policy.untrusted import NOTE, scan
+
+    suspicious = scan(dumped)
+    if suspicious:
+        merged["injection_warning"] = {"note": NOTE, "excerpts": suspicious}
+        dumped = dump({"ok": True, "data": payload, "meta": merged})
     if len(dumped) > char_limit:
         payload = {
             "preview": dumped[:char_limit],

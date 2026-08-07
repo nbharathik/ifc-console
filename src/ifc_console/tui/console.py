@@ -205,7 +205,12 @@ class ConsoleScreen(Screen):
         self.query_one("#statusbar", Static).update(
             f" {model}{extra}   MODE: [{color}]{mode.upper()}[/{color}]{dirty}{taint}"
         )
-        server = f"MCP {core.mcp_url}" if core.server_running else "MCP starting…"
+        if core.server_running:
+            server = f"MCP {core.mcp_url}"
+        elif core.server_error:
+            server = "[red]MCP not running (/port)[/red]"
+        else:
+            server = "MCP starting…"
         if not core.viewer.enabled:
             viewer = "viewer: off (/viewer)"
         elif core.viewer.connected:

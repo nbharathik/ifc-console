@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 from starlette.testclient import TestClient
 
+from ifc_console.viewer.assets import require_static_dir as _static_dir
 from tests.unit.test_viewer_hub import TINY_PNG, FakeWS
 
 pytestmark = pytest.mark.asyncio
@@ -573,11 +574,9 @@ async def test_every_status_frame_asks_the_tab_to_resend_its_selection(
     Guards the two halves of that contract that live in app.js: sending the
     selection on a status frame, and again after a model rebuild.
     """
-    from pathlib import Path as _Path
 
     source = (
-        _Path(__file__).parents[2]
-        / "src/ifc_console/viewer/static/app.js"
+        _static_dir() / "app.js"
     ).read_text(encoding="utf-8")
     status_case = source.split('case "status":', 1)[1].split("case ", 1)[0]
     assert "sendSelection()" in status_case, "app.js must resend selection on (re)connect"
@@ -586,11 +585,9 @@ async def test_every_status_frame_asks_the_tab_to_resend_its_selection(
 
 
 async def test_picker_follows_a_pinned_model_after_it_becomes_active(viewer_core):
-    from pathlib import Path as _Path
 
     source = (
-        _Path(__file__).parents[2]
-        / "src/ifc_console/viewer/static/app.js"
+        _static_dir() / "app.js"
     ).read_text(encoding="utf-8")
     picker = source.split("function renderModelPicker", 1)[1].split("function ", 1)[0]
     assert "viewModelId === activeId" in picker
@@ -598,9 +595,8 @@ async def test_picker_follows_a_pinned_model_after_it_becomes_active(viewer_core
 
 
 async def test_viewer_commits_complete_model_with_one_loading_state(viewer_core):
-    from pathlib import Path as _Path
 
-    static = _Path(__file__).parents[2] / "src/ifc_console/viewer/static"
+    static = _static_dir()
     source = (static / "app.js").read_text(encoding="utf-8")
     shell = (static / "index.html").read_text(encoding="utf-8")
 
@@ -625,9 +621,8 @@ async def test_static_assets_revalidate_so_upgrades_take_effect(viewer_core):
 async def test_section_planes_are_wired_to_every_patched_material(viewer_core):
     """Clipping only works if the shared plane array reaches every material and
     a plane-count change forces the recompile three.js needs."""
-    from pathlib import Path as _Path
 
-    static = _Path(__file__).parents[2] / "src/ifc_console/viewer/static"
+    static = _static_dir()
     source = (static / "app.js").read_text(encoding="utf-8")
     shell = (static / "index.html").read_text(encoding="utf-8")
 
@@ -646,9 +641,8 @@ async def test_measurement_reads_depth_on_the_gpu_not_by_raycast(viewer_core):
     """Merged chunks free their CPU arrays on upload (`freeUploadedArray`), so
     THREE.Raycaster has no vertex data and throws. The surface point has to come
     from the same 1x1 GPU pass the id picker uses."""
-    from pathlib import Path as _Path
 
-    static = _Path(__file__).parents[2] / "src/ifc_console/viewer/static"
+    static = _static_dir()
     source = (static / "app.js").read_text(encoding="utf-8")
     shell = (static / "index.html").read_text(encoding="utf-8")
 
@@ -674,10 +668,9 @@ async def test_measurement_reads_depth_on_the_gpu_not_by_raycast(viewer_core):
 
 
 async def test_escape_exits_the_active_tool_before_closing_popovers(viewer_core):
-    from pathlib import Path as _Path
 
     source = (
-        _Path(__file__).parents[2] / "src/ifc_console/viewer/static/app.js"
+        _static_dir() / "app.js"
     ).read_text(encoding="utf-8")
     handler = source.split('window.addEventListener("keydown"', 1)[1].split("});", 1)[0]
     escape = handler.split('e.key === "Escape"', 1)[1].split("return;", 1)[0]
@@ -686,9 +679,8 @@ async def test_escape_exits_the_active_tool_before_closing_popovers(viewer_core)
 
 
 async def test_wheel_zoom_always_invalidates_the_viewer_frame(viewer_core):
-    from pathlib import Path as _Path
 
-    static = _Path(__file__).parents[2] / "src/ifc_console/viewer/static"
+    static = _static_dir()
     source = (static / "app.js").read_text(encoding="utf-8")
     css = (static / "app.css").read_text(encoding="utf-8")
 

@@ -83,6 +83,8 @@
     "INTERNAL_ERROR",
     "INVALID_INPUT",
     "INVALID_QUERY",
+    "KNOWLEDGE_DISABLED",
+    "KNOWLEDGE_NOT_READY",
     "MODEL_BUSY",
     "MODEL_NOT_FOUND",
     "MODEL_READ_ONLY",
@@ -1200,6 +1202,114 @@
       "destructive": false,
       "input_schema": {
         "properties": {
+          "function": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "module.function, e.g. pset.add_pset.",
+            "title": "Function"
+          },
+          "search": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Plain-words search when you do not know the name.",
+            "title": "Search"
+          }
+        },
+        "title": "get_api_docsArguments",
+        "type": "object"
+      },
+      "name": "get_api_docs",
+      "output_schema": {
+        "$defs": {
+          "ErrorInfo": {
+            "properties": {
+              "code": {
+                "description": "Stable machine-readable code; see ERROR_CODES.",
+                "title": "Code",
+                "type": "string"
+              },
+              "hint": {
+                "description": "What to do next; follow it instead of retrying blindly.",
+                "title": "Hint",
+                "type": "string"
+              },
+              "message": {
+                "description": "What went wrong, in one sentence.",
+                "title": "Message",
+                "type": "string"
+              }
+            },
+            "required": [
+              "code",
+              "message",
+              "hint"
+            ],
+            "title": "ErrorInfo",
+            "type": "object"
+          }
+        },
+        "description": "The public tool-result contract.",
+        "properties": {
+          "data": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Data"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ErrorInfo"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "meta": {
+            "additionalProperties": true,
+            "title": "Meta",
+            "type": "object"
+          },
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok"
+        ],
+        "title": "Envelope",
+        "type": "object"
+      },
+      "read_only": true
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
           "global_ids": {
             "items": {
               "type": "string"
@@ -1513,6 +1623,96 @@
       "destructive": false,
       "input_schema": {
         "properties": {
+          "key": {
+            "description": "The key from a search hit.",
+            "title": "Key",
+            "type": "string"
+          }
+        },
+        "required": [
+          "key"
+        ],
+        "title": "get_knowledge_recordArguments",
+        "type": "object"
+      },
+      "name": "get_knowledge_record",
+      "output_schema": {
+        "$defs": {
+          "ErrorInfo": {
+            "properties": {
+              "code": {
+                "description": "Stable machine-readable code; see ERROR_CODES.",
+                "title": "Code",
+                "type": "string"
+              },
+              "hint": {
+                "description": "What to do next; follow it instead of retrying blindly.",
+                "title": "Hint",
+                "type": "string"
+              },
+              "message": {
+                "description": "What went wrong, in one sentence.",
+                "title": "Message",
+                "type": "string"
+              }
+            },
+            "required": [
+              "code",
+              "message",
+              "hint"
+            ],
+            "title": "ErrorInfo",
+            "type": "object"
+          }
+        },
+        "description": "The public tool-result contract.",
+        "properties": {
+          "data": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Data"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ErrorInfo"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "meta": {
+            "additionalProperties": true,
+            "title": "Meta",
+            "type": "object"
+          },
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok"
+        ],
+        "title": "Envelope",
+        "type": "object"
+      },
+      "read_only": true
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
           "global_ids": {
             "items": {
               "type": "string"
@@ -1644,14 +1844,58 @@
             "title": "Attribute"
           },
           "entity": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
             "description": "e.g. IfcWall",
-            "title": "Entity",
-            "type": "string"
+            "title": "Entity"
+          },
+          "property": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Property name to look up, e.g. FireRating.",
+            "title": "Property"
+          },
+          "pset": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Property or quantity set name, e.g. Pset_WallCommon.",
+            "title": "Pset"
+          },
+          "schema": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "IFC2X3, IFC4, or IFC4X3. Defaults to the loaded model.",
+            "title": "Schema"
           }
         },
-        "required": [
-          "entity"
-        ],
         "title": "get_schema_docsArguments",
         "type": "object"
       },
@@ -2797,6 +3041,141 @@
         "type": "object"
       },
       "read_only": false
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
+          "kind": {
+            "anyOf": [
+              {
+                "items": {
+                  "enum": [
+                    "entity",
+                    "pset",
+                    "property",
+                    "type",
+                    "api",
+                    "recipe"
+                  ],
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Restrict to these record kinds.",
+            "title": "Kind"
+          },
+          "limit": {
+            "default": 10,
+            "description": "Maximum hits.",
+            "maximum": 50,
+            "minimum": 1,
+            "title": "Limit",
+            "type": "integer"
+          },
+          "query": {
+            "description": "What you want to know, in plain words.",
+            "title": "Query",
+            "type": "string"
+          },
+          "schema": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "IFC2X3, IFC4, or IFC4X3. Defaults to the loaded model.",
+            "title": "Schema"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "title": "search_ifc_knowledgeArguments",
+        "type": "object"
+      },
+      "name": "search_ifc_knowledge",
+      "output_schema": {
+        "$defs": {
+          "ErrorInfo": {
+            "properties": {
+              "code": {
+                "description": "Stable machine-readable code; see ERROR_CODES.",
+                "title": "Code",
+                "type": "string"
+              },
+              "hint": {
+                "description": "What to do next; follow it instead of retrying blindly.",
+                "title": "Hint",
+                "type": "string"
+              },
+              "message": {
+                "description": "What went wrong, in one sentence.",
+                "title": "Message",
+                "type": "string"
+              }
+            },
+            "required": [
+              "code",
+              "message",
+              "hint"
+            ],
+            "title": "ErrorInfo",
+            "type": "object"
+          }
+        },
+        "description": "The public tool-result contract.",
+        "properties": {
+          "data": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Data"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ErrorInfo"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "meta": {
+            "additionalProperties": true,
+            "title": "Meta",
+            "type": "object"
+          },
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok"
+        ],
+        "title": "Envelope",
+        "type": "object"
+      },
+      "read_only": true
     },
     {
       "destructive": false,

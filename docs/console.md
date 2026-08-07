@@ -39,8 +39,8 @@ bottom, and modal cards when something needs your decision.
 ## The completion menu
 
 Everything is picked in place. Type `/` and every command appears with a
-one-line description. Keep typing to narrow the list (`/mo` leaves `/mode`,
-`/model`, and `/models`).
+one-line description. Keep typing to narrow the list (`/mo` leaves `/mode`
+and `/models`).
 
 - ++tab++ inserts the highlighted entry without running it.
 - ++up++ / ++down++ (or the mouse wheel) move the highlight.
@@ -52,21 +52,21 @@ one-line description. Keep typing to narrow the list (`/mo` leaves `/mode`,
 
 The menu knows each command's values: `/mode` offers `ask` and `edit`;
 `/viewer` offers open, `off`, `url`; `/copy` and `/connect` list their targets;
-`/settings` lists every key with its value; `/open` lists recent models and
+`/settings` lists every key with its value; `/file` lists recent models and
 nearby IFC files, filtered as you type.
 
 !!! tip "Where do prompts go?"
     The console is not a chat. You talk to the LLM in your MCP client (Claude
-    Code, Cursor, ...). The console is where you control the session those
-    conversations run against.
+    Code, Cursor, ...), or in the optional browser panel that `/chat` opens.
+    The console is where you control the session those conversations run
+    against.
 
 ## Commands
 
 | command | what it does |
 | ------- | ------------ |
-| `/help` | list all commands |
-| `/file [filter]` | pick an IFC file: recents + files near the working directory, filterable |
-| `/open <path>` | open a model by path (a bare path in the prompt works too) |
+| `/help [command]` | list all commands, or explain one with examples |
+| `/file [path\|filter]` | open a model: no argument opens the picker, a path opens that file, a word filters the list |
 | `/workspace [dir]` | browse a whole folder and check several files at once (`dir` sets the root) |
 | `/models` | list loaded models and attached files |
 | `/attach <path>` | load a file alongside the active model (extra IFC, or an IDS for the AI) |
@@ -76,11 +76,13 @@ nearby IFC files, filtered as you type.
 | `/mode [ask\|edit]` | show or change what the AI may do (switching to edit asks to confirm) |
 | `/theme [dark\|light\|auto]` | switch the console theme (persists; open viewer tabs follow) |
 | `/viewer [off\|url]` | open the 3D viewer (its 4 MCP tools register live); `off` closes tabs and removes them, `url` prints the link |
+| `/chat [split\|off\|provider]` | open the browser chat panel; `split` puts it beside the 3D view |
 | `/connect [client\|all]` | shared-console bridge setup for claude-code, claude-desktop, cursor, vscode, codex |
 | `/copy [client\|url\|viewer\|token]` | copy a complete client setup, MCP URL, viewer URL, or token |
 | `/sandbox [auto\|strict\|off\|restart]` | show or change where AI-generated code runs, and what it may touch |
 | `/status` | session summary |
-| `/model` | entity counts for the loaded model |
+| `/info` | entity counts for the active model |
+| `/kb [query]` | search the offline IFC reference (schema, property sets, API, recipes) |
 | `/save [path]` | save in place, or save-as to a new path |
 | `/reload` | reload from disk, discarding unsaved changes (also recovers a stuck session) |
 | `/port <n>` | move the MCP server to another port |
@@ -91,6 +93,11 @@ nearby IFC files, filtered as you type.
 
 Unique prefixes work: `/stat` runs `/status`. Unknown commands suggest the
 closest match.
+
+Two names changed in 0.2 so they stop looking alike. `/open` became part of
+`/file`, and `/model` (entity counts) became `/info`, which no longer reads
+like a typo for `/models` (the loaded-model list). Both old names still work
+and print where they went.
 
 `/connect <client>` displays that client's complete setup and copies it to the
 system clipboard automatically. For example, `/connect codex` copies the full
@@ -104,15 +111,15 @@ connection to the console; `/file` controls which model that session serves.
 
 ## Opening files
 
-`/open ` (with the space) completes files in the menu: recently opened models
+`/file ` (with the space) completes files in the menu: recently opened models
 that still exist, then every `.ifc`, `.ifczip`, and `.ifcxml` in the working
 directory, its immediate subdirectories, and any `--allow-dir` folders, newest
 first. Type any part of a name to filter, pick, done. For files the menu does
-not know, `/open <path>` takes any absolute or relative path, and a bare path
+not know, `/file <path>` takes any absolute or relative path, and a bare path
 in the prompt works too.
 
-`/file` shows the same list in a full-height picker, useful when there are many
-models to scan.
+Bare `/file` shows the same list in a full-height picker, useful when there are
+many models to scan.
 
 Start ifc-console in your project folder and both show exactly the models you care
 about, no paths to type.

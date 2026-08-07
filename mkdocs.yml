@@ -56,8 +56,11 @@ nav:
       - Safety model: safety.md
       - Code sandbox: sandbox.md
       - 3D viewer: viewer.md
+      - Chat panel: chat.md
   - Reference:
       - MCP tools: tools.md
+      - Python SDK: sdk.md
+      - Knowledge index: knowledge.md
       - CLI: cli.md
       - Settings: settings.md
       - Versioning: versioning.md

@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>ifc-console viewer</title>
   <link rel="stylesheet" href="/viewer/static/app.css">
+  <link rel="stylesheet" href="/viewer/static/chat.css">
   <link rel="icon" href="data:,">
 </head>
 <body>
@@ -55,6 +56,14 @@
         </svg>
       </button>
     </span>
+    <button id="btn-chat" class="icon-btn" aria-pressed="false"
+            aria-controls="chat-dock" aria-label="Toggle the chat panel"
+            title="Chat about this model (C)">
+      <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
+        <path d="M2.5 3.5h11v7h-6l-3 2.5v-2.5h-2z" stroke="currentColor"
+              stroke-width="1.4" stroke-linejoin="round"/>
+      </svg>
+    </button>
     <button id="btn-settings" class="icon-btn" aria-expanded="false"
             aria-controls="settings-panel" aria-label="Display settings"
             title="Display settings">
@@ -260,6 +269,9 @@
         <div id="props"><p class="hint">click an element to inspect it</p></div>
       </div>
     </aside>
+    <div id="chat-dock-resize" role="separator" aria-orientation="vertical"
+         aria-label="Resize the chat panel" title="Drag to resize" hidden></div>
+    <aside id="chat-dock" hidden></aside>
   </main>
 
   <footer id="statusbar">

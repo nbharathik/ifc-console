@@ -45,10 +45,13 @@ class Command:
     help: str
     group: str
     handler: Handler
+    examples: tuple[str, ...] = ()
 
 
 REGISTRY: dict[str, Command] = {}
-ALIASES = {"exit": "quit"}
+# Names that moved in 0.2. They keep working; typing one prints where it went.
+RENAMED = {"open": "file", "model": "info"}
+ALIASES = {"exit": "quit", **RENAMED}
 
 
 def resolve_prefix(prefix: str) -> set[str]:
@@ -62,13 +65,26 @@ def resolve_prefix(prefix: str) -> set[str]:
     return {names[n] for n in names if n.startswith(prefix)}
 
 
-# Display order for /help.
-_GROUPS = ("model", "session", "server & clients", "console")
+# Display order for /help. Plain words, one per thing you might be doing.
+_GROUPS = ("files", "models", "session", "connect", "console")
 
 
-def command(name: str, usage: str, help_text: str, group: str) -> Callable[[Handler], Handler]:
+def command(
+    name: str,
+    usage: str,
+    help_text: str,
+    group: str,
+    examples: tuple[str, ...] = (),
+) -> Callable[[Handler], Handler]:
     def wrap(fn: Handler) -> Handler:
-        REGISTRY[name] = Command(name=name, usage=usage, help=help_text, group=group, handler=fn)
+        REGISTRY[name] = Command(
+            name=name,
+            usage=usage,
+            help=help_text,
+            group=group,
+            handler=fn,
+            examples=examples,
+        )
         return fn
 
     return wrap
@@ -127,7 +143,10 @@ async def dispatch(console: ConsoleScreen, line: str) -> None:
         )
         return
     name, _, args = line[1:].partition(" ")
-    name = ALIASES.get(name.lower(), name.lower())
+    typed = name.lower()
+    name = ALIASES.get(typed, typed)
+    if typed in RENAMED:
+        console.print(f"[dim]/{typed} is now /{RENAMED[typed]} (the old name still works)[/dim]")
     cmd = REGISTRY.get(name)
     if cmd is None:
         matches = sorted(resolve_prefix(name))
@@ -158,6 +177,25 @@ _TUI_HINTS = {
 
 def _console_hint(exc: ToolError) -> str:
     return _TUI_HINTS.get(exc.code, exc.hint)
+
+
+def _require_server(console: ConsoleScreen) -> bool:
+    """Browser features need the HTTP server. Say why it is missing."""
+    core = console.core
+    if core.server_running:
+        return True
+    if core.server_error:
+        console.print(
+            f"[red]the MCP server is not running:[/red] {escape(core.server_error)}\n"
+            f"[dim]this needs the server. Free port {core.port} (quit the other "
+            f"ifc-console) or move this one with /port {core.port + 1}[/dim]"
+        )
+    else:
+        console.print(
+            "[red]the MCP server is still starting[/red] [dim]try again in a "
+            "moment; /status shows when it is up[/dim]"
+        )
+    return False
 
 
 async def _open_path(console: ConsoleScreen, path: Path) -> bool:
@@ -241,10 +279,36 @@ def _mode_color(mode: str) -> str:
 
 
 # -------------------------------------------------------------------- commands
-@command("help", "/help", "list all commands", "console")
-async def _help(console: ConsoleScreen, _args: str) -> None:
+@command(
+    "help",
+    "/help [command]",
+    "list all commands, or explain one",
+    "console",
+    examples=("/help", "/help file"),
+)
+async def _help(console: ConsoleScreen, args: str) -> None:
+    wanted = _strip_quotes(args).lstrip("/").lower()
+    if wanted:
+        cmd = REGISTRY.get(ALIASES.get(wanted, wanted))
+        if cmd is None:
+            matches = sorted(resolve_prefix(wanted))
+            if len(matches) != 1:
+                hint = f" (did you mean {', '.join('/' + m for m in matches)}?)" if matches else ""
+                console.print(f"[red]no command /{escape(wanted)}[/red]{hint}")
+                return
+            cmd = REGISTRY[matches[0]]
+        lines = [f"[b][cyan]{cmd.usage}[/cyan][/b]  [dim]({cmd.group})[/dim]", f"  {cmd.help}"]
+        if cmd.examples:
+            lines.append("  [dim]examples[/dim]")
+            lines += [f"    [cyan]{escape(example)}[/cyan]" for example in cmd.examples]
+        alias = [old for old, new in RENAMED.items() if new == cmd.name]
+        if alias:
+            lines.append(f"  [dim]also answers to /{alias[0]}[/dim]")
+        console.print("\n".join(lines))
+        return
+
     width = max(len(c.usage) for c in REGISTRY.values())
-    lines = ["[b]commands[/b]"]
+    lines = ["[b]commands[/b]  [dim](/help <command> explains one)[/dim]"]
     for group in _GROUPS:
         members = [c for c in REGISTRY.values() if c.group == group]
         if not members:
@@ -264,24 +328,31 @@ async def _help(console: ConsoleScreen, _args: str) -> None:
     console.print("\n".join(lines))
 
 
-@command("file", "/file [filter]", "pick an IFC file from this folder and recents", "model")
+@command(
+    "file",
+    "/file [path|filter]",
+    "open a model: no argument picks from this folder, a path opens it",
+    "files",
+    examples=("/file", "/file tower", "/file C:/models/tower.ifc"),
+)
 async def _file(console: ConsoleScreen, args: str) -> None:
-    await console.open_file_picker(initial_filter=args)
-
-
-@command("open", "/open <path>", "open an IFC file by path", "model")
-async def _open(console: ConsoleScreen, args: str) -> None:
+    args = _strip_quotes(args)
     if not args:
         await console.open_file_picker()
         return
-    await _open_path(console, Path(_strip_quotes(args)))
+    candidate = Path(args).expanduser()
+    if candidate.suffix.lower() in _IFC_SUFFIXES or candidate.exists():
+        await _open_path(console, candidate)
+        return
+    await console.open_file_picker(initial_filter=args)
 
 
 @command(
     "workspace",
     "/workspace [dir]",
     "browse a folder and pick several files (dir sets the root)",
-    "model",
+    "files",
+    examples=("/workspace", "/workspace ./project"),
 )
 async def _workspace(console: ConsoleScreen, args: str) -> None:
     core = console.core
@@ -311,7 +382,12 @@ async def _workspace(console: ConsoleScreen, args: str) -> None:
         core.workspace.primary_root = previous_root
 
 
-@command("models", "/models", "list loaded models and attached files", "model")
+@command(
+    "models",
+    "/models",
+    "list loaded models and attached files",
+    "models",
+)
 async def _models(console: ConsoleScreen, _args: str) -> None:
     core = console.core
     rows = core.models.model_rows()
@@ -342,7 +418,13 @@ async def _models(console: ConsoleScreen, _args: str) -> None:
     console.print("\n".join(lines))
 
 
-@command("attach", "/attach <path>", "load a file alongside the active model", "model")
+@command(
+    "attach",
+    "/attach <path>",
+    "load a file alongside the active model",
+    "models",
+    examples=("/attach structural.ifc", "/attach requirements.ids"),
+)
 async def _attach(console: ConsoleScreen, args: str) -> None:
     if not args:
         await console.open_workspace_panel()
@@ -350,7 +432,7 @@ async def _attach(console: ConsoleScreen, args: str) -> None:
     await _attach_path(console, Path(_strip_quotes(args)))
 
 
-@command("detach", "/detach <id>", "release an attached model or file", "model")
+@command("detach", "/detach <id>", "release an attached model or file", "models")
 async def _detach(console: ConsoleScreen, args: str) -> None:
     core = console.core
     key = _strip_quotes(args)
@@ -368,7 +450,13 @@ async def _detach(console: ConsoleScreen, args: str) -> None:
         console.print(f"[red]{escape(str(exc))}[/red]")
 
 
-@command("use", "/use <id>", "make a loaded model the active one", "model")
+@command(
+    "use",
+    "/use <id>",
+    "make a loaded model the active one",
+    "models",
+    examples=("/use structural",),
+)
 async def _use(console: ConsoleScreen, args: str) -> None:
     core = console.core
     key = _strip_quotes(args)
@@ -386,7 +474,7 @@ async def _use(console: ConsoleScreen, args: str) -> None:
         console.print(f"[red]{escape(str(exc))}[/red]")
 
 
-@command("recent", "/recent", "list recently opened models", "model")
+@command("recent", "/recent", "list recently opened models", "files")
 async def _recent(console: ConsoleScreen, _args: str) -> None:
     entries = console.core.recents.entries()
     if not entries:
@@ -401,7 +489,13 @@ async def _recent(console: ConsoleScreen, _args: str) -> None:
     console.print("\n".join(lines))
 
 
-@command("mode", "/mode [ask|edit]", "show or change what the AI may do", "session")
+@command(
+    "mode",
+    "/mode [ask|edit]",
+    "show or change what the AI may do",
+    "session",
+    examples=("/mode", "/mode edit"),
+)
 async def _mode(console: ConsoleScreen, args: str) -> None:
     core = console.core
     if not args:
@@ -449,7 +543,8 @@ async def _theme(console: ConsoleScreen, args: str) -> None:
     "viewer",
     "/viewer [off|url]",
     "open the 3D viewer (off disables, url prints the link)",
-    "server & clients",
+    "connect",
+    examples=("/viewer", "/viewer url", "/viewer off"),
 )
 async def _viewer(console: ConsoleScreen, args: str) -> None:
     core = console.core
@@ -466,8 +561,12 @@ async def _viewer(console: ConsoleScreen, args: str) -> None:
         )
         console.refresh_status()
         return
-    if not core.server_running:
-        console.print("[red]server is not running[/red]")
+    if not _require_server(console):
+        return
+    from ifc_console.viewer import assets
+
+    if not assets.available():
+        console.print(f"[red]{escape(assets.INSTALL_HINT)}[/red]")
         return
     newly_enabled = not core.viewer.enabled
     core.enable_viewer()
@@ -493,8 +592,84 @@ async def _viewer(console: ConsoleScreen, args: str) -> None:
         console.print(f"viewer URL copied: {url}")
 
 
+_CHAT_PROVIDERS = ("openai", "anthropic", "openrouter", "local")
+
+
 @command(
-    "connect", "/connect [client|all]", "show how to connect an MCP client", "server & clients"
+    "chat",
+    "/chat [split|off|provider]",
+    "open the chat panel in your browser (split opens it beside the 3D view)",
+    "connect",
+    examples=("/chat", "/chat split", "/chat anthropic", "/chat off"),
+)
+async def _chat(console: ConsoleScreen, args: str) -> None:
+    core = console.core
+    arg = args.strip().lower()
+
+    if arg == "off":
+        if not core.chat.enabled:
+            console.print("chat is already off")
+            return
+        core.disable_chat()
+        console.print("chat panel disabled; any API key held for this run is gone")
+        console.refresh_status()
+        return
+    if arg in _CHAT_PROVIDERS:
+        core.chat.provider = arg
+        console.print(f"chat provider set to [b]{arg}[/b] for this session")
+        arg = ""
+    elif arg and arg != "split":
+        console.print(
+            f"[red]unknown option {escape(arg)}[/red]; use /chat, /chat split, "
+            f"/chat off, or one of: {', '.join(_CHAT_PROVIDERS)}"
+        )
+        return
+
+    if not _require_server(console):
+        return
+    from ifc_console.viewer import assets
+
+    if not assets.available():
+        console.print(f"[red]{escape(assets.INSTALL_HINT)}[/red] [dim](the chat panel ships with it)[/dim]")
+        return
+
+    split = arg == "split"
+    if split:
+        core.enable_viewer()
+    newly_enabled = not core.chat.enabled
+    core.enable_chat()
+    # the token rides the fragment, so it has to stay last in the URL
+    url = f"http://127.0.0.1:{core.port}/viewer?chat=1#t={core.token}" if split else core.chat_url
+    if newly_enabled:
+        provider = core.chat.provider
+        console.print(
+            f"[b]chat panel on[/b] ([cyan]{provider}[/cyan]) [dim]/chat off turns it back off[/dim]\n"
+            "[yellow]this is the one part of ifc-console that talks to the internet: your "
+            "prompts and whatever the tools read from the model go to the provider you "
+            "choose. Keys come from the environment or the panel and are never written to "
+            "disk.[/yellow]"
+        )
+    console.app.copy_to_clipboard(url)
+    import webbrowser
+
+    try:
+        opened = webbrowser.open(url)
+    except Exception:
+        opened = False
+    console.print(
+        f"[green]chat opened in your browser[/green] (URL copied): {url}"
+        if opened
+        else f"chat URL copied: {url}"
+    )
+    console.refresh_status()
+
+
+@command(
+    "connect",
+    "/connect [client|all]",
+    "show how to connect an MCP client",
+    "connect",
+    examples=("/connect all", "/connect codex"),
 )
 async def _connect(console: ConsoleScreen, args: str) -> None:
     core = console.core
@@ -560,7 +735,8 @@ async def _connect(console: ConsoleScreen, args: str) -> None:
     "copy",
     "/copy [client|url|viewer|token]",
     "copy a complete client setup, URL, or token",
-    "server & clients",
+    "connect",
+    examples=("/copy codex", "/copy viewer"),
 )
 async def _copy(console: ConsoleScreen, args: str) -> None:
     core = console.core
@@ -609,13 +785,21 @@ async def _status(console: ConsoleScreen, _args: str) -> None:
         lines.append("  model    (none; /file to pick one)")
     mode = core.policy.mode.value
     lines.append(f"  mode     [{_mode_color(mode)}]{mode}[/{_mode_color(mode)}]")
-    lines.append(
-        f"  server   {core.mcp_url}" if core.server_running else "  server   (not running)"
-    )
+    if core.server_running:
+        lines.append(f"  server   {core.mcp_url}")
+    elif core.server_error:
+        lines.append(f"  server   [red]not running[/red]: {escape(core.server_error)}")
+    else:
+        lines.append("  server   (starting)")
     if core.viewer.enabled:
         lines.append(f"  viewer   {core.viewer.connected} tab(s)  {core.viewer.url}")
     else:
         lines.append("  viewer   off (/viewer to start)")
+    if core.chat.enabled:
+        model = core.chat.model or "no model chosen"
+        lines.append(f"  chat     on  {core.chat.provider} · {model}")
+    else:
+        lines.append("  chat     off (/chat to start)")
     sandbox = core.sandbox.status()
     where = "sandboxed" if sandbox["would_sandbox"] else "in-process"
     lines.append(f"  sandbox  {sandbox['mode']}; next code run {where} (/sandbox)")
@@ -634,6 +818,7 @@ _SANDBOX_MODES = {
     "/sandbox [auto|strict|off|restart]",
     "where AI-generated code runs, and what it is allowed to do",
     "session",
+    examples=("/sandbox", "/sandbox strict"),
 )
 async def _sandbox(console: ConsoleScreen, args: str) -> None:
     core = console.core
@@ -684,7 +869,7 @@ async def _sandbox(console: ConsoleScreen, args: str) -> None:
     console.print("\n".join(lines))
 
 
-@command("model", "/model", "entity counts for the loaded model", "model")
+@command("info", "/info", "entity counts for the active model", "models")
 async def _model(console: ConsoleScreen, _args: str) -> None:
     core = console.core
     if not core.session.loaded:
@@ -725,7 +910,13 @@ async def _model(console: ConsoleScreen, _args: str) -> None:
     console.print("\n".join(lines))
 
 
-@command("save", "/save [path]", "save the model (path = save-as)", "model")
+@command(
+    "save",
+    "/save [path]",
+    "save the model (path = save-as)",
+    "files",
+    examples=("/save", "/save reviewed.ifc"),
+)
 async def _save(console: ConsoleScreen, args: str) -> None:
     core = console.core
     if not core.session.loaded:
@@ -761,7 +952,12 @@ async def _save(console: ConsoleScreen, args: str) -> None:
     console.print(f"[green]saved[/green] {escape(str(result['path']))}{backup}")
 
 
-@command("reload", "/reload", "reload the model from disk (discards unsaved changes)", "model")
+@command(
+    "reload",
+    "/reload",
+    "reload the model from disk (discards unsaved changes)",
+    "files",
+)
 async def _reload(console: ConsoleScreen, _args: str) -> None:
     core = console.core
     if not core.session.loaded and not core.session.poisoned:
@@ -788,7 +984,7 @@ async def _reload(console: ConsoleScreen, _args: str) -> None:
     )
 
 
-@command("port", "/port <number>", "move the MCP server to another port", "server & clients")
+@command("port", "/port <number>", "move the MCP server to another port", "connect")
 async def _port(console: ConsoleScreen, args: str) -> None:
     try:
         port = int(args)
@@ -825,7 +1021,13 @@ async def _audit(console: ConsoleScreen, args: str) -> None:
     console.print("\n".join(lines))
 
 
-@command("settings", "/settings [key value]", "list settings, or set a user setting", "session")
+@command(
+    "settings",
+    "/settings [key value]",
+    "list settings, or set a user setting",
+    "session",
+    examples=("/settings", "/settings workspace.enabled true"),
+)
 async def _settings(console: ConsoleScreen, args: str) -> None:
     store = console.core.store
     if not args:
@@ -888,6 +1090,51 @@ def _apply_live_setting(core, key: str) -> None:
         return
     with contextlib.suppress(Exception):
         apply(core, core.store.get(key))
+
+
+@command(
+    "kb",
+    "/kb [query]",
+    "search the offline IFC reference (no query shows the index status)",
+    "session",
+    examples=("/kb fire rating", "/kb assign material", "/kb Pset_WallCommon"),
+)
+async def _kb(console: ConsoleScreen, args: str) -> None:
+    core = console.core
+    query = _strip_quotes(args)
+    if not query:
+        stats = core.knowledge.stats()
+        if not stats["ready"]:
+            state = "building now" if stats.get("building") else "not built"
+            console.print(
+                f"knowledge index: {state} [dim]({escape(str(core.knowledge.path))})[/dim]\n"
+                "[dim]it builds itself in the background; /kb <query> once it is ready[/dim]"
+            )
+            core.start_knowledge()
+            return
+        counts = ", ".join(f"{k} {v}" for k, v in sorted(stats["counts"].items()))
+        console.print(
+            f"[b]knowledge index[/b]\n  records  {stats['total']} ({counts})\n"
+            f"  search   {stats['search']}   ifcopenshell {stats.get('ifcopenshell', '?')}"
+        )
+        return
+    if not core.knowledge.ready:
+        console.print("[dim]the knowledge index is still building; try again shortly[/dim]")
+        core.start_knowledge()
+        return
+    schema = core.session.schema if core.session.loaded else None
+    hits = await asyncio.to_thread(core.knowledge.search, query, schema=None, limit=8)
+    if not hits:
+        console.print(f"[dim]nothing found for {escape(query)}[/dim]")
+        return
+    lines = [f"[b]{len(hits)} result(s)[/b] [dim]for {escape(query)}[/dim]"]
+    for hit in hits:
+        where = f" [dim]{hit['schema']}[/dim]" if hit.get("schema") else ""
+        lines.append(f"  [cyan]{hit['kind']:8}[/cyan] {escape(hit['name'])}{where}")
+        lines.append(f"      [dim]{escape(hit['summary'][:110])}[/dim]")
+    if schema:
+        lines.append(f"[dim]the loaded model is {escape(schema)}[/dim]")
+    console.print("\n".join(lines))
 
 
 @command("clear", "/clear", "clear the log", "console")

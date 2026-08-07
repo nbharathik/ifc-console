@@ -61,7 +61,18 @@ defaults < user file < project file < project local file < env vars < CLI flags
 | `workspace.max_total_mb` | `6144` | combined size budget across resident models (0 disables) |
 | `workspace.scan_depth` | `3` | folder levels the index walks |
 | `workspace.scan_cap` | `10000` | files examined per scan |
-| `viewer.enabled_default` | `false` | start with the viewer on |
+| `chat.enabled_default` | `false` | start with the browser chat panel on |
+| `chat.provider` | `openai` | openai, anthropic, openrouter, or local |
+| `chat.model` | empty | model the panel opens with |
+| `chat.base_url` | empty | override the provider URL (a local vLLM, say) |
+| `chat.tools` | `true` | lend the chat model the ifc-console tools |
+| `chat.max_tool_rounds` | `8` | tool rounds one chat answer may take |
+| `chat.local_only` | `false` | refuse any chat provider that is not on this machine |
+| `knowledge.enabled` | `true` | expose the offline knowledge tools |
+| `knowledge.autobuild` | `true` | build the reference index in the background on first use |
+| `knowledge.schemas` | `["IFC2X3","IFC4","IFC4X3"]` | schemas to index; fewer means a smaller, faster index |
+| `knowledge.max_results` | `10` | default number of search hits |
+| `viewer.enabled_default` | `false` | start with the viewer on (needs the `viewer` extra) |
 | `viewer.max_model_mb` | `200` | refuse to serve larger models to the viewer |
 | `recents.max` | `20` | recents list length |
 | `sessions.retention` | `50` | audit sessions kept |

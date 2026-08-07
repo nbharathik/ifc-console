@@ -92,6 +92,41 @@ class RaisingProxy:
         return f"<blocked: {object.__getattribute__(self, '_label')}>"
 
 
+class ApiModule:
+    """ifcopenshell.api with its submodules resolved on first use.
+
+    The real package imports submodules lazily, so `ifc_api.pset` is an
+    AttributeError until something imports it. Generated code (and every
+    example in the docs) expects the attribute to work, so resolve it here.
+    """
+
+    def __init__(self, real: Any) -> None:
+        object.__setattr__(self, "_real", real)
+
+    def __getattr__(self, name: str) -> Any:
+        real = object.__getattribute__(self, "_real")
+        try:
+            return getattr(real, name)
+        except AttributeError:
+            pass
+        if name.startswith("_"):
+            raise AttributeError(name)
+        import importlib
+
+        try:
+            return importlib.import_module(f"ifcopenshell.api.{name}")
+        except ImportError as exc:
+            raise AttributeError(
+                f"ifcopenshell.api has no module {name!r}; get_api_docs() lists them"
+            ) from exc
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        raise GuardError("modifying modules is blocked in execute_ifc_code")
+
+    def __repr__(self) -> str:
+        return "<ifcopenshell.api>"
+
+
 class ModuleShim:
     """Delegates to a real module, blocking specific attributes."""
 
@@ -313,7 +348,7 @@ def build_namespace(
     if allow_mutation:
         ifc_obj: Any = ifc_file
         ifcos: Any = ifcopenshell
-        api_obj: Any = ifcopenshell.api
+        api_obj: Any = ApiModule(ifcopenshell.api)
     else:
         ifc_obj = GuardedFile(ifc_file) if ifc_file is not None else None
         ifcos = ModuleShim(ifcopenshell, _LOCKED_MODULE_BLOCKS)

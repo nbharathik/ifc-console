@@ -16,6 +16,9 @@ tests/fixtures/generated/
 # MkDocs output
 site/
 
+# Scratch
+.tmp/
+
 # Local development notes (design docs, implementation log, scratch)
 dev/
 *.ifc
