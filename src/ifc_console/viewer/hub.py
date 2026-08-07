@@ -218,6 +218,8 @@ class ViewerHub:
             "highlight": self.last_highlight,
             "color_theme": self.last_color_theme,
             "tabs": self.connected,
+            # the viewer only offers the chat dock while the console has it on
+            "chat": {"enabled": self.core.chat.enabled},
         }
 
     def cache_model_bytes(self, etag: str, data: bytes) -> None:

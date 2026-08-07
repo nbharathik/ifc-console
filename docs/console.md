@@ -76,7 +76,7 @@ nearby IFC files, filtered as you type.
 | `/mode [ask\|edit]` | show or change what the AI may do (switching to edit asks to confirm) |
 | `/theme [dark\|light\|auto]` | switch the console theme (persists; open viewer tabs follow) |
 | `/viewer [off\|url]` | open the 3D viewer (its 4 MCP tools register live); `off` closes tabs and removes them, `url` prints the link |
-| `/chat [split\|off\|provider]` | open the browser chat panel; `split` puts it beside the 3D view |
+| `/chat [solo\|off\|provider]` | open the 3D view with the chat panel beside it; `solo` leaves the 3D view out |
 | `/connect [client\|all]` | shared-console bridge setup for claude-code, claude-desktop, cursor, vscode, codex |
 | `/copy [client\|url\|viewer\|token]` | copy a complete client setup, MCP URL, viewer URL, or token |
 | `/sandbox [auto\|strict\|off\|restart]` | show or change where AI-generated code runs, and what it may touch |

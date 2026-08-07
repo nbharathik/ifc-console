@@ -309,7 +309,9 @@ button svg {
   padding: 0;
 }
 
-.icon-btn[aria-expanded="true"] {
+/* pressed is the chat dock's toggle, expanded is a popover's launcher */
+.icon-btn[aria-expanded="true"],
+.icon-btn[aria-pressed="true"] {
   color: var(--accent-bright);
   background: var(--accent-wash);
   border-color: var(--accent-line);
@@ -727,9 +729,24 @@ canvas.is-measuring { cursor: crosshair; }
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 20px;
+  gap: 16px;
   min-height: 34px;
+  padding: 5px 0;
   cursor: pointer;
+}
+
+.switch-row + .switch-row { border-top: 1px solid color-mix(in srgb, var(--line) 60%, transparent); }
+
+.switch-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.switch-text small {
+  color: var(--text-quiet);
+  font-size: 11px;
 }
 
 .switch-label {

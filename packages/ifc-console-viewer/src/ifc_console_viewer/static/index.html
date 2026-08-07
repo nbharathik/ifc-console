@@ -47,7 +47,7 @@
           <path d="M6 3.5V12.5" stroke="currentColor" stroke-width="1.4"/>
         </svg>
       </button>
-      <button id="btn-panel-props" class="seg-btn" aria-pressed="true"
+      <button id="btn-panel-props" class="seg-btn" aria-pressed="false"
               aria-controls="props-panel" aria-label="Toggle properties"
               title="Toggle the properties panel">
         <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
@@ -60,18 +60,21 @@
             aria-controls="chat-dock" aria-label="Toggle the chat panel"
             title="Chat about this model (C)">
       <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
-        <path d="M2.5 3.5h11v7h-6l-3 2.5v-2.5h-2z" stroke="currentColor"
-              stroke-width="1.4" stroke-linejoin="round"/>
+        <path d="M2.4 3.2h11.2v7.2H6.8L3.6 13v-2.6H2.4z" stroke="currentColor"
+              stroke-width="1.4" stroke-linejoin="miter"/>
+        <path d="M5 6.2h6M5 8.2h3.6" stroke="currentColor" stroke-width="1.2"
+              stroke-linecap="square"/>
       </svg>
     </button>
     <button id="btn-settings" class="icon-btn" aria-expanded="false"
-            aria-controls="settings-panel" aria-label="Display settings"
-            title="Display settings">
-      <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
-        <path d="M2 4.5h6M11 4.5h3M2 11.5h3M8 11.5h6" stroke="currentColor"
-              stroke-width="1.4" stroke-linecap="round"/>
-        <circle cx="9.5" cy="4.5" r="1.9" stroke="currentColor" stroke-width="1.4"/>
-        <circle cx="6.5" cy="11.5" r="1.9" stroke="currentColor" stroke-width="1.4"/>
+            aria-controls="settings-panel" aria-label="Viewer settings"
+            title="Viewer settings">
+      <!-- a cog, not the sliders mark: that one reads as a theme switch -->
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"
+           stroke-linecap="square" aria-hidden="true">
+        <circle cx="8" cy="8" r="4.6"/>
+        <circle cx="8" cy="8" r="1.7"/>
+        <path d="M8 1.6v1.8M8 12.6v1.8M14.4 8h-1.8M3.4 8H1.6M12.53 3.47 11.25 4.75M4.75 11.25l-1.28 1.28M12.53 12.53 11.25 11.25M4.75 4.75 3.47 3.47"/>
       </svg>
     </button>
   </header>
@@ -232,13 +235,26 @@
       <div id="settings-panel" class="popover" hidden>
         <div class="popover-title">Display</div>
         <label class="switch-row">
-          <span class="switch-label">Ground grid <kbd>G</kbd></span>
+          <span class="switch-text">
+            <span class="switch-label">Ground grid <kbd>G</kbd></span>
+            <small>Drawn at the foot of the model.</small>
+          </span>
           <input type="checkbox" id="set-grid" class="switch">
         </label>
         <label class="switch-row">
-          <span class="switch-label">Origin axes</span>
+          <span class="switch-text">
+            <span class="switch-label">Origin axes</span>
+            <small>X, Y and Z at the project origin.</small>
+          </span>
           <input type="checkbox" id="set-axes" class="switch">
         </label>
+        <div class="popover-title">Workspace</div>
+        <div class="tool-list">
+          <button id="set-reset-layout" class="tool-btn"
+                  title="Reopen both side panels and forget their widths">
+            Reset panel layout</button>
+        </div>
+        <p class="tool-note">The theme follows the console: <kbd>/theme</kbd></p>
       </div>
 
       <div id="help-panel" class="popover" hidden>

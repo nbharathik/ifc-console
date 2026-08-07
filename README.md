@@ -152,9 +152,10 @@ elements back and takes screenshots. Edits refresh the view live.
 
 ## The chat panel (optional)
 
-Type `/chat` and a small chat window opens in your browser; `/chat split` puts
-it beside the 3D view. It drives the same tools an MCP client gets, under the
-same ask/edit gate, and shows every tool call it made under the answer.
+Type `/chat` and the 3D view opens in your browser with a chat panel docked
+beside it (`/chat solo` leaves the 3D view out). It drives the same tools an
+MCP client gets, under the same ask/edit gate, and shows every tool call it
+made under the answer.
 
 Bring your own model: **OpenAI**, **Claude**, **OpenRouter**, or any
 OpenAI-compatible local server (**vLLM**, LM Studio, Ollama). The key comes

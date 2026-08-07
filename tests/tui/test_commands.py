@@ -377,11 +377,27 @@ async def test_chat_enables_the_panel_and_warns_about_the_network(console) -> No
     assert "/chat" in console.clipboard or "chat" in console.clipboard
 
 
-async def test_chat_split_turns_the_viewer_on_too(console) -> None:
+async def test_chat_opens_the_3d_view_with_the_panel_docked(console) -> None:
+    """The panel answers about the open model, so it opens beside it."""
+    console.core.server_running = True
+    await commands.dispatch(console, "/chat")
+    assert console.core.viewer.enabled is True
+    assert "/viewer?chat=1" in console.clipboard
+
+
+async def test_chat_split_is_still_accepted(console) -> None:
     console.core.server_running = True
     await commands.dispatch(console, "/chat split")
-    assert console.core.viewer.enabled is True
+    assert "unknown option" not in console.text
     assert "chat=1" in console.clipboard
+
+
+async def test_chat_solo_leaves_the_viewer_alone(console) -> None:
+    console.core.server_running = True
+    await commands.dispatch(console, "/chat solo")
+    assert console.core.chat.enabled is True
+    assert console.core.viewer.enabled is False
+    assert "chat=1" not in console.clipboard
 
 
 async def test_chat_off_drops_the_session_key(console) -> None:

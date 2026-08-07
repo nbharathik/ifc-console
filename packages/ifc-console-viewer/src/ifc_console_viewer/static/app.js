@@ -2333,6 +2333,7 @@ function setModelInfo(status) {
     $("dirty").hidden = !status.dirty;
     if (status.highlight) applyHighlightFrame(status.highlight);
     if (status.color_theme) applyColorThemeFrame(status.color_theme);
+    if (status.chat) setChatAvailable(status.chat.enabled);
   } else {
     label.textContent = "no model";
     label.title = "";
@@ -2739,7 +2740,7 @@ if (uiState.section) {
 }
 for (const axis of AXES) syncSectionRow(axis);
 
-function initSidePanel(panelId, splitId, btnId, widthKey, openKey, side) {
+function initSidePanel(panelId, splitId, btnId, widthKey, openKey, side, openByDefault) {
   const panel = $(panelId);
   const splitter = $(splitId);
   const btn = $(btnId);
@@ -2751,8 +2752,10 @@ function initSidePanel(panelId, splitId, btnId, widthKey, openKey, side) {
     );
     return Math.min(Math.max(Math.round(w), 160), max);
   };
+  // Properties start closed: an empty panel should not cost the 3D view 320px.
+  const isOpen = () => uiState[openKey] ?? openByDefault;
   const apply = () => {
-    const open = uiState[openKey] !== false;
+    const open = isOpen();
     panel.classList.toggle("collapsed", !open);
     splitter.classList.toggle("collapsed", !open);
     btn.setAttribute("aria-pressed", String(open));
@@ -2785,17 +2788,19 @@ function initSidePanel(panelId, splitId, btnId, widthKey, openKey, side) {
     apply();
   });
   btn.addEventListener("click", () => {
-    const open = uiState[openKey] !== false;
-    uiState[openKey] = !open;
+    uiState[openKey] = !isOpen();
     saveUi();
     apply();
   });
   window.addEventListener("resize", apply);
   apply();
+  return apply;
 }
 
-initSidePanel("tree-panel", "split-tree", "btn-panel-tree", "treeWidth", "treeOpen", "left");
-initSidePanel("props-panel", "split-props", "btn-panel-props", "propsWidth", "propsOpen", "right");
+const applyTreePanel =
+  initSidePanel("tree-panel", "split-tree", "btn-panel-tree", "treeWidth", "treeOpen", "left", true);
+const applyPropsPanel =
+  initSidePanel("props-panel", "split-props", "btn-panel-props", "propsWidth", "propsOpen", "right", false);
 
 const POPOVERS = [
   ["btn-settings", "settings-panel"],
@@ -2835,6 +2840,18 @@ axesBox.addEventListener("change", () => {
   saveUi();
   applySceneSettings();
 });
+$("set-reset-layout").addEventListener("click", () => {
+  delete uiState.treeWidth;
+  delete uiState.propsWidth;
+  delete uiState.chatWidth;
+  delete uiState.treeOpen;
+  delete uiState.propsOpen;
+  saveUi();
+  applyTreePanel();
+  applyPropsPanel();
+  chatDock.style.width = "";
+  resize();
+});
 applySceneSettings();
 renderSavedViews();
 
@@ -2868,6 +2885,13 @@ async function setChat(open) {
     chatPanel.focus();
   }
   resize();
+}
+
+// A viewer session with no chat should not offer a button that opens a dead
+// panel, so the console's status decides whether it is there at all.
+function setChatAvailable(on) {
+  chatBtn.hidden = !on;
+  if (!on && !chatDock.hidden) setChat(false);
 }
 
 chatBtn.addEventListener("click", () => setChat(chatDock.hidden));
@@ -2907,7 +2931,7 @@ window.addEventListener("keydown", (e) => {
   } else if (e.key === "f") {
     fitTo(null);
   } else if (e.key === "c") {
-    setChat(chatDock.hidden);
+    if (!chatBtn.hidden) setChat(chatDock.hidden);
   } else if (e.key === "g") {
     uiState.grid = uiState.grid !== true;
     gridBox.checked = uiState.grid;

@@ -191,6 +191,13 @@ class AppCore:
     # -- chat panel -----------------------------------------------------------
     @property
     def chat_url(self) -> str:
+        """The chat docked beside the 3D view: what /chat opens. The token
+        rides the fragment, so it has to stay last in the URL."""
+        return f"http://127.0.0.1:{self.port}/viewer?chat=1#t={self.token}"
+
+    @property
+    def chat_solo_url(self) -> str:
+        """The panel on its own page, for a session with no viewer."""
         return f"http://127.0.0.1:{self.port}/chat#t={self.token}"
 
     def enable_chat(self) -> None:

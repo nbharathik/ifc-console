@@ -106,31 +106,47 @@ export function md(src) {
 }
 
 // --------------------------------------------------------------------- icons
+// Same squared monoline system as the viewer chrome: 16 grid, 1.4 stroke.
+const svg = (body, size = 16) =>
+  `<svg viewBox="0 0 16 16" width="${size}" height="${size}" fill="none" stroke="currentColor" ` +
+  `stroke-width="1.4" stroke-linecap="square" aria-hidden="true">${body}</svg>`;
+
 const I = {
-  send: '<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"/></svg>',
-  stop: '<svg viewBox="0 0 24 24" width="12" height="12" fill="currentColor"><rect x="5" y="5" width="14" height="14" rx="2"/></svg>',
-  gear: '<svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="2.4"/><path d="M8 1.6v1.7M8 12.7v1.7M14.4 8h-1.7M3.3 8H1.6M12.5 3.5l-1.2 1.2M4.7 11.3l-1.2 1.2M12.5 12.5l-1.2-1.2M4.7 4.7L3.5 3.5" stroke-linecap="round"/></svg>',
-  plus: '<svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M8 3.2v9.6M3.2 8h9.6"/></svg>',
-  close: '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M4 4l8 8M12 4l-8 8"/></svg>',
-  refresh: '<svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><path d="M13.2 8a5.2 5.2 0 1 1-1.6-3.7"/><path d="M13.4 2.4v2.9h-2.9"/></svg>',
+  send: svg('<path d="M8 13.2V3.4M8 3.4 4.2 7.2M8 3.4l3.8 3.8"/>', 15),
+  stop: '<svg viewBox="0 0 16 16" width="15" height="15" fill="currentColor" aria-hidden="true"><rect x="5" y="5" width="6" height="6"/></svg>',
+  gear: svg(
+    '<circle cx="8" cy="8" r="4.6"/><circle cx="8" cy="8" r="1.7"/>' +
+      '<path d="M8 1.6v1.8M8 12.6v1.8M14.4 8h-1.8M3.4 8H1.6' +
+      'M12.53 3.47 11.25 4.75M4.75 11.25l-1.28 1.28M12.53 12.53 11.25 11.25M4.75 4.75 3.47 3.47"/>',
+    15,
+  ),
+  plus: svg('<path d="M8 3.2v9.6M3.2 8h9.6"/>', 15),
+  close: svg('<path d="m4.5 4.5 7 7M11.5 4.5l-7 7"/>', 14),
+  refresh: svg(
+    '<path d="M13.1 8a5.1 5.1 0 1 1-1.6-3.7" stroke-linecap="round"/><path d="M13.3 2.5v2.9h-2.9"/>',
+    13,
+  ),
 };
 
 // -------------------------------------------------------------------- markup
 const TEMPLATE = `
 <header class="chat-head">
-  <div class="chat-id">
-    <span class="chat-dot" data-role="dot" title=""></span>
-    <div class="chat-id-text">
-      <div class="chat-id-model" data-role="modelname">chat</div>
-      <div class="chat-id-context" data-role="context"></div>
-    </div>
-  </div>
+  <span class="chat-title">Assistant</span>
+  <span class="chat-dot" data-role="dot" title=""></span>
+  <span class="chat-spacer"></span>
   <div class="chat-actions">
     <button class="chat-icon" data-act="clear" title="New chat" aria-label="New chat">${I.plus}</button>
-    <button class="chat-icon" data-act="settings" title="Settings" aria-label="Settings">${I.gear}</button>
-    <button class="chat-icon" data-role="close" title="Close" aria-label="Close" hidden>${I.close}</button>
+    <button class="chat-icon" data-act="settings" title="Provider, model and tools"
+            aria-label="Chat settings">${I.gear}</button>
+    <button class="chat-icon" data-role="close" title="Close the panel"
+            aria-label="Close the chat panel" hidden>${I.close}</button>
   </div>
 </header>
+
+<button class="chat-context" data-act="settings" title="Change the provider or model">
+  <span class="chat-context-model" data-role="modelname">no model</span>
+  <span class="chat-context-meta" data-role="context"></span>
+</button>
 
 <div class="chat-log" data-role="log"></div>
 
@@ -150,6 +166,7 @@ const TEMPLATE = `
       <button class="chat-icon" data-act="close-settings" aria-label="Close settings">${I.close}</button>
     </header>
     <div class="chat-dialog-body">
+      <div class="chat-section">Model</div>
       <div class="chat-field">
         <label for="chat-provider">Provider</label>
         <select id="chat-provider" data-role="provider"></select>
@@ -174,6 +191,7 @@ const TEMPLATE = `
                placeholder="model id" spellcheck="false">
       </div>
 
+      <div class="chat-section">Behaviour</div>
       <label class="chat-toggle">
         <input type="checkbox" data-role="tools" checked>
         <span>
@@ -302,17 +320,23 @@ export function mountChat(root, options = {}) {
     !p || !p.needs_key || Boolean(p.key_from_env) || Boolean(p.has_key) || Boolean(el("key").value.trim());
 
   // --------------------------------------------------------------- rendering
+  const isReady = () => {
+    const p = provider();
+    return Boolean(p && chosenModel() && hasKey(p));
+  };
+
   function render() {
     const p = provider();
     const model = chosenModel();
-    const ready = Boolean(p && model && hasKey(p));
+    const ready = isReady();
     // the dock is narrow: "Local (vLLM, LM Studio, Ollama)" becomes "Local"
     const short = p ? p.label.split(" (")[0] : "";
-    el("modelname").textContent = p ? (model ? `${short} · ${model}` : short) : "chat";
+    el("modelname").textContent = p ? (model ? `${short} · ${model}` : `${short} · no model`) : "chat off";
     el("modelname").title = p ? `${p.label}${model ? " · " + model : ""}` : "";
-    el("dot").className = "chat-dot" + (ready ? " ok" : " warn");
+    el("dot").className = "chat-dot" + (ready ? " ok" : "");
     el("dot").title = ready ? "ready" : "needs a model or a key";
     send.disabled = !ready && !busy;
+    if (!turns.length && !busy) empty();
     if (p) {
       el("note").textContent = p.key_from_env
         ? `${p.note} Key found in ${p.key_from_env}.`
@@ -325,7 +349,7 @@ export function mountChat(root, options = {}) {
     if (!p) el("status").textContent = "chat is off; type /chat in the console";
     else if (!model) el("status").innerHTML = 'pick a model in <b>settings</b>';
     else if (!hasKey(p)) el("status").innerHTML = 'add an API key in <b>settings</b>';
-    else el("status").textContent = "Enter to send · Shift+Enter for a new line";
+    else el("status").innerHTML = "<b>Enter</b> sends · <b>Shift+Enter</b> new line";
   }
 
   async function refreshContext() {
@@ -334,9 +358,10 @@ export function mountChat(root, options = {}) {
       if (!response.ok) return;
       const status = await response.json();
       const mode = status.mode || "ask";
+      // the file name repeats the viewer's own header, so the dock hides it
       el("context").innerHTML =
-        `<span>${esc(status.model || "no model")}</span>` +
-        `<span class="chat-mode ${mode}">${esc(mode)}</span>` +
+        `<span class="chat-file" title="${esc(status.model || "")}">${esc(status.model || "no file")}</span>` +
+        `<span class="chat-mode ${mode}" title="session mode">${esc(mode)}</span>` +
         (status.dirty ? '<span class="chat-mode dirty">unsaved</span>' : "");
     } catch {
       /* the panel still works without the badge */
@@ -374,7 +399,8 @@ export function mountChat(root, options = {}) {
     render();
     refreshContext();
     if (hasKey(provider())) loadModels({ quiet: true });
-    if (!chosenModel()) openSettings();
+    // no model yet is not an error worth a modal on open: the empty state
+    // offers the button, and the dialog would cover the panel every time.
   }
 
   function setModelOptions(names, selected) {
@@ -446,14 +472,23 @@ export function mountChat(root, options = {}) {
   }
 
   // ---------------------------------------------------------------- messages
+  // An unconfigured panel used to say "pick a model in settings" in the status
+  // line and leave the user to find it; the empty state now offers the button.
   function empty() {
     if (turns.length) return;
+    const body = isReady()
+      ? `<p class="chat-empty-lead">Questions are answered from the file open in the console.</p>
+         <div class="chat-starters">
+           ${STARTERS.map((s) => `<button class="chat-starter">${esc(s)}</button>`).join("")}
+         </div>`
+      : `<p class="chat-empty-lead">Nothing answers yet: choose a provider and a model, and add a key if the provider needs one.</p>
+         <div class="chat-setup">
+           <button class="chat-btn primary" data-act="settings">Set up the model</button>
+         </div>`;
     log.innerHTML = `
       <div class="chat-empty">
         <p class="chat-empty-title">Ask about the open model</p>
-        <div class="chat-starters">
-          ${STARTERS.map((s) => `<button class="chat-starter">${esc(s)}</button>`).join("")}
-        </div>
+        ${body}
         <p class="chat-empty-note">Answers come from the same tools an MCP client uses, under the same ask/edit gate.</p>
       </div>`;
     for (const button of log.querySelectorAll(".chat-starter")) {

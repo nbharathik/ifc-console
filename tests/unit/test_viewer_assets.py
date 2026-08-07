@@ -133,6 +133,15 @@ def test_every_action_the_script_handles_exists_in_the_markup(chat_js: str):
         assert action in handled or f'[data-act="{action}"]' in chat_js, f"dead button: {action}"
 
 
+def test_the_dock_takes_its_colours_from_the_viewer(chat_css: str):
+    """Its own hardcoded palette made the dock clash with the viewer chrome
+    and stay dark when the console switched to the light theme."""
+    block = chat_css.split(".chat-root {", 1)[1].split("}", 1)[0]
+    for line in block.splitlines():
+        if line.strip().startswith("--chat-") and "#" in line:
+            assert "var(--" in line, f"hardcoded colour in the dock: {line.strip()}"
+
+
 def test_settings_are_a_dialog_not_an_inline_panel(chat_js: str, chat_css: str):
     """An inline settings panel squeezed the conversation; it is a modal now."""
     assert 'class="chat-modal"' in chat_js and 'class="chat-dialog"' in chat_js

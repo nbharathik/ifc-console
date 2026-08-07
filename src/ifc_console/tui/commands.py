@@ -597,10 +597,10 @@ _CHAT_PROVIDERS = ("openai", "anthropic", "openrouter", "local")
 
 @command(
     "chat",
-    "/chat [split|off|provider]",
-    "open the chat panel in your browser (split opens it beside the 3D view)",
+    "/chat [solo|off|provider]",
+    "open the 3D view with the chat panel beside it (solo drops the 3D view)",
     "connect",
-    examples=("/chat", "/chat split", "/chat anthropic", "/chat off"),
+    examples=("/chat", "/chat solo", "/chat anthropic", "/chat off"),
 )
 async def _chat(console: ConsoleScreen, args: str) -> None:
     core = console.core
@@ -618,9 +618,11 @@ async def _chat(console: ConsoleScreen, args: str) -> None:
         core.chat.provider = arg
         console.print(f"chat provider set to [b]{arg}[/b] for this session")
         arg = ""
-    elif arg and arg != "split":
+    elif arg == "split":
+        arg = ""  # what the split used to be called; it is the default now
+    elif arg and arg != "solo":
         console.print(
-            f"[red]unknown option {escape(arg)}[/red]; use /chat, /chat split, "
+            f"[red]unknown option {escape(arg)}[/red]; use /chat, /chat solo, "
             f"/chat off, or one of: {', '.join(_CHAT_PROVIDERS)}"
         )
         return
@@ -633,13 +635,12 @@ async def _chat(console: ConsoleScreen, args: str) -> None:
         console.print(f"[red]{escape(assets.INSTALL_HINT)}[/red] [dim](the chat panel ships with it)[/dim]")
         return
 
-    split = arg == "split"
-    if split:
+    solo = arg == "solo"
+    if not solo:
         core.enable_viewer()
     newly_enabled = not core.chat.enabled
     core.enable_chat()
-    # the token rides the fragment, so it has to stay last in the URL
-    url = f"http://127.0.0.1:{core.port}/viewer?chat=1#t={core.token}" if split else core.chat_url
+    url = core.chat_solo_url if solo else core.chat_url
     if newly_enabled:
         provider = core.chat.provider
         console.print(
@@ -656,10 +657,11 @@ async def _chat(console: ConsoleScreen, args: str) -> None:
         opened = webbrowser.open(url)
     except Exception:
         opened = False
+    what = "chat" if solo else "3D view with the chat beside it"
     console.print(
-        f"[green]chat opened in your browser[/green] (URL copied): {url}"
+        f"[green]{what} opened in your browser[/green] (URL copied): {url}"
         if opened
-        else f"chat URL copied: {url}"
+        else f"{what}: URL copied: {url}"
     )
     console.refresh_status()
 

@@ -1,17 +1,21 @@
 # Chat panel
 
-A small chat window in your browser that can drive the ifc-console tools. It
-exists so you can try the whole thing without wiring up an MCP client, and so
-you can keep the 3D view and the conversation side by side.
+A chat panel docked beside the 3D view that can drive the ifc-console tools.
+It exists so you can try the whole thing without wiring up an MCP client, and
+so you can see the model while you ask about it: what the assistant selects,
+highlights or hides shows up in the view next to it.
 
 It is **off by default** and it is the only part of ifc-console that talks to
 the internet.
 
 ```
-/chat          the chat panel on its own
-/chat split    the 3D viewer on the left, the chat on the right
+/chat          the 3D view with the chat panel beside it
+/chat solo     the panel on its own page, no 3D view
 /chat off      turn it off (any key held for this run is dropped)
 ```
+
+`/chat` turns the viewer on as well. In the viewer the dock has its own
+button in the toolbar, `C` toggles it, and the divider between them drags.
 
 It ships with the viewer extra:
 
@@ -114,10 +118,11 @@ with Workbench.open("tower.ifc") as wb:
 
 ## The panel
 
-The header shows which provider and model you are on, plus the open file and
-the session mode, so you always know what the answers are about and whether
-edits are possible. Settings live in a dialog over the panel, not in a strip
-that squeezes the conversation.
+The panel is chrome of the viewer: same title bar, same colours, same theme.
+Under the title a single line names the provider and model you are on and the
+session mode, so you always know what the answers are about and whether edits
+are possible; click it to change either. Settings live in a dialog over the
+panel, not in a strip that squeezes the conversation.
 
 Picking a model: choose a provider and the panel lists the models that key can
 reach; the refresh button reloads them, and "Custom id..." takes any name the

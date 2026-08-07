@@ -313,6 +313,7 @@ def build_http_app(core: AppCore, mcp: MCPServer) -> Any:
                     "enabled": core.viewer.enabled,
                     "connected": core.viewer.connected,
                 },
+                "chat": {"enabled": core.chat.enabled},
             }
         )
 
