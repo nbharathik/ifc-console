@@ -130,6 +130,14 @@ class SessionsSettings(BaseModel):
     retention: int = Field(default=50, ge=1)
 
 
+class AutomationSettings(BaseModel):
+    jobs_retention: int = Field(default=200, ge=10, le=10_000)
+    artifact_retention_days: int = Field(default=30, ge=1, le=3650)
+    validation_timeout_s: int = Field(default=1800, ge=30, le=86_400)
+    transaction_timeout_s: int = Field(default=600, ge=30, le=3600)
+    transaction_lock_timeout_s: int = Field(default=15, ge=1, le=300)
+
+
 class LoggingSettings(BaseModel):
     level: str = Field(default="info", pattern="^(debug|info|warning|error)$")
     file_enabled: bool = True
@@ -152,6 +160,7 @@ class Settings(BaseModel):
     knowledge: KnowledgeSettings = Field(default_factory=KnowledgeSettings)
     recents: RecentsSettings = Field(default_factory=RecentsSettings)
     sessions: SessionsSettings = Field(default_factory=SessionsSettings)
+    automation: AutomationSettings = Field(default_factory=AutomationSettings)
     logging: LoggingSettings = Field(default_factory=LoggingSettings)
     tui: TuiSettings = Field(default_factory=TuiSettings)
 
@@ -312,6 +321,18 @@ class SettingsStore:
         return self.home / "backups"
 
     @property
+    def artifacts_dir(self) -> Path:
+        return self.home / "artifacts"
+
+    @property
+    def jobs_dir(self) -> Path:
+        return self.home / "jobs"
+
+    @property
+    def transactions_dir(self) -> Path:
+        return self.home / "transactions"
+
+    @property
     def knowledge_dir(self) -> Path:
         return self.home / "knowledge"
 
@@ -343,9 +364,7 @@ class SettingsStore:
     def _write_server_token(self) -> str:
         token = secrets.token_hex(16)
         self.home.mkdir(parents=True, exist_ok=True)
-        tmp = self.token_file.with_name(
-            f".{self.token_file.name}.{secrets.token_hex(6)}.tmp"
-        )
+        tmp = self.token_file.with_name(f".{self.token_file.name}.{secrets.token_hex(6)}.tmp")
         try:
             # owner-only from the first byte, not only after the chmod below
             tmp_fd = os.open(tmp, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
@@ -361,7 +380,15 @@ class SettingsStore:
         return token
 
     def ensure_dirs(self) -> None:
-        for d in (self.home, self.logs_dir, self.sessions_dir, self.backups_dir):
+        for d in (
+            self.home,
+            self.logs_dir,
+            self.sessions_dir,
+            self.backups_dir,
+            self.artifacts_dir,
+            self.jobs_dir,
+            self.transactions_dir,
+        ):
             d.mkdir(parents=True, exist_ok=True)
         if not self.user_file.exists():
             payload = {

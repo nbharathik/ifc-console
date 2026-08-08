@@ -19,7 +19,7 @@ import logging
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
-from ifc_console.mcp.envelope import ToolError
+from ifc_console.core.results import ToolError
 
 if TYPE_CHECKING:
     from ifc_console.app import AppCore
@@ -175,8 +175,7 @@ class ViewerHub:
             raise ToolError(
                 "VIEWER_NOT_CONNECTED",
                 "no web viewer tab is connected to this session.",
-                hint + " Meanwhile query_elements/get_element give the same "
-                "information as text.",
+                hint + " Meanwhile query_elements/get_element give the same information as text.",
             )
 
     # -- state payloads ----------------------------------------------------------
@@ -184,7 +183,8 @@ class ViewerHub:
         s = session or self.core.session
         if not s.loaded:
             return None
-        return f"{s.fingerprint}-{s.revision}"
+        model_id = s.model_id or "model"
+        return f"{model_id}-{s.fingerprint}-{s.revision}"
 
     def model_rows(self) -> list[dict]:
         """Every resident model the viewer may show; the active one leads."""
@@ -245,9 +245,10 @@ class ViewerHub:
             requested_model = frame.get("model_id")
             if requested_model is None:
                 model_id = self.core.models.active_id
-            elif isinstance(requested_model, str) and self.core.models.get(
-                requested_model
-            ) is not None:
+            elif (
+                isinstance(requested_model, str)
+                and self.core.models.get(requested_model) is not None
+            ):
                 model_id = requested_model
             else:
                 guids = []
@@ -301,9 +302,7 @@ class ViewerHub:
         self.last_highlight = None if clear else frame
         await self.broadcast(frame)
 
-    async def send_color_theme(
-        self, groups: list[dict], *, title: str, clear: bool
-    ) -> None:
+    async def send_color_theme(self, groups: list[dict], *, title: str, clear: bool) -> None:
         frame = {"type": "color_theme", "title": title, "groups": groups, "clear": clear}
         self.last_color_theme = None if clear else frame
         await self.broadcast(frame)
@@ -349,8 +348,7 @@ class ViewerHub:
             except asyncio.TimeoutError:
                 raise ToolError(
                     "VIEWER_TIMEOUT",
-                    f"the viewer did not return a screenshot within "
-                    f"{_SCREENSHOT_TIMEOUT:.0f}s.",
+                    f"the viewer did not return a screenshot within {_SCREENSHOT_TIMEOUT:.0f}s.",
                     "The viewer tab may be hidden or busy. Ask the user to bring "
                     "it to the foreground, then retry once.",
                 ) from None

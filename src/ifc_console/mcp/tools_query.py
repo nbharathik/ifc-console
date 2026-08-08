@@ -8,6 +8,11 @@ from typing import TYPE_CHECKING, Annotated, Any, Literal
 from pydantic import Field
 
 from ifc_console import __version__
+from ifc_console.application.operations import enveloped
+from ifc_console.core.operation_data import QueryElementsData, SessionStatusData
+from ifc_console.core.operations import OperationAnnotations as ToolAnnotations
+from ifc_console.core.operations import OperationRegistry
+from ifc_console.core.results import Envelope, ToolError, ok
 from ifc_console.ifc.elements import INCLUDE_ALLOWED, INCLUDE_DEFAULT, element_detail
 from ifc_console.ifc.info import build_project_info
 from ifc_console.ifc.query import (
@@ -18,9 +23,6 @@ from ifc_console.ifc.query import (
 )
 from ifc_console.ifc.schema_docs import build_pset_docs, build_schema_docs, find_property
 from ifc_console.ifc.spatial import build_spatial_tree
-from ifc_console.mcp.compat import MCPServer, ToolAnnotations
-from ifc_console.mcp.envelope import Envelope, ToolError, ok
-from ifc_console.mcp.server import enveloped
 
 if TYPE_CHECKING:
     from ifc_console.app import AppCore
@@ -50,11 +52,12 @@ def _validate_subset(values: list[str] | None, allowed: tuple[str, ...], param: 
         )
 
 
-def register(mcp: MCPServer, core: AppCore) -> None:
+def register(mcp: OperationRegistry, core: AppCore) -> None:
     limit_ = core.settings.exec.output_char_limit
 
     @mcp.tool(
         annotations=QUERY_ANN,
+        data_model=SessionStatusData,
         description=(
             "[QUERY] Return server/session state: loaded model (name, path, schema, "
             "size), mode (ask = query-only, edit = mutations allowed), "
@@ -231,6 +234,7 @@ def register(mcp: MCPServer, core: AppCore) -> None:
 
     @mcp.tool(
         annotations=QUERY_ANN,
+        data_model=QueryElementsData,
         description=(
             "[QUERY] Find elements with the IfcOpenShell selector syntax and return "
             "one summary row each. Examples: `IfcWall` (all walls); `IfcWall, IfcSlab` "

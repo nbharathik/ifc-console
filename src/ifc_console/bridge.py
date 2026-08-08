@@ -137,9 +137,7 @@ class Bridge:
 
     def _write_list_changed(self) -> None:
         for surface in ("tools", "resources", "prompts"):
-            self.write(
-                {"jsonrpc": "2.0", "method": f"notifications/{surface}/list_changed"}
-            )
+            self.write({"jsonrpc": "2.0", "method": f"notifications/{surface}/list_changed"})
 
     def _set_online(self, online: bool, *, notify: bool = True) -> None:
         if online == self.online:

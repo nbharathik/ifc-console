@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from ifc_console.mcp.envelope import ToolError
+from ifc_console.core.results import ToolError
 from ifc_console.workspace.kinds import KINDS, describe_file, detect_kind, kind
 
 # ISO 19650 style names put the role in a single-letter field; only trust a
@@ -91,7 +91,6 @@ class FileEntry:
     def opens_as(self) -> str:
         k = kind(self.kind)
         return k.opens_as if k else "unknown"
-
 
     def to_dict(self) -> dict[str, Any]:
         k = kind(self.kind)
@@ -314,7 +313,9 @@ class WorkspaceIndex:
             scored.append((sum(scores) / len(scores), entry))
         scored.sort(key=lambda pair: (-pair[0], pair[1].path.name))
         ambiguous = (
-            len(scored) > 1 and scored[0][0] > 0 and (scored[0][0] - scored[1][0]) / scored[0][0] < 0.15
+            len(scored) > 1
+            and scored[0][0] > 0
+            and (scored[0][0] - scored[1][0]) / scored[0][0] < 0.15
         )
         return [entry for _, entry in scored[:limit]], ambiguous
 
@@ -326,9 +327,7 @@ class WorkspaceIndex:
             "roots": [
                 str(r)
                 for r in (
-                    [self.primary_root]
-                    if self.primary_root is not None
-                    else list(self._roots())
+                    [self.primary_root] if self.primary_root is not None else list(self._roots())
                 )
             ],
             "files": len(self.entries),

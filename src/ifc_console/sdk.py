@@ -1,7 +1,8 @@
 """The Python SDK: use ifc-console from a script or an agent.
 
 No server, no terminal, no port. `Workbench` opens a model, runs the same
-tools the MCP layer serves, and returns plain Python data.
+transport-neutral operations that MCP projects as tools, and returns plain
+Python data.
 
     from ifc_console import Workbench
 
@@ -18,12 +19,42 @@ from __future__ import annotations
 
 import asyncio
 import threading
-from collections.abc import Callable, Coroutine
+from collections.abc import AsyncIterator, Callable, Coroutine, Iterator
 from pathlib import Path
 from types import TracebackType
 from typing import Any
 
-__all__ = ["AsyncWorkbench", "IfcConsoleError", "Workbench"]
+from ifc_console.core.artifacts import ArtifactGCPlan, ArtifactGCResult, ArtifactRef
+from ifc_console.core.changes import (
+    ApprovalRecord,
+    ChangeSetRecord,
+    CommitRecord,
+    IfcScalar,
+    RestoreRecord,
+)
+from ifc_console.core.context import WorkspaceContext
+from ifc_console.core.jobs import JobRecord
+from ifc_console.core.operation_data import QueryElementsData, ValidationData
+from ifc_console.core.operations import OperationDefinition
+from ifc_console.core.results import Envelope, ToolError
+
+__all__ = [
+    "AsyncWorkbench",
+    "ApprovalRecord",
+    "ArtifactRef",
+    "ArtifactGCPlan",
+    "ArtifactGCResult",
+    "ChangeSetRecord",
+    "CommitRecord",
+    "IfcConsoleError",
+    "JobRecord",
+    "OperationDefinition",
+    "QueryElementsData",
+    "RestoreRecord",
+    "ValidationData",
+    "Workbench",
+    "WorkspaceContext",
+]
 
 _DEFAULT_TIMEOUT = 600.0
 
@@ -36,6 +67,10 @@ class IfcConsoleError(RuntimeError):
         self.code = code
         self.message = message
         self.hint = hint
+
+
+def _sdk_error(exc: ToolError) -> IfcConsoleError:
+    return IfcConsoleError(exc.code, exc.message, exc.hint)
 
 
 def _apply_settings(store: Any, overrides: dict[str, Any]) -> None:
@@ -70,7 +105,6 @@ class AsyncWorkbench:
 
     def __init__(self, core: Any) -> None:
         self._core = core
-        self._mcp: Any = None
 
     # -- construction ---------------------------------------------------------
     @classmethod
@@ -84,7 +118,7 @@ class AsyncWorkbench:
         settings: dict[str, Any] | None = None,
     ) -> AsyncWorkbench:
         from ifc_console.app import AppCore
-        from ifc_console.mcp.server import build_mcp
+        from ifc_console.application.operations import build_operations
         from ifc_console.policy.modes import Mode
         from ifc_console.settings import SettingsStore
 
@@ -95,7 +129,7 @@ class AsyncWorkbench:
         for directory in allowed_dirs:
             core.add_allowed_dir(Path(directory))
         workbench = cls(core)
-        workbench._mcp = build_mcp(core)
+        build_operations(core)
         if path is not None:
             await workbench.open_model(path)
         return workbench
@@ -109,6 +143,11 @@ class AsyncWorkbench:
     @property
     def mode(self) -> str:
         return self._core.policy.mode.value
+
+    @property
+    def context(self) -> WorkspaceContext:
+        """Stable identity and revision context for the current workspace."""
+        return self._core.operation_service.workspace_context()
 
     def set_mode(self, mode: str) -> str:
         """Change what this process may do to the model.
@@ -138,6 +177,7 @@ class AsyncWorkbench:
             "schema": session.schema,
             "dirty": session.dirty,
             "fingerprint": session.fingerprint,
+            "content_sha256": session.source_sha256,
             "model_id": getattr(session, "model_id", None),
         }
 
@@ -147,15 +187,38 @@ class AsyncWorkbench:
     # -- the tool surface -----------------------------------------------------
     async def tools(self) -> list[dict[str, Any]]:
         """Every tool as a provider-neutral JSON Schema definition."""
-        listing = await self._mcp.list_tools()
         return [
             {
-                "name": tool.name,
-                "description": tool.description,
-                "input_schema": tool.inputSchema,
+                "name": definition.name,
+                "description": definition.description,
+                "input_schema": definition.input_schema,
+                "output_schema": definition.output_schema,
+                "data_schema": definition.data_schema,
+                "annotations": definition.annotations.model_dump(exclude_none=True),
             }
-            for tool in sorted(listing, key=lambda t: t.name)
+            for definition in self.operation_definitions()
         ]
+
+    def operation_definitions(self) -> list[OperationDefinition]:
+        """Typed definitions for embedding IFC operations in another client."""
+        return self._core.operation_service.definitions()
+
+    async def call_result(self, name: str, **kwargs: Any) -> Envelope:
+        """Run one structured operation and return its typed envelope."""
+        spec = self._core.operations.get(name)
+        if spec is None:
+            known = ", ".join(sorted(self._core.operations.handlers))
+            raise IfcConsoleError(
+                "NOT_FOUND", f"no operation named {name!r}", f"Operations: {known}"
+            )
+        result = await self._core.operation_service.call(name, kwargs)
+        if not isinstance(result, Envelope):
+            raise IfcConsoleError(
+                "INVALID_OUTPUT",
+                f"operation {name!r} returns transport content, not an envelope",
+                "Call it through its supported transport.",
+            )
+        return result
 
     async def call(self, name: str, **kwargs: Any) -> dict[str, Any]:
         """Run one tool and return its envelope, errors included.
@@ -163,12 +226,7 @@ class AsyncWorkbench:
         This is what an agent loop should use: the envelope's error code and
         hint are written for a model to read and retry from.
         """
-        fn = self._core.tool_functions.get(name)
-        if fn is None:
-            known = ", ".join(sorted(self._core.tool_functions))
-            raise IfcConsoleError("NOT_FOUND", f"no tool named {name!r}", f"Tools: {known}")
-        envelope = await fn(**kwargs)
-        return envelope.model_dump() if hasattr(envelope, "model_dump") else dict(envelope)
+        return (await self.call_result(name, **kwargs)).model_dump()
 
     async def _data(self, name: str, **kwargs: Any) -> dict[str, Any]:
         return _unwrap(await self.call(name, **kwargs))
@@ -190,6 +248,12 @@ class AsyncWorkbench:
         data = await self._data("query_elements", query=selector, **kwargs)
         return data.get("rows", [])
 
+    async def query_result(self, selector: str, **kwargs: Any) -> QueryElementsData:
+        """Query elements and validate the operation-specific data contract."""
+        result = await self.call_result("query_elements", query=selector, **kwargs)
+        data = _unwrap(result)
+        return QueryElementsData.model_validate(data)
+
     async def element(self, global_ids: str | list[str], **kwargs: Any) -> list[dict[str, Any]]:
         ids = [global_ids] if isinstance(global_ids, str) else list(global_ids)
         data = await self._data("get_element", global_ids=ids, **kwargs)
@@ -200,12 +264,197 @@ class AsyncWorkbench:
         return await self._data("get_psets", global_ids=ids, **kwargs)
 
     async def quantities(self, selector: str, by: str = "class", **kwargs: Any) -> dict[str, Any]:
-        return await self._data(
-            "compute_quantities", selector=selector, aggregate_by=by, **kwargs
-        )
+        return await self._data("compute_quantities", selector=selector, aggregate_by=by, **kwargs)
 
     async def validate(self, **kwargs: Any) -> dict[str, Any]:
         return await self._data("validate_model", **kwargs)
+
+    async def validation_result(self, **kwargs: Any) -> ValidationData:
+        """Validate the model and return a typed validation report."""
+        result = await self.call_result("validate_model", **kwargs)
+        data = _unwrap(result)
+        return ValidationData.model_validate(data)
+
+    # -- durable jobs and artifacts -------------------------------------------
+    async def submit_validation_job(
+        self,
+        *,
+        model: str | None = None,
+        ids_paths: tuple[str | Path, ...] = (),
+        express_rules: bool = False,
+        max_issues: int = 200,
+        expected_revision: str | None = None,
+    ) -> JobRecord:
+        """Submit isolated validation and return immediately with a job record."""
+        try:
+            return await self._core.jobs.submit_validation(
+                model=model,
+                ids_paths=ids_paths,
+                express_rules=express_rules,
+                max_issues=max_issues,
+                expected_revision=expected_revision,
+            )
+        except ToolError as exc:
+            raise _sdk_error(exc) from exc
+
+    def job(self, job_id: str) -> JobRecord:
+        try:
+            return self._core.jobs.get(job_id)
+        except ToolError as exc:
+            raise _sdk_error(exc) from exc
+
+    def jobs(self, *, limit: int = 100) -> list[JobRecord]:
+        return self._core.jobs.list(limit=limit)
+
+    async def wait_job(self, job_id: str, *, timeout: float | None = None) -> JobRecord:
+        try:
+            return await self._core.jobs.wait(job_id, timeout=timeout)
+        except ToolError as exc:
+            raise _sdk_error(exc) from exc
+
+    async def watch_job(
+        self, job_id: str, *, poll_interval: float = 0.1
+    ) -> AsyncIterator[JobRecord]:
+        """Yield durable progress snapshots until the job is terminal."""
+        try:
+            async for record in self._core.jobs.watch(job_id, poll_interval=poll_interval):
+                yield record
+        except ToolError as exc:
+            raise _sdk_error(exc) from exc
+
+    async def cancel_job(self, job_id: str) -> JobRecord:
+        try:
+            return await self._core.jobs.cancel(job_id)
+        except ToolError as exc:
+            raise _sdk_error(exc) from exc
+
+    def artifact(self, artifact_id: str) -> ArtifactRef:
+        try:
+            return self._core.artifacts.get(artifact_id)
+        except ToolError as exc:
+            raise _sdk_error(exc) from exc
+
+    def artifacts(self, *, limit: int = 100) -> list[ArtifactRef]:
+        return self._core.artifacts.list(limit=limit)
+
+    def read_artifact(self, artifact_id: str) -> bytes:
+        try:
+            return self._core.artifacts.read_bytes(artifact_id)
+        except ToolError as exc:
+            raise _sdk_error(exc) from exc
+
+    def read_artifact_text(self, artifact_id: str) -> str:
+        return self.read_artifact(artifact_id).decode("utf-8")
+
+    def export_artifact(
+        self, artifact_id: str, path: str | Path, *, overwrite: bool = False
+    ) -> Path:
+        try:
+            return self._core.artifacts.export(artifact_id, Path(path), overwrite=overwrite)
+        except ToolError as exc:
+            raise _sdk_error(exc) from exc
+
+    def pin_artifact(self, artifact_id: str) -> ArtifactRef:
+        try:
+            ref = self._core.artifact_retention.pin(artifact_id)
+            self._core.audit.record("artifact_pinned", artifact_id=ref.artifact_id)
+            return ref
+        except ToolError as exc:
+            raise _sdk_error(exc) from exc
+
+    def unpin_artifact(self, artifact_id: str) -> bool:
+        try:
+            removed = self._core.artifact_retention.unpin(artifact_id)
+            self._core.audit.record(
+                "artifact_unpinned", artifact_id=artifact_id, pin_existed=removed
+            )
+            return removed
+        except ToolError as exc:
+            raise _sdk_error(exc) from exc
+
+    def plan_artifact_gc(self, *, older_than_days: int | None = None) -> ArtifactGCPlan:
+        try:
+            plan = self._core.artifact_retention.plan(older_than_days=older_than_days)
+            self._core.audit.record(
+                "artifact_gc_planned",
+                cutoff=plan.cutoff.isoformat(),
+                candidate_count=plan.candidate_count,
+                candidate_bytes=plan.candidate_bytes,
+            )
+            return plan
+        except ToolError as exc:
+            raise _sdk_error(exc) from exc
+
+    def collect_artifacts(
+        self, plan: ArtifactGCPlan, *, confirm: bool = False
+    ) -> ArtifactGCResult:
+        try:
+            result = self._core.artifact_retention.collect(plan, confirm=confirm)
+            self._core.audit.record(
+                "artifact_gc_completed",
+                deleted_count=result.deleted_count,
+                deleted_bytes=result.deleted_bytes,
+                deleted_ids=list(result.deleted_ids),
+            )
+            return result
+        except ToolError as exc:
+            raise _sdk_error(exc) from exc
+
+    # -- safe structured changes --------------------------------------------
+    async def preview_property_change(
+        self,
+        global_ids: str | list[str] | tuple[str, ...],
+        *,
+        pset_name: str,
+        property_name: str,
+        value: IfcScalar,
+        expected_revision: str | None = None,
+    ) -> ChangeSetRecord:
+        ids = (global_ids,) if isinstance(global_ids, str) else tuple(global_ids)
+        try:
+            return await self._core.transactions.preview_property_value(
+                global_ids=ids,
+                pset_name=pset_name,
+                property_name=property_name,
+                value=value,
+                expected_revision=expected_revision,
+            )
+        except ToolError as exc:
+            raise _sdk_error(exc) from exc
+
+    def change_set(self, change_set_id: str) -> ChangeSetRecord:
+        try:
+            return self._core.transactions.get_change_set(change_set_id)
+        except ToolError as exc:
+            raise _sdk_error(exc) from exc
+
+    def approve_change_set(
+        self, change_set_id: str, *, approved_by: str, reason: str = ""
+    ) -> ApprovalRecord:
+        try:
+            return self._core.transactions.approve(
+                change_set_id, approved_by=approved_by, reason=reason
+            )
+        except ToolError as exc:
+            raise _sdk_error(exc) from exc
+
+    async def commit_change_set(self, change_set_id: str, *, approval_id: str) -> CommitRecord:
+        try:
+            return await self._core.transactions.commit(change_set_id, approval_id=approval_id)
+        except ToolError as exc:
+            raise _sdk_error(exc) from exc
+
+    def commit_record(self, commit_id: str) -> CommitRecord:
+        try:
+            return self._core.transactions.get_commit(commit_id)
+        except ToolError as exc:
+            raise _sdk_error(exc) from exc
+
+    async def restore_commit(self, commit_id: str, *, confirm: bool = False) -> RestoreRecord:
+        try:
+            return await self._core.transactions.restore(commit_id, confirm=confirm)
+        except ToolError as exc:
+            raise _sdk_error(exc) from exc
 
     async def validate_ids(self, ids_path: str | Path, **kwargs: Any) -> dict[str, Any]:
         return await self._data("validate_ids", ids_path=str(ids_path), **kwargs)
@@ -266,7 +515,9 @@ class AsyncWorkbench:
             if kind == "content":
                 parts.append(event["text"])
             elif kind == "tool_result":
-                calls.append({"name": event["name"], "ok": event["ok"], "summary": event["summary"]})
+                calls.append(
+                    {"name": event["name"], "ok": event["ok"], "summary": event["summary"]}
+                )
             elif kind == "usage":
                 usage = {"in": event.get("in"), "out": event.get("out")}
             elif kind == "error":
@@ -297,9 +548,7 @@ class AsyncWorkbench:
         return await self._data("export_csv", selector=selector, path=str(path), **kwargs)
 
     async def save(self, path: str | Path | None = None, **kwargs: Any) -> dict[str, Any]:
-        return await self._data(
-            "save_ifc_file", output_path=str(path) if path else None, **kwargs
-        )
+        return await self._data("save_ifc_file", output_path=str(path) if path else None, **kwargs)
 
     # -- more than one model --------------------------------------------------
     async def attach(self, path: str | Path, **kwargs: Any) -> dict[str, Any]:
@@ -326,9 +575,7 @@ class _Loop:
     def __init__(self) -> None:
         self.loop = asyncio.new_event_loop()
         self.closed = False
-        self._thread = threading.Thread(
-            target=self._run, name="ifc-console-sdk", daemon=True
-        )
+        self._thread = threading.Thread(target=self._run, name="ifc-console-sdk", daemon=True)
         self._thread.start()
 
     def _run(self) -> None:
@@ -384,7 +631,9 @@ class Workbench:
     def __enter__(self) -> Workbench:
         return self
 
-    def __exit__(self, exc_type: type | None, exc: BaseException | None, tb: TracebackType | None) -> None:
+    def __exit__(
+        self, exc_type: type | None, exc: BaseException | None, tb: TracebackType | None
+    ) -> None:
         self.close()
 
     def close(self) -> None:
@@ -407,6 +656,10 @@ class Workbench:
     def mode(self) -> str:
         return self._wb.mode
 
+    @property
+    def context(self) -> WorkspaceContext:
+        return self._wb.context
+
     def set_mode(self, mode: str) -> str:
         return self._wb.set_mode(mode)
 
@@ -420,6 +673,12 @@ class Workbench:
     # -- tools ----------------------------------------------------------------
     def tools(self) -> list[dict[str, Any]]:
         return self._run(lambda: self._wb.tools())
+
+    def operation_definitions(self) -> list[OperationDefinition]:
+        return self._wb.operation_definitions()
+
+    def call_result(self, name: str, **kwargs: Any) -> Envelope:
+        return self._run(lambda: self._wb.call_result(name, **kwargs))
 
     def call(self, name: str, **kwargs: Any) -> dict[str, Any]:
         return self._run(lambda: self._wb.call(name, **kwargs))
@@ -440,6 +699,9 @@ class Workbench:
     def query(self, selector: str, **kwargs: Any) -> list[dict[str, Any]]:
         return self._run(lambda: self._wb.query(selector, **kwargs))
 
+    def query_result(self, selector: str, **kwargs: Any) -> QueryElementsData:
+        return self._run(lambda: self._wb.query_result(selector, **kwargs))
+
     def element(self, global_ids: str | list[str], **kwargs: Any) -> list[dict[str, Any]]:
         return self._run(lambda: self._wb.element(global_ids, **kwargs))
 
@@ -451,6 +713,104 @@ class Workbench:
 
     def validate(self, **kwargs: Any) -> dict[str, Any]:
         return self._run(lambda: self._wb.validate(**kwargs))
+
+    def validation_result(self, **kwargs: Any) -> ValidationData:
+        return self._run(lambda: self._wb.validation_result(**kwargs))
+
+    # -- durable jobs and artifacts -------------------------------------------
+    def submit_validation_job(self, **kwargs: Any) -> JobRecord:
+        return self._run(lambda: self._wb.submit_validation_job(**kwargs))
+
+    def job(self, job_id: str) -> JobRecord:
+        return self._wb.job(job_id)
+
+    def jobs(self, *, limit: int = 100) -> list[JobRecord]:
+        return self._wb.jobs(limit=limit)
+
+    def wait_job(self, job_id: str, *, timeout: float | None = None) -> JobRecord:
+        return self._run(lambda: self._wb.wait_job(job_id, timeout=timeout))
+
+    def watch_job(self, job_id: str, *, poll_interval: float = 0.1) -> Iterator[JobRecord]:
+        last_update = None
+        while True:
+            record = self.job(job_id)
+            if record.updated_at != last_update:
+                last_update = record.updated_at
+                yield record
+            if record.state.value in {"succeeded", "failed", "cancelled"}:
+                return
+            threading.Event().wait(max(0.01, poll_interval))
+
+    def cancel_job(self, job_id: str) -> JobRecord:
+        return self._run(lambda: self._wb.cancel_job(job_id))
+
+    def artifact(self, artifact_id: str) -> ArtifactRef:
+        return self._wb.artifact(artifact_id)
+
+    def artifacts(self, *, limit: int = 100) -> list[ArtifactRef]:
+        return self._wb.artifacts(limit=limit)
+
+    def read_artifact(self, artifact_id: str) -> bytes:
+        return self._wb.read_artifact(artifact_id)
+
+    def read_artifact_text(self, artifact_id: str) -> str:
+        return self._wb.read_artifact_text(artifact_id)
+
+    def export_artifact(
+        self, artifact_id: str, path: str | Path, *, overwrite: bool = False
+    ) -> Path:
+        return self._wb.export_artifact(artifact_id, path, overwrite=overwrite)
+
+    def pin_artifact(self, artifact_id: str) -> ArtifactRef:
+        return self._wb.pin_artifact(artifact_id)
+
+    def unpin_artifact(self, artifact_id: str) -> bool:
+        return self._wb.unpin_artifact(artifact_id)
+
+    def plan_artifact_gc(self, *, older_than_days: int | None = None) -> ArtifactGCPlan:
+        return self._wb.plan_artifact_gc(older_than_days=older_than_days)
+
+    def collect_artifacts(
+        self, plan: ArtifactGCPlan, *, confirm: bool = False
+    ) -> ArtifactGCResult:
+        return self._wb.collect_artifacts(plan, confirm=confirm)
+
+    # -- safe structured changes --------------------------------------------
+    def preview_property_change(
+        self,
+        global_ids: str | list[str] | tuple[str, ...],
+        *,
+        pset_name: str,
+        property_name: str,
+        value: IfcScalar,
+        expected_revision: str | None = None,
+    ) -> ChangeSetRecord:
+        return self._run(
+            lambda: self._wb.preview_property_change(
+                global_ids,
+                pset_name=pset_name,
+                property_name=property_name,
+                value=value,
+                expected_revision=expected_revision,
+            )
+        )
+
+    def change_set(self, change_set_id: str) -> ChangeSetRecord:
+        return self._wb.change_set(change_set_id)
+
+    def approve_change_set(
+        self, change_set_id: str, *, approved_by: str, reason: str = ""
+    ) -> ApprovalRecord:
+        return self._wb.approve_change_set(change_set_id, approved_by=approved_by, reason=reason)
+
+    def commit_change_set(self, change_set_id: str, *, approval_id: str) -> CommitRecord:
+        return self._run(lambda: self._wb.commit_change_set(change_set_id, approval_id=approval_id))
+
+    def commit_record(self, commit_id: str) -> CommitRecord:
+        return self._wb.commit_record(commit_id)
+
+    def restore_commit(self, commit_id: str, *, confirm: bool = False) -> RestoreRecord:
+        return self._run(lambda: self._wb.restore_commit(commit_id, confirm=confirm))
 
     def validate_ids(self, ids_path: str | Path, **kwargs: Any) -> dict[str, Any]:
         return self._run(lambda: self._wb.validate_ids(ids_path, **kwargs))

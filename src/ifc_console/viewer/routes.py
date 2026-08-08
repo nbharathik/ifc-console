@@ -19,9 +19,9 @@ from starlette.routing import Route, WebSocketRoute
 from starlette.staticfiles import StaticFiles
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
+from ifc_console.core.results import ToolError
 from ifc_console.ifc.elements import element_detail
 from ifc_console.ifc.query import element_row, search_elements
-from ifc_console.mcp.envelope import ToolError
 from ifc_console.viewer import assets
 
 if TYPE_CHECKING:
@@ -117,8 +117,7 @@ def build_viewer_routes(core: AppCore) -> list[Any]:
                     "error": "MODEL_TOO_LARGE",
                     "message": f"model is {session.size_bytes / 1_048_576:.0f} MB, "
                     f"viewer limit is {max_mb} MB",
-                    "hint": "raise viewer.max_model_mb in settings if you really "
-                    "want to try",
+                    "hint": "raise viewer.max_model_mb in settings if you really want to try",
                 },
                 status_code=413,
             )
@@ -165,8 +164,13 @@ def build_viewer_routes(core: AppCore) -> list[Any]:
             return element_detail(
                 entity,
                 (
-                    "attributes", "psets", "qtos", "type", "container",
-                    "materials", "decomposition",
+                    "attributes",
+                    "psets",
+                    "qtos",
+                    "type",
+                    "container",
+                    "materials",
+                    "decomposition",
                 ),
             )
 
@@ -175,9 +179,7 @@ def build_viewer_routes(core: AppCore) -> list[Any]:
         except ToolError as exc:
             return _tool_error_response(exc, status=503)
         if detail is None:
-            return JSONResponse(
-                {"error": "ELEMENT_NOT_FOUND", "guid": guid}, status_code=404
-            )
+            return JSONResponse({"error": "ELEMENT_NOT_FOUND", "guid": guid}, status_code=404)
         return JSONResponse(detail)
 
     async def search(request) -> Response:
@@ -199,8 +201,7 @@ def build_viewer_routes(core: AppCore) -> list[Any]:
             matches, mode = search_elements(session.ifc, term)
             total = len(matches)
             rows = [
-                element_row(entity, ("name", "type_name", "storey"))
-                for entity in matches[:limit]
+                element_row(entity, ("name", "type_name", "storey")) for entity in matches[:limit]
             ]
             return {
                 "query": term,

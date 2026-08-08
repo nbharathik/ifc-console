@@ -262,8 +262,10 @@ class ConsoleScreen(Screen):
             self.refresh_status()
             if etype == "mode_changed":
                 mode = event.get("mode", "?")
-                self.print(f"mode changed to [{_MODE_COLORS.get(mode, 'white')}]{mode}[/] "
-                           f"[dim](by {event.get('by', '?')})[/dim]")
+                self.print(
+                    f"mode changed to [{_MODE_COLORS.get(mode, 'white')}]{mode}[/] "
+                    f"[dim](by {event.get('by', '?')})[/dim]"
+                )
             elif etype == "model_loaded":
                 detail = str(event.get("schema"))
                 if event.get("size_bytes"):
@@ -326,8 +328,9 @@ class ConsoleScreen(Screen):
             n = event.get("count", 0)
             shown = ", ".join(event.get("guids", [])[:3])
             more = ", …" if n > 3 else ""
-            self.print(f"[dim]viewer selection: {n} element{'s' if n != 1 else ''} "
-                       f"({shown}{more})[/dim]")
+            self.print(
+                f"[dim]viewer selection: {n} element{'s' if n != 1 else ''} ({shown}{more})[/dim]"
+            )
 
     # -- completion menu ---------------------------------------------------------------
     def suppress_menu(self) -> None:
@@ -376,9 +379,7 @@ class ConsoleScreen(Screen):
         menu.display = True
         count = len(state.candidates)
         menu.border_title = f"{count} option{'s' if count != 1 else ''}"
-        menu.highlighted = next(
-            (i for i, c in enumerate(state.candidates) if not c.disabled), None
-        )
+        menu.highlighted = next((i for i, c in enumerate(state.candidates) if not c.disabled), None)
 
     def hide_menu(self) -> bool:
         menu = self.query_one("#completions", OptionList)

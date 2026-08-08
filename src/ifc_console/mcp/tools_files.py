@@ -9,9 +9,10 @@ from typing import TYPE_CHECKING, Annotated, Any
 
 from pydantic import Field
 
-from ifc_console.mcp.compat import MCPServer, ToolAnnotations
-from ifc_console.mcp.envelope import Envelope, ToolError, ok
-from ifc_console.mcp.server import enveloped
+from ifc_console.application.operations import enveloped
+from ifc_console.core.operations import OperationAnnotations as ToolAnnotations
+from ifc_console.core.operations import OperationRegistry
+from ifc_console.core.results import Envelope, ToolError, ok
 from ifc_console.policy.modes import Mode
 
 if TYPE_CHECKING:
@@ -33,7 +34,7 @@ def _peek_schema(path: Path) -> str | None:
     return match.group(1) if match else None
 
 
-def register(mcp: MCPServer, core: AppCore) -> None:
+def register(mcp: OperationRegistry, core: AppCore) -> None:
     limit_ = core.settings.exec.output_char_limit
 
     @mcp.tool(
@@ -175,8 +176,7 @@ def register(mcp: MCPServer, core: AppCore) -> None:
         if core.policy.mode is Mode.ASK:
             raise ToolError(
                 "ASK_MODE_BLOCKED",
-                "save_ifc_file is disabled in ask mode: the AI may query, never "
-                "change, the model.",
+                "save_ifc_file is disabled in ask mode: the AI may query, never change, the model.",
                 "Ask the user to run /mode edit in the ifc-console terminal.",
             )
         if output_path is not None:
@@ -186,8 +186,7 @@ def register(mcp: MCPServer, core: AppCore) -> None:
                 raise ToolError(
                     "FILE_EXISTS",
                     f"{target} already exists.",
-                    "Pass overwrite=true to replace it (a backup is made), or pick "
-                    "another path.",
+                    "Pass overwrite=true to replace it (a backup is made), or pick another path.",
                 )
         else:
             assert session.path is not None

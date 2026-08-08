@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from ifc_console.mcp.envelope import ToolError
+from ifc_console.core.results import ToolError
 from ifc_console.session.model import ModelSession
 from ifc_console.workspace.index import slug
 
@@ -107,13 +107,9 @@ class ModelRegistry:
         """Clean, non-active models, least recently used first."""
         order = [mid for mid in self._order if mid in self.sessions]
         order += [mid for mid in self.sessions if mid not in order]
-        return [
-            mid for mid in order if mid != self.active_id and not self.sessions[mid].dirty
-        ]
+        return [mid for mid in order if mid != self.active_id and not self.sessions[mid].dirty]
 
-    def plan_room(
-        self, incoming_bytes: int, *, replacing: Iterable[str] = ()
-    ) -> list[str]:
+    def plan_room(self, incoming_bytes: int, *, replacing: Iterable[str] = ()) -> list[str]:
         """Return the clean models to evict so a newcomer fits.
 
         This is a dry run. Existing sessions remain intact when the request

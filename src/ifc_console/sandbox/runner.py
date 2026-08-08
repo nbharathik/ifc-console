@@ -109,23 +109,18 @@ class SandboxRunner:
         if not self.enabled:
             return Decision(False, "sandbox.mode is off")
         if mutating:
-            return Decision(
-                False, "mutating code must run against the live model, not a copy"
-            )
+            return Decision(False, "mutating code must run against the live model, not a copy")
         if not session.loaded or session.path is None:
             return Decision(False, "no model is loaded")
         if session.dirty:
-            return Decision(
-                False, "the model has unsaved changes the sandbox copy cannot see"
-            )
+            return Decision(False, "the model has unsaved changes the sandbox copy cannot see")
         if session.tainted:
             return Decision(False, "the in-memory model has diverged from the file")
         limit = self.settings.max_model_mb
         if limit and session.size_bytes > limit * _MB:
             return Decision(
                 False,
-                f"the model is over the {limit} MB sandbox budget "
-                "(sandbox.max_model_mb)",
+                f"the model is over the {limit} MB sandbox budget (sandbox.max_model_mb)",
             )
         return Decision(True, "")
 
@@ -170,9 +165,7 @@ class SandboxRunner:
                 info=info,
             )
         before, after = reply.get("max_id_before"), reply.get("max_id_after")
-        contained = (
-            isinstance(before, int) and isinstance(after, int) and after > before
-        )
+        contained = isinstance(before, int) and isinstance(after, int) and after > before
         return SandboxResult(
             ok=True,
             stdout=reply.get("stdout") or "",
@@ -185,9 +178,7 @@ class SandboxRunner:
     async def _ensure_ready(self, session: ModelSession) -> SandboxProcess:
         """A live worker holding the same file the console holds."""
         dirs_key = tuple(str(d) for d in self.core.allowed_dirs)
-        if self._process is not None and (
-            not self._process.alive or dirs_key != self._dirs_key
-        ):
+        if self._process is not None and (not self._process.alive or dirs_key != self._dirs_key):
             await self._stop(self._process)
             self._process = None
 

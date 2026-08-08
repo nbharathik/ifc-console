@@ -11,9 +11,10 @@ from typing import TYPE_CHECKING, Annotated, Any, Literal
 
 from pydantic import Field
 
-from ifc_console.mcp.compat import MCPServer, ToolAnnotations
-from ifc_console.mcp.envelope import Envelope, ToolError, ok
-from ifc_console.mcp.server import enveloped
+from ifc_console.application.operations import enveloped
+from ifc_console.core.operations import OperationAnnotations as ToolAnnotations
+from ifc_console.core.operations import OperationRegistry
+from ifc_console.core.results import Envelope, ToolError, ok
 
 if TYPE_CHECKING:
     from ifc_console.app import AppCore
@@ -38,7 +39,7 @@ def _require(core: AppCore) -> None:
         raise ToolError("KNOWLEDGE_NOT_READY", "the reference index is not built yet.", _NOT_READY)
 
 
-def register(mcp: MCPServer, core: AppCore) -> None:
+def register(mcp: OperationRegistry, core: AppCore) -> None:
     limit_ = core.settings.exec.output_char_limit
 
     @mcp.tool(

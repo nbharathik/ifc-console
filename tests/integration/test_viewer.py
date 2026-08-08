@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -116,7 +117,10 @@ async def test_model_ifc_etag_and_304(viewer_core):
     assert first.status_code == 200
     assert first.text.startswith("ISO-10303-21")
     etag = first.headers["etag"]
-    assert etag == f"{viewer_core.session.fingerprint}-{viewer_core.session.revision}"
+    assert etag == (
+        f"{viewer_core.session.model_id}-{viewer_core.session.fingerprint}-"
+        f"{viewer_core.session.revision}"
+    )
 
     again = client.get(
         "/api/model.ifc", headers={**_auth(viewer_core), "If-None-Match": etag}
@@ -157,6 +161,20 @@ async def test_model_ifc_streams_the_file_while_it_matches_the_model(viewer_core
 
     # once the model diverges from the file, the fast path must switch off
     viewer_core.session.mark_dirty()
+    assert not viewer_core.session.matches_disk()
+
+
+async def test_disk_match_detects_content_changes_with_preserved_stat(viewer_core):
+    path = viewer_core.session.path
+    original = path.read_bytes()
+    stat = path.stat()
+    changed = original.replace(b"Duplex", b"Dupley", 1)
+    assert len(changed) == len(original)
+    path.write_bytes(changed)
+    os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+
+    assert path.stat().st_size == stat.st_size
+    assert path.stat().st_mtime_ns == stat.st_mtime_ns
     assert not viewer_core.session.matches_disk()
 
 

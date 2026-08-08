@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, TypeVar
 
-from ifc_console.mcp.envelope import ToolError
+from ifc_console.core.results import ToolError
 from ifc_console.session.backups import BackupStore
 
 T = TypeVar("T")
@@ -40,6 +40,7 @@ class ModelSession:
         self.size_bytes: int = 0
         self.loaded_at: str | None = None
         self.fingerprint: str | None = None
+        self.source_sha256: str | None = None
         # (size, mtime_ns) of the file at the last load or save. While it still
         # matches and nothing is dirty, the bytes on disk ARE the model, so the
         # viewer can stream the file instead of re-serializing it.
@@ -77,7 +78,18 @@ class ModelSession:
             stat = self.path.stat()
         except OSError:
             return False
-        return (stat.st_size, stat.st_mtime_ns) == self.disk_key
+        if (stat.st_size, stat.st_mtime_ns) != self.disk_key or self.source_sha256 is None:
+            return False
+        try:
+            digest, size_bytes = self._hash_file(self.path)
+            verified_stat = self.path.stat()
+        except OSError:
+            return False
+        return (
+            size_bytes == verified_stat.st_size
+            and (verified_stat.st_size, verified_stat.st_mtime_ns) == self.disk_key
+            and digest == self.source_sha256
+        )
 
     def require_loaded(self) -> None:
         if not self.loaded:
@@ -133,8 +145,16 @@ class ModelSession:
         # and `ifc-console --help` should never pay it.
         import ifcopenshell
 
+        digest_before, size_before = self._hash_file(path)
         ifc = ifcopenshell.open(str(path))
+        digest_after, size_after = self._hash_file(path)
         stat = path.stat()
+        if digest_before != digest_after or size_before != size_after or size_after != stat.st_size:
+            raise ToolError(
+                "SOURCE_CHANGED",
+                f"{path.name} changed while it was being opened.",
+                "Retry after the source file is stable.",
+            )
         if generation != self._generation:
             return  # a recover() superseded this job; its result is stale
         self.ifc = ifc
@@ -142,9 +162,8 @@ class ModelSession:
         self.schema = getattr(ifc, "schema", None)
         self.size_bytes = stat.st_size
         self.loaded_at = datetime.now(timezone.utc).isoformat()
-        self.fingerprint = hashlib.sha256(
-            f"{path}|{stat.st_size}|{stat.st_mtime_ns}".encode()
-        ).hexdigest()[:12]
+        self.source_sha256 = digest_after
+        self.fingerprint = digest_after[:12]
         self.disk_key = (stat.st_size, stat.st_mtime_ns)
         self.dirty = False
         self.tainted = False
@@ -173,9 +192,7 @@ class ModelSession:
                 )
         try:
             generation = self._generation
-            await self.run(
-                lambda: self._load_sync(path, generation), timeout=_LOAD_TIMEOUT
-            )
+            await self.run(lambda: self._load_sync(path, generation), timeout=_LOAD_TIMEOUT)
         except ToolError:
             raise
         except Exception as exc:
@@ -219,9 +236,7 @@ class ModelSession:
             return None
 
     # -- saving ---------------------------------------------------------------
-    def _save_sync(
-        self, target: Path, backups: BackupStore, generation: int
-    ) -> dict[str, Any]:
+    def _save_sync(self, target: Path, backups: BackupStore, generation: int) -> dict[str, Any]:
         backup_path = backups.backup(target)  # a failed backup aborts the save
         tmp = target.with_name(f".{target.name}.{secrets.token_hex(4)}.tmp")
         try:
@@ -231,11 +246,8 @@ class ModelSession:
             if tmp.exists():
                 with contextlib.suppress(OSError):
                     tmp.unlink()
-        digest = hashlib.sha256()
-        with target.open("rb") as fh:
-            for chunk in iter(lambda: fh.read(1 << 20), b""):
-                digest.update(chunk)
-        fingerprint = digest.hexdigest()[:12]
+        source_sha256, _size_bytes = self._hash_file(target)
+        fingerprint = source_sha256[:12]
         saved_stat = target.stat()
         if generation != self._generation:
             # The file is written, but a recover() has replaced this session's
@@ -249,6 +261,7 @@ class ModelSession:
                 "superseded": True,
             }
         self.fingerprint = fingerprint
+        self.source_sha256 = source_sha256
         self.path = target
         self.size_bytes = saved_stat.st_size
         self.disk_key = (saved_stat.st_size, saved_stat.st_mtime_ns)
@@ -279,6 +292,7 @@ class ModelSession:
                 schema=self.schema,
                 dirty=self.dirty,
                 fingerprint=self.fingerprint,
+                source_sha256=self.source_sha256,
             )
             if self.tainted:
                 meta["warning"] = (
@@ -288,3 +302,13 @@ class ModelSession:
         else:
             meta["model"] = None
         return meta
+
+    @staticmethod
+    def _hash_file(path: Path) -> tuple[str, int]:
+        digest = hashlib.sha256()
+        size_bytes = 0
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1 << 20), b""):
+                digest.update(chunk)
+                size_bytes += len(chunk)
+        return digest.hexdigest(), size_bytes

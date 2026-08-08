@@ -194,7 +194,9 @@ async def test_model_events_translate_to_frames(core, hub, work_model: Path):
     await asyncio.sleep(0)  # let the scheduled broadcast task run
     frames = ws.frames("model_updated")
     assert frames and frames[-1]["reason"] == "loaded"
-    assert frames[-1]["etag"] == f"{core.session.fingerprint}-{core.session.revision}"
+    assert frames[-1]["etag"] == (
+        f"{core.session.model_id}-{core.session.fingerprint}-{core.session.revision}"
+    )
     assert ws.frames("status")[-1]["model"] == work_model.name
 
     core.events.emit("model_mutated", tool="test")

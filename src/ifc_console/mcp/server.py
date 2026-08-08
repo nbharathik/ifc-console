@@ -5,19 +5,20 @@ from __future__ import annotations
 import contextlib
 import functools
 import hmac
+import inspect
 import json
 import logging
-import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Callable, Iterable
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 
 from ifc_console import __version__
-from ifc_console.mcp.compat import MCPServer
-from ifc_console.mcp.envelope import Envelope, ToolError, err, from_tool_error
+from ifc_console.core.operations import OperationImage, OperationRegistry, OperationSpec
+from ifc_console.mcp.compat import Image, MCPServer, ToolAnnotations
 
 if TYPE_CHECKING:
     from ifc_console.app import AppCore
+    from ifc_console.application.operations import OperationService
 
 log = logging.getLogger("ifc-console.mcp")
 
@@ -96,59 +97,53 @@ only ever happen in the user's terminal.
 """
 
 
-def enveloped(core: AppCore, tool_name: str) -> Callable:
-    """Wrap a tool coroutine: ToolError becomes an err envelope; audit + event on every call.
+def _mcp_value(value: Any) -> Any:
+    """Translate the few transport-neutral content values MCP owns."""
+    if isinstance(value, OperationImage):
+        return Image(data=value.data, format=value.format)
+    if isinstance(value, list):
+        return [_mcp_value(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_mcp_value(item) for item in value)
+    if isinstance(value, dict):
+        return {key: _mcp_value(item) for key, item in value.items()}
+    return value
 
-    The wrapper is also recorded on the core, which is how the SDK calls the
-    very same function the MCP layer serves without a server or a socket.
-    """
 
-    def decorate(fn: Callable[..., Awaitable[Any]]) -> Callable[..., Awaitable[Any]]:
-        @functools.wraps(fn)
-        async def wrapper(*args: Any, **kwargs: Any) -> Envelope:
-            start = time.perf_counter()
-            ok_flag, detail = True, ""
-            try:
-                return await fn(*args, **kwargs)
-            except ToolError as exc:
-                ok_flag, detail = False, exc.code
-                return from_tool_error(exc, core.session_meta())
-            except Exception as exc:  # never crash the protocol
-                log.exception("tool %s failed", tool_name)
-                ok_flag, detail = False, "INTERNAL_ERROR"
-                return err(
-                    "INTERNAL_ERROR",
-                    f"{type(exc).__name__}: {exc}",
-                    "This is an ifc-console bug; the audit log has details.",
-                    core.session_meta(),
-                )
-            finally:
-                core.tool_event(
-                    tool_name,
-                    ok=ok_flag,
-                    duration_ms=int((time.perf_counter() - start) * 1000),
-                    detail=detail,
-                )
+def _projected_handler(spec: OperationSpec, service: OperationService) -> Callable:
+    @functools.wraps(spec.handler)
+    async def projected(*args: Any, **kwargs: Any) -> Any:
+        bound = inspect.signature(spec.handler).bind(*args, **kwargs)
+        return _mcp_value(await service.call(spec.name, dict(bound.arguments)))
 
-        core.tool_functions[tool_name] = wrapper
-        return wrapper
+    return projected
 
-    return decorate
+
+def register_mcp_operations(
+    mcp: MCPServer,
+    registry: OperationRegistry,
+    service: OperationService,
+    *,
+    names: Iterable[str] | None = None,
+) -> None:
+    """Project registered operations into one MCP server instance."""
+    for spec in registry.specs(names):
+        annotations = ToolAnnotations(**spec.annotations.model_dump(exclude_none=True))
+        mcp.tool(
+            name=spec.name,
+            description=spec.description,
+            annotations=annotations,
+            structured_output=spec.structured_output,
+        )(_projected_handler(spec, service))
 
 
 def build_mcp(core: AppCore) -> MCPServer:
     """Core tools always; the viewer tool category only while the viewer is
     enabled (attach_mcp keeps it in sync as /viewer toggles at runtime)."""
-    from ifc_console.mcp import (
-        prompts,
-        resources,
-        tools_analysis,
-        tools_exec,
-        tools_files,
-        tools_knowledge,
-        tools_query,
-        tools_workspace,
-    )
+    from ifc_console.application.operations import build_operations
+    from ifc_console.mcp import prompts, resources
+
+    service = build_operations(core)
 
     # Stateless HTTP: session state lives in AppCore, not the transport, so
     # clients survive ifc-console restarts without a "Session not found" 404
@@ -160,12 +155,7 @@ def build_mcp(core: AppCore) -> MCPServer:
     # FastMCP takes no version, so initialize would advertise the SDK's.
     with contextlib.suppress(AttributeError):
         mcp._mcp_server.version = __version__
-    tools_query.register(mcp, core)
-    tools_knowledge.register(mcp, core)
-    tools_analysis.register(mcp, core)
-    tools_exec.register(mcp, core)
-    tools_files.register(mcp, core)
-    tools_workspace.register(mcp, core)
+    register_mcp_operations(mcp, core.operations, service)
     resources.register(mcp, core)
     prompts.register(mcp, core)
     core.attach_mcp(mcp)

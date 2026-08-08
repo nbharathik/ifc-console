@@ -14,9 +14,10 @@ from typing import TYPE_CHECKING, Annotated, Any
 
 from pydantic import Field
 
-from ifc_console.mcp.compat import MCPServer, ToolAnnotations
-from ifc_console.mcp.envelope import Envelope, ToolError, ok
-from ifc_console.mcp.server import enveloped
+from ifc_console.application.operations import enveloped
+from ifc_console.core.operations import OperationAnnotations as ToolAnnotations
+from ifc_console.core.operations import OperationRegistry
+from ifc_console.core.results import Envelope, ToolError, ok
 from ifc_console.policy.classify import classify
 from ifc_console.policy.guards import GuardError, build_namespace, entity_mutation_lock
 from ifc_console.policy.modes import OpClass, Verdict
@@ -56,7 +57,7 @@ _DESCRIPTION = (
 _UNAVAILABLE_KINDS = frozenset({"worker", "protocol"})
 
 
-def register(mcp: MCPServer, core: AppCore) -> None:
+def register(mcp: OperationRegistry, core: AppCore) -> None:
     settings = core.settings
 
     @mcp.tool(annotations=EXEC_ANN, description=_DESCRIPTION)
@@ -75,9 +76,7 @@ def register(mcp: MCPServer, core: AppCore) -> None:
         session = core.session
 
         try:
-            cls = classify(
-                code, extra_system_modules=tuple(settings.exec.system_modules_extra)
-            )
+            cls = classify(code, extra_system_modules=tuple(settings.exec.system_modules_extra))
         except SyntaxError as exc:
             raise ToolError(
                 "EXEC_ERROR",
@@ -99,8 +98,7 @@ def register(mcp: MCPServer, core: AppCore) -> None:
         if verdict is Verdict.DENY_SYSTEM:
             raise ToolError(
                 "EXEC_BLOCKED",
-                f"SYSTEM-class code ({reasons}) is disabled: exec.allow_system_access "
-                "is false.",
+                f"SYSTEM-class code ({reasons}) is disabled: exec.allow_system_access is false.",
                 "Rewrite without OS/network/file access, or ask the user to run "
                 "`ifc-console settings set exec.allow_system_access true` and restart.",
             )
@@ -171,7 +169,11 @@ async def _run_sandboxed(
         return None, str(exc)
     except SandboxTimeout:
         core.audit.record(
-            "exec", ok=False, sandboxed=True, op_class=cls.op_class.value, code=code,
+            "exec",
+            ok=False,
+            sandboxed=True,
+            op_class=cls.op_class.value,
+            code=code,
             error="timeout",
         )
         raise ToolError(
@@ -234,16 +236,12 @@ async def _run_sandboxed(
             "this code changed the sandbox's throwaway copy of the model; the "
             "console's model is untouched. Nothing was saved."
         )
-    return ok(
-        data, core.session_meta(), char_limit=core.settings.exec.output_char_limit
-    ), ""
+    return ok(data, core.session_meta(), char_limit=core.settings.exec.output_char_limit), ""
 
 
 def _raise_sandbox_failure(core: AppCore, code: str, cls: Any, result: SandboxResult) -> None:
     if result.kind == "syntax":
-        raise ToolError(
-            "EXEC_ERROR", f"syntax error: {result.message}", "Fix and resubmit."
-        )
+        raise ToolError("EXEC_ERROR", f"syntax error: {result.message}", "Fix and resubmit.")
     if result.kind in ("guard", "violation"):
         core.audit.record(
             "exec",
@@ -265,8 +263,12 @@ def _raise_sandbox_failure(core: AppCore, code: str, cls: Any, result: SandboxRe
         )
         raise ToolError("EXEC_BLOCKED", result.message, hint)
     core.audit.record(
-        "exec", ok=False, sandboxed=True, op_class=cls.op_class.value,
-        error=result.message, code=code,
+        "exec",
+        ok=False,
+        sandboxed=True,
+        op_class=cls.op_class.value,
+        error=result.message,
+        code=code,
     )
     raise ToolError(
         "EXEC_ERROR",
@@ -308,9 +310,7 @@ async def _run_in_process(
     def job() -> tuple[executor.ExecResult, int | None, int | None]:
         pre = session.max_id()
         with entity_mutation_lock(enabled=not allow_mutation):
-            result = executor.run(
-                compiled, namespace, output_limit=settings.exec.output_char_limit
-            )
+            result = executor.run(compiled, namespace, output_limit=settings.exec.output_char_limit)
         post = session.max_id()
         return result, pre, post
 
@@ -322,9 +322,7 @@ async def _run_in_process(
     except ToolError:
         raise
     except GuardError as exc:
-        core.audit.record(
-            "exec", ok=False, blocked=True, op_class=cls.op_class.value, code=code
-        )
+        core.audit.record("exec", ok=False, blocked=True, op_class=cls.op_class.value, code=code)
         raise ToolError(
             "EXEC_BLOCKED",
             str(exc),
@@ -338,9 +336,7 @@ async def _run_in_process(
             # dirty costs a save prompt, a false clean loses edits.
             session.mark_dirty()
             core.events.emit("model_mutated", tool="execute_ifc_code")
-        core.audit.record(
-            "exec", ok=False, op_class=cls.op_class.value, error=repr(exc), code=code
-        )
+        core.audit.record("exec", ok=False, op_class=cls.op_class.value, error=repr(exc), code=code)
         raise ToolError(
             "EXEC_ERROR",
             f"{type(exc).__name__}: {exc}",
@@ -384,7 +380,5 @@ async def _run_in_process(
     if mutated:
         data["note"] = "model is dirty; call save_ifc_file when the batch is done"
     elif fallback_reason:
-        data["note"] = (
-            f"ran with in-process guards instead of the sandbox: {fallback_reason}"
-        )
+        data["note"] = f"ran with in-process guards instead of the sandbox: {fallback_reason}"
     return ok(data, core.session_meta(), char_limit=settings.exec.output_char_limit)

@@ -14,9 +14,10 @@ from typing import TYPE_CHECKING, Annotated, Any
 
 from pydantic import Field
 
-from ifc_console.mcp.compat import MCPServer, ToolAnnotations
-from ifc_console.mcp.envelope import Envelope, ToolError, ok
-from ifc_console.mcp.server import enveloped
+from ifc_console.application.operations import enveloped
+from ifc_console.core.operations import OperationAnnotations as ToolAnnotations
+from ifc_console.core.operations import OperationRegistry
+from ifc_console.core.results import Envelope, ToolError, ok
 from ifc_console.workspace.kinds import KINDS, detect_kind
 
 if TYPE_CHECKING:
@@ -36,7 +37,7 @@ async def _ensure_index(core: AppCore) -> None:
         await asyncio.to_thread(core.workspace.scan)
 
 
-def register(mcp: MCPServer, core: AppCore) -> None:
+def register(mcp: OperationRegistry, core: AppCore) -> None:
     limit_ = core.settings.exec.output_char_limit
 
     @mcp.tool(

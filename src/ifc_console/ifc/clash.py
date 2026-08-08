@@ -13,7 +13,7 @@ from typing import Any
 
 import numpy as np
 
-from ifc_console.mcp.envelope import ToolError
+from ifc_console.core.results import ToolError
 
 MODES = ("overlap", "clearance")
 PRECISIONS = ("exact", "fast")
@@ -43,6 +43,7 @@ def _non_physical(element, cache: dict[str, bool]) -> bool:
         hit = any(element.is_a(cls) for cls in NON_PHYSICAL)
         cache[name] = hit
     return hit
+
 
 # Triangles per element above this are dropped: an element that dense is a
 # rendering mesh, not something a coordinator clashes by hand.
@@ -120,11 +121,7 @@ def _candidates(lo_a, hi_a, lo_b, hi_b, mode: str, tolerance: float):
             lo_b[None, :, :] - hi_a[start:stop, None, :],
         )
         worst[start:stop] = block.max(axis=2)
-    hits = (
-        worst < -tolerance
-        if mode == "overlap"
-        else (worst >= -tolerance) & (worst <= tolerance)
-    )
+    hits = worst < -tolerance if mode == "overlap" else (worst >= -tolerance) & (worst <= tolerance)
     return np.argwhere(hits), worst
 
 
@@ -193,8 +190,7 @@ def _sample_grid(low: np.ndarray, high: np.ndarray, budget: int) -> np.ndarray:
     # once and the odd-crossing test flips the wrong way.
     offsets = (0.5, 0.4931, 0.5137)
     axes = [
-        low[k] + (np.arange(counts[k]) + offsets[k]) * (extent[k] / counts[k])
-        for k in range(3)
+        low[k] + (np.arange(counts[k]) + offsets[k]) * (extent[k] / counts[k]) for k in range(3)
     ]
     grid = np.meshgrid(*axes, indexing="ij")
     return np.stack([g.ravel() for g in grid], axis=1)
@@ -325,9 +321,7 @@ def compare_sets(
     ids_a = prep_a["ids"]
     ids_b = prep_b["ids"]
     skipped = prep_a["without_geometry"] + (0 if self_check else prep_b["without_geometry"])
-    dropped = prep_a["dropped_non_physical"] + (
-        0 if self_check else prep_b["dropped_non_physical"]
-    )
+    dropped = prep_a["dropped_non_physical"] + (0 if self_check else prep_b["dropped_non_physical"])
 
     lo_a, hi_a = _boxes(meshes_a, ids_a)
     lo_b, hi_b = _boxes(meshes_b, ids_b)
@@ -449,9 +443,7 @@ def detect_clashes(
     """Prepare both sets and compare them, for callers holding one worker."""
     same_model = ifc_b is None or ifc_b is ifc_a
     self_check = selector_b is None and same_model
-    prep_a = prepare_set(
-        ifc_a, selector_a, physical_only=physical_only, max_elements=max_elements
-    )
+    prep_a = prepare_set(ifc_a, selector_a, physical_only=physical_only, max_elements=max_elements)
     if self_check:
         prep_b = prep_a
     else:

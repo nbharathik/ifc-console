@@ -303,6 +303,7 @@ def _settings_args(core: AppCore, rest: str, _files: FilesProvider | None) -> Me
 
 Provider = Callable[["AppCore", str, "FilesProvider | None"], MenuState]
 
+
 def _loaded_args(core: AppCore, rest: str, _files: FilesProvider | None) -> MenuState:
     """Ids of what is already loaded: models first, then attached files."""
     rows: list[tuple[str, str]] = []

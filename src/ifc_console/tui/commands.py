@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING, Any
 from pydantic import ValidationError
 from rich.markup import escape
 
-from ifc_console.mcp.envelope import ToolError
+from ifc_console.core.results import ToolError
 from ifc_console.policy.modes import Mode
 from ifc_console.workspace.kinds import detect_kind
 
@@ -112,11 +112,7 @@ def _client_config(core: Any, client: str) -> str:
         bridge_token=(
             None
             if core.settings.server.persistent_token
-            else (
-                core.token
-                if core.settings.server.token_in_config_snippets
-                else "<TOKEN>"
-            )
+            else (core.token if core.settings.server.token_in_config_snippets else "<TOKEN>")
         ),
     )
 
@@ -205,7 +201,9 @@ async def _open_path(console: ConsoleScreen, path: Path) -> bool:
         console.print(f"[red]{escape(str(path))} does not exist[/red]")
         return False
     discard_dirty = core.session.dirty
-    if discard_dirty and not await console.confirm("Discard unsaved changes and open another model?"):
+    if discard_dirty and not await console.confirm(
+        "Discard unsaved changes and open another model?"
+    ):
         return False
     core.add_allowed_dir(path.parent)
     try:
@@ -269,8 +267,7 @@ async def apply_workspace_choice(console: ConsoleScreen, choice) -> None:
             landed += 1
     if landed:
         console.print(
-            "[dim]attached files stay read-only; the LLM sees them through "
-            "list_models[/dim]"
+            "[dim]attached files stay read-only; the LLM sees them through list_models[/dim]"
         )
 
 
@@ -632,7 +629,9 @@ async def _chat(console: ConsoleScreen, args: str) -> None:
     from ifc_console.viewer import assets
 
     if not assets.available():
-        console.print(f"[red]{escape(assets.INSTALL_HINT)}[/red] [dim](the chat panel ships with it)[/dim]")
+        console.print(
+            f"[red]{escape(assets.INSTALL_HINT)}[/red] [dim](the chat panel ships with it)[/dim]"
+        )
         return
 
     solo = arg == "solo"
@@ -833,14 +832,11 @@ async def _sandbox(console: ConsoleScreen, args: str) -> None:
     if arg in _SANDBOX_MODES:
         core.store.set_user("sandbox.mode", arg)
         await core.sandbox.aclose()
-        console.print(
-            f"sandbox mode [b]{arg}[/b] - {_SANDBOX_MODES[arg]} [dim](saved)[/dim]"
-        )
+        console.print(f"sandbox mode [b]{arg}[/b] - {_SANDBOX_MODES[arg]} [dim](saved)[/dim]")
         return
     if arg:
         console.print(
-            f"[red]unknown option {escape(arg)}[/red]; use /sandbox "
-            "[auto|strict|off|restart]"
+            f"[red]unknown option {escape(arg)}[/red]; use /sandbox [auto|strict|off|restart]"
         )
         return
 
@@ -865,8 +861,7 @@ async def _sandbox(console: ConsoleScreen, args: str) -> None:
     if info["last_error"]:
         lines.append(f"  [red]last error {escape(info['last_error'])}[/red]")
     lines.append(
-        "[dim]  mutating code always runs in-process; the sandbox holds a "
-        "read-only copy[/dim]"
+        "[dim]  mutating code always runs in-process; the sandbox holds a read-only copy[/dim]"
     )
     console.print("\n".join(lines))
 

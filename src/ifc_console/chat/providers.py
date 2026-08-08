@@ -401,7 +401,11 @@ def _stream_anthropic(
             elif kind == "message_delta":
                 usage = chunk.get("usage") or {}
                 if usage.get("output_tokens"):
-                    yield {"type": "usage", "in": usage.get("input_tokens"), "out": usage["output_tokens"]}
+                    yield {
+                        "type": "usage",
+                        "in": usage.get("input_tokens"),
+                        "out": usage["output_tokens"],
+                    }
                 reason = (chunk.get("delta") or {}).get("stop_reason")
                 if reason:
                     yield {"type": "finish", "reason": reason}

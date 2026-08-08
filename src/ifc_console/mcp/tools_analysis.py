@@ -10,13 +10,15 @@ from typing import TYPE_CHECKING, Annotated, Literal
 
 from pydantic import Field
 
+from ifc_console.application.operations import enveloped
+from ifc_console.core.operation_data import ValidationData
+from ifc_console.core.operations import OperationAnnotations as ToolAnnotations
+from ifc_console.core.operations import OperationRegistry
+from ifc_console.core.results import Envelope, ToolError, ok
 from ifc_console.ifc.clash import MAX_ELEMENTS, MAX_RESULTS, compare_sets, prepare_set
 from ifc_console.ifc.quantities import AGGREGATE_BY, build_georeferencing, compute_quantities
 from ifc_console.ifc.query import ALLOWED_FIELDS, DEFAULT_FIELDS, element_row
 from ifc_console.ifc.validation import run_ids_validation, run_schema_validation
-from ifc_console.mcp.compat import MCPServer, ToolAnnotations
-from ifc_console.mcp.envelope import Envelope, ToolError, ok
-from ifc_console.mcp.server import enveloped
 from ifc_console.mcp.tools_query import MODEL_ARG, _validate_subset, read_meta
 from ifc_console.policy.modes import OpClass, Verdict
 
@@ -31,11 +33,12 @@ ARTIFACT_ANN = ToolAnnotations(readOnlyHint=False, destructiveHint=False)
 _HEAVY_TIMEOUT = 600.0
 
 
-def register(mcp: MCPServer, core: AppCore) -> None:
+def register(mcp: OperationRegistry, core: AppCore) -> None:
     limit_ = core.settings.exec.output_char_limit
 
     @mcp.tool(
         annotations=ANALYSIS_ANN,
+        data_model=ValidationData,
         description=(
             "[QUERY] Validate the loaded model against its IFC schema: attribute "
             "types, cardinality, enumerations. express_rules=true adds the EXPRESS "
@@ -223,9 +226,7 @@ def register(mcp: MCPServer, core: AppCore) -> None:
             timeout=_HEAVY_TIMEOUT,
         )
         report["models"] = {"set_a": session_a.model_id, "set_b": session_b.model_id}
-        return ok(
-            report, core.session_meta(), char_limit=limit_, **read_meta(core, session_a)
-        )
+        return ok(report, core.session_meta(), char_limit=limit_, **read_meta(core, session_a))
 
     @mcp.tool(
         annotations=ARTIFACT_ANN,
@@ -243,11 +244,16 @@ def register(mcp: MCPServer, core: AppCore) -> None:
         path: Annotated[str, Field(description="Target file path; must end in .csv.")],
         fields: Annotated[
             list[str] | None,
-            Field(description=f"Row fields beyond global_id+class. Allowed: {list(ALLOWED_FIELDS)}."),
+            Field(
+                description=f"Row fields beyond global_id+class. Allowed: {list(ALLOWED_FIELDS)}."
+            ),
         ] = None,
         properties: Annotated[
             list[str] | None,
-            Field(max_length=20, description="Dotted pset columns, e.g. ['Pset_WallCommon.FireRating']."),
+            Field(
+                max_length=20,
+                description="Dotted pset columns, e.g. ['Pset_WallCommon.FireRating'].",
+            ),
         ] = None,
         limit: Annotated[int, Field(ge=1, le=100_000)] = 10_000,
         overwrite: bool = False,

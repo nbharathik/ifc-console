@@ -10,6 +10,9 @@ Everything is under `~/.ifc-console/` (override with `IFC_CONSOLE_HOME`):
   token             the persistent server token (ifc-console token rotate renews it)
   recents.json      recently opened models
   backups/          timestamped copies made before every overwrite
+  artifacts/        content-addressed reports, ChangeSets, backups, and receipts
+  jobs/             durable automation job records
+  transactions/     temporary isolated transaction workspaces
   sessions/<id>/    audit JSONL per session
   logs/             rotating application log
 ```
@@ -76,6 +79,11 @@ defaults < user file < project file < project local file < env vars < CLI flags
 | `viewer.max_model_mb` | `200` | refuse to serve larger models to the viewer |
 | `recents.max` | `20` | recents list length |
 | `sessions.retention` | `50` | audit sessions kept |
+| `automation.jobs_retention` | `200` | completed durable job records kept |
+| `automation.artifact_retention_days` | `30` | minimum age for unreachable artifact cleanup candidates |
+| `automation.validation_timeout_s` | `1800` | hard timeout for an isolated validation worker |
+| `automation.transaction_timeout_s` | `600` | hard timeout for preview, apply, and verification workers |
+| `automation.transaction_lock_timeout_s` | `15` | seconds to wait for another process editing the same IFC |
 | `logging.level` | `info` | log verbosity |
 | `logging.file_enabled` | `true` | write `~/.ifc-console/logs/ifc-console.log` |
 | `tui.theme` | `dark` | console and viewer theme; `/theme dark|light|auto` sets it |

@@ -50,12 +50,57 @@ _RANK = "bm25(record_fts, 8.0, 5.0, 2.0, 1.0)"
 
 _WORD = re.compile(r"[A-Za-z0-9_]+")
 _NON_ALNUM = re.compile(r"[^a-z0-9]")
-_STOPWORDS = frozenset({
-    "a", "an", "and", "are", "as", "at", "be", "by", "can", "do", "does", "for", "from",
-    "get", "give", "have", "how", "i", "if", "in", "into", "is", "it", "me", "my", "of",
-    "on", "or", "should", "show", "that", "the", "their", "them", "this", "to", "use",
-    "using", "what", "when", "where", "which", "who", "why", "with", "you", "your",
-})
+_STOPWORDS = frozenset(
+    {
+        "a",
+        "an",
+        "and",
+        "are",
+        "as",
+        "at",
+        "be",
+        "by",
+        "can",
+        "do",
+        "does",
+        "for",
+        "from",
+        "get",
+        "give",
+        "have",
+        "how",
+        "i",
+        "if",
+        "in",
+        "into",
+        "is",
+        "it",
+        "me",
+        "my",
+        "of",
+        "on",
+        "or",
+        "should",
+        "show",
+        "that",
+        "the",
+        "their",
+        "them",
+        "this",
+        "to",
+        "use",
+        "using",
+        "what",
+        "when",
+        "where",
+        "which",
+        "who",
+        "why",
+        "with",
+        "you",
+        "your",
+    }
+)
 # How people say it, mapped to how the schema spells it.
 _SYNONYMS = {
     "guid": "globalid",

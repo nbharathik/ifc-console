@@ -35,9 +35,7 @@ def register(mcp: MCPServer, core: AppCore) -> None:
         s = core.session
         if not s.loaded:
             return dump(_NO_MODEL)
-        info, _ = await core.cached_read(
-            "project_info", lambda: build_project_info(s.ifc, s.path)
-        )
+        info, _ = await core.cached_read("project_info", lambda: build_project_info(s.ifc, s.path))
         return dump({"loaded": True, "revision": s.revision, **info})
 
     @mcp.resource(

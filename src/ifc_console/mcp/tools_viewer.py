@@ -16,11 +16,12 @@ from typing import TYPE_CHECKING, Annotated, Any, Literal
 
 from pydantic import BaseModel, Field
 
+from ifc_console.application.operations import enveloped
 from ifc_console.branding import categorical_color
+from ifc_console.core.operations import OperationAnnotations as ToolAnnotations
+from ifc_console.core.operations import OperationImage, OperationRegistry
+from ifc_console.core.results import Envelope, ToolError, ok
 from ifc_console.ifc.query import DEFAULT_FIELDS, element_row
-from ifc_console.mcp.compat import Image, MCPServer, ToolAnnotations
-from ifc_console.mcp.envelope import Envelope, ToolError, ok
-from ifc_console.mcp.server import enveloped
 
 if TYPE_CHECKING:
     from ifc_console.app import AppCore
@@ -49,7 +50,7 @@ class ColorGroup(BaseModel):
     )
 
 
-def register(mcp: MCPServer, core: AppCore) -> None:
+def register(mcp: OperationRegistry, core: AppCore) -> None:
     limit_ = core.settings.exec.output_char_limit
 
     @mcp.tool(
@@ -233,12 +234,8 @@ def register(mcp: MCPServer, core: AppCore) -> None:
         frame_groups, legend = [], []
         for index, group in enumerate(groups):
             color = group.color or categorical_color(index)
-            frame_groups.append(
-                {"label": group.label, "color": color, "guids": resolved[index]}
-            )
-            legend.append(
-                {"label": group.label, "color": color, "count": len(resolved[index])}
-            )
+            frame_groups.append({"label": group.label, "color": color, "guids": resolved[index]})
+            legend.append({"label": group.label, "color": color, "count": len(resolved[index])})
         await hub.send_color_theme(frame_groups, title=title, clear=False)
         data: dict[str, Any] = {
             "title": title,
@@ -279,4 +276,4 @@ def register(mcp: MCPServer, core: AppCore) -> None:
             f"viewer screenshot {width}x{height} {format} ({len(data)} bytes); "
             "if no image is visible above, your client dropped the image content"
         )
-        return [Image(data=data, format=format), note]
+        return [OperationImage(data=data, format=format), note]

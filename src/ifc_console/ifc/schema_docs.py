@@ -10,7 +10,7 @@ from __future__ import annotations
 import contextlib
 from typing import Any
 
-from ifc_console.mcp.envelope import ToolError
+from ifc_console.core.results import ToolError
 
 # Longest prefixes first: IFC4X3 must not fall into the IFC4 bucket.
 _SUPPORTED = ("IFC4X3", "IFC2X3", "IFC4")
@@ -60,9 +60,7 @@ def _property_types(schema: str, pset: str) -> dict[str, dict[str, Any]]:
             entry["data_type"] = prop.PrimaryMeasureType
         with contextlib.suppress(Exception):
             if prop.Enumerators is not None:
-                entry["values"] = [
-                    v.wrappedValue for v in prop.Enumerators.EnumerationValues or []
-                ]
+                entry["values"] = [v.wrappedValue for v in prop.Enumerators.EnumerationValues or []]
         out[prop.Name] = entry
     out["__applicable__"] = {"applicable_to": definition.ApplicableEntity}
     return out

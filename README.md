@@ -101,11 +101,17 @@ like running a stranger's script.
 
 ## What the LLM gets
 
-**27 core tools**: project info, spatial tree, selector queries, element
+**35 core tools**: project info, spatial tree, selector queries, element
 details, property sets, schema docs, validation, quantities, clash detection,
 CSV export, file list/open/save, workspace tools for multi-file work
 (find, attach, switch), the offline knowledge search, and a gated Python
-`execute_ifc_code` power tool.
+`execute_ifc_code` power tool. Durable validation jobs add progress,
+cancellation, revision checks, and checksum-verified JSON/SARIF artifacts.
+Structured property previews add caller-only approval, verified commit,
+automatic rollback, and guarded restore without giving an AI direct commit
+authority. Large IFC transaction and artifact copies are streamed with checksum
+verification. Artifact pins and reference-aware dry-run cleanup keep retained
+jobs and transaction history safe.
 
 **4 more while the viewer runs**: read your click-selection, highlight
 elements, apply color themes, and screenshot the canvas so it can check

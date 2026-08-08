@@ -9,8 +9,8 @@ from __future__ import annotations
 from collections import defaultdict
 from typing import Any
 
+from ifc_console.core.results import ToolError
 from ifc_console.ifc.info import _units
-from ifc_console.mcp.envelope import ToolError
 
 AGGREGATE_BY = ("class", "type", "storey", "material", "none")
 
@@ -111,8 +111,7 @@ def compute_quantities(
         raise ToolError(
             "INVALID_QUERY",
             f"selector failed: {exc}",
-            "Use query_elements selector syntax, e.g. `IfcWall` or "
-            "`IfcSlab, material=concrete`.",
+            "Use query_elements selector syntax, e.g. `IfcWall` or `IfcSlab, material=concrete`.",
         ) from exc
 
     matched = len(elements)

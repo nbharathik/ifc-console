@@ -7,11 +7,16 @@ from typing import Any
 import ifcopenshell.util.element as element_util
 import ifcopenshell.util.selector as selector_util
 
-from ifc_console.mcp.envelope import ToolError
+from ifc_console.core.results import ToolError
 
 DEFAULT_FIELDS = ("name", "storey", "type_name")
 ALLOWED_FIELDS = (
-    "name", "predefined_type", "type_name", "storey", "description", "tag",
+    "name",
+    "predefined_type",
+    "type_name",
+    "storey",
+    "description",
+    "tag",
 )
 
 SYNTAX_HELP = """IfcOpenShell selector syntax (ifcopenshell.util.selector), by example:

@@ -9,7 +9,6 @@ apply exactly as they do for an external client.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import inspect
 import json
 import logging
@@ -19,6 +18,7 @@ from typing import TYPE_CHECKING, Any
 
 from ifc_console.chat import SYSTEM_PROMPT
 from ifc_console.chat.providers import PROVIDERS, Provider, ProviderError, resolve_key, stream
+from ifc_console.core.operations import OperationImage
 
 if TYPE_CHECKING:
     from ifc_console.app import AppCore
@@ -33,17 +33,13 @@ _QUEUE_DONE = object()
 
 async def tool_schemas(core: AppCore) -> list[dict[str, Any]]:
     """Provider-neutral schemas for every tool this session exposes."""
-    mcp = getattr(core, "_mcp", None)
-    if mcp is None:
-        return []
-    listing = await mcp.list_tools()
     return [
         {
-            "name": tool.name,
-            "description": (tool.description or "")[:1024],
-            "input_schema": tool.inputSchema,
+            "name": definition.name,
+            "description": definition.description[:1024],
+            "input_schema": definition.input_schema,
         }
-        for tool in sorted(listing, key=lambda t: t.name)
+        for definition in core.operation_service.definitions()
     ]
 
 
@@ -76,17 +72,28 @@ async def run_tool(core: AppCore, name: str, arguments: str) -> tuple[str, dict[
         message = f"invalid tool arguments: {exc}"
         return message, {"ok": False, "summary": message}
 
-    fn = core.tool_functions.get(name)
-    if fn is None:
+    spec = core.operations.get(name)
+    if spec is None:
         message = f"no tool named {name!r}"
         return message, {"ok": False, "summary": message}
 
-    mistake = _argument_error(fn, name, parsed)
+    mistake = _argument_error(spec.handler, name, parsed)
     if mistake:
         return mistake, {"ok": False, "summary": "bad arguments"}
 
-    envelope = await fn(**parsed)
-    payload = envelope.model_dump() if hasattr(envelope, "model_dump") else dict(envelope)
+    result = await core.operation_service.call(name, parsed)
+    if hasattr(result, "model_dump"):
+        payload = result.model_dump()
+    elif isinstance(result, dict):
+        payload = result
+    else:
+        content = []
+        for item in result if isinstance(result, (list, tuple)) else [result]:
+            if isinstance(item, OperationImage):
+                content.append({"type": "image", "format": item.format, "bytes": len(item.data)})
+            else:
+                content.append(item)
+        payload = {"ok": True, "data": {"content": content}, "meta": {}}
     text = json.dumps(payload, default=str)
     if payload.get("ok"):
         summary = "ok"
@@ -159,7 +166,7 @@ async def converse(
     for round_index in range(max(1, settings.max_tool_rounds)):
         calls: list[dict[str, Any]] = []
         text_parts: list[str] = []
-        async for event in _stream_round(
+        round_stream = _stream_round(
             provider,
             base_url=base,
             key=key,
@@ -169,20 +176,22 @@ async def converse(
             tools=tools,
             options=options,
             timeout=float(settings.timeout_s),
-        ):
-            if event["type"] == "tool_calls":
-                calls = event["calls"]
-                continue
-            if event["type"] == "content":
-                text_parts.append(event["text"])
-            yield event
+        )
+        try:
+            async for event in round_stream:
+                if event["type"] == "tool_calls":
+                    calls = event["calls"]
+                    continue
+                if event["type"] == "content":
+                    text_parts.append(event["text"])
+                yield event
+        finally:
+            await round_stream.aclose()
 
         if not calls:
             return
 
-        conversation.append(
-            {"role": "assistant", "text": "".join(text_parts), "tool_calls": calls}
-        )
+        conversation.append({"role": "assistant", "text": "".join(text_parts), "tool_calls": calls})
         for index, call in enumerate(calls):
             # the panel pairs result to call by id; a model that calls the same
             # tool twice in one round would otherwise leave a chip spinning.
@@ -221,18 +230,26 @@ async def _stream_round(provider: Provider, **kwargs) -> AsyncIterator[dict[str,
     loop = asyncio.get_running_loop()
     queue: asyncio.Queue = asyncio.Queue()
     cancel = threading.Event()
+    slots = threading.Semaphore(64)
 
-    def emit(event: Any) -> None:
-        if not cancel.is_set():
-            with contextlib.suppress(RuntimeError):  # loop closed under us
-                loop.call_soon_threadsafe(queue.put_nowait, event)
+    def emit(event: Any) -> bool:
+        while not cancel.is_set():
+            if slots.acquire(timeout=0.05):
+                try:
+                    loop.call_soon_threadsafe(queue.put_nowait, event)
+                except RuntimeError:  # loop closed under us
+                    slots.release()
+                    return False
+                return True
+        return False
 
     def pump() -> None:
         try:
             for event in stream(provider, cancel=cancel, **kwargs):
                 if cancel.is_set():
                     return
-                emit(event)
+                if not emit(event):
+                    return
         except ProviderError as exc:
             emit({"type": "error", "text": str(exc)})
         except Exception as exc:  # never leave the panel hanging
@@ -245,6 +262,7 @@ async def _stream_round(provider: Provider, **kwargs) -> AsyncIterator[dict[str,
     try:
         while True:
             event = await queue.get()
+            slots.release()
             if event is _QUEUE_DONE:
                 return
             yield event

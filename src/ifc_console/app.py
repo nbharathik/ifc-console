@@ -19,11 +19,17 @@ from pathlib import Path
 from typing import Any, Literal
 
 from ifc_console import __version__
+from ifc_console.application.artifacts import ArtifactService
+from ifc_console.application.jobs import JobService
+from ifc_console.application.operations import OperationService
+from ifc_console.application.retention import ArtifactRetentionService
+from ifc_console.application.transactions import TransactionService
 from ifc_console.audit import AuditLog
 from ifc_console.chat import ChatState
+from ifc_console.core.operations import OperationRegistry
+from ifc_console.core.results import ToolError
 from ifc_console.events import EventBus
 from ifc_console.knowledge import KnowledgeBase
-from ifc_console.mcp.envelope import ToolError
 from ifc_console.policy.modes import Mode, PolicyEngine
 from ifc_console.recents import RecentsStore
 from ifc_console.sandbox.runner import SandboxRunner
@@ -101,9 +107,31 @@ class AppCore:
         # Why the last start attempt failed, so /viewer and /chat can say more
         # than "not running" (a port conflict is the usual reason).
         self.server_error: str | None = None
-        # Every enveloped tool, by name. The MCP layer fills this in as it
-        # registers; the SDK calls straight into it.
-        self.tool_functions: dict[str, Callable] = {}
+        # Operations are registered independently of any transport. The old
+        # mapping remains as a compatibility view for integrations that used
+        # it before the operation registry became public.
+        self.workspace_id = f"workspace-{secrets.token_hex(8)}"
+        self.operations = OperationRegistry()
+        self.operation_service = OperationService(self, self.operations)
+        self.tool_functions = self.operations.handlers
+        self._operations_registered = False
+        self.artifacts = ArtifactService(store.artifacts_dir)
+        self.artifact_retention = ArtifactRetentionService(
+            self.artifacts,
+            store.jobs_dir,
+            default_retention_days=s.automation.artifact_retention_days,
+        )
+        self.transactions = TransactionService(
+            self,
+            store.transactions_dir,
+            self.artifacts,
+        )
+        self.jobs = JobService(
+            self,
+            store.jobs_dir,
+            self.artifacts,
+            retention=s.automation.jobs_retention,
+        )
         self._mcp = None  # set by attach_mcp once the tool server exists
         self._viewer_tools_registered = False
         self._read_cache: dict[tuple, Any] = {}
@@ -151,30 +179,37 @@ class AppCore:
 
     # -- viewer lifecycle -------------------------------------------------------
     def attach_mcp(self, mcp) -> None:
-        """Called by build_mcp: core tools are registered unconditionally,
-        the viewer tool category only while the viewer is enabled."""
+        """Attach the current MCP projection of the operation registry."""
         self._mcp = mcp
-        # A fresh FastMCP never carries the category yet, whatever the old
-        # instance had (matters when /port rebuilds the server).
-        self._viewer_tools_registered = False
-        self._sync_viewer_tools()
 
     def _sync_viewer_tools(self) -> None:
-        """Keep the registered tool surface in step with viewer.enabled.
+        """Keep operation and MCP viewer surfaces in step with viewer.enabled.
 
         FastMCP evaluates tools/list per request, so added or removed tools
         are visible to clients on their next listing without a restart.
         """
-        if self._mcp is None:
+        if not self._operations_registered:
             return
+        from ifc_console.application.operations import register_viewer_operations
         from ifc_console.mcp import tools_viewer
 
         if self.viewer.enabled and not self._viewer_tools_registered:
-            tools_viewer.register(self._mcp, self)
+            register_viewer_operations(self)
+            if self._mcp is not None:
+                from ifc_console.mcp.server import register_mcp_operations
+
+                register_mcp_operations(
+                    self._mcp,
+                    self.operations,
+                    self.operation_service,
+                    names=tools_viewer.TOOL_NAMES,
+                )
             self._viewer_tools_registered = True
         elif not self.viewer.enabled and self._viewer_tools_registered:
             for name in tools_viewer.TOOL_NAMES:
-                self._mcp.remove_tool(name)
+                self.operations.remove_tool(name)
+                if self._mcp is not None:
+                    self._mcp.remove_tool(name)
             self._viewer_tools_registered = False
 
     def enable_viewer(self) -> None:
@@ -261,10 +296,7 @@ class AppCore:
         value = await s.run(build, timeout=timeout)
         if len(self._read_cache) >= 64:
             # every resident model's current revision survives the prune
-            live = {
-                (id(m), m.fingerprint, m.revision)
-                for m in self.models.sessions.values()
-            }
+            live = {(id(m), m.fingerprint, m.revision) for m in self.models.sessions.values()}
             live.add((id(s), s.fingerprint, s.revision))
             for stale in [k for k in self._read_cache if k[1:4] not in live]:
                 del self._read_cache[stale]
@@ -359,9 +391,7 @@ class AppCore:
                         session = self.models.require(existing)
                         self.models.set_active(existing)
                         self.models.drop(previous_id, force=True)
-                        self.audit.record(
-                            "model_active", model_id=existing, path=str(session.path)
-                        )
+                        self.audit.record("model_active", model_id=existing, path=str(session.path))
                         self.events.emit(
                             "active_model_changed",
                             model_id=existing,
@@ -479,9 +509,7 @@ class AppCore:
             promoted_id = self.models.active_id
             if promoted_id is not None and promoted_id != previous_active:
                 promoted = self.models.sessions[promoted_id]
-                self.audit.record(
-                    "model_active", model_id=promoted_id, path=str(promoted.path)
-                )
+                self.audit.record("model_active", model_id=promoted_id, path=str(promoted.path))
                 self.events.emit(
                     "active_model_changed",
                     model_id=promoted_id,
@@ -563,9 +591,7 @@ class AppCore:
         self.models.attach_file(attachment)
         self.add_allowed_dir(path.parent)
         self.audit.record("file_attach", path=str(path), kind=kind_name, alias=attachment.alias)
-        self.events.emit(
-            "file_attached", path=str(path), kind=kind_name, alias=attachment.alias
-        )
+        self.events.emit("file_attached", path=str(path), kind=kind_name, alias=attachment.alias)
         return attachment
 
     def resolve_attachment(self, ref: str, *, kind: str | None = None) -> Path:
@@ -655,6 +681,7 @@ class AppCore:
 
     def shutdown(self) -> None:
         self.audit.end()
+        self.jobs.close()
         self.sandbox.close()
         self.models.close_all()
         self.knowledge.close()
