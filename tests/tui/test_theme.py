@@ -4,13 +4,9 @@ from __future__ import annotations
 
 import asyncio
 
-import pytest
-
 from ifc_console.branding import CATEGORICAL, categorical_color
 from ifc_console.tui import commands
 from tests.tui.test_commands import FakeConsole
-
-pytestmark = pytest.mark.asyncio
 
 
 def test_categorical_palette_shape():

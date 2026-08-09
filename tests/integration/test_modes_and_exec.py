@@ -129,6 +129,18 @@ async def test_save_blocked_in_ask_mode(ask_harness, work_model) -> None:
     assert _digest(work_model) == before
 
 
+async def test_save_refuses_an_external_source_change(harness_factory, work_model) -> None:
+    h = await harness_factory(model=work_model, mode=Mode.EDIT)
+    work_model.write_bytes(work_model.read_bytes() + b"\n")
+    changed = _digest(work_model)
+
+    out = await h.call("save_ifc_file")
+
+    assert out["ok"] is False
+    assert out["error"]["code"] == "REVISION_CONFLICT"
+    assert _digest(work_model) == changed
+
+
 async def test_save_as_refuses_overwrite(harness_factory, work_model, tmp_path) -> None:
     h = await harness_factory(model=work_model, mode=Mode.EDIT)
     existing = tmp_path / "exists.ifc"

@@ -177,7 +177,7 @@ counted and reported; a geometry fallback is planned as an opt-in step.
 | `set_b` | selector string | set_a against itself |
 | `mode` | overlap, clearance | overlap |
 | `tolerance` | metres, 0 to 10 | 0.01 |
-| `precision` | exact, fast | exact |
+| `precision` | sampled, fast, exact (legacy alias) | sampled |
 | `physical_only` | bool | true |
 | `max_elements` | int 1-5000 | 1000 |
 | `max_results` | int 1-1000 | 200 |
@@ -195,11 +195,14 @@ Openings, spaces, annotations, grids and virtual elements are skipped by
 default: they share space with real elements by design. Set
 `physical_only=false` to include them.
 
-`precision="exact"` tests the actual solids and is the default.
+`precision="sampled"` runs a bounded point-in-solid occupancy test and estimates
+shared volume. It is more selective than bounding boxes, but remains approximate
+and can miss thin intersections. `precision="exact"` is accepted as a legacy
+alias and reports `precision: "sampled"`; it does not claim exact geometry.
 `precision="fast"` stops at bounding boxes, which is quicker on very large sets
-but reports every box overlap, including pairs that do not really touch. It
-applies to `overlap` only: `clearance` is always a bounding-box measurement,
-and reports `precision: "bounding_box"` to say so.
+but reports every box overlap, including pairs that do not really touch.
+Clearance is always a bounding-box measurement and reports
+`precision: "bounding_box"`.
 
 The response carries a `global_ids` list, so the usual next call is
 `highlight_elements` with it to see the clashes in the viewer.
@@ -229,6 +232,33 @@ and grid north. Answers "where is this model really".
 Writes query results to a CSV file. Allowed in ask mode: writing a report
 file is not editing the model. The path must lie inside the allowed
 directories, and every write is audited (`artifact_write`).
+
+## Structured change previews
+
+### preview_property_change
+
+Builds an immutable, revision-bound ChangeSet without modifying model bytes.
+Pass `global_ids`, `pset_name`, `property_name`, and a scalar `value`.
+`create_missing=false` updates only an existing occurrence
+`IfcPropertySingleValue`. Set it explicitly to true to preview creating a
+missing occurrence property or property set. `nominal_type` is optional for
+creation and accepts IFC value types such as `IfcLabel` or
+`IfcLengthMeasure`; common non-null scalars can be inferred.
+
+### preview_classification_assignment
+
+Pass `global_ids`, `classification_name`, `identification`, and
+`reference_name`. The preview assigns one direct occurrence classification
+reference, reusing the exact system/reference or declaring their candidate
+creation. Duplicate systems/references and existing direct assignments fail
+closed.
+
+### get_change_set
+
+Reads either kind of verified ChangeSet by its content-addressed ID. Agent
+tools can preview and inspect changes, but cannot approve, commit, restore, or
+change the execution mode. Those authority-bearing actions remain direct
+caller SDK/CLI workflows.
 
 ## Execution
 

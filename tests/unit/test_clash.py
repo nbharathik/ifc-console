@@ -161,12 +161,19 @@ class TestAgainstAModel:
         copy = element_util.copy(ifc4, ifc4.by_type("IfcWall")[0])
         copy.GlobalId = ifcopenshell.guid.new()
 
-        exact = detect_clashes(ifc4, "IfcWall", mode="overlap", precision="exact")
+        sampled = detect_clashes(ifc4, "IfcWall", mode="overlap", precision="sampled")
         fast = detect_clashes(ifc4, "IfcWall", mode="overlap", precision="fast")
-        assert fast["total"] >= exact["total"] >= 1
-        # only the exact path can price the overlap
+        assert fast["total"] >= sampled["total"] >= 1
+        # only the sampled path can estimate the overlap
         assert "volume" not in fast["clashes"][0]
-        assert "volume" in exact["clashes"][0]
+        assert "volume" in sampled["clashes"][0]
+        assert sampled["method"] == "sampled_solid_occupancy"
+        assert sampled["approximate"] is True
+
+    def test_exact_is_a_compatibility_alias_not_a_correctness_claim(self, ifc4):
+        report = detect_clashes(ifc4, "IfcWall", mode="overlap", precision="exact")
+        assert report["precision"] == "sampled"
+        assert report["requested_precision"] == "exact"
 
     def test_non_physical_classes_are_excluded_by_default(self, ifc4):
         report = prepare_set(ifc4, "IfcProduct")

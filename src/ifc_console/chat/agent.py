@@ -17,7 +17,15 @@ from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any
 
 from ifc_console.chat import SYSTEM_PROMPT
-from ifc_console.chat.providers import PROVIDERS, Provider, ProviderError, resolve_key, stream
+from ifc_console.chat.providers import (
+    PROVIDERS,
+    Provider,
+    ProviderError,
+    redact,
+    resolve_key,
+    stream,
+    validate_base_url,
+)
 from ifc_console.core.operations import OperationImage
 
 if TYPE_CHECKING:
@@ -113,17 +121,6 @@ def _provider(core: AppCore, requested: str | None) -> Provider:
     return provider
 
 
-def _check_url(core: AppCore, base_url: str) -> None:
-    if not core.settings.chat.local_only:
-        return
-    host = base_url.split("//", 1)[-1].split("/", 1)[0].split(":", 1)[0].lower()
-    if host not in ("localhost", "127.0.0.1", "::1", ""):
-        raise ProviderError(
-            f"chat.local_only is on and {host} is not local; "
-            "use the local provider or turn the setting off"
-        )
-
-
 async def converse(
     core: AppCore,
     *,
@@ -139,8 +136,10 @@ async def converse(
     """Stream one exchange, running tool calls until the model stops asking."""
     settings = core.settings.chat
     provider = _provider(core, provider_id)
-    base = (base_url or core.chat.base_url or provider.base_url).strip()
-    _check_url(core, base)
+    base = validate_base_url(
+        base_url or core.chat.base_url or provider.base_url,
+        local_only=settings.local_only,
+    )
     key = resolve_key(provider, api_key or core.chat.key_for(provider.id))
     if provider.needs_key and not key:
         env = " or ".join(provider.key_env) or "an API key"
@@ -176,6 +175,7 @@ async def converse(
             tools=tools,
             options=options,
             timeout=float(settings.timeout_s),
+            local_only=settings.local_only,
         )
         try:
             async for event in round_stream:
@@ -254,7 +254,13 @@ async def _stream_round(provider: Provider, **kwargs) -> AsyncIterator[dict[str,
             emit({"type": "error", "text": str(exc)})
         except Exception as exc:  # never leave the panel hanging
             log.exception("chat provider failed")
-            emit({"type": "error", "text": f"{type(exc).__name__}: {exc}"})
+            secret = str(kwargs.get("key") or "")
+            emit(
+                {
+                    "type": "error",
+                    "text": f"{type(exc).__name__}: {redact(str(exc), (secret,))}",
+                }
+            )
         finally:
             emit(_QUEUE_DONE)
 

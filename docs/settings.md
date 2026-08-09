@@ -30,12 +30,13 @@ defaults < user file < project file < project local file < env vars < CLI flags
 
 !!! info "Project files are sandboxed"
     A cloned repository must not weaken your safety settings, so project-level
-    files may only set a safe subset: `mode.default`, `server.port`,
+    files may only set a safe subset: `server.port`,
     `exec.timeout_seconds`, `exec.output_char_limit`, `viewer.enabled_default`,
     `viewer.max_model_mb`, `logging.level`, `tui.theme`. Anything else in a
     project file is ignored with a warning. In particular, `files.allowed_dirs`,
-    `exec.allow_system_access`, and every `sandbox.*` key can only come from
-    your own user file, environment, or flags.
+    `mode.default`, `exec.allow_system_access`, every `sandbox.*` key, and every
+    `plugins.*` key can only come from your own user file, environment, or
+    flags.
 
 ## All keys
 
@@ -44,7 +45,7 @@ defaults < user file < project file < project local file < env vars < CLI flags
 | `mode.default` | `ask` | session mode at launch (`ask` = AI queries only, `edit` = AI may change the model) |
 | `server.port` | `8383` | HTTP port for MCP + viewer |
 | `server.persistent_token` | `true` | one token per machine (configure clients once); false = fresh token per run |
-| `server.token_in_config_snippets` | `true` | include the token in printed snippets |
+| `server.token_in_config_snippets` | `false` | include the token in printed snippets; opt in only when the destination is trusted |
 | `exec.timeout_seconds` | `30` | wall clock limit per execute_ifc_code run |
 | `exec.output_char_limit` | `40000` | envelope size cap before truncation |
 | `exec.allow_system_access` | `false` | permit SYSTEM-class code in edit mode |
@@ -75,6 +76,8 @@ defaults < user file < project file < project local file < env vars < CLI flags
 | `knowledge.autobuild` | `true` | build the reference index in the background on first use |
 | `knowledge.schemas` | `["IFC2X3","IFC4","IFC4X3"]` | schemas to index; fewer means a smaller, faster index |
 | `knowledge.max_results` | `10` | default number of search hits |
+| `plugins.enabled` | `false` | allow loading trusted Python operation plugins |
+| `plugins.allow` | `[]` | exact entry-point names permitted to load |
 | `viewer.enabled_default` | `false` | start with the viewer on (needs the `viewer` extra) |
 | `viewer.max_model_mb` | `200` | refuse to serve larger models to the viewer |
 | `recents.max` | `20` | recents list length |

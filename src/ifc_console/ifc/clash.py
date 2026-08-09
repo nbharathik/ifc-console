@@ -16,7 +16,7 @@ import numpy as np
 from ifc_console.core.results import ToolError
 
 MODES = ("overlap", "clearance")
-PRECISIONS = ("exact", "fast")
+PRECISIONS = ("sampled", "fast", "exact")
 
 # Voids, zones and drafting aids share space with real elements by design, so
 # they are dropped unless the caller asks for them.
@@ -290,7 +290,7 @@ def compare_sets(
     same_model: bool = True,
     mode: str = "overlap",
     tolerance: float = 0.01,
-    precision: str = "exact",
+    precision: str = "sampled",
     samples: int = 512,
     max_results: int = 200,
 ) -> dict[str, Any]:
@@ -305,7 +305,7 @@ def compare_sets(
         raise ToolError(
             "INVALID_INPUT",
             f"precision must be one of {', '.join(PRECISIONS)}",
-            "Use precision='exact' for a real solid test, 'fast' for boxes only.",
+            "Use precision='sampled' for occupancy sampling or 'fast' for boxes only.",
         )
     if tolerance < 0:
         raise ToolError(
@@ -314,6 +314,9 @@ def compare_sets(
             "Pass a tolerance in metres, e.g. 0.01.",
         )
 
+    # `exact` was the pre-release name for this sampled implementation. Keep
+    # accepting it so stored calls do not break, but never report it as exact.
+    effective_precision = "sampled" if precision == "exact" else precision
     meshes_a = prep_a["meshes"]
     meshes_b = prep_b["meshes"]
     by_id_a = prep_a["info"]
@@ -349,7 +352,7 @@ def compare_sets(
         low, high = _overlap_box(lo_a[i], hi_a[i], lo_b[j], hi_b[j])
         if mode == "overlap":
             volume = None
-            if precision == "exact":
+            if effective_precision == "sampled":
                 tris_a = _triangles(*meshes_a[id_a])
                 tris_b = _triangles(*meshes_b[id_b])
                 real, volume = _solid_overlap(tris_a, tris_b, low, high, samples)
@@ -410,7 +413,15 @@ def compare_sets(
         "mode": mode,
         # Reporting the precision actually used, not the one requested: the
         # clearance pass is bounding-box only.
-        "precision": precision if mode == "overlap" else "bounding_box",
+        "precision": effective_precision if mode == "overlap" else "bounding_box",
+        "requested_precision": precision,
+        "method": (
+            "sampled_solid_occupancy"
+            if mode == "overlap" and effective_precision == "sampled"
+            else "axis_aligned_bounding_box"
+        ),
+        "approximate": True,
+        "sample_budget": samples if mode == "overlap" and effective_precision == "sampled" else None,
         "tolerance": tolerance,
         "set_a": {"selector": prep_a["selector"], "elements": len(ids_a)},
         "set_b": {

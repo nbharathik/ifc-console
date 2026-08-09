@@ -35,6 +35,11 @@ async def _core(tmp_path: Path, source: Path) -> tuple[AppCore, Path]:
     return core, model
 
 
+def _property_target(core: AppCore) -> str:
+    wall = core.session.ifc.by_type("IfcWall")[0]
+    return str(wall.GlobalId)
+
+
 async def test_validation_job_persists_progress_and_artifacts(
     tmp_path: Path, minimal_ifc4_path: Path
 ) -> None:
@@ -68,6 +73,18 @@ async def test_validation_job_persists_progress_and_artifacts(
         report = json.loads(core.artifacts.read_text(report_ref.artifact_id))
         assert report["passed"] is True
         assert report_ref.revision == record.spec.revision
+        assert record.spec.context is not None
+        assert record.worker["correlation_id"] == record.spec.context.correlation_id
+        assert report_ref.correlation_ids == (record.spec.context.correlation_id,)
+        job_events = [
+            event
+            for event in core.audit.tail(100)
+            if event.get("job_id") == record.job_id
+        ]
+        assert job_events
+        assert {event["correlation_id"] for event in job_events} == {
+            record.spec.context.correlation_id
+        }
     finally:
         core.shutdown()
 
@@ -235,3 +252,109 @@ async def test_expected_revision_conflict_is_refused_before_worker_start(
         assert not core.jobs.list()
     finally:
         core.shutdown()
+
+
+async def test_commit_and_restore_are_durable_phase_jobs(
+    tmp_path: Path, minimal_ifc4_path: Path
+) -> None:
+    core, _model = await _core(tmp_path, minimal_ifc4_path)
+    try:
+        preview = await core.transactions.preview_property_value(
+            global_ids=[_property_target(core)],
+            pset_name="Pset_WallCommon",
+            property_name="FireRating",
+            value="F60",
+        )
+        approval = core.transactions.approve(preview.change_set_id, approved_by="test")
+        core.set_mode(Mode.EDIT, by="test")
+
+        submitted = await core.jobs.submit_commit(
+            preview.change_set_id, approval_id=approval.approval_id
+        )
+        committed = await core.jobs.wait(submitted.job_id, timeout=60)
+
+        assert committed.state is JobState.SUCCEEDED
+        assert committed.kind == "commit"
+        assert committed.phase == "receipt_persisted"
+        assert committed.cancellable is False
+        assert committed.transaction_id is not None
+        assert committed.summary["commit_id"] == committed.artifacts[0].artifact_id
+        assert {event.type for event in committed.events} >= {"queued", "running", "phase"}
+
+        restored_submit = await core.jobs.submit_restore(
+            str(committed.summary["commit_id"]), confirm=True
+        )
+        restored = await core.jobs.wait(restored_submit.job_id, timeout=60)
+
+        assert restored.state is JobState.SUCCEEDED
+        assert restored.kind == "restore"
+        assert restored.phase == "receipt_persisted"
+        assert restored.cancellable is False
+        assert core.transactions.get_restore(str(restored.summary["restore_id"]))
+    finally:
+        core.shutdown()
+
+
+async def test_cancel_rejects_a_job_after_its_commit_point(
+    tmp_path: Path, minimal_ifc4_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    core, _model = await _core(tmp_path, minimal_ifc4_path)
+    monkeypatch.setattr(
+        core.jobs,
+        "_worker_command",
+        lambda _path: (worker_executable(), "-c", "import time; time.sleep(60)"),
+    )
+    try:
+        submitted = await core.jobs.submit_validation()
+        core.jobs._replace(
+            submitted.job_id,
+            phase="commit_point",
+            cancellable=False,
+        )
+        with pytest.raises(ToolError) as excinfo:
+            await core.jobs.cancel(submitted.job_id)
+        assert excinfo.value.code == "JOB_NOT_CANCELLABLE"
+    finally:
+        core.shutdown()
+
+
+async def test_orphaned_commit_job_recovers_from_durable_receipt(
+    tmp_path: Path, minimal_ifc4_path: Path
+) -> None:
+    core, _model = await _core(tmp_path, minimal_ifc4_path)
+    preview = await core.transactions.preview_property_value(
+        global_ids=[_property_target(core)],
+        pset_name="Pset_WallCommon",
+        property_name="FireRating",
+        value="F60",
+    )
+    approval = core.transactions.approve(preview.change_set_id, approved_by="test")
+    core.set_mode(Mode.EDIT, by="test")
+    submitted = await core.jobs.submit_commit(
+        preview.change_set_id, approval_id=approval.approval_id
+    )
+    completed = await core.jobs.wait(submitted.job_id, timeout=60)
+    core.shutdown()
+
+    record_path = tmp_path / "home" / "jobs" / "records" / f"{completed.job_id}.json"
+    payload = json.loads(record_path.read_text(encoding="utf-8"))
+    payload["record"]["state"] = "running"
+    payload["record"]["progress"] = 82
+    payload["record"]["message"] = "supervisor exited after target verification"
+    payload["record"]["failure"] = None
+    payload["owner_pid"] = 2_147_483_647
+    record_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    reopened = AppCore(
+        SettingsStore(home=tmp_path / "home", project_dir=tmp_path, env={}),
+        mode=Mode.EDIT,
+        transport="cli",
+    )
+    try:
+        recovered = reopened.jobs.get(completed.job_id)
+        assert recovered.state is JobState.SUCCEEDED
+        assert recovered.phase == "receipt_persisted"
+        assert recovered.summary["commit_id"] == completed.summary["commit_id"]
+        assert recovered.summary["recovered"] is True
+    finally:
+        reopened.shutdown()

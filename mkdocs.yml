@@ -60,8 +60,10 @@ nav:
   - Reference:
       - MCP tools: tools.md
       - Python SDK: sdk.md
+      - Operation plugins: plugins.md
       - Knowledge index: knowledge.md
       - CLI: cli.md
+      - Automation workflows: workflows.md
       - Settings: settings.md
       - Versioning: versioning.md
   - Project:

@@ -58,6 +58,9 @@ read from the model reach that provider.
 - Keys come from an environment variable or from the panel. They are held in
   memory for the session and dropped on `/chat off`; nothing is written to
   disk, logged, or put in a URL, and provider error bodies are redacted.
+- Provider URLs reject embedded credentials and non-HTTP schemes. Redirects
+  cannot change scheme, host, or port, so authorization headers stay on the
+  configured origin.
 - `chat.local_only true` refuses any provider URL that is not on this machine.
 - Chat tool calls go through the same functions, the same ask/edit gate, and
   the same audit log as an MCP client. A chat session cannot mutate a model in
@@ -77,3 +80,11 @@ read from the model reach that provider.
   `ifc-console sessions show <id>` reads it afterwards.
 - The knowledge index is built from the ifcopenshell package already installed
   on your machine. It performs no network access.
+
+## Python plugins
+
+Operation plugins are trusted code and are not sandboxed. Discovery does not
+import them, loading is disabled by default, and only exact names in the
+user-owned `plugins.allow` list can load. Project settings cannot enable or
+allow plugins. Review a package before enabling it and use
+`ifc-console plugins doctor` to validate its manifest and registration.

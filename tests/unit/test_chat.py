@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import threading
+import urllib.request
 
 import pytest
 
@@ -22,8 +23,6 @@ from ifc_console.chat.providers import (
     to_anthropic_messages,
     to_openai_messages,
 )
-
-pytestmark = pytest.mark.asyncio
 
 
 # ----------------------------------------------------------------- providers
@@ -53,9 +52,88 @@ async def test_key_comes_from_the_environment_or_the_call(monkeypatch):
 
 def test_error_bodies_never_echo_a_key_back(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "sk-supersecretvalue123")
-    assert "sk-supersecretvalue123" not in providers._redact(
+    assert "sk-supersecretvalue123" not in providers.redact(
         "invalid key sk-supersecretvalue123 rejected"
     )
+
+
+def test_explicit_request_key_is_redacted_without_an_environment_variable(monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    key = "pasted-secret-value"
+    assert key not in providers.redact(f"provider reflected {key}", (key,))
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://localhost:8000/v1",
+        "http://127.0.0.1:8000/v1",
+        "http://[::1]:8000/v1",
+        "http://worker.localhost:8000/v1",
+    ],
+)
+def test_local_only_accepts_only_loopback_urls(url):
+    assert providers.validate_base_url(url, local_only=True) == url
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://api.openai.com/v1",
+        "http://127.0.0.1@evil.example/v1",
+        "http://10.0.0.5:8000/v1",
+        "file:///tmp/provider",
+    ],
+)
+def test_local_only_rejects_remote_or_unsafe_urls(url):
+    with pytest.raises(ProviderError):
+        providers.validate_base_url(url, local_only=True)
+
+
+def test_provider_base_url_rejects_credentials_queries_and_fragments():
+    for url in (
+        "https://user:pass@example.com/v1",
+        "https://example.com/v1?key=value",
+        "https://example.com/v1#fragment",
+    ):
+        with pytest.raises(ProviderError):
+            providers.validate_base_url(url)
+
+
+def test_provider_redirects_cannot_change_origin_or_downgrade_transport():
+    handler = providers._SafeRedirectHandler(local_only=False)
+    request = urllib.request.Request(
+        "https://provider.example/v1/chat",
+        headers={"Authorization": "Bearer test-secret"},
+    )
+
+    redirected = handler.redirect_request(
+        request,
+        None,
+        302,
+        "Found",
+        {},
+        "https://provider.example/v2/chat",
+    )
+    assert redirected is not None
+    with pytest.raises(ProviderError, match="changed origin"):
+        handler.redirect_request(
+            request,
+            None,
+            302,
+            "Found",
+            {},
+            "https://collector.example/v1/chat",
+        )
+    with pytest.raises(ProviderError, match="changed origin"):
+        handler.redirect_request(
+            request,
+            None,
+            302,
+            "Found",
+            {},
+            "http://provider.example/v1/chat",
+        )
 
 
 def test_openai_messages_carry_tool_calls_and_results():

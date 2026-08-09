@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from ifc_console.core.artifacts import ArtifactRef
+from ifc_console.core.context import OperationContext
 from ifc_console.core.jobs import SourceFileRef
 from ifc_console.core.revisions import RevisionRef
 
@@ -30,16 +31,64 @@ class PropertyValueChange(BaseModel):
     after: IfcScalar
 
 
+class PropertyCreateChange(BaseModel):
+    """Create one occurrence-level single-value property.
+
+    ``pset_id`` is present when the property set existed at preview time. A
+    missing ID means both the property set and property must still be absent at
+    commit time. This makes creation previews revision-safe without relying on
+    unstable entity IDs allocated in the isolated preview worker.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    kind: Literal["property_create"] = "property_create"
+    global_id: str = Field(min_length=1)
+    entity_type: str = Field(min_length=1)
+    entity_name: str | None = None
+    pset_name: str = Field(min_length=1)
+    property_name: str = Field(min_length=1)
+    pset_id: int | None = Field(default=None, gt=0)
+    nominal_type: str = Field(min_length=1)
+    before: None = None
+    after: str | int | float | bool
+
+
+class ClassificationAssignmentChange(BaseModel):
+    """Assign one direct occurrence classification reference."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    kind: Literal["classification_assignment"] = "classification_assignment"
+    global_id: str = Field(min_length=1)
+    entity_type: str = Field(min_length=1)
+    entity_name: str | None = None
+    classification_name: str = Field(min_length=1)
+    identification: str = Field(min_length=1)
+    reference_name: str = Field(min_length=1)
+    classification_id: int | None = Field(default=None, gt=0)
+    reference_id: int | None = Field(default=None, gt=0)
+    before: None = None
+    after: str = Field(min_length=1)
+
+
+ModelChange = Annotated[
+    PropertyValueChange | PropertyCreateChange | ClassificationAssignmentChange,
+    Field(discriminator="kind"),
+]
+
+
 class ChangeSet(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     version: Literal["1"] = "1"
-    operation: Literal["property.set"] = "property.set"
+    operation: Literal["property.set", "classification.assign"] = "property.set"
     created_at: datetime
     revision: RevisionRef
     source: SourceFileRef
-    changes: tuple[PropertyValueChange, ...] = Field(min_length=1)
+    changes: tuple[ModelChange, ...] = Field(min_length=1)
     warnings: tuple[str, ...] = ()
+    context: OperationContext | None = None
 
 
 class ChangeSetRecord(BaseModel):
@@ -59,6 +108,7 @@ class Approval(BaseModel):
     approved_by: str = Field(min_length=1, max_length=200)
     approved_at: datetime
     reason: str = Field(default="", max_length=1000)
+    context: OperationContext | None = None
 
 
 class ApprovalRecord(BaseModel):
@@ -86,6 +136,7 @@ class CommitResult(BaseModel):
     schema_valid: bool
     schema_issue_count: int = Field(ge=0)
     worker: dict[str, object] = Field(default_factory=dict)
+    context: OperationContext | None = None
 
 
 class CommitRecord(BaseModel):
@@ -111,6 +162,7 @@ class RestoreResult(BaseModel):
     schema_valid: bool
     schema_issue_count: int = Field(ge=0)
     worker: dict[str, object] = Field(default_factory=dict)
+    context: OperationContext | None = None
 
 
 class RestoreRecord(BaseModel):

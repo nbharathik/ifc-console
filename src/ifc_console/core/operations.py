@@ -5,10 +5,11 @@ from __future__ import annotations
 import inspect
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass
-from typing import Any, get_type_hints
+from typing import Annotated, Any, get_type_hints
 
-from pydantic import BaseModel, ConfigDict, create_model
+from pydantic import BaseModel, ConfigDict, Field, create_model
 
+from ifc_console.core.capabilities import Capability, normalize_capabilities
 from ifc_console.core.results import Envelope
 
 OperationHandler = Callable[..., Awaitable[Any]]
@@ -40,6 +41,7 @@ class OperationDefinition(BaseModel):
     output_schema: dict[str, Any] | None
     data_schema: dict[str, Any] | None = None
     annotations: OperationAnnotations
+    required_capabilities: tuple[Capability, ...] = ()
 
 
 def _argument_model(fn: OperationHandler) -> type[BaseModel]:
@@ -51,7 +53,13 @@ def _argument_model(fn: OperationHandler) -> type[BaseModel]:
             continue
         annotation = hints.get(name, Any)
         default = ... if parameter.default is inspect.Parameter.empty else parameter.default
-        fields[name] = (annotation, default)
+        # Public operation arguments such as `schema` can share a name with a
+        # BaseModel method. Keep the public alias and use a private field name
+        # so Pydantic does not emit one warning per registry construction.
+        field_name = f"{name}_" if hasattr(BaseModel, name) else name
+        if field_name != name:
+            annotation = Annotated[annotation, Field(alias=name)]
+        fields[field_name] = (annotation, default)
     return create_model(
         f"{fn.__name__}Arguments",
         __config__=ConfigDict(extra="forbid"),
@@ -68,6 +76,7 @@ class OperationSpec:
     argument_model: type[BaseModel]
     structured_output: bool
     data_model: type[BaseModel] | None = None
+    required_capabilities: tuple[Capability, ...] = ()
 
     @property
     def input_schema(self) -> dict[str, Any]:
@@ -102,11 +111,19 @@ class OperationSpec:
             output_schema=self.output_schema,
             data_schema=self.data_schema,
             annotations=self.annotations,
+            required_capabilities=self.required_capabilities,
         )
 
     def validate_arguments(self, arguments: dict[str, Any]) -> dict[str, Any]:
         validated = self.argument_model.model_validate(arguments)
-        return {name: getattr(validated, name) for name in self.argument_model.model_fields}
+        # Handlers are typed Python callables, so preserve validated nested
+        # BaseModel instances instead of serializing them back to dictionaries.
+        # Only the top-level generated field name needs to be mapped to its
+        # public alias, such as schema_ back to schema.
+        return {
+            field.alias or field_name: getattr(validated, field_name)
+            for field_name, field in self.argument_model.model_fields.items()
+        }
 
 
 class OperationRegistry:
@@ -122,6 +139,7 @@ class OperationRegistry:
         annotations: OperationAnnotations | None = None,
         structured_output: bool | None = None,
         data_model: type[BaseModel] | None = None,
+        required_capabilities: Iterable[Capability | str] | None = None,
         **_ignored: Any,
     ) -> Callable[[OperationHandler], OperationHandler]:
         def decorate(fn: OperationHandler) -> OperationHandler:
@@ -136,6 +154,11 @@ class OperationRegistry:
                 argument_model=_argument_model(fn),
                 structured_output=structured_output is not False,
                 data_model=data_model,
+                required_capabilities=normalize_capabilities(
+                    list(required_capabilities)
+                    if required_capabilities is not None
+                    else list(_default_capabilities(operation_name, annotations))
+                ),
             )
             self._specs[operation_name] = spec
             self.handlers[operation_name] = fn
@@ -175,3 +198,87 @@ class OperationRegistry:
 
     def __len__(self) -> int:
         return len(self._specs)
+
+
+_CAPABILITY_GROUPS: tuple[tuple[frozenset[str], tuple[Capability, ...]], ...] = (
+    (
+        frozenset({"list_ifc_files", "find_files"}),
+        (Capability.FILE_READ,),
+    ),
+    (
+        frozenset({"open_ifc_file", "attach"}),
+        (Capability.FILE_READ, Capability.SESSION_MANAGE),
+    ),
+    (
+        frozenset({"detach", "set_active_model"}),
+        (Capability.SESSION_MANAGE,),
+    ),
+    (
+        frozenset({"save_ifc_file"}),
+        (Capability.MODEL_COMMIT, Capability.FILE_WRITE),
+    ),
+    (
+        frozenset({"export_csv"}),
+        (Capability.MODEL_READ, Capability.FILE_WRITE, Capability.ARTIFACT_WRITE),
+    ),
+    (
+        frozenset({"validate_ids"}),
+        (Capability.MODEL_READ, Capability.FILE_READ),
+    ),
+    (
+        frozenset({"detect_clashes"}),
+        (Capability.MODEL_READ, Capability.GEOMETRY),
+    ),
+    (
+        frozenset({"search_ifc_knowledge", "get_knowledge_record", "get_api_docs"}),
+        (Capability.KNOWLEDGE_READ,),
+    ),
+    (
+        frozenset({"execute_ifc_code"}),
+        (Capability.GENERATED_CODE,),
+    ),
+    (
+        frozenset({"submit_validation_job"}),
+        (Capability.MODEL_READ, Capability.JOB_SUBMIT, Capability.ARTIFACT_WRITE),
+    ),
+    (
+        frozenset({"get_job", "list_jobs"}),
+        (Capability.JOB_READ,),
+    ),
+    (
+        frozenset({"cancel_job"}),
+        (Capability.JOB_CANCEL,),
+    ),
+    (
+        frozenset({"get_artifact", "list_artifacts", "get_change_set"}),
+        (Capability.ARTIFACT_READ,),
+    ),
+    (
+        frozenset({"preview_property_change", "preview_classification_assignment"}),
+        (Capability.MODEL_PREVIEW, Capability.ARTIFACT_WRITE),
+    ),
+    (
+        frozenset({"get_viewer_selection", "get_viewer_screenshot"}),
+        (Capability.VIEWER_READ,),
+    ),
+    (
+        frozenset({"highlight_elements", "apply_color_theme"}),
+        (Capability.VIEWER_CONTROL,),
+    ),
+)
+
+
+def _default_capabilities(
+    name: str, annotations: OperationAnnotations | None
+) -> tuple[Capability, ...]:
+    """Compatibility mapping until every built-in declaration is explicit.
+
+    Unknown third-party operations fail closed: non-read-only operations need
+    model mutation authority. Plugins should always declare their exact set.
+    """
+    for names, capabilities in _CAPABILITY_GROUPS:
+        if name in names:
+            return capabilities
+    if annotations is not None and annotations.readOnlyHint is False:
+        return (Capability.MODEL_MUTATE,)
+    return (Capability.MODEL_READ,)

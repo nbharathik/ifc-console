@@ -79,6 +79,13 @@ class IfcConsoleApp(App):
         self._server = None
         self._server_task: asyncio.Task | None = None
         self._unsubscribe = None
+        # Direct embedders and tests construct the TUI without going through
+        # the CLI's warm-up path. Start the same import warm-up as soon as the
+        # fully constructed core reaches the app, before Textual mounts.
+        from ifc_console import preload
+
+        preload.start()
+        preload.release()
 
     # -- lifecycle ----------------------------------------------------------------
     async def on_mount(self) -> None:

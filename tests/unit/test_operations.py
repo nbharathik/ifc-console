@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from pydantic import BaseModel
 
 from ifc_console.app import AppCore
 from ifc_console.application.operations import build_operations
@@ -12,6 +13,10 @@ from ifc_console.core.operations import OperationRegistry
 from ifc_console.core.results import Envelope
 from ifc_console.mcp.server import build_mcp
 from ifc_console.settings import SettingsStore
+
+
+class _NestedItem(BaseModel):
+    value: int
 
 
 def _core(home: Path) -> AppCore:
@@ -30,6 +35,22 @@ def test_registry_refuses_duplicate_operation_names() -> None:
     registry.tool(name="same")(first)
     with pytest.raises(ValueError, match="already registered"):
         registry.tool(name="same")(second)
+
+
+def test_validation_preserves_nested_models_and_public_aliases() -> None:
+    registry = OperationRegistry()
+
+    async def nested(schema: str, items: list[_NestedItem]) -> Envelope:
+        return Envelope(ok=True)
+
+    registry.tool()(nested)
+    arguments = registry.require("nested").validate_arguments(
+        {"schema": "IFC4", "items": [{"value": 7}]}
+    )
+
+    assert arguments["schema"] == "IFC4"
+    assert isinstance(arguments["items"][0], _NestedItem)
+    assert arguments["items"][0].value == 7
 
 
 async def test_application_service_validates_arguments_before_execution(tmp_path: Path) -> None:

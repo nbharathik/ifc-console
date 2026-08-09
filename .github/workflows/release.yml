@@ -14,8 +14,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
+      - run: uv lock --check
+      - run: uv run python scripts/check_vendor_assets.py
       - run: uv sync --extra dev
-      - run: uv run ruff check src tests packages
+      - run: uv run ruff check src tests packages scripts
       - run: uv run pytest
 
   publish:

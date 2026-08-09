@@ -344,6 +344,7 @@ button svg {
 
 /* Workspace ------------------------------------------------------------- */
 #layout {
+  position: relative;
   display: flex;
   flex: 1;
   min-height: 0;
@@ -1206,6 +1207,22 @@ kbd {
   #model-name { max-width: 28vw; }
   #dirty { display: none !important; }
   .toolbar-sep { display: none; }
+  #tree-panel,
+  #props-panel {
+    position: absolute;
+    z-index: 25;
+    inset-block: 0;
+    max-width: 85vw;
+    box-shadow: 10px 0 28px rgba(0, 0, 0, 0.24);
+  }
+  #tree-panel { inset-inline-start: 0; width: min(300px, 85vw) !important; }
+  #props-panel {
+    inset-inline-end: 0;
+    width: min(320px, 85vw) !important;
+    box-shadow: -10px 0 28px rgba(0, 0, 0, 0.24);
+  }
+  #split-tree,
+  #split-props { display: none; }
   #statusbar { gap: 8px; }
   #stats { display: none; }
   .text-action { width: 30px; padding: 0; font-size: 0; }

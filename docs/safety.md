@@ -11,6 +11,9 @@ One binary switch, owned by you:
 | | `ask` (default) | `edit` |
 | --- | --- | --- |
 | structured queries | yes | yes |
+| preview property/classification ChangeSets | yes | yes |
+| approve a ChangeSet through an AI tool | no | no |
+| commit a caller-approved ChangeSet | blocked | yes |
 | generate/show code | yes | yes |
 | run mutating code | blocked with an error | yes |
 | save to disk | blocked with an error | yes |
@@ -102,6 +105,20 @@ follow. ifc-console mitigates this three ways:
 
 Treat "the model asked me to do something" in an agent's output as a red
 flag, and review files from untrusted sources in `ask` mode first.
+
+## Workflow manifests
+
+Version 1 automation manifests are deliberately read-only. They can select IFC
+and IDS files below the manifest's allowed directory and request built-in
+validation or selector queries. They cannot interpolate environment variables,
+read secrets, execute code or commands, access the network, load plugins, or
+mutate a model. JSON and safely loaded YAML are size limited, paths must be
+relative and contained, source counts and hashing are bounded, and all source
+identities are checked again before submit or resume.
+
+Planning performs no IFC operation and creates no jobs or artifacts. Review the
+plan ID, resolved sources, capabilities, and child count before submission when
+the manifest came from another party.
 
 ## What this does not guarantee
 

@@ -115,6 +115,19 @@ def build_parser() -> argparse.ArgumentParser:
     check.add_argument("--output", default=None, metavar="FILE", help="Write the report to a file.")
     check.set_defaults(func=_cmd_check)
 
+    workflow_run = sub.add_parser(
+        "run", help="Plan or execute a versioned IFC automation workflow."
+    )
+    workflow_run.add_argument("manifest", help="Workflow .json, .yaml, or .yml file.")
+    workflow_run.add_argument(
+        "--plan", action="store_true", help="Resolve and hash inputs without scheduling work."
+    )
+    workflow_run.add_argument("--json", action="store_true")
+    workflow_run.add_argument(
+        "--output-dir", default=None, metavar="DIR", help="Export workflow and step artifacts."
+    )
+    workflow_run.set_defaults(func=_cmd_workflow_run)
+
     jobs = sub.add_parser("jobs", help="Run and inspect durable automation jobs.")
     jobs_sub = jobs.add_subparsers(dest="jobs_cmd", required=True)
     jobs_validate = jobs_sub.add_parser(
@@ -130,6 +143,22 @@ def build_parser() -> argparse.ArgumentParser:
         "--output-dir", default=None, metavar="DIR", help="Export generated artifacts."
     )
     jobs_validate.set_defaults(func=_cmd_jobs_validate)
+    jobs_commit = jobs_sub.add_parser(
+        "commit", help="Run a journaled commit and stream transaction phases."
+    )
+    jobs_commit.add_argument("model")
+    jobs_commit.add_argument("change_set_id")
+    jobs_commit.add_argument("--approval", required=True, dest="approval_id")
+    jobs_commit.add_argument("--json", action="store_true")
+    jobs_commit.set_defaults(func=_cmd_jobs_commit)
+    jobs_restore = jobs_sub.add_parser(
+        "restore", help="Run a journaled restore and stream transaction phases."
+    )
+    jobs_restore.add_argument("model")
+    jobs_restore.add_argument("commit_id")
+    jobs_restore.add_argument("--confirm", action="store_true")
+    jobs_restore.add_argument("--json", action="store_true")
+    jobs_restore.set_defaults(func=_cmd_jobs_restore)
     jobs_list = jobs_sub.add_parser("list", help="List persisted jobs.")
     jobs_list.add_argument("--limit", type=int, default=50)
     jobs_list.add_argument("--json", action="store_true")
@@ -142,6 +171,111 @@ def build_parser() -> argparse.ArgumentParser:
     jobs_cancel.add_argument("job_id")
     jobs_cancel.add_argument("--json", action="store_true")
     jobs_cancel.set_defaults(func=_cmd_jobs_cancel)
+
+    batch = sub.add_parser(
+        "batch", help="Run resumable read-only automation across many IFC files."
+    )
+    batch_sub = batch.add_subparsers(dest="batch_cmd", required=True)
+    batch_validate = batch_sub.add_parser(
+        "validate", help="Capture and validate IFC files with bounded concurrency."
+    )
+    batch_validate.add_argument("models", nargs="+", help="IFC files to validate.")
+    batch_validate.add_argument("--ids", action="append", default=[], metavar="FILE")
+    batch_validate.add_argument("--express-rules", action="store_true")
+    batch_validate.add_argument("--max-issues", type=int, default=200)
+    batch_validate.add_argument("--concurrency", type=int, default=2)
+    batch_validate.add_argument(
+        "--failure-policy", choices=["continue", "fail_fast"], default="continue"
+    )
+    batch_validate.add_argument("--json", action="store_true")
+    batch_validate.add_argument(
+        "--output-dir", default=None, metavar="DIR", help="Export the manifest and reports."
+    )
+    batch_validate.set_defaults(func=_cmd_batch_validate)
+    batch_query = batch_sub.add_parser(
+        "query", help="Stream one selector result artifact per IFC file."
+    )
+    batch_query.add_argument("models", nargs="+", help="IFC files to query.")
+    batch_query.add_argument("--selector", required=True, help="IfcOpenShell selector.")
+    batch_query.add_argument(
+        "--field",
+        action="append",
+        dest="fields",
+        choices=["name", "predefined_type", "type_name", "storey", "description", "tag"],
+        help="Result field beyond global_id and class (repeatable).",
+    )
+    batch_query.add_argument("--order-by", choices=["class", "name", "storey"], default="class")
+    batch_query.add_argument("--format", choices=["jsonl", "csv"], default="jsonl")
+    batch_query.add_argument("--limit", type=int, default=100_000, help="Per-file row cap.")
+    batch_query.add_argument("--concurrency", type=int, default=2)
+    batch_query.add_argument(
+        "--failure-policy", choices=["continue", "fail_fast"], default="continue"
+    )
+    batch_query.add_argument("--json", action="store_true")
+    batch_query.add_argument(
+        "--output-dir", default=None, metavar="DIR", help="Export the manifest and results."
+    )
+    batch_query.set_defaults(func=_cmd_batch_query)
+    batch_list = batch_sub.add_parser("list", help="List durable batch records.")
+    batch_list.add_argument("--limit", type=int, default=50)
+    batch_list.add_argument("--json", action="store_true")
+    batch_list.set_defaults(func=_cmd_batch_list)
+    batch_show = batch_sub.add_parser("show", help="Show one batch and its children.")
+    batch_show.add_argument("batch_id")
+    batch_show.add_argument("--json", action="store_true")
+    batch_show.set_defaults(func=_cmd_batch_show)
+    batch_resume = batch_sub.add_parser(
+        "resume", help="Verify captured sources and retry unfinished children."
+    )
+    batch_resume.add_argument("batch_id")
+    batch_resume.add_argument("--json", action="store_true")
+    batch_resume.set_defaults(func=_cmd_batch_resume)
+    batch_cancel = batch_sub.add_parser("cancel", help="Cancel a running batch.")
+    batch_cancel.add_argument("batch_id")
+    batch_cancel.add_argument("--json", action="store_true")
+    batch_cancel.set_defaults(func=_cmd_batch_cancel)
+
+    workflows = sub.add_parser("workflows", help="Inspect durable workflow runs.")
+    workflows_sub = workflows.add_subparsers(dest="workflows_cmd", required=True)
+    workflows_list = workflows_sub.add_parser("list", help="List durable workflow runs.")
+    workflows_list.add_argument("--limit", type=int, default=50)
+    workflows_list.add_argument("--json", action="store_true")
+    workflows_list.set_defaults(func=_cmd_workflows_list)
+    workflows_show = workflows_sub.add_parser("show", help="Show a workflow and its steps.")
+    workflows_show.add_argument("workflow_id")
+    workflows_show.add_argument("--json", action="store_true")
+    workflows_show.set_defaults(func=_cmd_workflows_show)
+    workflows_watch = workflows_sub.add_parser(
+        "watch", help="Watch a workflow owned by this or another local process."
+    )
+    workflows_watch.add_argument("workflow_id")
+    workflows_watch.add_argument("--json", action="store_true")
+    workflows_watch.set_defaults(func=_cmd_workflows_watch)
+    workflows_resume = workflows_sub.add_parser(
+        "resume", help="Verify sources and retry unfinished workflow steps."
+    )
+    workflows_resume.add_argument("workflow_id")
+    workflows_resume.add_argument("--json", action="store_true")
+    workflows_resume.add_argument("--output-dir", default=None, metavar="DIR")
+    workflows_resume.set_defaults(func=_cmd_workflows_resume)
+    workflows_cancel = workflows_sub.add_parser("cancel", help="Cancel a running workflow.")
+    workflows_cancel.add_argument("workflow_id")
+    workflows_cancel.add_argument("--json", action="store_true")
+    workflows_cancel.set_defaults(func=_cmd_workflows_cancel)
+
+    transactions = sub.add_parser(
+        "transactions", help="Inspect durable commit and restore recovery journals."
+    )
+    transactions_sub = transactions.add_subparsers(
+        dest="transactions_cmd", required=True
+    )
+    transactions_list = transactions_sub.add_parser("list")
+    transactions_list.add_argument("--json", action="store_true")
+    transactions_list.set_defaults(func=_cmd_transactions_list)
+    transactions_show = transactions_sub.add_parser("show")
+    transactions_show.add_argument("transaction_id")
+    transactions_show.add_argument("--json", action="store_true")
+    transactions_show.set_defaults(func=_cmd_transactions_show)
 
     artifacts = sub.add_parser("artifacts", help="Inspect and export durable job outputs.")
     artifacts_sub = artifacts.add_subparsers(dest="artifacts_cmd", required=True)
@@ -184,6 +318,16 @@ def build_parser() -> argparse.ArgumentParser:
     changes_preview.add_argument("--global-id", action="append", required=True, dest="global_ids")
     changes_preview.add_argument("--pset", required=True, dest="pset_name")
     changes_preview.add_argument("--property", required=True, dest="property_name")
+    changes_preview.add_argument(
+        "--create-missing",
+        action="store_true",
+        help="Explicitly preview creating a missing occurrence property or property set.",
+    )
+    changes_preview.add_argument(
+        "--nominal-type",
+        default=None,
+        help="IFC value type for creation, such as IfcLabel or IfcLengthMeasure.",
+    )
     value_group = changes_preview.add_mutually_exclusive_group(required=True)
     value_group.add_argument("--value", dest="plain_value", help="String property value.")
     value_group.add_argument(
@@ -194,6 +338,22 @@ def build_parser() -> argparse.ArgumentParser:
     changes_preview.add_argument("--expected-revision", default=None)
     changes_preview.add_argument("--json", action="store_true")
     changes_preview.set_defaults(func=_cmd_changes_preview)
+
+    changes_classify = changes_sub.add_parser(
+        "classify", help="Preview a direct occurrence classification assignment."
+    )
+    changes_classify.add_argument("model", help="IFC model to inspect without modifying it.")
+    changes_classify.add_argument(
+        "--global-id", action="append", required=True, dest="global_ids"
+    )
+    changes_classify.add_argument(
+        "--system", required=True, dest="classification_name"
+    )
+    changes_classify.add_argument("--identification", required=True)
+    changes_classify.add_argument("--name", required=True, dest="reference_name")
+    changes_classify.add_argument("--expected-revision", default=None)
+    changes_classify.add_argument("--json", action="store_true")
+    changes_classify.set_defaults(func=_cmd_changes_classify)
 
     changes_show = changes_sub.add_parser("show", help="Show one ChangeSet preview.")
     changes_show.add_argument("change_set_id")
@@ -288,6 +448,19 @@ def build_parser() -> argparse.ArgumentParser:
     kb_search.add_argument("--json", action="store_true")
     kb_search.set_defaults(func=_cmd_knowledge_search)
 
+    plugins = sub.add_parser("plugins", help="Inspect trusted operation plugins.")
+    plugins_sub = plugins.add_subparsers(dest="plugins_cmd", required=True)
+    plugins_list = plugins_sub.add_parser(
+        "list", help="List discovered plugins without importing their code."
+    )
+    plugins_list.add_argument("--json", action="store_true")
+    plugins_list.set_defaults(func=_cmd_plugins_list)
+    plugins_doctor = plugins_sub.add_parser(
+        "doctor", help="Load configured plugins and validate registration."
+    )
+    plugins_doctor.add_argument("--json", action="store_true")
+    plugins_doctor.set_defaults(func=_cmd_plugins_doctor)
+
     ses = sub.add_parser("sessions", help="Audit-log sessions.")
     ses_sub = ses.add_subparsers(dest="sessions_cmd", required=True)
     ses_list = ses_sub.add_parser("list")
@@ -296,6 +469,10 @@ def build_parser() -> argparse.ArgumentParser:
     ses_show = ses_sub.add_parser("show")
     ses_show.add_argument("id")
     ses_show.set_defaults(func=_cmd_sessions_show)
+    ses_verify = ses_sub.add_parser("verify", help="Verify an audit session's hash chain.")
+    ses_verify.add_argument("id")
+    ses_verify.add_argument("--json", action="store_true")
+    ses_verify.set_defaults(func=_cmd_sessions_verify)
     ses_clear = ses_sub.add_parser("clear")
     ses_clear.set_defaults(func=_cmd_sessions_clear)
 
@@ -754,8 +931,8 @@ def _cmd_mcp_config(args: argparse.Namespace) -> int:
         )
         return 2
     transport = args.transport or ("bridge" if persistent else "stdio")
-    # With the (default) persistent token the snippet is complete and stays
-    # valid across restarts: configure the client once, then just run ifc-console.
+    # The default bridge snippet stays valid across restarts without placing
+    # the persistent token in a client configuration file.
     token = None
     if persistent and store.settings.server.token_in_config_snippets:
         token = store.load_server_token()
@@ -863,10 +1040,14 @@ def _print_job(record: Any, *, as_json: bool) -> None:
     print(f"state     {record.state.value}")
     print(f"progress  {record.progress}%")
     print(f"message   {record.message}")
+    print(f"phase     {record.phase}")
+    print(f"cancel    {'allowed' if record.cancellable else 'closed'}")
+    if record.transaction_id:
+        print(f"transaction {record.transaction_id}")
     print(f"revision  {record.spec.revision.revision_id}")
     if record.summary:
-        print(f"passed    {record.summary.get('passed')}")
-        print(f"issues    {record.summary.get('issue_count', 0)}")
+        for key, value in record.summary.items():
+            print(f"{key:<10} {value}")
     if record.failure is not None:
         print(f"error     {record.failure.code}: {record.failure.message}")
     for artifact in record.artifacts:
@@ -930,6 +1111,78 @@ def _cmd_jobs_validate(args: argparse.Namespace) -> int:
         core.shutdown()
 
 
+def _cmd_jobs_commit(args: argparse.Namespace) -> int:
+    import asyncio
+
+    from ifc_console.core.results import ToolError
+
+    core = _automation_core(Mode.EDIT)
+
+    async def run():
+        model = Path(args.model).expanduser().resolve()
+        core.start_audit()
+        core.add_allowed_dir(model.parent)
+        await core.open_model(model)
+        submitted = await core.jobs.submit_commit(
+            args.change_set_id, approval_id=args.approval_id
+        )
+        completed = submitted
+        async for update in core.jobs.watch(submitted.job_id):
+            completed = update
+            print(
+                f"{update.job_id}  {update.progress:3}%  {update.phase}  {update.message}",
+                file=sys.stderr,
+            )
+        return completed
+
+    try:
+        record = asyncio.run(run())
+        _print_job(record, as_json=args.json)
+        return 0 if record.state.value == "succeeded" else 1
+    except ToolError as exc:
+        return _tool_error(exc)
+    except (OSError, ValueError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 4
+    finally:
+        core.shutdown()
+
+
+def _cmd_jobs_restore(args: argparse.Namespace) -> int:
+    import asyncio
+
+    from ifc_console.core.results import ToolError
+
+    core = _automation_core(Mode.EDIT)
+
+    async def run():
+        model = Path(args.model).expanduser().resolve()
+        core.start_audit()
+        core.add_allowed_dir(model.parent)
+        await core.open_model(model)
+        submitted = await core.jobs.submit_restore(args.commit_id, confirm=args.confirm)
+        completed = submitted
+        async for update in core.jobs.watch(submitted.job_id):
+            completed = update
+            print(
+                f"{update.job_id}  {update.progress:3}%  {update.phase}  {update.message}",
+                file=sys.stderr,
+            )
+        return completed
+
+    try:
+        record = asyncio.run(run())
+        _print_job(record, as_json=args.json)
+        return 0 if record.state.value == "succeeded" else 1
+    except ToolError as exc:
+        return _tool_error(exc)
+    except (OSError, ValueError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 4
+    finally:
+        core.shutdown()
+
+
 def _cmd_jobs_list(args: argparse.Namespace) -> int:
     core = _automation_core()
     try:
@@ -979,6 +1232,485 @@ def _cmd_jobs_cancel(args: argparse.Namespace) -> int:
         core.shutdown()
 
 
+# --------------------------------------------------------------------------- batches
+def _print_batch(record: Any, *, as_json: bool) -> None:
+    if as_json:
+        print(record.model_dump_json(indent=2))
+        return
+    print(f"batch      {record.batch_id}")
+    print(f"state      {record.state.value}")
+    print(f"progress   {record.progress}%")
+    print(f"message    {record.message}")
+    print(f"inputs     {len(record.children)}")
+    print(f"runs       {record.run_count}")
+    print(f"concurrency {record.spec.concurrency}")
+    print(f"policy     {record.spec.failure_policy}")
+    for child in record.children:
+        name = Path(child.source.path).name
+        detail = f"job={child.job_id}" if child.job_id else "not submitted"
+        print(
+            f"child {child.index:03} {child.state.value:9} attempts={child.attempts} "
+            f"{name}  {detail}"
+        )
+        if child.failure is not None:
+            print(f"      error {child.failure.code}: {child.failure.message}")
+    if record.aggregate_artifact is not None:
+        print(
+            f"manifest   {record.aggregate_artifact.artifact_id}  "
+            f"{record.aggregate_artifact.name}"
+        )
+
+
+async def _watch_batch(core: Any, batch_id: str) -> Any:
+    completed = core.batches.get(batch_id)
+    async for update in core.batches.watch(batch_id):
+        completed = update
+        print(
+            f"{update.batch_id}  {update.progress:3}%  {update.message}",
+            file=sys.stderr,
+        )
+    return completed
+
+
+def _batch_exit_code(record: Any) -> int:
+    if record.state.value != "succeeded":
+        return 1
+    return 0 if record.summary.get("passed") else 5
+
+
+def _cmd_batch_validate(args: argparse.Namespace) -> int:
+    import asyncio
+
+    from ifc_console.core.results import ToolError
+
+    models = tuple(Path(path).expanduser().resolve() for path in args.models)
+    ids_paths = tuple(Path(path).expanduser().resolve() for path in args.ids)
+    core = _automation_core()
+
+    async def run():
+        core.start_audit()
+        for path in (*models, *ids_paths):
+            core.add_allowed_dir(path.parent)
+        submitted = await core.batches.submit_validation(
+            models,
+            ids_paths=ids_paths,
+            express_rules=args.express_rules,
+            max_issues=args.max_issues,
+            concurrency=args.concurrency,
+            failure_policy=args.failure_policy,
+        )
+        return await _watch_batch(core, submitted.batch_id)
+
+    try:
+        record = asyncio.run(run())
+        if args.output_dir:
+            output_dir = Path(args.output_dir).expanduser().resolve()
+            if record.aggregate_artifact is not None:
+                core.artifacts.export(
+                    record.aggregate_artifact.artifact_id,
+                    output_dir / record.aggregate_artifact.name,
+                )
+            for child in record.children:
+                for artifact in child.artifacts:
+                    core.artifacts.export(
+                        artifact.artifact_id,
+                        output_dir / f"{child.index:03}-{artifact.name}",
+                    )
+        _print_batch(record, as_json=args.json)
+        return _batch_exit_code(record)
+    except ToolError as exc:
+        return _tool_error(exc)
+    except (OSError, ValueError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 4
+    finally:
+        core.shutdown()
+
+
+def _cmd_batch_query(args: argparse.Namespace) -> int:
+    import asyncio
+
+    from ifc_console.core.results import ToolError
+
+    models = tuple(Path(path).expanduser().resolve() for path in args.models)
+    fields = tuple(args.fields or ("name", "storey", "type_name"))
+    core = _automation_core()
+
+    async def run():
+        core.start_audit()
+        for path in models:
+            core.add_allowed_dir(path.parent)
+        submitted = await core.batches.submit_query(
+            models,
+            query=args.selector,
+            fields=fields,
+            order_by=args.order_by,
+            output_format=args.format,
+            limit=args.limit,
+            concurrency=args.concurrency,
+            failure_policy=args.failure_policy,
+        )
+        return await _watch_batch(core, submitted.batch_id)
+
+    try:
+        record = asyncio.run(run())
+        if args.output_dir:
+            output_dir = Path(args.output_dir).expanduser().resolve()
+            if record.aggregate_artifact is not None:
+                core.artifacts.export(
+                    record.aggregate_artifact.artifact_id,
+                    output_dir / record.aggregate_artifact.name,
+                )
+            for child in record.children:
+                for artifact in child.artifacts:
+                    core.artifacts.export(
+                        artifact.artifact_id,
+                        output_dir / f"{child.index:03}-{artifact.name}",
+                    )
+        _print_batch(record, as_json=args.json)
+        return _batch_exit_code(record)
+    except ToolError as exc:
+        return _tool_error(exc)
+    except (OSError, ValueError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 4
+    finally:
+        core.shutdown()
+
+
+def _cmd_batch_list(args: argparse.Namespace) -> int:
+    core = _automation_core()
+    try:
+        records = core.batches.list(limit=args.limit)
+        if args.json:
+            print(json.dumps([record.model_dump(mode="json") for record in records], indent=2))
+        elif not records:
+            print("(no batches)")
+        else:
+            for record in records:
+                print(
+                    f"{record.batch_id}  {record.state.value:11}  "
+                    f"{record.progress:3}%  {len(record.children):4} inputs  {record.message}"
+                )
+        return 0
+    finally:
+        core.shutdown()
+
+
+def _cmd_batch_show(args: argparse.Namespace) -> int:
+    from ifc_console.core.results import ToolError
+
+    core = _automation_core()
+    try:
+        _print_batch(core.batches.get(args.batch_id), as_json=args.json)
+        return 0
+    except ToolError as exc:
+        return _tool_error(exc)
+    finally:
+        core.shutdown()
+
+
+def _cmd_batch_resume(args: argparse.Namespace) -> int:
+    import asyncio
+
+    from ifc_console.core.results import ToolError
+
+    core = _automation_core()
+
+    async def run():
+        core.start_audit()
+        resumed = await core.batches.resume(args.batch_id)
+        return await _watch_batch(core, resumed.batch_id)
+
+    try:
+        record = asyncio.run(run())
+        _print_batch(record, as_json=args.json)
+        return _batch_exit_code(record)
+    except ToolError as exc:
+        return _tool_error(exc)
+    finally:
+        core.shutdown()
+
+
+def _cmd_batch_cancel(args: argparse.Namespace) -> int:
+    import asyncio
+
+    from ifc_console.core.results import ToolError
+
+    core = _automation_core()
+    try:
+        core.start_audit()
+        record = asyncio.run(core.batches.cancel(args.batch_id))
+        _print_batch(record, as_json=args.json)
+        return 0
+    except ToolError as exc:
+        return _tool_error(exc)
+    finally:
+        core.shutdown()
+
+
+# --------------------------------------------------------------------------- workflows
+def _print_workflow(record: Any, *, as_json: bool) -> None:
+    if as_json:
+        print(record.model_dump_json(indent=2))
+        return
+    print(f"workflow    {record.workflow_id}")
+    print(f"name        {record.plan.spec.name}")
+    print(f"plan        {record.plan.plan_id}")
+    print(f"state       {record.state.value}")
+    print(f"progress    {record.progress}%")
+    print(f"message     {record.message}")
+    print(f"runs        {record.run_count}")
+    for step in record.steps:
+        detail = f"batch={step.batch_id}" if step.batch_id else "not submitted"
+        print(
+            f"step {step.id:<20} {step.state.value:11} attempts={step.attempts} "
+            f"output={step.output} {detail}"
+        )
+        if step.failure is not None:
+            print(f"     error {step.failure.code}: {step.failure.message}")
+    if record.aggregate_artifact is not None:
+        print(
+            f"manifest    {record.aggregate_artifact.artifact_id}  "
+            f"{record.aggregate_artifact.name}"
+        )
+
+
+def _print_workflow_plan(plan: Any, *, as_json: bool) -> None:
+    if as_json:
+        print(plan.model_dump_json(indent=2))
+        return
+    print(f"workflow    {plan.spec.name}")
+    print(f"plan        {plan.plan_id}")
+    print(f"version     {plan.spec.version}")
+    print(f"steps       {len(plan.steps)}")
+    print(f"children    {plan.total_children}")
+    for step in plan.steps:
+        dependencies = ",".join(step.needs) if step.needs else "-"
+        print(
+            f"step {step.id:<20} {step.batch_spec.operation.kind:10} "
+            f"inputs={len(step.batch_spec.inputs)} needs={dependencies} output={step.output}"
+        )
+
+
+async def _watch_workflow(core: Any, workflow_id: str) -> Any:
+    completed = core.workflows.get(workflow_id)
+    async for update in core.workflows.watch(workflow_id):
+        completed = update
+        print(
+            f"{update.workflow_id}  {update.progress:3}%  {update.message}",
+            file=sys.stderr,
+        )
+    return completed
+
+
+def _workflow_exit_code(record: Any) -> int:
+    if record.state.value != "succeeded":
+        return 1
+    return 0 if record.summary.get("passed") else 5
+
+
+def _export_workflow(core: Any, record: Any, output_dir: Path) -> None:
+    if record.aggregate_artifact is not None:
+        core.artifacts.export(
+            record.aggregate_artifact.artifact_id,
+            output_dir / record.aggregate_artifact.name,
+        )
+    for step in record.steps:
+        if step.batch_id is None:
+            continue
+        batch = core.batches.get(step.batch_id)
+        if batch.aggregate_artifact is not None:
+            core.artifacts.export(
+                batch.aggregate_artifact.artifact_id,
+                output_dir / f"{step.output}-{batch.aggregate_artifact.name}",
+            )
+        for child in batch.children:
+            for artifact in child.artifacts:
+                core.artifacts.export(
+                    artifact.artifact_id,
+                    output_dir / f"{step.output}-{child.index:03}-{artifact.name}",
+                )
+
+
+def _cmd_workflow_run(args: argparse.Namespace) -> int:
+    import asyncio
+
+    from ifc_console.core.results import ToolError
+
+    manifest = Path(args.manifest).expanduser().resolve()
+    core = _automation_core()
+
+    async def run() -> Any:
+        core.start_audit()
+        core.add_allowed_dir(manifest.parent)
+        plan = await core.workflows.plan_manifest(manifest)
+        if args.plan:
+            return plan
+        submitted = await core.workflows.submit_plan(plan)
+        return await _watch_workflow(core, submitted.workflow_id)
+
+    try:
+        result = asyncio.run(run())
+        if args.plan:
+            _print_workflow_plan(result, as_json=args.json)
+            return 0
+        if args.output_dir:
+            _export_workflow(core, result, Path(args.output_dir).expanduser().resolve())
+        _print_workflow(result, as_json=args.json)
+        return _workflow_exit_code(result)
+    except ToolError as exc:
+        return _tool_error(exc)
+    except (OSError, ValueError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 4
+    finally:
+        core.shutdown()
+
+
+def _cmd_workflows_list(args: argparse.Namespace) -> int:
+    core = _automation_core()
+    try:
+        records = core.workflows.list(limit=args.limit)
+        if args.json:
+            print(json.dumps([record.model_dump(mode="json") for record in records], indent=2))
+        elif not records:
+            print("(no workflows)")
+        else:
+            for record in records:
+                print(
+                    f"{record.workflow_id}  {record.state.value:11}  "
+                    f"{record.progress:3}%  {len(record.steps):3} steps  {record.plan.spec.name}"
+                )
+        return 0
+    finally:
+        core.shutdown()
+
+
+def _cmd_workflows_show(args: argparse.Namespace) -> int:
+    from ifc_console.core.results import ToolError
+
+    core = _automation_core()
+    try:
+        _print_workflow(core.workflows.get(args.workflow_id), as_json=args.json)
+        return 0
+    except ToolError as exc:
+        return _tool_error(exc)
+    finally:
+        core.shutdown()
+
+
+def _cmd_workflows_watch(args: argparse.Namespace) -> int:
+    import asyncio
+
+    from ifc_console.core.results import ToolError
+
+    core = _automation_core()
+    try:
+        record = asyncio.run(_watch_workflow(core, args.workflow_id))
+        _print_workflow(record, as_json=args.json)
+        return _workflow_exit_code(record)
+    except ToolError as exc:
+        return _tool_error(exc)
+    finally:
+        core.shutdown()
+
+
+def _cmd_workflows_resume(args: argparse.Namespace) -> int:
+    import asyncio
+
+    from ifc_console.core.results import ToolError
+
+    core = _automation_core()
+
+    async def run() -> Any:
+        core.start_audit()
+        existing = core.workflows.get(args.workflow_id)
+        if existing.plan.manifest_path:
+            core.add_allowed_dir(Path(existing.plan.manifest_path).parent)
+        resumed = await core.workflows.resume(args.workflow_id)
+        return await _watch_workflow(core, resumed.workflow_id)
+
+    try:
+        record = asyncio.run(run())
+        if args.output_dir:
+            _export_workflow(core, record, Path(args.output_dir).expanduser().resolve())
+        _print_workflow(record, as_json=args.json)
+        return _workflow_exit_code(record)
+    except ToolError as exc:
+        return _tool_error(exc)
+    except OSError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 4
+    finally:
+        core.shutdown()
+
+
+def _cmd_workflows_cancel(args: argparse.Namespace) -> int:
+    import asyncio
+
+    from ifc_console.core.results import ToolError
+
+    core = _automation_core()
+    try:
+        core.start_audit()
+        record = asyncio.run(core.workflows.cancel(args.workflow_id))
+        _print_workflow(record, as_json=args.json)
+        return 0
+    except ToolError as exc:
+        return _tool_error(exc)
+    finally:
+        core.shutdown()
+
+
+def _cmd_transactions_list(args: argparse.Namespace) -> int:
+    core = _automation_core()
+    try:
+        journals = core.transactions.journals.list()
+        if args.json:
+            print(json.dumps([item.model_dump(mode="json") for item in journals], indent=2))
+        elif not journals:
+            print("(no transactions)")
+        else:
+            for item in journals:
+                print(
+                    f"{item.transaction_id}  {item.kind.value:7}  "
+                    f"{item.phase.value:18}  {item.target_path}"
+                )
+        return 0
+    finally:
+        core.shutdown()
+
+
+def _cmd_transactions_show(args: argparse.Namespace) -> int:
+    from ifc_console.core.results import ToolError
+
+    core = _automation_core()
+    try:
+        journal = core.transactions.journals.get(args.transaction_id)
+        if args.json:
+            print(journal.model_dump_json(indent=2))
+        else:
+            print(f"transaction {journal.transaction_id}")
+            print(f"kind        {journal.kind.value}")
+            print(f"phase       {journal.phase.value}")
+            print(f"target      {journal.target_path}")
+            print(f"before      {journal.expected_before_sha256}")
+            print(f"after       {journal.desired_after_sha256}")
+            print(f"cancellable {journal.cancellable}")
+            if journal.rollback_artifact_id:
+                print(f"rollback    {journal.rollback_artifact_id}")
+            if journal.receipt_artifact_id:
+                print(f"receipt     {journal.receipt_artifact_id}")
+            if journal.error:
+                print(f"error       {journal.error}")
+        return 0
+    except ToolError as exc:
+        return _tool_error(exc)
+    finally:
+        core.shutdown()
+
+
 def _artifact_service():
     from ifc_console.application.artifacts import ArtifactService
 
@@ -1001,6 +1733,8 @@ def _artifact_retention_service():
         ArtifactRetentionService(
             artifacts,
             store.jobs_dir,
+            batches_root=store.batches_dir,
+            workflows_root=store.workflows_dir,
             default_retention_days=store.settings.automation.artifact_retention_days,
         ),
         audit,
@@ -1147,10 +1881,16 @@ def _print_change_set(record: Any, *, as_json: bool) -> None:
     print(f"revision    {record.change_set.revision.revision_id}")
     print(f"source      {record.change_set.source.path}")
     for change in record.change_set.changes:
-        print(
-            f"change      {change.global_id}  {change.pset_name}.{change.property_name}  "
-            f"{change.before!r} -> {change.after!r}"
-        )
+        if change.kind == "classification_assignment":
+            print(
+                f"change      {change.global_id}  {change.classification_name}."
+                f"{change.identification}  assign {change.reference_name!r}"
+            )
+        else:
+            print(
+                f"change      {change.global_id}  {change.pset_name}.{change.property_name}  "
+                f"{change.before!r} -> {change.after!r}"
+            )
 
 
 def _cmd_changes_preview(args: argparse.Namespace) -> int:
@@ -1170,6 +1910,8 @@ def _cmd_changes_preview(args: argparse.Namespace) -> int:
             pset_name=args.pset_name,
             property_name=args.property_name,
             value=_change_value(args),
+            create_missing=args.create_missing,
+            nominal_type=args.nominal_type,
             expected_revision=args.expected_revision,
         )
 
@@ -1180,6 +1922,39 @@ def _cmd_changes_preview(args: argparse.Namespace) -> int:
     except ToolError as exc:
         return _tool_error(exc)
     except (OSError, ValueError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 4
+    finally:
+        core.shutdown()
+
+
+def _cmd_changes_classify(args: argparse.Namespace) -> int:
+    import asyncio
+
+    from ifc_console.core.results import ToolError
+
+    core = _automation_core(Mode.ASK)
+
+    async def run():
+        model = Path(args.model).expanduser().resolve()
+        core.start_audit()
+        core.add_allowed_dir(model.parent)
+        await core.open_model(model)
+        return await core.transactions.preview_classification_assignment(
+            global_ids=args.global_ids,
+            classification_name=args.classification_name,
+            identification=args.identification,
+            reference_name=args.reference_name,
+            expected_revision=args.expected_revision,
+        )
+
+    try:
+        record = asyncio.run(run())
+        _print_change_set(record, as_json=args.json)
+        return 0
+    except ToolError as exc:
+        return _tool_error(exc)
+    except OSError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 4
     finally:
@@ -1236,7 +2011,18 @@ def _cmd_changes_commit(args: argparse.Namespace) -> int:
         core.start_audit()
         core.add_allowed_dir(model.parent)
         await core.open_model(model)
-        return await core.transactions.commit(args.change_set_id, approval_id=args.approval_id)
+        submitted = await core.jobs.submit_commit(
+            args.change_set_id, approval_id=args.approval_id
+        )
+        completed = await core.jobs.wait(submitted.job_id)
+        if completed.state.value != "succeeded":
+            failure = completed.failure
+            raise ToolError(
+                failure.code if failure else "JOB_CANCELLED",
+                failure.message if failure else "the commit job did not complete",
+                failure.hint if failure else "Inspect the durable job record.",
+            )
+        return core.transactions.get_commit(str(completed.summary["commit_id"]))
 
     try:
         record = asyncio.run(run())
@@ -1286,7 +2072,16 @@ def _cmd_changes_restore(args: argparse.Namespace) -> int:
         core.start_audit()
         core.add_allowed_dir(model.parent)
         await core.open_model(model)
-        return await core.transactions.restore(args.commit_id, confirm=args.confirm)
+        submitted = await core.jobs.submit_restore(args.commit_id, confirm=args.confirm)
+        completed = await core.jobs.wait(submitted.job_id)
+        if completed.state.value != "succeeded":
+            failure = completed.failure
+            raise ToolError(
+                failure.code if failure else "JOB_CANCELLED",
+                failure.message if failure else "the restore job did not complete",
+                failure.hint if failure else "Inspect the durable job record.",
+            )
+        return core.transactions.get_restore(str(completed.summary["restore_id"]))
 
     try:
         record = asyncio.run(run())
@@ -1550,6 +2345,20 @@ def _cmd_sessions_show(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_sessions_verify(args: argparse.Namespace) -> int:
+    store = _new_store()
+    from ifc_console.audit import AuditLog
+
+    result = AuditLog(store.sessions_dir).verify_session(args.id)
+    if args.json:
+        print(result.model_dump_json(indent=2))
+    elif result.valid:
+        print(f"valid: {result.event_count} chained event(s)")
+    else:
+        print(f"invalid: {result.error}", file=sys.stderr)
+    return 0 if result.valid else 5
+
+
 def _cmd_sessions_clear(_args: argparse.Namespace) -> int:
     store = _new_store()
     from ifc_console.audit import AuditLog
@@ -1617,6 +2426,53 @@ def _cmd_knowledge_search(args: argparse.Namespace) -> int:
         schema = f" [{hit['schema']}]" if hit.get("schema") else ""
         print(f"{hit['kind']:9} {hit['name']}{schema}\n    {hit['summary'][:100]}")
     return 0
+
+
+# --------------------------------------------------------------------------- plugins
+def _print_plugin_records(records, *, as_json: bool) -> None:
+    payload = [record.model_dump(mode="json") for record in records]
+    if as_json:
+        print(json.dumps({"plugins": payload}, indent=2))
+        return
+    if not payload:
+        print("no ifc-console plugins are installed")
+        return
+    for record in payload:
+        version = (record.get("manifest") or {}).get("version")
+        suffix = f" {version}" if version else ""
+        detail = ", ".join(record.get("operations") or ())
+        if record.get("error"):
+            detail = record["error"]
+        print(f"{record['name']}{suffix}: {record['status']}" + (f" ({detail})" if detail else ""))
+
+
+def _cmd_plugins_list(args: argparse.Namespace) -> int:
+    from ifc_console.plugins import PluginManager
+
+    store = _new_store()
+    allow = {name.strip().lower() for name in store.settings.plugins.allow if name.strip()}
+    records = PluginManager().inventory(
+        enabled=store.settings.plugins.enabled,
+        allow=allow,
+    )
+    _print_plugin_records(records, as_json=args.json)
+    return 0
+
+
+def _cmd_plugins_doctor(args: argparse.Namespace) -> int:
+    from ifc_console.app import AppCore
+    from ifc_console.application.operations import build_operations
+
+    store = _new_store()
+    core = AppCore(store, transport="embedded")
+    core.start_audit()
+    try:
+        build_operations(core)
+        records = core.plugins.records
+        _print_plugin_records(records, as_json=args.json)
+        return 1 if any(record.status in {"error", "missing"} for record in records) else 0
+    finally:
+        core.shutdown()
 
 
 # --------------------------------------------------------------------------- entry

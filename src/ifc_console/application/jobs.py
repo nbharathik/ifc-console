@@ -17,18 +17,25 @@ from threading import RLock
 from typing import TYPE_CHECKING, Any
 
 from ifc_console.application.artifacts import ArtifactService
+from ifc_console.application.locks import process_is_running
 from ifc_console.automation.files import describe_source
 from ifc_console.checks import render
+from ifc_console.core.capabilities import Capability
+from ifc_console.core.context import bind_operation_context, current_operation_context
 from ifc_console.core.jobs import (
     TERMINAL_JOB_STATES,
+    CommitJobSpec,
     JobEvent,
     JobFailure,
     JobRecord,
     JobState,
+    QueryJobSpec,
+    RestoreJobSpec,
     ValidationJobSpec,
 )
 from ifc_console.core.results import ToolError
 from ifc_console.core.revisions import RevisionRef
+from ifc_console.core.transaction_journal import TransactionKind, TransactionPhase
 from ifc_console.sandbox.client import _child_env, worker_executable
 from ifc_console.sandbox.limits import ProcessJail
 from ifc_console.sandbox.policy import SandboxPolicy
@@ -86,6 +93,24 @@ class JobService:
         max_issues: int = 200,
         expected_revision: str | None = None,
     ) -> JobRecord:
+        if current_operation_context() is None:
+            with self.core.operation_service.invocation(
+                "submit_validation_job", authority="caller", client=self.core.transport
+            ):
+                return await self.submit_validation(
+                    model=model,
+                    ids_paths=ids_paths,
+                    express_rules=express_rules,
+                    max_issues=max_issues,
+                    expected_revision=expected_revision,
+                )
+        context = current_operation_context()
+        assert context is not None
+        self.core.policy.require(
+            [Capability.JOB_SUBMIT],
+            authority=context.authority,
+            action="submit validation job",
+        )
         session = self.core.resolve_session(model)
         if session.dirty:
             raise ToolError(
@@ -132,14 +157,117 @@ class JobService:
             ids_files=tuple(sources[1:]),
             express_rules=express_rules,
             max_issues=max_issues,
+            context=context,
         )
+        return self._enqueue(
+            spec,
+            message="validation job queued",
+            runner=self._run_validation,
+        )
+
+    def submit_captured_validation(self, spec: ValidationJobSpec) -> JobRecord:
+        """Enqueue an already captured validation spec for application orchestration.
+
+        BatchService is responsible for the caller capability check and source
+        capture. The normal worker still independently verifies every source.
+        """
+        if self._closing:
+            raise ToolError(
+                "JOB_SERVICE_CLOSED",
+                "the local job service is shutting down.",
+                "Create a new workbench before submitting more work.",
+            )
+        return self._enqueue(
+            spec,
+            message="validation job queued by batch",
+            runner=self._run_validation,
+        )
+
+    def submit_captured_query(self, spec: QueryJobSpec) -> JobRecord:
+        """Enqueue an immutable query spec captured by BatchService."""
+        if self._closing:
+            raise ToolError(
+                "JOB_SERVICE_CLOSED",
+                "the local job service is shutting down.",
+                "Create a new workbench before submitting more work.",
+            )
+        return self._enqueue(
+            spec,
+            message="query job queued by batch",
+            runner=self._run_query,
+        )
+
+    async def submit_commit(self, change_set_id: str, *, approval_id: str) -> JobRecord:
+        if current_operation_context() is None:
+            with self.core.operation_service.invocation(
+                "submit_commit_job", authority="caller", client=self.core.transport
+            ):
+                return await self.submit_commit(change_set_id, approval_id=approval_id)
+        context = current_operation_context()
+        assert context is not None
+        self.core.policy.require(
+            [Capability.JOB_SUBMIT, Capability.MODEL_COMMIT],
+            authority=context.authority,
+            action="submit commit job",
+        )
+        change = self.core.transactions.get_change_set(change_set_id)
+        approval = self.core.transactions.get_approval(approval_id)
+        if approval.approval.change_set_id != change.change_set_id:
+            raise ToolError(
+                "APPROVAL_MISMATCH",
+                "the approval belongs to a different ChangeSet.",
+                "Approve this ChangeSet explicitly and pass the returned approval_id.",
+            )
+        if approval.approval.revision != change.change_set.revision:
+            raise ToolError(
+                "APPROVAL_MISMATCH",
+                "the approval is bound to a different model revision.",
+                "Create a new approval for this ChangeSet.",
+            )
+        spec = CommitJobSpec(
+            revision=change.change_set.revision,
+            change_set_id=change.change_set_id,
+            approval_id=approval.approval_id,
+            context=context,
+        )
+        return self._enqueue(spec, message="commit job queued", runner=self._run_transaction)
+
+    async def submit_restore(self, commit_id: str, *, confirm: bool = False) -> JobRecord:
+        if current_operation_context() is None:
+            with self.core.operation_service.invocation(
+                "submit_restore_job", authority="caller", client=self.core.transport
+            ):
+                return await self.submit_restore(commit_id, confirm=confirm)
+        context = current_operation_context()
+        assert context is not None
+        self.core.policy.require(
+            [Capability.JOB_SUBMIT, Capability.MODEL_RESTORE],
+            authority=context.authority,
+            action="submit restore job",
+        )
+        if not confirm:
+            raise ToolError(
+                "APPROVAL_REQUIRED",
+                "restore requires explicit caller confirmation.",
+                "Pass confirm=true only after reviewing the commit receipt.",
+            )
+        commit = self.core.transactions.get_commit(commit_id)
+        spec = RestoreJobSpec(
+            revision=commit.result.revision_after,
+            commit_id=commit.commit_id,
+            confirmed=True,
+            context=context,
+        )
+        return self._enqueue(spec, message="restore job queued", runner=self._run_transaction)
+
+    def _enqueue(self, spec: Any, *, message: str, runner: Any) -> JobRecord:
         job_id = f"job-{secrets.token_hex(8)}"
         created = _now()
         event = JobEvent(
             ts=created,
             type="queued",
             progress=0,
-            message="validation job queued",
+            message=message,
         )
         record = JobRecord(
             job_id=job_id,
@@ -157,7 +285,7 @@ class JobService:
         self._persist(record)
         self._prune_records()
         self._announce(record, "job_submitted")
-        task = asyncio.create_task(self._run_validation(job_id), name=job_id)
+        task = asyncio.create_task(runner(job_id), name=job_id)
         self._tasks[job_id] = task
         return record
 
@@ -235,9 +363,25 @@ class JobService:
             await asyncio.sleep(max(0.01, poll_interval))
 
     async def cancel(self, job_id: str) -> JobRecord:
+        if current_operation_context() is None:
+            with self.core.operation_service.invocation(
+                "cancel_job", authority="caller", client=self.core.transport
+            ):
+                return await self.cancel(job_id)
+        context = current_operation_context()
+        assert context is not None
+        self.core.policy.require(
+            [Capability.JOB_CANCEL], authority=context.authority, action="cancel job"
+        )
         record = self.get(job_id)
         if record.state in TERMINAL_JOB_STATES:
             return record
+        if not record.cancellable:
+            raise ToolError(
+                "JOB_NOT_CANCELLABLE",
+                f"{job_id} passed its cancellation boundary at {record.phase}.",
+                "Wait for receipt persistence or rollback to finish, then inspect the job.",
+            )
         self._replace(job_id, cancel_requested=True, message="cancellation requested")
         task = self._tasks.get(job_id)
         if task is not None:
@@ -258,7 +402,7 @@ class JobService:
                 job_id,
                 JobState.CANCELLED,
                 progress=record.progress,
-                message="validation job cancelled",
+                message=f"{record.kind} job cancelled",
             )
         return record
 
@@ -270,14 +414,16 @@ class JobService:
             if process.returncode is None:
                 with contextlib.suppress(ProcessLookupError):
                     process.terminate()
-        for jail in self._jails.values():
-            jail.close()
         for job_id, task in list(self._tasks.items()):
             if task.done():
                 continue
             task.cancel()
             record = self._records.get(job_id)
-            if record is not None and record.state not in TERMINAL_JOB_STATES:
+            if (
+                record is not None
+                and record.state not in TERMINAL_JOB_STATES
+                and record.kind in {"validation", "query"}
+            ):
                 self._transition(
                     job_id,
                     JobState.CANCELLED,
@@ -285,7 +431,203 @@ class JobService:
                     message="job cancelled during shutdown",
                 )
 
+    async def aclose(self) -> None:
+        """Cancel owned work and await rollback or worker termination."""
+        tasks = tuple(task for task in self._tasks.values() if not task.done())
+        self.close()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        for jail in self._jails.values():
+            jail.close()
+
     async def _run_validation(self, job_id: str) -> None:
+        record = self._records[job_id]
+        context = record.spec.context or self.core.operation_service.context(
+            operation="validation_job", authority="worker", job_id=job_id
+        )
+        context = context.model_copy(
+            update={"authority": "worker", "operation": "validation_job", "job_id": job_id}
+        )
+        with bind_operation_context(context):
+            await self._run_validation_bound(job_id)
+
+    async def _run_query(self, job_id: str) -> None:
+        record = self._records[job_id]
+        context = record.spec.context or self.core.operation_service.context(
+            operation="query_job", authority="worker", job_id=job_id
+        )
+        context = context.model_copy(
+            update={"authority": "worker", "operation": "query_job", "job_id": job_id}
+        )
+        with bind_operation_context(context):
+            await self._run_query_bound(job_id)
+
+    async def _run_transaction(self, job_id: str) -> None:
+        record = self._records[job_id]
+        operation = f"{record.kind}_job"
+        context = record.spec.context or self.core.operation_service.context(
+            operation=operation, authority="worker", job_id=job_id
+        )
+        context = context.model_copy(
+            update={"authority": "worker", "operation": operation, "job_id": job_id}
+        )
+        with bind_operation_context(context):
+            await self._run_transaction_bound(job_id)
+
+    async def _run_transaction_bound(self, job_id: str) -> None:
+        record = self._transition(
+            job_id,
+            JobState.RUNNING,
+            progress=1,
+            message=f"preparing {self._records[job_id].kind} transaction",
+        )
+        self._replace(job_id, phase="preparing", cancellable=True, event_type="phase")
+
+        phase_progress = {
+            TransactionPhase.PREPARED: 30,
+            TransactionPhase.CANDIDATE_VERIFIED: 45,
+            TransactionPhase.BACKUP_VERIFIED: 60,
+            TransactionPhase.COMMIT_POINT: 70,
+            TransactionPhase.TARGET_VERIFIED: 82,
+            TransactionPhase.RECEIPT_PREPARED: 92,
+            TransactionPhase.RECEIPT_PERSISTED: 99,
+            TransactionPhase.ROLLBACK_STARTED: 90,
+            TransactionPhase.ROLLED_BACK: 99,
+            TransactionPhase.ABORTED: 99,
+            TransactionPhase.RECOVERY_FAILED: 99,
+        }
+
+        def progress(journal: Any) -> None:
+            current = self._records[job_id]
+            if current.state in TERMINAL_JOB_STATES:
+                return
+            self._replace(
+                job_id,
+                progress=max(current.progress, phase_progress[journal.phase]),
+                message=f"transaction phase: {journal.phase.value}",
+                phase=journal.phase.value,
+                cancellable=journal.cancellable,
+                transaction_id=journal.transaction_id,
+                event_type="phase",
+            )
+
+        try:
+            spec = record.spec
+            if isinstance(spec, CommitJobSpec):
+                result = await self._await_transaction(
+                    job_id,
+                    self.core.transactions.commit(
+                        spec.change_set_id,
+                        approval_id=spec.approval_id,
+                        _job_id=job_id,
+                        _progress=progress,
+                        _cancel_check=lambda: self._cancel_path(job_id).exists(),
+                    ),
+                )
+                summary: dict[str, object] = {
+                    "commit_id": result.commit_id,
+                    "change_set_id": result.result.change_set_id,
+                    "committed_sha256": result.result.committed_sha256,
+                }
+                artifacts = (result.artifact,)
+            elif isinstance(spec, RestoreJobSpec):
+                result = await self._await_transaction(
+                    job_id,
+                    self.core.transactions.restore(
+                        spec.commit_id,
+                        confirm=spec.confirmed,
+                        _job_id=job_id,
+                        _progress=progress,
+                        _cancel_check=lambda: self._cancel_path(job_id).exists(),
+                    ),
+                )
+                summary = {
+                    "restore_id": result.restore_id,
+                    "commit_id": result.result.commit_id,
+                    "restored_sha256": result.result.restored_sha256,
+                }
+                artifacts = (result.artifact,)
+            else:
+                raise ToolError(
+                    "JOB_SPEC_INVALID",
+                    f"unsupported transaction job kind {record.kind!r}.",
+                    "Submit a commit or restore job.",
+                )
+            current = self._records[job_id]
+            self._replace(
+                job_id,
+                phase=TransactionPhase.RECEIPT_PERSISTED.value,
+                cancellable=False,
+                transaction_id=current.transaction_id,
+                event_type="finalized",
+            )
+            self._transition(
+                job_id,
+                JobState.SUCCEEDED,
+                progress=100,
+                message=f"{record.kind} job completed",
+                artifacts=artifacts,
+                summary=summary,
+            )
+        except asyncio.CancelledError:
+            current = self._records[job_id]
+            if current.state not in TERMINAL_JOB_STATES:
+                self._transition(
+                    job_id,
+                    JobState.CANCELLED,
+                    progress=current.progress,
+                    message=f"{record.kind} job cancelled before commit completion",
+                    cancel_requested=True,
+                )
+            raise
+        except ToolError as exc:
+            current = self._records[job_id]
+            self._transition(
+                job_id,
+                JobState.FAILED,
+                progress=current.progress,
+                message=f"{record.kind} job failed",
+                failure=JobFailure(code=exc.code, message=exc.message, hint=exc.hint),
+            )
+        except Exception as exc:
+            current = self._records[job_id]
+            self._transition(
+                job_id,
+                JobState.FAILED,
+                progress=current.progress,
+                message=f"{record.kind} job failed",
+                failure=JobFailure(
+                    code="JOB_WORKER_FAILED",
+                    message=f"{type(exc).__name__}: {exc}",
+                    hint="Inspect the transaction journal and retry only when the target is safe.",
+                ),
+            )
+        finally:
+            self._tasks.pop(job_id, None)
+            with contextlib.suppress(OSError):
+                self._cancel_path(job_id).unlink()
+
+    async def _await_transaction(self, job_id: str, operation: Any) -> Any:
+        task = asyncio.create_task(operation)
+        try:
+            while True:
+                done, _pending = await asyncio.wait({task}, timeout=0.05)
+                if done:
+                    return task.result()
+                if self._cancel_path(job_id).exists():
+                    current = self._records[job_id]
+                    if current.cancellable:
+                        task.cancel()
+                        return await task
+                    with contextlib.suppress(OSError):
+                        self._cancel_path(job_id).unlink()
+        finally:
+            if not task.done():
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
+
+    async def _run_validation_bound(self, job_id: str) -> None:
         record = self._transition(
             job_id,
             JobState.RUNNING,
@@ -331,6 +673,9 @@ class JobService:
                     "controls": list(jail.controls),
                     "environment": "minimal",
                     "network": "blocked",
+                    "correlation_id": (
+                        record.spec.context.correlation_id if record.spec.context else None
+                    ),
                 },
                 event_type="worker_started",
             )
@@ -445,6 +790,162 @@ class JobService:
             with contextlib.suppress(OSError):
                 self._cancel_path(job_id).unlink()
 
+    async def _run_query_bound(self, job_id: str) -> None:
+        record = self._transition(
+            job_id,
+            JobState.RUNNING,
+            progress=1,
+            message="starting query worker",
+        )
+        work = self.work_dir / job_id
+        input_path = work / "input.json"
+        spec = record.spec
+        assert isinstance(spec, QueryJobSpec)
+        extension = spec.output_format
+        output_path = work / f"result.{extension}"
+        metadata_path = work / "metadata.json"
+        worker_failure: JobFailure | None = None
+        process: Process | None = None
+        try:
+            work.mkdir(parents=True, exist_ok=True)
+            payload = {
+                "spec": spec.model_dump(mode="json"),
+                "output_path": str(output_path),
+                "metadata_path": str(metadata_path),
+                "policy": SandboxPolicy.build(
+                    read_dirs=[Path(spec.model.path).parent],
+                    scratch_dir=work,
+                    deny_dirs=[self.core.store.home],
+                    memory_mb=self.core.settings.sandbox.memory_mb,
+                ).to_dict(),
+            }
+            self._write_json(input_path, payload)
+            process = await asyncio.create_subprocess_exec(
+                *self._query_worker_command(input_path),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=work,
+                env=_child_env(work),
+            )
+            self._processes[job_id] = process
+            jail = ProcessJail(self.core.settings.sandbox.memory_mb)
+            jail.attach(process.pid)
+            self._jails[job_id] = jail
+            self._replace(
+                job_id,
+                worker={
+                    "pid": process.pid,
+                    "controls": list(jail.controls),
+                    "environment": "minimal",
+                    "network": "blocked",
+                    "correlation_id": spec.context.correlation_id if spec.context else None,
+                },
+                event_type="worker_started",
+            )
+            try:
+                return_code, stderr, worker_failure = await asyncio.wait_for(
+                    self._consume_worker(job_id, process),
+                    timeout=float(self.core.settings.automation.validation_timeout_s),
+                )
+            except asyncio.TimeoutError as exc:
+                await self._stop_process(process)
+                raise ToolError(
+                    "JOB_TIMEOUT",
+                    "the query worker exceeded its configured timeout.",
+                    "Narrow the selector or raise automation.validation_timeout_s.",
+                ) from exc
+            if return_code != 0:
+                if worker_failure is None:
+                    worker_failure = JobFailure(
+                        code="JOB_WORKER_FAILED",
+                        message=stderr[-1000:] or f"worker exited with code {return_code}",
+                        hint="Inspect the query input and retry.",
+                    )
+                raise ToolError(
+                    worker_failure.code, worker_failure.message, worker_failure.hint
+                )
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            base = Path(spec.model.path).stem
+            media_type = (
+                "application/x-ndjson"
+                if spec.output_format == "jsonl"
+                else "text/csv"
+            )
+            artifact = self.artifacts.put_file(
+                output_path,
+                name=f"{base}-query.{extension}",
+                kind="query-result",
+                media_type=media_type,
+                producer=job_id,
+                revision=spec.revision,
+                metadata={
+                    **metadata,
+                    "query": spec.query,
+                    "order_by": spec.order_by,
+                },
+            )
+            self._transition(
+                job_id,
+                JobState.SUCCEEDED,
+                progress=100,
+                message="query job completed",
+                artifacts=(artifact,),
+                summary=metadata,
+            )
+        except asyncio.CancelledError:
+            if process is not None:
+                await self._stop_process(process)
+            current = self._records[job_id]
+            if current.state not in TERMINAL_JOB_STATES:
+                self._transition(
+                    job_id,
+                    JobState.CANCELLED,
+                    progress=current.progress,
+                    message="query job cancelled",
+                )
+            raise
+        except _JobCancelled:
+            if process is not None:
+                await self._stop_process(process)
+            current = self._records[job_id]
+            if current.state not in TERMINAL_JOB_STATES:
+                self._transition(
+                    job_id,
+                    JobState.CANCELLED,
+                    progress=current.progress,
+                    message="query job cancelled",
+                    cancel_requested=True,
+                )
+        except ToolError as exc:
+            self._transition(
+                job_id,
+                JobState.FAILED,
+                progress=self._records[job_id].progress,
+                message="query job failed",
+                failure=JobFailure(code=exc.code, message=exc.message, hint=exc.hint),
+            )
+        except Exception as exc:
+            self._transition(
+                job_id,
+                JobState.FAILED,
+                progress=self._records[job_id].progress,
+                message="query job failed",
+                failure=JobFailure(
+                    code="JOB_WORKER_FAILED",
+                    message=f"{type(exc).__name__}: {exc}",
+                    hint="Inspect the query job record and retry.",
+                ),
+            )
+        finally:
+            self._processes.pop(job_id, None)
+            jail = self._jails.pop(job_id, None)
+            if jail is not None:
+                jail.close()
+            self._tasks.pop(job_id, None)
+            shutil.rmtree(work, ignore_errors=True)
+            with contextlib.suppress(OSError):
+                self._cancel_path(job_id).unlink()
+
     async def _consume_worker(
         self, job_id: str, process: Process
     ) -> tuple[int, str, JobFailure | None]:
@@ -533,6 +1034,8 @@ class JobService:
             "failure": failure,
             "event_type": state.value,
         }
+        if state in TERMINAL_JOB_STATES:
+            updates["cancellable"] = False
         if artifacts is not None:
             updates["artifacts"] = artifacts
         if summary is not None:
@@ -605,6 +1108,11 @@ class JobService:
         for job_id, record in list(self._records.items()):
             owner_pid, _owner_id = self._owners[job_id]
             if record.state not in TERMINAL_JOB_STATES and not self._pid_exists(owner_pid):
+                if record.kind in {
+                    TransactionKind.COMMIT.value,
+                    TransactionKind.RESTORE.value,
+                } and self._recover_transaction_job(job_id):
+                    continue
                 self._transition(
                     job_id,
                     JobState.FAILED,
@@ -616,6 +1124,67 @@ class JobService:
                         hint="Submit the job again; incomplete jobs are never reported as successful.",
                     ),
                 )
+
+    def _recover_transaction_job(self, job_id: str) -> bool:
+        journal = self.core.transactions.journals.find_by_job(job_id)
+        if journal is None:
+            return False
+        common = {
+            "phase": journal.phase.value,
+            "cancellable": journal.cancellable,
+            "transaction_id": journal.transaction_id,
+        }
+        if journal.phase is TransactionPhase.RECEIPT_PERSISTED:
+            receipt_id = journal.receipt_artifact_id or journal.expected_receipt_id
+            if not receipt_id:
+                return False
+            try:
+                artifact = self.artifacts.verify(receipt_id)
+            except ToolError:
+                return False
+            key = "commit_id" if journal.kind is TransactionKind.COMMIT else "restore_id"
+            self._replace(job_id, **common, event_type="recovered")
+            self._transition(
+                job_id,
+                JobState.SUCCEEDED,
+                progress=100,
+                message=f"{journal.kind.value} job recovered from its durable receipt",
+                artifacts=(artifact,),
+                summary={key: receipt_id, "recovered": True},
+            )
+            return True
+        if journal.phase in {
+            TransactionPhase.ABORTED,
+            TransactionPhase.ROLLED_BACK,
+        }:
+            self._replace(job_id, **common, event_type="recovered")
+            self._transition(
+                job_id,
+                JobState.FAILED,
+                progress=self._records[job_id].progress,
+                message=f"{journal.kind.value} job interrupted and target left unchanged",
+                failure=JobFailure(
+                    code="TRANSACTION_INTERRUPTED",
+                    message=journal.error or "the transaction owner exited before completion",
+                    hint="Review the journal, then submit a fresh transaction.",
+                ),
+            )
+            return True
+        if journal.phase is TransactionPhase.RECOVERY_FAILED:
+            self._replace(job_id, **common, event_type="recovery_failed")
+            self._transition(
+                job_id,
+                JobState.FAILED,
+                progress=self._records[job_id].progress,
+                message=f"{journal.kind.value} job requires manual recovery",
+                failure=JobFailure(
+                    code="TRANSACTION_RECOVERY_REQUIRED",
+                    message=journal.error or "automatic transaction recovery failed",
+                    hint="Do not modify the target until its hashes and backup are inspected.",
+                ),
+            )
+            return True
+        return False
 
     def _prune_records(self) -> None:
         records = sorted(self._records.values(), key=lambda record: record.created_at, reverse=True)
@@ -652,6 +1221,14 @@ class JobService:
             str(input_path),
         )
 
+    def _query_worker_command(self, input_path: Path) -> tuple[str, ...]:
+        return (
+            worker_executable(),
+            "-m",
+            "ifc_console.automation.query_worker",
+            str(input_path),
+        )
+
     def _cancel_path(self, job_id: str) -> Path:
         return self.cancel_dir / job_id
 
@@ -670,25 +1247,7 @@ class JobService:
 
     @staticmethod
     def _pid_exists(pid: int) -> bool:
-        if pid <= 0:
-            return False
-        if os.name == "nt":
-            import ctypes
-
-            process_query_limited_information = 0x1000
-            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-            handle = kernel32.OpenProcess(process_query_limited_information, False, pid)
-            if not handle:
-                return False
-            kernel32.CloseHandle(handle)
-            return True
-        try:
-            os.kill(pid, 0)
-        except PermissionError:
-            return True
-        except OSError:
-            return False
-        return True
+        return process_is_running(pid)
 
     @staticmethod
     def _write_json(path: Path, payload: dict[str, Any]) -> None:

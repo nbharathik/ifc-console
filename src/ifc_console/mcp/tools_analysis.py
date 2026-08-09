@@ -178,7 +178,7 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
             float,
             Field(ge=0.0, le=10.0, description="Metres. Overlap tolerance, or the clearance gap."),
         ] = 0.01,
-        precision: Literal["exact", "fast"] = "exact",
+        precision: Literal["sampled", "fast", "exact"] = "sampled",
         physical_only: bool = True,
         max_elements: Annotated[int, Field(ge=1, le=MAX_ELEMENTS)] = 1000,
         max_results: Annotated[int, Field(ge=1, le=MAX_RESULTS)] = 200,

@@ -24,7 +24,10 @@ from pathlib import Path
 from types import TracebackType
 from typing import Any
 
+from ifc_console.audit import AuditVerification
 from ifc_console.core.artifacts import ArtifactGCPlan, ArtifactGCResult, ArtifactRef
+from ifc_console.core.batches import BatchRecord
+from ifc_console.core.capabilities import Authority, Capability, CapabilityDecision
 from ifc_console.core.changes import (
     ApprovalRecord,
     ChangeSetRecord,
@@ -37,6 +40,8 @@ from ifc_console.core.jobs import JobRecord
 from ifc_console.core.operation_data import QueryElementsData, ValidationData
 from ifc_console.core.operations import OperationDefinition
 from ifc_console.core.results import Envelope, ToolError
+from ifc_console.core.transaction_journal import TransactionJournal
+from ifc_console.core.workflows import WorkflowPlan, WorkflowRecord, WorkflowSpec
 
 __all__ = [
     "AsyncWorkbench",
@@ -44,6 +49,10 @@ __all__ = [
     "ArtifactRef",
     "ArtifactGCPlan",
     "ArtifactGCResult",
+    "AuditVerification",
+    "BatchRecord",
+    "Capability",
+    "CapabilityDecision",
     "ChangeSetRecord",
     "CommitRecord",
     "IfcConsoleError",
@@ -51,7 +60,11 @@ __all__ = [
     "OperationDefinition",
     "QueryElementsData",
     "RestoreRecord",
+    "TransactionJournal",
     "ValidationData",
+    "WorkflowPlan",
+    "WorkflowRecord",
+    "WorkflowSpec",
     "Workbench",
     "WorkspaceContext",
 ]
@@ -134,6 +147,14 @@ class AsyncWorkbench:
             await workbench.open_model(path)
         return workbench
 
+    async def __aenter__(self) -> AsyncWorkbench:
+        return self
+
+    async def __aexit__(
+        self, exc_type: type | None, exc: BaseException | None, tb: TracebackType | None
+    ) -> None:
+        await self.aclose()
+
     # -- session --------------------------------------------------------------
     @property
     def core(self) -> Any:
@@ -184,6 +205,10 @@ class AsyncWorkbench:
     def close(self) -> None:
         self._core.shutdown()
 
+    async def aclose(self) -> None:
+        """Await supervised job shutdown and transaction rollback."""
+        await self._core.ashutdown()
+
     # -- the tool surface -----------------------------------------------------
     async def tools(self) -> list[dict[str, Any]]:
         """Every tool as a provider-neutral JSON Schema definition."""
@@ -195,6 +220,12 @@ class AsyncWorkbench:
                 "output_schema": definition.output_schema,
                 "data_schema": definition.data_schema,
                 "annotations": definition.annotations.model_dump(exclude_none=True),
+                "required_capabilities": [
+                    capability.value for capability in definition.required_capabilities
+                ],
+                "permitted": self._core.policy.evaluate(
+                    list(definition.required_capabilities)
+                ).allowed,
             }
             for definition in self.operation_definitions()
         ]
@@ -202,6 +233,24 @@ class AsyncWorkbench:
     def operation_definitions(self) -> list[OperationDefinition]:
         """Typed definitions for embedding IFC operations in another client."""
         return self._core.operation_service.definitions()
+
+    def granted_capabilities(
+        self, *, authority: Authority = "tool"
+    ) -> tuple[Capability, ...]:
+        """Capabilities granted by the current ask/edit compatibility profile."""
+        return self._core.policy.granted_capabilities(authority=authority)
+
+    def capability_decision(
+        self,
+        required: list[Capability | str] | tuple[Capability | str, ...],
+        *,
+        authority: Authority = "tool",
+    ) -> CapabilityDecision:
+        return self._core.policy.evaluate(list(required), authority=authority)
+
+    def verify_audit(self, session_id: str | None = None) -> AuditVerification:
+        """Verify the current or selected local audit hash chain."""
+        return self._core.audit.verify_session(session_id)
 
     async def call_result(self, name: str, **kwargs: Any) -> Envelope:
         """Run one structured operation and return its typed envelope."""
@@ -297,6 +346,26 @@ class AsyncWorkbench:
         except ToolError as exc:
             raise _sdk_error(exc) from exc
 
+    async def submit_commit_job(
+        self, change_set_id: str, *, approval_id: str
+    ) -> JobRecord:
+        """Submit a journaled commit and return before it completes."""
+        try:
+            return await self._core.jobs.submit_commit(
+                change_set_id, approval_id=approval_id
+            )
+        except ToolError as exc:
+            raise _sdk_error(exc) from exc
+
+    async def submit_restore_job(
+        self, commit_id: str, *, confirm: bool = False
+    ) -> JobRecord:
+        """Submit a journaled restore and return before it completes."""
+        try:
+            return await self._core.jobs.submit_restore(commit_id, confirm=confirm)
+        except ToolError as exc:
+            raise _sdk_error(exc) from exc
+
     def job(self, job_id: str) -> JobRecord:
         try:
             return self._core.jobs.get(job_id)
@@ -328,6 +397,178 @@ class AsyncWorkbench:
         except ToolError as exc:
             raise _sdk_error(exc) from exc
 
+    async def submit_validation_batch(
+        self,
+        inputs: tuple[str | Path, ...] | list[str | Path],
+        *,
+        ids_paths: tuple[str | Path, ...] = (),
+        express_rules: bool = False,
+        max_issues: int = 200,
+        concurrency: int = 2,
+        failure_policy: str = "continue",
+    ) -> BatchRecord:
+        """Capture and submit bounded validation for one or more IFC files."""
+        input_paths = tuple(Path(path).expanduser().resolve() for path in inputs)
+        ids = tuple(Path(path).expanduser().resolve() for path in ids_paths)
+        for path in (*input_paths, *ids):
+            self._core.add_allowed_dir(path.parent)
+        try:
+            return await self._core.batches.submit_validation(
+                input_paths,
+                ids_paths=ids,
+                express_rules=express_rules,
+                max_issues=max_issues,
+                concurrency=concurrency,
+                failure_policy=failure_policy,
+            )
+        except ToolError as exc:
+            raise _sdk_error(exc) from exc
+
+    async def submit_query_batch(
+        self,
+        inputs: tuple[str | Path, ...] | list[str | Path],
+        *,
+        query: str,
+        fields: tuple[str, ...] = ("name", "storey", "type_name"),
+        order_by: str = "class",
+        output_format: str = "jsonl",
+        limit: int = 100_000,
+        concurrency: int = 2,
+        failure_policy: str = "continue",
+    ) -> BatchRecord:
+        """Stream one selector query result artifact per captured IFC file."""
+        input_paths = tuple(Path(path).expanduser().resolve() for path in inputs)
+        for path in input_paths:
+            self._core.add_allowed_dir(path.parent)
+        try:
+            return await self._core.batches.submit_query(
+                input_paths,
+                query=query,
+                fields=fields,
+                order_by=order_by,
+                output_format=output_format,
+                limit=limit,
+                concurrency=concurrency,
+                failure_policy=failure_policy,
+            )
+        except ToolError as exc:
+            raise _sdk_error(exc) from exc
+
+    def batch(self, batch_id: str) -> BatchRecord:
+        try:
+            return self._core.batches.get(batch_id)
+        except ToolError as exc:
+            raise _sdk_error(exc) from exc
+
+    def batches(self, *, limit: int = 100) -> list[BatchRecord]:
+        return self._core.batches.list(limit=limit)
+
+    async def wait_batch(
+        self, batch_id: str, *, timeout: float | None = None
+    ) -> BatchRecord:
+        try:
+            return await self._core.batches.wait(batch_id, timeout=timeout)
+        except ToolError as exc:
+            raise _sdk_error(exc) from exc
+
+    async def watch_batch(
+        self, batch_id: str, *, poll_interval: float = 0.1
+    ) -> AsyncIterator[BatchRecord]:
+        try:
+            async for record in self._core.batches.watch(
+                batch_id, poll_interval=poll_interval
+            ):
+                yield record
+        except ToolError as exc:
+            raise _sdk_error(exc) from exc
+
+    async def cancel_batch(self, batch_id: str) -> BatchRecord:
+        try:
+            return await self._core.batches.cancel(batch_id)
+        except ToolError as exc:
+            raise _sdk_error(exc) from exc
+
+    async def resume_batch(self, batch_id: str) -> BatchRecord:
+        try:
+            return await self._core.batches.resume(batch_id)
+        except ToolError as exc:
+            raise _sdk_error(exc) from exc
+
+    async def plan_workflow(self, manifest_path: str | Path) -> WorkflowPlan:
+        """Resolve and hash a workflow manifest without scheduling any work."""
+        path = Path(manifest_path).expanduser().resolve()
+        self._core.add_allowed_dir(path.parent)
+        try:
+            return await self._core.workflows.plan_manifest(path)
+        except ToolError as exc:
+            raise _sdk_error(exc) from exc
+
+    async def plan_workflow_spec(
+        self, spec: WorkflowSpec, *, base_dir: str | Path
+    ) -> WorkflowPlan:
+        """Resolve a typed in-memory workflow relative to an explicit directory."""
+        base = Path(base_dir).expanduser().resolve()
+        self._core.add_allowed_dir(base)
+        try:
+            return await self._core.workflows.plan_spec(spec, base_dir=base)
+        except ToolError as exc:
+            raise _sdk_error(exc) from exc
+
+    async def submit_workflow(self, manifest_path: str | Path) -> WorkflowRecord:
+        """Plan and submit a versioned read-only workflow manifest."""
+        path = Path(manifest_path).expanduser().resolve()
+        self._core.add_allowed_dir(path.parent)
+        try:
+            return await self._core.workflows.submit_manifest(path)
+        except ToolError as exc:
+            raise _sdk_error(exc) from exc
+
+    async def submit_workflow_plan(self, plan: WorkflowPlan) -> WorkflowRecord:
+        try:
+            return await self._core.workflows.submit_plan(plan)
+        except ToolError as exc:
+            raise _sdk_error(exc) from exc
+
+    def workflow(self, workflow_id: str) -> WorkflowRecord:
+        try:
+            return self._core.workflows.get(workflow_id)
+        except ToolError as exc:
+            raise _sdk_error(exc) from exc
+
+    def workflows(self, *, limit: int = 100) -> list[WorkflowRecord]:
+        return self._core.workflows.list(limit=limit)
+
+    async def wait_workflow(
+        self, workflow_id: str, *, timeout: float | None = None
+    ) -> WorkflowRecord:
+        try:
+            return await self._core.workflows.wait(workflow_id, timeout=timeout)
+        except ToolError as exc:
+            raise _sdk_error(exc) from exc
+
+    async def watch_workflow(
+        self, workflow_id: str, *, poll_interval: float = 0.1
+    ) -> AsyncIterator[WorkflowRecord]:
+        try:
+            async for record in self._core.workflows.watch(
+                workflow_id, poll_interval=poll_interval
+            ):
+                yield record
+        except ToolError as exc:
+            raise _sdk_error(exc) from exc
+
+    async def cancel_workflow(self, workflow_id: str) -> WorkflowRecord:
+        try:
+            return await self._core.workflows.cancel(workflow_id)
+        except ToolError as exc:
+            raise _sdk_error(exc) from exc
+
+    async def resume_workflow(self, workflow_id: str) -> WorkflowRecord:
+        try:
+            return await self._core.workflows.resume(workflow_id)
+        except ToolError as exc:
+            raise _sdk_error(exc) from exc
+
     def artifact(self, artifact_id: str) -> ArtifactRef:
         try:
             return self._core.artifacts.get(artifact_id)
@@ -336,6 +577,17 @@ class AsyncWorkbench:
 
     def artifacts(self, *, limit: int = 100) -> list[ArtifactRef]:
         return self._core.artifacts.list(limit=limit)
+
+    def transaction_journal(self, transaction_id: str) -> TransactionJournal:
+        """Return one durable commit or restore state machine."""
+        try:
+            return self._core.transactions.journals.get(transaction_id)
+        except ToolError as exc:
+            raise _sdk_error(exc) from exc
+
+    def transaction_journals(self) -> list[TransactionJournal]:
+        """List durable commit and restore journals oldest first."""
+        return self._core.transactions.journals.list()
 
     def read_artifact(self, artifact_id: str) -> bytes:
         try:
@@ -408,6 +660,8 @@ class AsyncWorkbench:
         pset_name: str,
         property_name: str,
         value: IfcScalar,
+        create_missing: bool = False,
+        nominal_type: str | None = None,
         expected_revision: str | None = None,
     ) -> ChangeSetRecord:
         ids = (global_ids,) if isinstance(global_ids, str) else tuple(global_ids)
@@ -417,6 +671,29 @@ class AsyncWorkbench:
                 pset_name=pset_name,
                 property_name=property_name,
                 value=value,
+                create_missing=create_missing,
+                nominal_type=nominal_type,
+                expected_revision=expected_revision,
+            )
+        except ToolError as exc:
+            raise _sdk_error(exc) from exc
+
+    async def preview_classification_assignment(
+        self,
+        global_ids: str | list[str] | tuple[str, ...],
+        *,
+        classification_name: str,
+        identification: str,
+        reference_name: str,
+        expected_revision: str | None = None,
+    ) -> ChangeSetRecord:
+        ids = (global_ids,) if isinstance(global_ids, str) else tuple(global_ids)
+        try:
+            return await self._core.transactions.preview_classification_assignment(
+                global_ids=ids,
+                classification_name=classification_name,
+                identification=identification,
+                reference_name=reference_name,
                 expected_revision=expected_revision,
             )
         except ToolError as exc:
@@ -439,10 +716,17 @@ class AsyncWorkbench:
             raise _sdk_error(exc) from exc
 
     async def commit_change_set(self, change_set_id: str, *, approval_id: str) -> CommitRecord:
-        try:
-            return await self._core.transactions.commit(change_set_id, approval_id=approval_id)
-        except ToolError as exc:
-            raise _sdk_error(exc) from exc
+        submitted = await self.submit_commit_job(change_set_id, approval_id=approval_id)
+        completed = await self.wait_job(submitted.job_id)
+        self._raise_failed_job(completed)
+        commit_id = str(completed.summary.get("commit_id") or "")
+        if not commit_id:
+            raise IfcConsoleError(
+                "JOB_RESULT_INVALID",
+                "the completed commit job has no commit receipt ID",
+                "Inspect the job and transaction journal.",
+            )
+        return self.commit_record(commit_id)
 
     def commit_record(self, commit_id: str) -> CommitRecord:
         try:
@@ -451,10 +735,36 @@ class AsyncWorkbench:
             raise _sdk_error(exc) from exc
 
     async def restore_commit(self, commit_id: str, *, confirm: bool = False) -> RestoreRecord:
+        submitted = await self.submit_restore_job(commit_id, confirm=confirm)
+        completed = await self.wait_job(submitted.job_id)
+        self._raise_failed_job(completed)
+        restore_id = str(completed.summary.get("restore_id") or "")
+        if not restore_id:
+            raise IfcConsoleError(
+                "JOB_RESULT_INVALID",
+                "the completed restore job has no restore receipt ID",
+                "Inspect the job and transaction journal.",
+            )
         try:
-            return await self._core.transactions.restore(commit_id, confirm=confirm)
+            return self._core.transactions.get_restore(restore_id)
         except ToolError as exc:
             raise _sdk_error(exc) from exc
+
+    @staticmethod
+    def _raise_failed_job(record: JobRecord) -> None:
+        if record.state.value == "succeeded":
+            return
+        if record.failure is not None:
+            raise IfcConsoleError(
+                record.failure.code,
+                record.failure.message,
+                record.failure.hint,
+            )
+        raise IfcConsoleError(
+            "JOB_CANCELLED",
+            f"{record.kind} job {record.job_id} did not complete",
+            "Inspect the job record and submit a fresh transaction if appropriate.",
+        )
 
     async def validate_ids(self, ids_path: str | Path, **kwargs: Any) -> dict[str, Any]:
         return await self._data("validate_ids", ids_path=str(ids_path), **kwargs)
@@ -638,7 +948,7 @@ class Workbench:
 
     def close(self) -> None:
         try:
-            self._wb.close()
+            self._run(lambda: self._wb.aclose())
         finally:
             self._loop.close()
 
@@ -676,6 +986,22 @@ class Workbench:
 
     def operation_definitions(self) -> list[OperationDefinition]:
         return self._wb.operation_definitions()
+
+    def granted_capabilities(
+        self, *, authority: Authority = "tool"
+    ) -> tuple[Capability, ...]:
+        return self._wb.granted_capabilities(authority=authority)
+
+    def capability_decision(
+        self,
+        required: list[Capability | str] | tuple[Capability | str, ...],
+        *,
+        authority: Authority = "tool",
+    ) -> CapabilityDecision:
+        return self._wb.capability_decision(required, authority=authority)
+
+    def verify_audit(self, session_id: str | None = None) -> AuditVerification:
+        return self._wb.verify_audit(session_id)
 
     def call_result(self, name: str, **kwargs: Any) -> Envelope:
         return self._run(lambda: self._wb.call_result(name, **kwargs))
@@ -721,6 +1047,16 @@ class Workbench:
     def submit_validation_job(self, **kwargs: Any) -> JobRecord:
         return self._run(lambda: self._wb.submit_validation_job(**kwargs))
 
+    def submit_commit_job(self, change_set_id: str, *, approval_id: str) -> JobRecord:
+        return self._run(
+            lambda: self._wb.submit_commit_job(change_set_id, approval_id=approval_id)
+        )
+
+    def submit_restore_job(self, commit_id: str, *, confirm: bool = False) -> JobRecord:
+        return self._run(
+            lambda: self._wb.submit_restore_job(commit_id, confirm=confirm)
+        )
+
     def job(self, job_id: str) -> JobRecord:
         return self._wb.job(job_id)
 
@@ -744,11 +1080,119 @@ class Workbench:
     def cancel_job(self, job_id: str) -> JobRecord:
         return self._run(lambda: self._wb.cancel_job(job_id))
 
+    def submit_validation_batch(
+        self,
+        inputs: tuple[str | Path, ...] | list[str | Path],
+        **kwargs: Any,
+    ) -> BatchRecord:
+        return self._run(lambda: self._wb.submit_validation_batch(inputs, **kwargs))
+
+    def submit_query_batch(
+        self,
+        inputs: tuple[str | Path, ...] | list[str | Path],
+        *,
+        query: str,
+        **kwargs: Any,
+    ) -> BatchRecord:
+        return self._run(
+            lambda: self._wb.submit_query_batch(inputs, query=query, **kwargs)
+        )
+
+    def batch(self, batch_id: str) -> BatchRecord:
+        return self._wb.batch(batch_id)
+
+    def batches(self, *, limit: int = 100) -> list[BatchRecord]:
+        return self._wb.batches(limit=limit)
+
+    def wait_batch(self, batch_id: str, *, timeout: float | None = None) -> BatchRecord:
+        return self._run(lambda: self._wb.wait_batch(batch_id, timeout=timeout))
+
+    def watch_batch(
+        self, batch_id: str, *, poll_interval: float = 0.1
+    ) -> Iterator[BatchRecord]:
+        last_update = None
+        while True:
+            record = self.batch(batch_id)
+            if record.updated_at != last_update:
+                last_update = record.updated_at
+                yield record
+            if record.state.value in {
+                "succeeded",
+                "partial",
+                "failed",
+                "cancelled",
+                "interrupted",
+            }:
+                return
+            threading.Event().wait(max(0.01, poll_interval))
+
+    def cancel_batch(self, batch_id: str) -> BatchRecord:
+        return self._run(lambda: self._wb.cancel_batch(batch_id))
+
+    def resume_batch(self, batch_id: str) -> BatchRecord:
+        return self._run(lambda: self._wb.resume_batch(batch_id))
+
+    def plan_workflow(self, manifest_path: str | Path) -> WorkflowPlan:
+        return self._run(lambda: self._wb.plan_workflow(manifest_path))
+
+    def plan_workflow_spec(
+        self, spec: WorkflowSpec, *, base_dir: str | Path
+    ) -> WorkflowPlan:
+        return self._run(lambda: self._wb.plan_workflow_spec(spec, base_dir=base_dir))
+
+    def submit_workflow(self, manifest_path: str | Path) -> WorkflowRecord:
+        return self._run(lambda: self._wb.submit_workflow(manifest_path))
+
+    def submit_workflow_plan(self, plan: WorkflowPlan) -> WorkflowRecord:
+        return self._run(lambda: self._wb.submit_workflow_plan(plan))
+
+    def workflow(self, workflow_id: str) -> WorkflowRecord:
+        return self._wb.workflow(workflow_id)
+
+    def workflows(self, *, limit: int = 100) -> list[WorkflowRecord]:
+        return self._wb.workflows(limit=limit)
+
+    def wait_workflow(
+        self, workflow_id: str, *, timeout: float | None = None
+    ) -> WorkflowRecord:
+        return self._run(lambda: self._wb.wait_workflow(workflow_id, timeout=timeout))
+
+    def watch_workflow(
+        self, workflow_id: str, *, poll_interval: float = 0.1
+    ) -> Iterator[WorkflowRecord]:
+        last_update = None
+        while True:
+            record = self.workflow(workflow_id)
+            if record.updated_at != last_update:
+                last_update = record.updated_at
+                yield record
+            if record.state.value in {
+                "succeeded",
+                "partial",
+                "failed",
+                "cancelled",
+                "interrupted",
+            }:
+                return
+            threading.Event().wait(max(0.01, poll_interval))
+
+    def cancel_workflow(self, workflow_id: str) -> WorkflowRecord:
+        return self._run(lambda: self._wb.cancel_workflow(workflow_id))
+
+    def resume_workflow(self, workflow_id: str) -> WorkflowRecord:
+        return self._run(lambda: self._wb.resume_workflow(workflow_id))
+
     def artifact(self, artifact_id: str) -> ArtifactRef:
         return self._wb.artifact(artifact_id)
 
     def artifacts(self, *, limit: int = 100) -> list[ArtifactRef]:
         return self._wb.artifacts(limit=limit)
+
+    def transaction_journal(self, transaction_id: str) -> TransactionJournal:
+        return self._wb.transaction_journal(transaction_id)
+
+    def transaction_journals(self) -> list[TransactionJournal]:
+        return self._wb.transaction_journals()
 
     def read_artifact(self, artifact_id: str) -> bytes:
         return self._wb.read_artifact(artifact_id)
@@ -783,6 +1227,8 @@ class Workbench:
         pset_name: str,
         property_name: str,
         value: IfcScalar,
+        create_missing: bool = False,
+        nominal_type: str | None = None,
         expected_revision: str | None = None,
     ) -> ChangeSetRecord:
         return self._run(
@@ -791,6 +1237,27 @@ class Workbench:
                 pset_name=pset_name,
                 property_name=property_name,
                 value=value,
+                create_missing=create_missing,
+                nominal_type=nominal_type,
+                expected_revision=expected_revision,
+            )
+        )
+
+    def preview_classification_assignment(
+        self,
+        global_ids: str | list[str] | tuple[str, ...],
+        *,
+        classification_name: str,
+        identification: str,
+        reference_name: str,
+        expected_revision: str | None = None,
+    ) -> ChangeSetRecord:
+        return self._run(
+            lambda: self._wb.preview_classification_assignment(
+                global_ids,
+                classification_name=classification_name,
+                identification=identification,
+                reference_name=reference_name,
                 expected_revision=expected_revision,
             )
         )

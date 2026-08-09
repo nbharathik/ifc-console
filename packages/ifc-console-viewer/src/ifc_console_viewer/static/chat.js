@@ -144,7 +144,7 @@ const TEMPLATE = `
 </header>
 
 <button class="chat-context" data-act="settings" title="Change the provider or model">
-  <span class="chat-context-model" data-role="modelname">no model</span>
+  <span class="chat-context-model" data-role="modelname">no AI model</span>
   <span class="chat-context-meta" data-role="context"></span>
 </button>
 
@@ -166,7 +166,7 @@ const TEMPLATE = `
       <button class="chat-icon" data-act="close-settings" aria-label="Close settings">${I.close}</button>
     </header>
     <div class="chat-dialog-body">
-      <div class="chat-section">Model</div>
+      <div class="chat-section">Assistant model</div>
       <div class="chat-field">
         <label for="chat-provider">Provider</label>
         <select id="chat-provider" data-role="provider"></select>
@@ -181,7 +181,7 @@ const TEMPLATE = `
       </div>
 
       <div class="chat-field">
-        <label for="chat-model">Model</label>
+        <label for="chat-model">AI model</label>
         <div class="chat-inline">
           <select id="chat-model" data-role="model"></select>
           <button class="chat-icon chat-icon-bordered" data-act="models"
@@ -196,7 +196,7 @@ const TEMPLATE = `
         <input type="checkbox" data-role="tools" checked>
         <span>
           <b>Use the ifc-console tools</b>
-          <small>The model can query and analyse the open file. Your session mode still decides whether it may change anything.</small>
+          <small>The AI model can query and analyse the open file. Your session mode still decides whether it may change anything.</small>
         </span>
       </label>
 
@@ -223,7 +223,7 @@ const TEMPLATE = `
       </details>
     </div>
     <footer class="chat-dialog-foot">
-      <span class="chat-privacy">Prompts and tool results go to this provider.</span>
+      <span class="chat-privacy" data-role="privacy">Prompts and tool results go to this provider.</span>
       <button class="chat-btn primary" data-act="close-settings">Done</button>
     </footer>
   </div>
@@ -250,6 +250,8 @@ export function mountChat(root, options = {}) {
   let providers = [];
   let busy = false;
   let aborter = null;
+  let localOnly = false;
+  let sessionStatus = {};
   const settings = loadSettings();
 
   if (options.onClose) {
@@ -319,6 +321,47 @@ export function mountChat(root, options = {}) {
   const hasKey = (p) =>
     !p || !p.needs_key || Boolean(p.key_from_env) || Boolean(p.has_key) || Boolean(el("key").value.trim());
 
+  function providerRoute(p) {
+    if (!p) return { kind: "off", label: "off", detail: "Chat is off." };
+    const configured = el("baseurl").value.trim() || p.base_url || "";
+    let hostname = "";
+    try {
+      hostname = new URL(configured).hostname.replace(/\.$/, "").toLowerCase();
+    } catch {
+      return { kind: "blocked", label: "invalid URL", detail: "The provider URL is invalid." };
+    }
+    const loopback =
+      hostname === "localhost" ||
+      hostname.endsWith(".localhost") ||
+      hostname === "127.0.0.1" ||
+      hostname === "::1";
+    if (localOnly && !loopback) {
+      return {
+        kind: "blocked",
+        label: "blocked",
+        detail: "Blocked by chat.local_only. Choose a loopback provider.",
+      };
+    }
+    return loopback
+      ? { kind: "local", label: "local", detail: "Prompts stay on this machine." }
+      : {
+          kind: "network",
+          label: "network",
+          detail: `Prompts and tool results go to ${p.label}.`,
+        };
+  }
+
+  function renderContext() {
+    const route = providerRoute(provider());
+    const mode = sessionStatus.mode || "ask";
+    el("context").innerHTML =
+      `<span class="chat-route ${route.kind}" title="${esc(route.detail)}">${esc(route.label)}</span>` +
+      `<span class="chat-file" title="${esc(sessionStatus.model || "")}">${esc(sessionStatus.model || "no file")}</span>` +
+      `<span class="chat-mode ${mode}" title="session mode">${esc(mode)}</span>` +
+      (sessionStatus.dirty ? '<span class="chat-mode dirty">unsaved</span>' : "");
+    el("privacy").textContent = route.detail;
+  }
+
   // --------------------------------------------------------------- rendering
   const isReady = () => {
     const p = provider();
@@ -331,10 +374,10 @@ export function mountChat(root, options = {}) {
     const ready = isReady();
     // the dock is narrow: "Local (vLLM, LM Studio, Ollama)" becomes "Local"
     const short = p ? p.label.split(" (")[0] : "";
-    el("modelname").textContent = p ? (model ? `${short} · ${model}` : `${short} · no model`) : "chat off";
+    el("modelname").textContent = p ? (model ? `${short} · ${model}` : `${short} · no AI model`) : "chat off";
     el("modelname").title = p ? `${p.label}${model ? " · " + model : ""}` : "";
     el("dot").className = "chat-dot" + (ready ? " ok" : "");
-    el("dot").title = ready ? "ready" : "needs a model or a key";
+    el("dot").title = ready ? "ready" : "needs an AI model or API key";
     send.disabled = !ready && !busy;
     if (!turns.length && !busy) empty();
     if (p) {
@@ -347,22 +390,18 @@ export function mountChat(root, options = {}) {
         : "Goes to the running console for this session only, never to disk.";
     }
     if (!p) el("status").textContent = "chat is off; type /chat in the console";
-    else if (!model) el("status").innerHTML = 'pick a model in <b>settings</b>';
+    else if (!model) el("status").innerHTML = 'choose an AI model in <b>settings</b>';
     else if (!hasKey(p)) el("status").innerHTML = 'add an API key in <b>settings</b>';
     else el("status").innerHTML = "<b>Enter</b> sends · <b>Shift+Enter</b> new line";
+    renderContext();
   }
 
   async function refreshContext() {
     try {
       const response = await api("/api/status");
       if (!response.ok) return;
-      const status = await response.json();
-      const mode = status.mode || "ask";
-      // the file name repeats the viewer's own header, so the dock hides it
-      el("context").innerHTML =
-        `<span class="chat-file" title="${esc(status.model || "")}">${esc(status.model || "no file")}</span>` +
-        `<span class="chat-mode ${mode}" title="session mode">${esc(mode)}</span>` +
-        (status.dirty ? '<span class="chat-mode dirty">unsaved</span>' : "");
+      sessionStatus = await response.json();
+      renderContext();
     } catch {
       /* the panel still works without the badge */
     }
@@ -379,6 +418,7 @@ export function mountChat(root, options = {}) {
       return;
     }
     providers = payload.providers;
+    localOnly = Boolean(payload.defaults.local_only);
     const select = el("provider");
     select.innerHTML = "";
     for (const p of providers) {
@@ -414,7 +454,7 @@ export function mountChat(root, options = {}) {
       select.appendChild(option);
       return option;
     };
-    if (!names.length) add("", "no models loaded");
+    if (!names.length) add("", "no AI models loaded");
     for (const name of names) add(name, name);
     if (selected && !names.includes(selected)) add(selected, selected);
     add("__custom__", "Custom id...");
@@ -448,7 +488,7 @@ export function mountChat(root, options = {}) {
       if (ticket !== modelRequest) return;
       if (!quiet) {
         el("note").innerHTML =
-          `<span class="chat-bad">${esc(exc.message)}</span> — type the id yourself instead`;
+          `<span class="chat-bad">${esc(exc.message)}</span>. Type the id yourself instead`;
       }
       el("model").value = "__custom__";
       el("modelcustom").hidden = false;
@@ -481,9 +521,9 @@ export function mountChat(root, options = {}) {
          <div class="chat-starters">
            ${STARTERS.map((s) => `<button class="chat-starter">${esc(s)}</button>`).join("")}
          </div>`
-      : `<p class="chat-empty-lead">Nothing answers yet: choose a provider and a model, and add a key if the provider needs one.</p>
+      : `<p class="chat-empty-lead">Nothing answers yet: choose an AI provider and model, and add a key if the provider needs one.</p>
          <div class="chat-setup">
-           <button class="chat-btn primary" data-act="settings">Set up the model</button>
+           <button class="chat-btn primary" data-act="settings">Configure assistant</button>
          </div>`;
     log.innerHTML = `
       <div class="chat-empty">

@@ -77,13 +77,16 @@ def test_corrupt_token_file_regenerates(tmp_path: Path) -> None:
     assert store.load_server_token() == token  # and it stuck
 
 
-def test_mcp_config_embeds_persistent_token(tmp_path: Path, monkeypatch, capsys) -> None:
+def test_mcp_config_hides_persistent_token_by_default(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
     monkeypatch.setenv("IFC_CONSOLE_HOME", str(tmp_path / "home"))
     expected = _store(tmp_path / "home").load_server_token()
     assert main(["mcp-config", "--client", "claude-code", "--transport", "http"]) == 0
-    out = capsys.readouterr().out
-    assert expected in out
-    assert "<TOKEN>" not in out
+    captured = capsys.readouterr()
+    assert expected not in captured.out
+    assert "<TOKEN>" in captured.out
+    assert "token_in_config_snippets" in captured.err
 
 
 def test_default_mcp_config_keeps_the_token_out_of_client_files(
@@ -99,17 +102,17 @@ def test_default_mcp_config_keeps_the_token_out_of_client_files(
     assert "bridge" in out
 
 
-def test_mcp_config_respects_hidden_token_setting(tmp_path: Path, monkeypatch, capsys) -> None:
+def test_mcp_config_respects_explicit_token_setting(tmp_path: Path, monkeypatch, capsys) -> None:
     home = tmp_path / "home"
     store = _store(home)
     expected = store.load_server_token()
-    store.set_user("server.token_in_config_snippets", "false")
+    store.set_user("server.token_in_config_snippets", "true")
     monkeypatch.setenv("IFC_CONSOLE_HOME", str(home))
     assert main(["mcp-config", "--client", "codex", "--transport", "http"]) == 0
     captured = capsys.readouterr()
-    assert expected not in captured.out
-    assert "<TOKEN>" in captured.out
-    assert "token_in_config_snippets" in captured.err
+    assert expected in captured.out
+    assert "<TOKEN>" not in captured.out
+    assert "token_in_config_snippets" not in captured.err
 
 
 def test_per_run_token_defaults_mcp_config_to_stdio(

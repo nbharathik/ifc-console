@@ -119,6 +119,17 @@
   align-items: center;
   gap: 8px;
 }
+.chat-route {
+  padding: 2px 4px;
+  border: 1px solid currentColor;
+  border-radius: 3px;
+  font-size: 9px;
+  line-height: 1;
+}
+.chat-route.local { color: var(--chat-ok); }
+.chat-route.network { color: var(--chat-warn); }
+.chat-route.blocked { color: var(--chat-bad); }
+.chat-route.off { color: var(--chat-quiet); }
 .chat-file { display: none; max-width: 20ch; overflow: hidden; text-overflow: ellipsis; }
 .chat-mode {
   display: inline-flex;
@@ -706,6 +717,15 @@ body.chat-page .chat-file { display: inline-block; }
 #chat-dock-resize:hover::after { background: var(--accent); }
 
 @media (max-width: 900px) {
-  #chat-dock { width: 100%; max-width: none; border-left: 0; }
+  #chat-dock {
+    position: absolute;
+    z-index: 20;
+    inset: 0 0 0 auto;
+    width: min(480px, 100%);
+    min-width: 0;
+    max-width: none;
+    border-left: 1px solid var(--line);
+    box-shadow: -12px 0 32px rgba(0, 0, 0, 0.22);
+  }
   #chat-dock-resize { display: none; }
 }

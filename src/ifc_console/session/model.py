@@ -236,12 +236,55 @@ class ModelSession:
             return None
 
     # -- saving ---------------------------------------------------------------
+    def _verify_expected_target(self, target: Path) -> None:
+        if self.path is None or target != self.path.resolve() or self.source_sha256 is None:
+            return
+        try:
+            digest, _size = self._hash_file(target)
+        except OSError as exc:
+            raise ToolError(
+                "REVISION_CONFLICT",
+                f"the loaded source {target.name} is no longer readable: {exc}",
+                "Reload the model and review the external change before saving.",
+            ) from exc
+        if digest != self.source_sha256:
+            raise ToolError(
+                "REVISION_CONFLICT",
+                f"{target.name} changed on disk after it was opened.",
+                "Reload the model and review the external change before saving.",
+            )
+
     def _save_sync(self, target: Path, backups: BackupStore, generation: int) -> dict[str, Any]:
-        backup_path = backups.backup(target)  # a failed backup aborts the save
+        self._verify_expected_target(target)
         tmp = target.with_name(f".{target.name}.{secrets.token_hex(4)}.tmp")
         try:
             self.ifc.write(str(tmp))
+            with tmp.open("r+b") as handle:
+                os.fsync(handle.fileno())
+
+            import ifcopenshell
+
+            try:
+                verified = ifcopenshell.open(str(tmp))
+            except Exception as exc:
+                raise ToolError(
+                    "VALIDATION_FAILED",
+                    f"the serialized model could not be reopened: {exc}",
+                    "Reload the model and retry. The original file was not changed.",
+                ) from exc
+            if getattr(verified, "schema", None) != self.schema:
+                raise ToolError(
+                    "VALIDATION_FAILED",
+                    "the serialized model did not reopen with the expected schema.",
+                    "Reload the model and retry. The original file was not changed.",
+                )
+            del verified
+
+            self._verify_expected_target(target)
+            backup_path = backups.backup(target)  # a failed backup aborts the save
+            self._verify_expected_target(target)
             os.replace(tmp, target)
+            self._fsync_directory(target.parent)
         finally:
             if tmp.exists():
                 with contextlib.suppress(OSError):
@@ -312,3 +355,17 @@ class ModelSession:
                 digest.update(chunk)
                 size_bytes += len(chunk)
         return digest.hexdigest(), size_bytes
+
+    @staticmethod
+    def _fsync_directory(path: Path) -> None:
+        flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+        try:
+            fd = os.open(path, flags)
+        except OSError:
+            return
+        try:
+            os.fsync(fd)
+        except OSError:
+            pass
+        finally:
+            os.close(fd)

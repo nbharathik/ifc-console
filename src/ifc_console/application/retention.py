@@ -36,10 +36,14 @@ class ArtifactRetentionService:
         artifacts: ArtifactService,
         jobs_root: Path,
         *,
+        batches_root: Path | None = None,
+        workflows_root: Path | None = None,
         default_retention_days: int = 30,
     ) -> None:
         self.artifacts = artifacts
         self.jobs_root = jobs_root
+        self.batches_root = batches_root
+        self.workflows_root = workflows_root
         self.default_retention_days = max(1, default_retention_days)
         self.pins_path = artifacts.root / "pins.json"
         self._lock = RLock()
@@ -134,7 +138,7 @@ class ArtifactRetentionService:
         roots = {ref.artifact_id for ref in refs if ref.created_at >= cutoff}
         roots.update(ref.artifact_id for ref in refs if ref.kind in _PROTECTED_KINDS)
         roots.update(self._load_pins())
-        roots.update(self._job_artifact_ids())
+        roots.update(self._record_artifact_ids())
         unknown_roots = roots.difference(by_id)
         if unknown_roots:
             warnings.append(f"{len(unknown_roots)} retained reference(s) have no artifact metadata.")
@@ -174,15 +178,20 @@ class ArtifactRetentionService:
     def _all_refs(self) -> list[ArtifactRef]:
         return self.artifacts.list(limit=2**31 - 1)
 
-    def _job_artifact_ids(self) -> set[str]:
+    def _record_artifact_ids(self) -> set[str]:
         result: set[str] = set()
-        records_dir = self.jobs_root / "records"
-        for path in records_dir.glob("job-*.json"):
-            try:
-                payload = json.loads(path.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
-                continue
-            self._find_artifact_ids(payload, result)
+        roots = [(self.jobs_root, "job-*.json")]
+        if self.batches_root is not None:
+            roots.append((self.batches_root, "batch-*.json"))
+        if self.workflows_root is not None:
+            roots.append((self.workflows_root, "workflow-*.json"))
+        for root, pattern in roots:
+            for path in (root / "records").glob(pattern):
+                try:
+                    payload = json.loads(path.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError):
+                    continue
+                self._find_artifact_ids(payload, result)
         return result
 
     @classmethod

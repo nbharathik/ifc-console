@@ -36,8 +36,9 @@ def register(registry: OperationRegistry, core: AppCore) -> None:
         annotations=PREVIEW_ANN,
         data_model=ChangeSetData,
         description=(
-            "[PREVIEW] Build a revision-bound ChangeSet for existing occurrence-level "
-            "IfcPropertySingleValue values. The live model and source IFC are untouched. "
+            "[PREVIEW] Build a revision-bound ChangeSet for occurrence-level "
+            "IfcPropertySingleValue values. Missing properties and property sets may be "
+            "created only when create_missing is explicit. The live model and source IFC are untouched. "
             "This writes a local preview artifact but cannot approve or commit it. "
             "Approval and commit remain explicit SDK or CLI caller actions."
         ),
@@ -48,6 +49,8 @@ def register(registry: OperationRegistry, core: AppCore) -> None:
         pset_name: Annotated[str, Field(min_length=1, max_length=255)],
         property_name: Annotated[str, Field(min_length=1, max_length=255)],
         value: IfcScalar,
+        create_missing: bool = False,
+        nominal_type: Annotated[str | None, Field(max_length=255)] = None,
         expected_revision: str | None = None,
     ) -> Envelope:
         record = await core.transactions.preview_property_value(
@@ -55,6 +58,39 @@ def register(registry: OperationRegistry, core: AppCore) -> None:
             pset_name=pset_name,
             property_name=property_name,
             value=value,
+            create_missing=create_missing,
+            nominal_type=nominal_type,
+            expected_revision=expected_revision,
+        )
+        return ok(
+            {"change_set": record.model_dump(mode="json")},
+            core.session_meta(),
+            char_limit=char_limit,
+        )
+
+    @registry.tool(
+        annotations=PREVIEW_ANN,
+        data_model=ChangeSetData,
+        description=(
+            "[PREVIEW] Build a revision-bound ChangeSet that directly assigns a typed "
+            "classification reference to IFC occurrences. Missing systems and references "
+            "are created in the candidate only. The source IFC is untouched, and approval "
+            "and commit remain explicit SDK or CLI caller actions."
+        ),
+    )
+    @enveloped(core, "preview_classification_assignment")
+    async def preview_classification_assignment(
+        global_ids: Annotated[list[str], Field(min_length=1, max_length=500)],
+        classification_name: Annotated[str, Field(min_length=1, max_length=255)],
+        identification: Annotated[str, Field(min_length=1, max_length=255)],
+        reference_name: Annotated[str, Field(min_length=1, max_length=255)],
+        expected_revision: str | None = None,
+    ) -> Envelope:
+        record = await core.transactions.preview_classification_assignment(
+            global_ids=global_ids,
+            classification_name=classification_name,
+            identification=identification,
+            reference_name=reference_name,
             expected_revision=expected_revision,
         )
         return ok(

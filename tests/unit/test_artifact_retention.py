@@ -61,6 +61,53 @@ def test_gc_plan_retains_recent_pinned_job_and_referenced_artifacts(tmp_path: Pa
     assert job_output.artifact_id not in plan.candidate_ids
 
 
+def test_gc_plan_retains_batch_manifests_and_child_artifacts(tmp_path: Path) -> None:
+    artifacts = ArtifactService(tmp_path / "artifacts")
+    retention = ArtifactRetentionService(
+        artifacts, tmp_path / "jobs", batches_root=tmp_path / "batches"
+    )
+    child = _put(artifacts, "batch-child")
+    manifest = _put(artifacts, "batch-manifest", references=(child.artifact_id,))
+    for ref in (child, manifest):
+        _old(artifacts, ref.artifact_id)
+    records = tmp_path / "batches" / "records"
+    records.mkdir(parents=True)
+    (records / "batch-0123456789abcdef.json").write_text(
+        json.dumps({"aggregate_artifact": {"artifact_id": manifest.artifact_id}}),
+        encoding="utf-8",
+    )
+
+    plan = retention.plan(older_than_days=30)
+
+    assert plan.candidate_count == 0
+    assert plan.retained_count == 2
+
+
+def test_gc_plan_retains_workflow_and_referenced_batch_artifacts(tmp_path: Path) -> None:
+    artifacts = ArtifactService(tmp_path / "artifacts")
+    retention = ArtifactRetentionService(
+        artifacts,
+        tmp_path / "jobs",
+        batches_root=tmp_path / "batches",
+        workflows_root=tmp_path / "workflows",
+    )
+    batch = _put(artifacts, "workflow-batch")
+    workflow = _put(artifacts, "workflow-manifest", references=(batch.artifact_id,))
+    for ref in (batch, workflow):
+        _old(artifacts, ref.artifact_id)
+    records = tmp_path / "workflows" / "records"
+    records.mkdir(parents=True)
+    (records / "workflow-0123456789abcdef.json").write_text(
+        json.dumps({"aggregate_artifact": {"artifact_id": workflow.artifact_id}}),
+        encoding="utf-8",
+    )
+
+    plan = retention.plan(older_than_days=30)
+
+    assert plan.candidate_count == 0
+    assert plan.retained_count == 2
+
+
 def test_gc_requires_confirmation_and_exact_unchanged_plan(tmp_path: Path) -> None:
     artifacts = ArtifactService(tmp_path / "artifacts")
     retention = ArtifactRetentionService(artifacts, tmp_path / "jobs")

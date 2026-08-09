@@ -16,6 +16,7 @@ from typing import Any
 
 from ifc_console.application.locks import exclusive_file_lock
 from ifc_console.core.artifacts import ArtifactRef
+from ifc_console.core.context import current_operation_context
 from ifc_console.core.results import ToolError
 from ifc_console.core.revisions import RevisionRef
 
@@ -274,9 +275,20 @@ class ArtifactService:
         self, existing: ArtifactRef, references: Iterable[str]
     ) -> ArtifactRef:
         merged = tuple(dict.fromkeys((*existing.references, *references)))
-        if merged == existing.references:
+        context = current_operation_context()
+        correlation_ids = tuple(
+            dict.fromkeys(
+                (
+                    *existing.correlation_ids,
+                    *((context.correlation_id,) if context is not None else ()),
+                )
+            )
+        )
+        if merged == existing.references and correlation_ids == existing.correlation_ids:
             return existing
-        updated = existing.model_copy(update={"references": merged})
+        updated = existing.model_copy(
+            update={"references": merged, "correlation_ids": correlation_ids}
+        )
         payload = json.dumps(
             updated.model_dump(mode="json"), indent=2, ensure_ascii=False
         ).encode("utf-8")
@@ -302,6 +314,7 @@ class ArtifactService:
         metadata: dict[str, Any] | None,
         references: Iterable[str],
     ) -> ArtifactRef:
+        context = current_operation_context()
         return ArtifactRef(
             artifact_id=f"sha256:{digest}",
             name=Path(name).name or digest,
@@ -312,6 +325,7 @@ class ArtifactService:
             created_at=datetime.now(timezone.utc),
             producer=producer,
             revision=revision,
+            correlation_ids=(context.correlation_id,) if context is not None else (),
             metadata=metadata or {},
             references=tuple(dict.fromkeys(references)),
         )

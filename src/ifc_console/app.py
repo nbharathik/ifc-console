@@ -20,16 +20,19 @@ from typing import Any, Literal
 
 from ifc_console import __version__
 from ifc_console.application.artifacts import ArtifactService
+from ifc_console.application.batches import BatchService
 from ifc_console.application.jobs import JobService
 from ifc_console.application.operations import OperationService
 from ifc_console.application.retention import ArtifactRetentionService
 from ifc_console.application.transactions import TransactionService
+from ifc_console.application.workflows import WorkflowService
 from ifc_console.audit import AuditLog
 from ifc_console.chat import ChatState
 from ifc_console.core.operations import OperationRegistry
 from ifc_console.core.results import ToolError
 from ifc_console.events import EventBus
 from ifc_console.knowledge import KnowledgeBase
+from ifc_console.plugins import PluginManager
 from ifc_console.policy.modes import Mode, PolicyEngine
 from ifc_console.recents import RecentsStore
 from ifc_console.sandbox.runner import SandboxRunner
@@ -112,6 +115,7 @@ class AppCore:
         # it before the operation registry became public.
         self.workspace_id = f"workspace-{secrets.token_hex(8)}"
         self.operations = OperationRegistry()
+        self.plugins = PluginManager()
         self.operation_service = OperationService(self, self.operations)
         self.tool_functions = self.operations.handlers
         self._operations_registered = False
@@ -119,6 +123,8 @@ class AppCore:
         self.artifact_retention = ArtifactRetentionService(
             self.artifacts,
             store.jobs_dir,
+            batches_root=store.batches_dir,
+            workflows_root=store.workflows_dir,
             default_retention_days=s.automation.artifact_retention_days,
         )
         self.transactions = TransactionService(
@@ -129,6 +135,18 @@ class AppCore:
         self.jobs = JobService(
             self,
             store.jobs_dir,
+            self.artifacts,
+            retention=s.automation.jobs_retention,
+        )
+        self.batches = BatchService(
+            self,
+            store.batches_dir,
+            self.artifacts,
+            retention=s.automation.jobs_retention,
+        )
+        self.workflows = WorkflowService(
+            self,
+            store.workflows_dir,
             self.artifacts,
             retention=s.automation.jobs_retention,
         )
@@ -342,7 +360,7 @@ class AppCore:
 
     # -- lifecycle ----------------------------------------------------------------
     def start_audit(self) -> str:
-        return self.audit.start(
+        session_id = self.audit.start(
             {
                 "version": __version__,
                 "mode": self.policy.mode.value,
@@ -351,6 +369,24 @@ class AppCore:
                 "settings": self.store.flat(),
             }
         )
+        for journal in self.transactions.recovered:
+            self.audit.record(
+                "transaction_recovered",
+                transaction_id=journal.transaction_id,
+                transaction_kind=journal.kind.value,
+                phase=journal.phase.value,
+                target_path=journal.target_path,
+                job_id=journal.job_id,
+                receipt_artifact_id=journal.receipt_artifact_id,
+                outcome=(
+                    "succeeded"
+                    if journal.phase.value == "receipt_persisted"
+                    else "rolled_back"
+                    if journal.phase.value in {"rolled_back", "aborted"}
+                    else "failed"
+                ),
+            )
+        return session_id
 
     # Longer than this and a file stem stops being something an LLM retypes
     # reliably; ISO 19650 codes are exactly that case.
@@ -680,13 +716,35 @@ class AppCore:
         self._knowledge_thread.start()
 
     def shutdown(self) -> None:
-        self.audit.end()
+        self.workflows.close()
+        self.batches.close()
         self.jobs.close()
         self.sandbox.close()
         self.models.close_all()
         self.knowledge.close()
+        self.audit.end()
+
+    async def ashutdown(self) -> None:
+        """Await job cleanup so transaction rollback finishes before sessions close."""
+        await self.workflows.aclose()
+        await self.batches.aclose()
+        await self.jobs.aclose()
+        self.sandbox.close()
+        self.models.close_all()
+        self.knowledge.close()
+        self.audit.end()
 
     # -- logging helper used by the tool wrapper ------------------------------------
     def tool_event(self, tool: str, *, ok: bool, duration_ms: int, detail: str = "") -> None:
-        self.audit.record("tool_call", tool=tool, ok=ok, duration_ms=duration_ms, detail=detail)
+        context = self.operation_service.workspace_context()
+        self.audit.record(
+            "tool_call",
+            tool=tool,
+            ok=ok,
+            outcome="succeeded" if ok else "failed",
+            duration_ms=duration_ms,
+            detail=detail,
+            result_model_id=context.active_model.model_id,
+            result_revision_id=context.active_model.revision_id,
+        )
         self.events.emit("tool_called", tool=tool, ok=ok, duration_ms=duration_ms, detail=detail)

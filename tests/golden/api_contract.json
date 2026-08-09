@@ -82,6 +82,13 @@
     "ARTIFACT_STORE_BUSY",
     "ARTIFACT_STORE_CORRUPT",
     "ASK_MODE_BLOCKED",
+    "BATCH_NOT_FOUND",
+    "BATCH_NOT_RESUMABLE",
+    "BATCH_SERVICE_CLOSED",
+    "BATCH_SOURCE_CHANGED",
+    "BATCH_STORE_FAILED",
+    "BATCH_TIMEOUT",
+    "CAPABILITY_DENIED",
     "CHANGESET_INVALID",
     "CHANGESET_NOT_FOUND",
     "COMMIT_FAILED",
@@ -99,6 +106,8 @@
     "INVALID_QUERY",
     "JOB_NOT_CANCELLABLE",
     "JOB_NOT_FOUND",
+    "JOB_SERVICE_CLOSED",
+    "JOB_SPEC_INVALID",
     "JOB_TIMEOUT",
     "JOB_WORKER_FAILED",
     "KNOWLEDGE_DISABLED",
@@ -114,15 +123,39 @@
     "PATH_NOT_ALLOWED",
     "PROPERTY_NOT_FOUND",
     "RESTORE_CONFLICT",
+    "RESTORE_NOT_FOUND",
     "RESULT_TOO_LARGE",
     "REVISION_CONFLICT",
     "SANDBOX_UNAVAILABLE",
     "SOURCE_CHANGED",
     "TOO_MANY_ELEMENTS",
+    "TRANSACTION_INTERRUPTED",
+    "TRANSACTION_JOURNAL_BUSY",
+    "TRANSACTION_JOURNAL_CORRUPT",
+    "TRANSACTION_JOURNAL_INVALID",
+    "TRANSACTION_RECOVERY_REQUIRED",
     "UNSAVED_CHANGES",
+    "VALIDATION_FAILED",
     "VIEWER_ERROR",
     "VIEWER_NOT_CONNECTED",
     "VIEWER_TIMEOUT",
+    "WORKFLOW_CANCELLED",
+    "WORKFLOW_DEPENDENCY_FAILED",
+    "WORKFLOW_INPUT_EMPTY",
+    "WORKFLOW_INPUT_LIMIT",
+    "WORKFLOW_INTERRUPTED",
+    "WORKFLOW_MANIFEST_INVALID",
+    "WORKFLOW_MANIFEST_TOO_LARGE",
+    "WORKFLOW_NOT_FOUND",
+    "WORKFLOW_NOT_RESUMABLE",
+    "WORKFLOW_PATH_INVALID",
+    "WORKFLOW_SERVICE_CLOSED",
+    "WORKFLOW_SOURCE_CHANGED",
+    "WORKFLOW_STEP_FAILED",
+    "WORKFLOW_STORE_CORRUPT",
+    "WORKFLOW_STORE_FAILED",
+    "WORKFLOW_SUPERVISOR_FAILED",
+    "WORKFLOW_TIMEOUT",
     "WORKSPACE_BUDGET",
     "WORKSPACE_DISABLED"
   ],
@@ -832,10 +865,11 @@
             "type": "boolean"
           },
           "precision": {
-            "default": "exact",
+            "default": "sampled",
             "enum": [
-              "exact",
-              "fast"
+              "sampled",
+              "fast",
+              "exact"
             ],
             "title": "Precision",
             "type": "string"
@@ -3367,6 +3401,12 @@
       "destructive": false,
       "input_schema": {
         "properties": {
+          "classification_name": {
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Classification Name",
+            "type": "string"
+          },
           "expected_revision": {
             "anyOf": [
               {
@@ -3387,6 +3427,145 @@
             "minItems": 1,
             "title": "Global Ids",
             "type": "array"
+          },
+          "identification": {
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Identification",
+            "type": "string"
+          },
+          "reference_name": {
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Reference Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "global_ids",
+          "classification_name",
+          "identification",
+          "reference_name"
+        ],
+        "title": "preview_classification_assignmentArguments",
+        "type": "object"
+      },
+      "name": "preview_classification_assignment",
+      "output_schema": {
+        "$defs": {
+          "ErrorInfo": {
+            "properties": {
+              "code": {
+                "description": "Stable machine-readable code; see ERROR_CODES.",
+                "title": "Code",
+                "type": "string"
+              },
+              "hint": {
+                "description": "What to do next; follow it instead of retrying blindly.",
+                "title": "Hint",
+                "type": "string"
+              },
+              "message": {
+                "description": "What went wrong, in one sentence.",
+                "title": "Message",
+                "type": "string"
+              }
+            },
+            "required": [
+              "code",
+              "message",
+              "hint"
+            ],
+            "title": "ErrorInfo",
+            "type": "object"
+          }
+        },
+        "description": "The public tool-result contract.",
+        "properties": {
+          "data": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Data"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ErrorInfo"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "meta": {
+            "additionalProperties": true,
+            "title": "Meta",
+            "type": "object"
+          },
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok"
+        ],
+        "title": "Envelope",
+        "type": "object"
+      },
+      "read_only": false
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
+          "create_missing": {
+            "default": false,
+            "title": "Create Missing",
+            "type": "boolean"
+          },
+          "expected_revision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Expected Revision"
+          },
+          "global_ids": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 500,
+            "minItems": 1,
+            "title": "Global Ids",
+            "type": "array"
+          },
+          "nominal_type": {
+            "anyOf": [
+              {
+                "maxLength": 255,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Nominal Type"
           },
           "property_name": {
             "maxLength": 255,

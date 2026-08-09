@@ -194,15 +194,39 @@ class TokenAuthMiddleware:
     # the fragment token. The boundary check still applies.
     TOKEN_EXEMPT = ("/viewer", "/chat", "/ws")
 
-    def __init__(self, app: Any, token: str, protected: tuple[str, ...] = PROTECTED):
+    def __init__(
+        self,
+        app: Any,
+        token: str,
+        protected: tuple[str, ...] = PROTECTED,
+        *,
+        core: AppCore | None = None,
+    ):
         self.app = app
         self.token = token
         self.protected = protected
+        self.core = core
 
     async def __call__(self, scope: dict, receive: Callable, send: Callable) -> None:
         if scope["type"] not in ("http", "websocket"):
             await self.app(scope, receive, send)
             return
+        if self.core is not None:
+            request_id = self._header(scope, b"x-request-id")
+            correlation_id = self._header(scope, b"x-correlation-id")
+            if correlation_id and len(correlation_id) > 200:
+                correlation_id = None
+            with self.core.operation_service.invocation(
+                "http_request",
+                client="http",
+                request_id=request_id[:200] if request_id else None,
+                correlation_id=correlation_id,
+            ):
+                await self._dispatch(scope, receive, send)
+            return
+        await self._dispatch(scope, receive, send)
+
+    async def _dispatch(self, scope: dict, receive: Callable, send: Callable) -> None:
         if not self._boundary_ok(scope):
             await self._deny(scope, send, status=403, ws_code=4403, error="forbidden_origin")
             return
@@ -220,6 +244,13 @@ class TokenAuthMiddleware:
             await self.app(scope, receive, send)
             return
         await self._deny(scope, send, status=401, ws_code=4401, error="unauthorized")
+
+    @staticmethod
+    def _header(scope: dict, wanted: bytes) -> str | None:
+        for name, value in scope.get("headers", []):
+            if name == wanted:
+                return value.decode("latin-1", errors="replace")
+        return None
 
     async def _deny(
         self, scope: dict, send: Callable, *, status: int, ws_code: int, error: str
@@ -313,7 +344,7 @@ def build_http_app(core: AppCore, mcp: MCPServer) -> Any:
     if viewer_assets.available():
         extra.append(Mount("/viewer/static", app=build_static_app(), name="viewer-static"))
     app.router.routes[0:0] = extra
-    return TokenAuthMiddleware(app, core.token)
+    return TokenAuthMiddleware(app, core.token, core=core)
 
 
 def make_uvicorn_server(app: Any, port: int) -> Any:

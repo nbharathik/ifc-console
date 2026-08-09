@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import logging
+import secrets
 import socket
 import sys
 import threading
@@ -99,15 +100,19 @@ class Bridge:
     def post(self, payload: dict, timeout: float = _TIMEOUT) -> dict | None:
         """One JSON-RPC round trip. None means the request had no response."""
         body = json.dumps(payload).encode("utf-8")
+        headers = {
+            "Content-Type": "application/json",
+            "Accept": "application/json, text/event-stream",
+            "Authorization": f"Bearer {self.token}",
+            "X-Correlation-ID": f"corr-{secrets.token_hex(16)}",
+        }
+        if payload.get("id") is not None:
+            headers["X-Request-ID"] = str(payload["id"])
         request = urllib.request.Request(
             self.url,
             data=body,
             method="POST",
-            headers={
-                "Content-Type": "application/json",
-                "Accept": "application/json, text/event-stream",
-                "Authorization": f"Bearer {self.token}",
-            },
+            headers=headers,
         )
         with self._opener.open(request, timeout=timeout) as response:
             raw = response.read()

@@ -210,9 +210,18 @@ async def test_connect_embeds_and_warns_about_a_per_run_token(
     console: FakeConsole,
 ) -> None:
     console.core.settings.server.persistent_token = False
+    console.core.settings.server.token_in_config_snippets = True
     await commands.dispatch(console, "/connect")
     assert console.core.token in console.text
     assert "must be copied again after every restart" in console.text
+
+
+async def test_connect_hides_a_per_run_token_by_default(console: FakeConsole) -> None:
+    console.core.settings.server.persistent_token = False
+    await commands.dispatch(console, "/connect")
+    assert console.core.token not in console.text
+    assert "<TOKEN>" in console.text
+    assert "replace <TOKEN>" in console.text
 
 
 async def test_status_reports_model_and_mode(console: FakeConsole, work_model: Path) -> None:

@@ -12,6 +12,7 @@ Keys are never logged, never written to disk by us, and never put in a URL.
 from __future__ import annotations
 
 import contextlib
+import ipaddress
 import json
 import os
 import threading
@@ -20,6 +21,7 @@ import urllib.request
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 USER_AGENT = "ifc-console-chat"
 # urllib applies one timeout to the connect and to every read, so this has to
@@ -117,13 +119,75 @@ class ProviderError(RuntimeError):
     """A provider refused the call. The message is safe to show the user."""
 
 
-def _redact(text: str) -> str:
+def redact(text: str, secrets: tuple[str, ...] = ()) -> str:
     """Providers sometimes echo the key back in an error body."""
     out = text
-    for value in os.environ.values():
-        if len(value) > 12 and value in out:
+    candidates = [value for value in os.environ.values() if len(value) > 12]
+    candidates.extend(value for value in secrets if len(value) >= 4)
+    for value in sorted(set(candidates), key=len, reverse=True):
+        if value in out:
             out = out.replace(value, "***")
     return out[:600]
+
+
+def _validated_url(url: str, *, local_only: bool, base: bool) -> str:
+    try:
+        parsed = urlsplit(url.strip())
+        port = parsed.port
+    except ValueError as exc:
+        raise ProviderError(f"invalid provider URL: {exc}") from None
+    if parsed.scheme.lower() not in {"http", "https"}:
+        raise ProviderError("provider URL must use http or https")
+    if parsed.hostname is None or not parsed.netloc:
+        raise ProviderError("provider URL must include a host")
+    if parsed.username is not None or parsed.password is not None:
+        raise ProviderError("provider URL must not contain credentials")
+    if parsed.fragment or (base and parsed.query):
+        raise ProviderError("provider base URL must not contain a query or fragment")
+    if port is not None and not 1 <= port <= 65535:
+        raise ProviderError("provider URL port is outside 1 to 65535")
+
+    host = parsed.hostname.rstrip(".").lower()
+    if local_only:
+        try:
+            is_loopback = ipaddress.ip_address(host).is_loopback
+        except ValueError:
+            is_loopback = host == "localhost" or host.endswith(".localhost")
+        if not is_loopback:
+            raise ProviderError(
+                f"chat.local_only is on and {host} is not loopback; "
+                "use the local provider or turn the setting off"
+            )
+    return urlunsplit(
+        (parsed.scheme.lower(), parsed.netloc, parsed.path.rstrip("/"), parsed.query, "")
+    )
+
+
+def validate_base_url(url: str, *, local_only: bool = False) -> str:
+    """Validate and normalize a configured provider base URL."""
+    return _validated_url(url, local_only=local_only, base=True)
+
+
+class _SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def __init__(self, *, local_only: bool) -> None:
+        self.local_only = local_only
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        current = urlsplit(
+            _validated_url(req.full_url, local_only=self.local_only, base=False)
+        )
+        target = urlsplit(_validated_url(newurl, local_only=self.local_only, base=False))
+
+        def origin(parsed):
+            default_port = 443 if parsed.scheme == "https" else 80
+            return parsed.scheme, parsed.hostname.lower().rstrip("."), parsed.port or default_port
+
+        # urllib forwards request headers to a redirect target. Refuse any
+        # origin change so a provider cannot redirect an Authorization header
+        # to another host, port, or weaker transport.
+        if origin(current) != origin(target):
+            raise ProviderError("provider redirect changed origin and was blocked")
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
 def _request(
@@ -132,11 +196,19 @@ def _request(
     payload: dict | None,
     method: str = "POST",
     timeout: float = LIST_TIMEOUT,
+    *,
+    local_only: bool = False,
+    secrets: tuple[str, ...] = (),
 ):
+    url = _validated_url(url, local_only=local_only, base=False)
     data = json.dumps(payload).encode() if payload is not None else None
     request = urllib.request.Request(url, data=data, headers=headers, method=method)
+    handlers: list[Any] = [_SafeRedirectHandler(local_only=local_only)]
+    if local_only:
+        handlers.insert(0, urllib.request.ProxyHandler({}))
+    opener = urllib.request.build_opener(*handlers)
     try:
-        return urllib.request.urlopen(request, timeout=timeout)  # noqa: S310
+        return opener.open(request, timeout=timeout)
     except urllib.error.HTTPError as exc:
         body = ""
         with contextlib.suppress(Exception):
@@ -147,17 +219,36 @@ def _request(
             detail = (parsed.get("error") or {}).get("message") or parsed.get("message") or ""
         except Exception:
             detail = body
-        raise ProviderError(f"HTTP {exc.code}: {_redact(detail) or exc.reason}") from None
+        safe_detail = redact(detail, secrets)
+        safe_reason = redact(str(exc.reason), secrets)
+        raise ProviderError(f"HTTP {exc.code}: {safe_detail or safe_reason}") from None
     except urllib.error.URLError as exc:
-        raise ProviderError(f"cannot reach the provider: {exc.reason}") from None
+        raise ProviderError(
+            f"cannot reach the provider: {redact(str(exc.reason), secrets)}"
+        ) from None
+    except ProviderError:
+        raise
     except Exception as exc:
-        raise ProviderError(f"{type(exc).__name__}: {exc}") from None
+        raise ProviderError(f"{type(exc).__name__}: {redact(str(exc), secrets)}") from None
 
 
-def list_models(provider: Provider, key: str, base_url: str | None = None) -> list[str]:
-    base = (base_url or provider.base_url).rstrip("/")
+def list_models(
+    provider: Provider,
+    key: str,
+    base_url: str | None = None,
+    *,
+    local_only: bool = False,
+) -> list[str]:
+    base = validate_base_url(base_url or provider.base_url, local_only=local_only)
     headers = {k: v for k, v in _headers(provider, key).items() if k != "accept"}
-    with _request(f"{base}/models", headers, None, method="GET") as response:
+    with _request(
+        f"{base}/models",
+        headers,
+        None,
+        method="GET",
+        local_only=local_only,
+        secrets=(key,),
+    ) as response:
         payload = json.loads(response.read().decode("utf-8", "replace"))
     rows = payload.get("data") or payload.get("models") or []
     names = [row.get("id") or row.get("name") for row in rows if isinstance(row, dict)]
@@ -184,15 +275,37 @@ def _relax(payload: dict, message: str) -> dict | None:
     return relaxed
 
 
-def _open_stream(url: str, headers: dict[str, str], payload: dict, timeout: float):
+def _open_stream(
+    url: str,
+    headers: dict[str, str],
+    payload: dict,
+    timeout: float,
+    *,
+    local_only: bool,
+    key: str,
+):
     try:
-        return _request(url, headers, payload, timeout=timeout)
+        return _request(
+            url,
+            headers,
+            payload,
+            timeout=timeout,
+            local_only=local_only,
+            secrets=(key,),
+        )
     except ProviderError as first:
         relaxed = _relax(payload, str(first))
         if relaxed is None:
             raise
         try:
-            return _request(url, headers, relaxed, timeout=timeout)
+            return _request(
+                url,
+                headers,
+                relaxed,
+                timeout=timeout,
+                local_only=local_only,
+                secrets=(key,),
+            )
         except ProviderError:
             raise first from None  # the first message is the honest one
 
@@ -258,11 +371,19 @@ def _stream_openai(
     options: dict,
     cancel: threading.Event | None = None,
     timeout: float = STREAM_TIMEOUT,
+    local_only: bool = False,
 ) -> Iterator[dict]:
     payload = _openai_payload(model, messages, tools, options)
     calls: dict[int, dict] = {}
     url = f"{base}/chat/completions"
-    with _open_stream(url, _headers(provider, key), payload, timeout) as response:
+    with _open_stream(
+        url,
+        _headers(provider, key),
+        payload,
+        timeout,
+        local_only=local_only,
+        key=key,
+    ) as response:
         for _event, data in _sse_lines(response, cancel):
             if data == "[DONE]":
                 break
@@ -350,6 +471,7 @@ def _stream_anthropic(
     system: str,
     cancel: threading.Event | None = None,
     timeout: float = STREAM_TIMEOUT,
+    local_only: bool = False,
 ) -> Iterator[dict]:
     payload: dict[str, Any] = {
         "model": model,
@@ -372,7 +494,14 @@ def _stream_anthropic(
         payload["temperature"] = options["temperature"]
 
     blocks: dict[int, dict] = {}
-    with _open_stream(f"{base}/messages", _headers(provider, key), payload, timeout) as response:
+    with _open_stream(
+        f"{base}/messages",
+        _headers(provider, key),
+        payload,
+        timeout,
+        local_only=local_only,
+        key=key,
+    ) as response:
         for event, data in _sse_lines(response, cancel):
             try:
                 chunk = json.loads(data)
@@ -410,7 +539,7 @@ def _stream_anthropic(
                 if reason:
                     yield {"type": "finish", "reason": reason}
             elif kind == "error":
-                raise ProviderError(_redact(json.dumps(chunk.get("error") or chunk)))
+                raise ProviderError(redact(json.dumps(chunk.get("error") or chunk), (key,)))
     calls = [
         {"id": b.get("id", ""), "name": b.get("name", ""), "arguments": b.get("arguments") or "{}"}
         for b in blocks.values()
@@ -475,9 +604,10 @@ def stream(
     options: dict,
     cancel: threading.Event | None = None,
     timeout: float = STREAM_TIMEOUT,
+    local_only: bool = False,
 ) -> Iterator[dict]:
     """One provider round trip as a stream of normalized events."""
-    base = (base_url or provider.base_url).rstrip("/")
+    base = validate_base_url(base_url or provider.base_url, local_only=local_only)
     if provider.family == "anthropic":
         yield from _stream_anthropic(
             provider,
@@ -490,6 +620,7 @@ def stream(
             system,
             cancel,
             timeout,
+            local_only,
         )
     else:
         yield from _stream_openai(
@@ -502,4 +633,5 @@ def stream(
             options,
             cancel,
             timeout,
+            local_only,
         )

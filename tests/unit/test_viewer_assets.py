@@ -192,3 +192,27 @@ def test_tool_chips_are_paired_by_id_not_by_name(chat_js: str):
     assert "pending.set(event.id" in chat_js
     assert "pending.get(event.id" in chat_js
     assert "pending.get(event.name" not in chat_js
+
+
+def test_chat_distinguishes_the_ai_model_from_the_open_ifc_model(chat_js: str):
+    assert "no AI model" in chat_js
+    assert "Configure assistant" in chat_js
+    assert 'for="chat-model">AI model<' in chat_js
+
+
+def test_chat_makes_provider_egress_visible(chat_js: str, chat_css: str):
+    for label in ("local", "network", "blocked"):
+        assert f'.chat-route.{label}' in chat_css
+    assert "Prompts stay on this machine." in chat_js
+    assert "Blocked by chat.local_only" in chat_js
+
+
+def test_compact_layout_uses_overlays_instead_of_squeezing_the_canvas(
+    script: str, styles: str, chat_css: str
+) -> None:
+    assert "window.innerWidth > 620" in script
+    compact = styles.split("@media (max-width: 620px)", 1)[1]
+    assert "#tree-panel," in compact and "position: absolute" in compact
+    dock = chat_css.split("@media (max-width: 900px)", 1)[1]
+    assert "position: absolute" in dock
+    assert "width: min(480px, 100%)" in dock

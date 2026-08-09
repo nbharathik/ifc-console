@@ -9,8 +9,8 @@ import json
 import os
 import secrets
 import shutil
-import sys
 import time
+from collections.abc import Callable
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -19,7 +19,10 @@ from typing import TYPE_CHECKING, Any
 from pydantic import BaseModel, ValidationError
 
 from ifc_console.application.artifacts import ArtifactService
+from ifc_console.application.locks import process_is_running
+from ifc_console.application.transaction_journals import TransactionJournalStore
 from ifc_console.automation.files import describe_source, sha256_file, source_matches
+from ifc_console.core.capabilities import Capability
 from ifc_console.core.changes import (
     Approval,
     ApprovalRecord,
@@ -28,12 +31,17 @@ from ifc_console.core.changes import (
     CommitRecord,
     CommitResult,
     IfcScalar,
-    PropertyValueChange,
     RestoreRecord,
     RestoreResult,
 )
+from ifc_console.core.context import current_operation_context
 from ifc_console.core.results import ToolError
 from ifc_console.core.revisions import RevisionRef
+from ifc_console.core.transaction_journal import (
+    TransactionJournal,
+    TransactionKind,
+    TransactionPhase,
+)
 from ifc_console.policy.modes import Mode
 from ifc_console.sandbox.client import _child_env, worker_executable
 from ifc_console.sandbox.limits import ProcessJail
@@ -56,6 +64,12 @@ class TransactionService:
         self.work_dir = root / "work"
         self.work_dir.mkdir(parents=True, exist_ok=True)
         self.artifacts = artifacts
+        self.journals = TransactionJournalStore(
+            root,
+            artifacts,
+            lock_timeout_s=float(core.settings.automation.transaction_lock_timeout_s),
+        )
+        self.recovered = self.journals.recover_incomplete()
         self._commit_lock = asyncio.Lock()
 
     async def preview_property_value(
@@ -65,13 +79,44 @@ class TransactionService:
         pset_name: str,
         property_name: str,
         value: IfcScalar,
+        create_missing: bool = False,
+        nominal_type: str | None = None,
         expected_revision: str | None = None,
     ) -> ChangeSetRecord:
+        if current_operation_context() is None:
+            with self.core.operation_service.invocation(
+                "preview_property_change", authority="caller", client=self.core.transport
+            ):
+                return await self.preview_property_value(
+                    global_ids=global_ids,
+                    pset_name=pset_name,
+                    property_name=property_name,
+                    value=value,
+                    create_missing=create_missing,
+                    nominal_type=nominal_type,
+                    expected_revision=expected_revision,
+                )
+        context = current_operation_context()
+        assert context is not None
+        self.core.policy.require(
+            [Capability.MODEL_PREVIEW],
+            authority=context.authority,
+            action="preview property change",
+        )
         if not pset_name.strip() or not property_name.strip():
             raise ToolError(
                 "INVALID_INPUT",
                 "property set and property names must not be empty.",
                 "Pass exact names such as Pset_WallCommon and FireRating.",
+            )
+        clean_nominal_type = nominal_type.strip() if nominal_type is not None else None
+        if clean_nominal_type == "" or (
+            clean_nominal_type is not None and len(clean_nominal_type) > 255
+        ):
+            raise ToolError(
+                "INVALID_INPUT",
+                "nominal_type must be a non-empty IFC type name of at most 255 characters.",
+                "Use a schema value type such as IfcLabel or IfcLengthMeasure.",
             )
         ids = tuple(dict.fromkeys(item.strip() for item in global_ids if item.strip()))
         if not ids:
@@ -94,6 +139,8 @@ class TransactionService:
                         "pset_name": pset_name.strip(),
                         "property_name": property_name.strip(),
                         "value": value,
+                        "create_missing": create_missing,
+                        "nominal_type": clean_nominal_type,
                     },
                     work,
                     read_dirs=[session.path.parent],
@@ -101,15 +148,21 @@ class TransactionService:
             finally:
                 shutil.rmtree(work, ignore_errors=True)
             self._require_unchanged_session(session, revision, source)
-            changes = tuple(PropertyValueChange.model_validate(item) for item in result["changes"])
+            creates = sum(item.get("kind") == "property_create" for item in result["changes"])
             change_set = ChangeSet(
                 created_at=_now(),
                 revision=revision,
                 source=source,
-                changes=changes,
+                changes=result["changes"],
                 warnings=(
-                    "Only existing occurrence-level IfcPropertySingleValue values are changed.",
+                    (
+                        f"Creates {creates} occurrence-level IfcPropertySingleValue "
+                        "properties; inherited type properties are not edited."
+                        if creates
+                        else "Only existing occurrence-level IfcPropertySingleValue values are changed."
+                    ),
                 ),
+                context=context,
             )
             artifact = self.artifacts.put_text(
                 change_set.model_dump_json(indent=2),
@@ -119,7 +172,8 @@ class TransactionService:
                 producer="preview_property_change",
                 revision=revision,
                 metadata={
-                    "change_count": len(changes),
+                    "change_count": len(change_set.changes),
+                    "create_count": creates,
                     "worker_controls": worker.get("controls", []),
                 },
             )
@@ -134,13 +188,128 @@ class TransactionService:
                 workspace_id=revision.workspace_id,
                 model_id=revision.model_id,
                 revision_id=revision.revision_id,
-                change_count=len(changes),
-                global_ids=[change.global_id for change in changes],
+                change_count=len(change_set.changes),
+                global_ids=[change.global_id for change in change_set.changes],
             )
             self.core.events.emit(
                 "changeset_previewed",
                 change_set_id=record.change_set_id,
-                change_count=len(changes),
+                change_count=len(change_set.changes),
+            )
+            return record
+
+    async def preview_classification_assignment(
+        self,
+        *,
+        global_ids: tuple[str, ...] | list[str],
+        classification_name: str,
+        identification: str,
+        reference_name: str,
+        expected_revision: str | None = None,
+    ) -> ChangeSetRecord:
+        if current_operation_context() is None:
+            with self.core.operation_service.invocation(
+                "preview_classification_assignment",
+                authority="caller",
+                client=self.core.transport,
+            ):
+                return await self.preview_classification_assignment(
+                    global_ids=global_ids,
+                    classification_name=classification_name,
+                    identification=identification,
+                    reference_name=reference_name,
+                    expected_revision=expected_revision,
+                )
+        context = current_operation_context()
+        assert context is not None
+        self.core.policy.require(
+            [Capability.MODEL_PREVIEW],
+            authority=context.authority,
+            action="preview classification assignment",
+        )
+        values = {
+            "classification_name": classification_name.strip(),
+            "identification": identification.strip(),
+            "reference_name": reference_name.strip(),
+        }
+        if any(not value or len(value) > 255 for value in values.values()):
+            raise ToolError(
+                "INVALID_INPUT",
+                "classification system, identification, and reference name must each "
+                "contain 1 to 255 characters.",
+                "Pass an exact system and reference, such as Uniclass 2015 and Ss_25_10.",
+            )
+        ids = tuple(dict.fromkeys(item.strip() for item in global_ids if item.strip()))
+        if not ids:
+            raise ToolError(
+                "INVALID_INPUT", "no GlobalIds were supplied.", "Select at least one element."
+            )
+        async with self.core.active_session() as session:
+            session.require_writable()
+            revision = self._require_clean_revision(session, expected_revision)
+            assert session.path is not None
+            source = await asyncio.to_thread(describe_source, session.path)
+            self._require_unchanged_session(session, revision, source)
+            work = self._new_work("classification-preview")
+            try:
+                result, worker = await self._run_worker(
+                    {
+                        "action": "preview_classification",
+                        "source": source.model_dump(mode="json"),
+                        "global_ids": ids,
+                        **values,
+                    },
+                    work,
+                    read_dirs=[session.path.parent],
+                )
+            finally:
+                shutil.rmtree(work, ignore_errors=True)
+            self._require_unchanged_session(session, revision, source)
+            change_set = ChangeSet(
+                operation="classification.assign",
+                created_at=_now(),
+                revision=revision,
+                source=source,
+                changes=result["changes"],
+                warnings=(
+                    "Creates direct occurrence assignments; inherited type classifications "
+                    "are not changed.",
+                ),
+                context=context,
+            )
+            artifact = self.artifacts.put_text(
+                change_set.model_dump_json(indent=2),
+                name=f"{session.path.stem}-classification-assignment.json",
+                kind="ifc-changeset",
+                media_type="application/vnd.ifc-console.changeset+json",
+                producer="preview_classification_assignment",
+                revision=revision,
+                metadata={
+                    "change_count": len(change_set.changes),
+                    "classification_name": values["classification_name"],
+                    "identification": values["identification"],
+                    "worker_controls": worker.get("controls", []),
+                },
+            )
+            record = ChangeSetRecord(
+                change_set_id=artifact.artifact_id,
+                change_set=change_set,
+                artifact=artifact,
+            )
+            self.core.audit.record(
+                "changeset_previewed",
+                change_set_id=record.change_set_id,
+                workspace_id=revision.workspace_id,
+                model_id=revision.model_id,
+                revision_id=revision.revision_id,
+                operation=change_set.operation,
+                change_count=len(change_set.changes),
+                global_ids=[change.global_id for change in change_set.changes],
+            )
+            self.core.events.emit(
+                "changeset_previewed",
+                change_set_id=record.change_set_id,
+                change_count=len(change_set.changes),
             )
             return record
 
@@ -148,7 +317,7 @@ class TransactionService:
         artifact, document = self._load_document(
             change_set_id,
             kind="ifc-changeset",
-            producer="preview_property_change",
+            producer=("preview_property_change", "preview_classification_assignment"),
             model=ChangeSet,
             missing_code="CHANGESET_NOT_FOUND",
             label="ChangeSet",
@@ -166,6 +335,25 @@ class TransactionService:
         approved_by: str,
         reason: str = "",
     ) -> ApprovalRecord:
+        if current_operation_context() is None:
+            with self.core.operation_service.invocation(
+                "approve_change_set",
+                authority="caller",
+                client=self.core.transport,
+                actor=approved_by,
+            ):
+                return self.approve(
+                    change_set_id,
+                    approved_by=approved_by,
+                    reason=reason,
+                )
+        context = current_operation_context()
+        assert context is not None
+        self.core.policy.require(
+            [Capability.MODEL_APPROVE],
+            authority=context.authority,
+            action="approve ChangeSet",
+        )
         actor = approved_by.strip()
         explanation = reason.strip()
         if not actor or len(actor) > 200 or len(explanation) > 1000:
@@ -181,6 +369,7 @@ class TransactionService:
             approved_by=actor,
             approved_at=_now(),
             reason=explanation,
+            context=context,
         )
         artifact = self.artifacts.put_text(
             approval.model_dump_json(indent=2),
@@ -226,7 +415,33 @@ class TransactionService:
             artifact=artifact,
         )
 
-    async def commit(self, change_set_id: str, *, approval_id: str) -> CommitRecord:
+    async def commit(
+        self,
+        change_set_id: str,
+        *,
+        approval_id: str,
+        _job_id: str | None = None,
+        _progress: Callable[[TransactionJournal], None] | None = None,
+        _cancel_check: Callable[[], bool] | None = None,
+    ) -> CommitRecord:
+        if current_operation_context() is None:
+            with self.core.operation_service.invocation(
+                "commit_change_set", authority="caller", client=self.core.transport
+            ):
+                return await self.commit(
+                    change_set_id,
+                    approval_id=approval_id,
+                    _job_id=_job_id,
+                    _progress=_progress,
+                    _cancel_check=_cancel_check,
+                )
+        context = current_operation_context()
+        assert context is not None
+        self.core.policy.require(
+            [Capability.MODEL_COMMIT],
+            authority=context.authority,
+            action="commit ChangeSet",
+        )
         self._require_edit_mode("commit")
         if not approval_id:
             raise ToolError(
@@ -266,6 +481,14 @@ class TransactionService:
                     work,
                     read_dirs=[target.parent],
                 )
+                regression_count = int(result.get("schema_regression_count", 0))
+                if regression_count:
+                    raise ToolError(
+                        "COMMIT_FAILED",
+                        f"the candidate introduced {regression_count} new schema validation "
+                        "issue(s).",
+                        "The source was not replaced. Review the ChangeSet or repair the model.",
+                    )
                 candidate_sha = sha256_file(output)
                 if candidate_sha == change_record.change_set.source.sha256:
                     raise ToolError(
@@ -274,6 +497,23 @@ class TransactionService:
                         "Discard the ChangeSet and preview the property edit again.",
                     )
                 async with self._target_lock(target):
+                    self.journals.ensure_target_ready(target)
+                    journal = self.journals.create(
+                        kind=TransactionKind.COMMIT,
+                        target=target,
+                        expected_before_sha256=change_record.change_set.source.sha256,
+                        desired_after_sha256=candidate_sha,
+                        candidate=output,
+                        job_id=_job_id,
+                        change_set_id=change_record.change_set_id,
+                        approval_id=approval_record.approval_id,
+                        context=context,
+                    )
+                    journal = self._journal_phase(
+                        journal,
+                        TransactionPhase.CANDIDATE_VERIFIED,
+                        _progress,
+                    )
                     return await self._commit_candidate(
                         session=session,
                         target=target,
@@ -285,6 +525,9 @@ class TransactionService:
                         schema_valid=bool(result["schema_valid"]),
                         schema_issue_count=int(result["schema_issue_count"]),
                         worker=worker,
+                        journal=journal,
+                        progress=_progress,
+                        cancel_check=_cancel_check,
                     )
             finally:
                 shutil.rmtree(work, ignore_errors=True)
@@ -300,7 +543,33 @@ class TransactionService:
         )
         return CommitRecord(commit_id=artifact.artifact_id, result=document, artifact=artifact)
 
-    async def restore(self, commit_id: str, *, confirm: bool = False) -> RestoreRecord:
+    async def restore(
+        self,
+        commit_id: str,
+        *,
+        confirm: bool = False,
+        _job_id: str | None = None,
+        _progress: Callable[[TransactionJournal], None] | None = None,
+        _cancel_check: Callable[[], bool] | None = None,
+    ) -> RestoreRecord:
+        if current_operation_context() is None:
+            with self.core.operation_service.invocation(
+                "restore_commit", authority="caller", client=self.core.transport
+            ):
+                return await self.restore(
+                    commit_id,
+                    confirm=confirm,
+                    _job_id=_job_id,
+                    _progress=_progress,
+                    _cancel_check=_cancel_check,
+                )
+        context = current_operation_context()
+        assert context is not None
+        self.core.policy.require(
+            [Capability.MODEL_RESTORE],
+            authority=context.authority,
+            action="restore commit",
+        )
         self._require_edit_mode("restore")
         if not confirm:
             raise ToolError(
@@ -360,6 +629,22 @@ class TransactionService:
                             "the target changed while restore was being prepared.",
                             "Inspect the current model before retrying restore.",
                         )
+                    self.journals.ensure_target_ready(target)
+                    journal = self.journals.create(
+                        kind=TransactionKind.RESTORE,
+                        target=target,
+                        expected_before_sha256=current_sha,
+                        desired_after_sha256=commit_record.result.previous_sha256,
+                        candidate=candidate,
+                        job_id=_job_id,
+                        source_commit_id=commit_record.commit_id,
+                        context=context,
+                    )
+                    journal = self._journal_phase(
+                        journal,
+                        TransactionPhase.CANDIDATE_VERIFIED,
+                        _progress,
+                    )
                     return await self._restore_candidate(
                         session=session,
                         target=target,
@@ -370,6 +655,9 @@ class TransactionService:
                         schema_valid=bool(result["schema_valid"]),
                         schema_issue_count=int(result["schema_issue_count"]),
                         worker=worker,
+                        journal=journal,
+                        progress=_progress,
+                        cancel_check=_cancel_check,
                     )
             finally:
                 shutil.rmtree(work, ignore_errors=True)
@@ -387,10 +675,19 @@ class TransactionService:
         schema_valid: bool,
         schema_issue_count: int,
         worker: dict[str, object],
+        journal: TransactionJournal,
+        progress: Callable[[TransactionJournal], None] | None,
+        cancel_check: Callable[[], bool] | None,
     ) -> CommitRecord:
         latest = await asyncio.to_thread(describe_source, target)
         expected = change_record.change_set.source
         if latest != expected or not source_matches(expected):
+            self._journal_phase(
+                journal,
+                TransactionPhase.ABORTED,
+                progress,
+                error="source changed after the candidate was verified",
+            )
             raise ToolError(
                 "REVISION_CONFLICT",
                 "the source IFC changed after the ChangeSet was previewed.",
@@ -413,17 +710,45 @@ class TransactionService:
                 expected_sha256=expected.sha256,
             )
         except Exception as exc:
+            self._journal_phase(
+                journal,
+                TransactionPhase.ABORTED,
+                progress,
+                error=f"backup creation failed: {type(exc).__name__}: {exc}",
+            )
             raise ToolError(
                 "COMMIT_FAILED",
                 f"the verified backup could not be created: {exc}",
                 "The source IFC was not replaced. Resolve artifact storage and retry.",
             ) from exc
-        replaced = False
+        journal = self._journal_phase(
+            journal,
+            TransactionPhase.BACKUP_VERIFIED,
+            progress,
+            rollback_artifact_id=backup.artifact_id,
+        )
+        if cancel_check is not None and cancel_check():
+            self._journal_phase(
+                journal,
+                TransactionPhase.ABORTED,
+                progress,
+                error="commit cancelled before commit point",
+            )
+            raise asyncio.CancelledError
         try:
+            journal = self._journal_phase(
+                journal,
+                TransactionPhase.COMMIT_POINT,
+                progress,
+            )
             self._replace_file(target, candidate, expected_sha256=candidate_sha)
-            replaced = True
             if await asyncio.to_thread(sha256_file, target) != candidate_sha:
                 raise OSError("target checksum does not match the verified candidate")
+            journal = self._journal_phase(
+                journal,
+                TransactionPhase.TARGET_VERIFIED,
+                progress,
+            )
             await session.reload()
             revision_after = self._session_revision(session)
             result = CommitResult(
@@ -442,9 +767,19 @@ class TransactionService:
                 schema_valid=schema_valid,
                 schema_issue_count=schema_issue_count,
                 worker=worker,
+                context=current_operation_context(),
+            )
+            receipt_text = result.model_dump_json(indent=2)
+            expected_receipt_id = f"sha256:{hashlib.sha256(receipt_text.encode('utf-8')).hexdigest()}"
+            journal = self._journal_phase(
+                journal,
+                TransactionPhase.RECEIPT_PREPARED,
+                progress,
+                expected_receipt_id=expected_receipt_id,
+                result_document=result.model_dump(mode="json"),
             )
             artifact = self.artifacts.put_text(
-                result.model_dump_json(indent=2),
+                receipt_text,
                 name=f"{target.stem}-commit.json",
                 kind="ifc-commit-receipt",
                 media_type="application/vnd.ifc-console.commit+json",
@@ -461,22 +796,54 @@ class TransactionService:
                     backup.artifact_id,
                 ),
             )
+            if artifact.artifact_id != expected_receipt_id:
+                raise OSError("commit receipt identity does not match its journal")
             record = CommitRecord(commit_id=artifact.artifact_id, result=result, artifact=artifact)
+            try:
+                journal = self._journal_phase(
+                    journal,
+                    TransactionPhase.RECEIPT_PERSISTED,
+                    progress,
+                    receipt_artifact_id=artifact.artifact_id,
+                )
+            except Exception as journal_exc:
+                self.core.audit.record(
+                    "transaction_journal_degraded",
+                    transaction_id=journal.transaction_id,
+                    phase=journal.phase.value,
+                    receipt_artifact_id=artifact.artifact_id,
+                    error_type=type(journal_exc).__name__,
+                )
+        except asyncio.CancelledError:
+            rollback_error = await self._rollback_after_failure(
+                journal=journal,
+                target=target,
+                rollback_artifact_id=backup.artifact_id,
+                expected_sha256=expected.sha256,
+                session=session,
+                progress=progress,
+                error="commit cancelled during finalization",
+            )
+            if rollback_error:
+                raise ToolError(
+                    "TRANSACTION_RECOVERY_REQUIRED",
+                    f"commit cancellation rollback failed: {rollback_error}",
+                    "Do not modify the target until the journal and backup are inspected.",
+                ) from None
+            raise
         except Exception as exc:
-            rollback_error = ""
-            if replaced:
-                try:
-                    self._replace_file(
-                        target,
-                        self.artifacts.content_path(backup.artifact_id),
-                        expected_sha256=expected.sha256,
-                    )
-                    await session.reload()
-                except Exception as rollback_exc:
-                    rollback_error = f" Rollback also failed: {rollback_exc}"
+            rollback_error = await self._rollback_after_failure(
+                journal=journal,
+                target=target,
+                rollback_artifact_id=backup.artifact_id,
+                expected_sha256=expected.sha256,
+                session=session,
+                progress=progress,
+                error=f"{type(exc).__name__}: {exc}",
+            )
             raise ToolError(
                 "COMMIT_FAILED",
-                f"the verified IFC could not be committed: {exc}.{rollback_error}".strip(),
+                f"the verified IFC could not be committed: {exc}. {rollback_error}".strip(),
                 "The original was restored when possible. Inspect the target and backup artifact.",
             ) from exc
         self.core.recents.touch(
@@ -516,29 +883,67 @@ class TransactionService:
         schema_valid: bool,
         schema_issue_count: int,
         worker: dict[str, object],
+        journal: TransactionJournal,
+        progress: Callable[[TransactionJournal], None] | None,
+        cancel_check: Callable[[], bool] | None,
     ) -> RestoreRecord:
-        safety = self.artifacts.put_file(
-            target,
-            name=f"{target.stem}-{current_sha[:12]}-restore-safety.ifc",
-            kind="ifc-restore-safety",
-            media_type="application/x-step",
-            producer="restore_commit",
-            revision=revision_before,
-            metadata={"target_path": str(target), "commit_id": commit_record.commit_id},
-            references=(commit_record.commit_id,),
-            expected_sha256=current_sha,
-        )
-        replaced = False
         try:
+            safety = self.artifacts.put_file(
+                target,
+                name=f"{target.stem}-{current_sha[:12]}-restore-safety.ifc",
+                kind="ifc-restore-safety",
+                media_type="application/x-step",
+                producer="restore_commit",
+                revision=revision_before,
+                metadata={"target_path": str(target), "commit_id": commit_record.commit_id},
+                references=(commit_record.commit_id,),
+                expected_sha256=current_sha,
+            )
+        except Exception as exc:
+            self._journal_phase(
+                journal,
+                TransactionPhase.ABORTED,
+                progress,
+                error=f"safety backup creation failed: {type(exc).__name__}: {exc}",
+            )
+            raise ToolError(
+                "COMMIT_FAILED",
+                f"the restore safety backup could not be created: {exc}",
+                "The target was not replaced. Resolve artifact storage and retry.",
+            ) from exc
+        journal = self._journal_phase(
+            journal,
+            TransactionPhase.BACKUP_VERIFIED,
+            progress,
+            rollback_artifact_id=safety.artifact_id,
+        )
+        if cancel_check is not None and cancel_check():
+            self._journal_phase(
+                journal,
+                TransactionPhase.ABORTED,
+                progress,
+                error="restore cancelled before commit point",
+            )
+            raise asyncio.CancelledError
+        try:
+            journal = self._journal_phase(
+                journal,
+                TransactionPhase.COMMIT_POINT,
+                progress,
+            )
             self._replace_file(
                 target,
                 backup,
                 expected_sha256=commit_record.result.previous_sha256,
             )
-            replaced = True
             restored_sha = await asyncio.to_thread(sha256_file, target)
             if restored_sha != commit_record.result.previous_sha256:
                 raise OSError("restored target checksum does not match the verified backup")
+            journal = self._journal_phase(
+                journal,
+                TransactionPhase.TARGET_VERIFIED,
+                progress,
+            )
             await session.reload()
             revision_after = self._session_revision(session)
             result = RestoreResult(
@@ -553,9 +958,19 @@ class TransactionService:
                 schema_valid=schema_valid,
                 schema_issue_count=schema_issue_count,
                 worker=worker,
+                context=current_operation_context(),
+            )
+            receipt_text = result.model_dump_json(indent=2)
+            expected_receipt_id = f"sha256:{hashlib.sha256(receipt_text.encode('utf-8')).hexdigest()}"
+            journal = self._journal_phase(
+                journal,
+                TransactionPhase.RECEIPT_PREPARED,
+                progress,
+                expected_receipt_id=expected_receipt_id,
+                result_document=result.model_dump(mode="json"),
             )
             artifact = self.artifacts.put_text(
-                result.model_dump_json(indent=2),
+                receipt_text,
                 name=f"{target.stem}-restore.json",
                 kind="ifc-restore-receipt",
                 media_type="application/vnd.ifc-console.restore+json",
@@ -564,24 +979,56 @@ class TransactionService:
                 metadata={"commit_id": commit_record.commit_id, "target_path": str(target)},
                 references=(commit_record.commit_id, safety.artifact_id),
             )
+            if artifact.artifact_id != expected_receipt_id:
+                raise OSError("restore receipt identity does not match its journal")
             record = RestoreRecord(
                 restore_id=artifact.artifact_id, result=result, artifact=artifact
             )
+            try:
+                journal = self._journal_phase(
+                    journal,
+                    TransactionPhase.RECEIPT_PERSISTED,
+                    progress,
+                    receipt_artifact_id=artifact.artifact_id,
+                )
+            except Exception as journal_exc:
+                self.core.audit.record(
+                    "transaction_journal_degraded",
+                    transaction_id=journal.transaction_id,
+                    phase=journal.phase.value,
+                    receipt_artifact_id=artifact.artifact_id,
+                    error_type=type(journal_exc).__name__,
+                )
+        except asyncio.CancelledError:
+            rollback_error = await self._rollback_after_failure(
+                journal=journal,
+                target=target,
+                rollback_artifact_id=safety.artifact_id,
+                expected_sha256=current_sha,
+                session=session,
+                progress=progress,
+                error="restore cancelled during finalization",
+            )
+            if rollback_error:
+                raise ToolError(
+                    "TRANSACTION_RECOVERY_REQUIRED",
+                    f"restore cancellation rollback failed: {rollback_error}",
+                    "Do not modify the target until the journal and backup are inspected.",
+                ) from None
+            raise
         except Exception as exc:
-            rollback_error = ""
-            if replaced:
-                try:
-                    self._replace_file(
-                        target,
-                        self.artifacts.content_path(safety.artifact_id),
-                        expected_sha256=current_sha,
-                    )
-                    await session.reload()
-                except Exception as rollback_exc:
-                    rollback_error = f" Rollback also failed: {rollback_exc}"
+            rollback_error = await self._rollback_after_failure(
+                journal=journal,
+                target=target,
+                rollback_artifact_id=safety.artifact_id,
+                expected_sha256=current_sha,
+                session=session,
+                progress=progress,
+                error=f"{type(exc).__name__}: {exc}",
+            )
             raise ToolError(
                 "COMMIT_FAILED",
-                f"the verified backup could not be restored: {exc}.{rollback_error}".strip(),
+                f"the verified backup could not be restored: {exc}. {rollback_error}".strip(),
                 "The pre-restore model was restored when possible. Inspect both artifacts.",
             ) from exc
         self.core.audit.record(
@@ -600,6 +1047,98 @@ class TransactionService:
             path=str(target),
         )
         return record
+
+    def get_restore(self, restore_id: str) -> RestoreRecord:
+        artifact, document = self._load_document(
+            restore_id,
+            kind="ifc-restore-receipt",
+            producer="restore_commit",
+            model=RestoreResult,
+            missing_code="RESTORE_NOT_FOUND",
+            label="restore receipt",
+        )
+        return RestoreRecord(
+            restore_id=artifact.artifact_id,
+            result=document,
+            artifact=artifact,
+        )
+
+    def _journal_phase(
+        self,
+        journal: TransactionJournal,
+        phase: TransactionPhase,
+        progress: Callable[[TransactionJournal], None] | None,
+        **updates: Any,
+    ) -> TransactionJournal:
+        updated = self.journals.update(journal.transaction_id, phase, **updates)
+        if progress is not None:
+            with contextlib.suppress(Exception):
+                progress(updated)
+        return updated
+
+    async def _rollback_after_failure(
+        self,
+        *,
+        journal: TransactionJournal,
+        target: Path,
+        rollback_artifact_id: str,
+        expected_sha256: str,
+        session: ModelSession,
+        progress: Callable[[TransactionJournal], None] | None,
+        error: str,
+    ) -> str:
+        try:
+            current_sha = await asyncio.to_thread(sha256_file, target)
+            if current_sha == expected_sha256:
+                self._journal_phase(
+                    journal,
+                    TransactionPhase.ROLLED_BACK,
+                    progress,
+                    error=error,
+                )
+                return ""
+            if current_sha != journal.desired_after_sha256:
+                raise OSError(
+                    "target checksum matches neither the expected source nor candidate"
+                )
+            journal = self._journal_phase(
+                journal,
+                TransactionPhase.ROLLBACK_STARTED,
+                progress,
+                error=error,
+            )
+            self._replace_file(
+                target,
+                self.artifacts.content_path(rollback_artifact_id),
+                expected_sha256=expected_sha256,
+            )
+            if await asyncio.to_thread(sha256_file, target) != expected_sha256:
+                raise OSError("rollback target checksum mismatch")
+            self._journal_phase(
+                journal,
+                TransactionPhase.ROLLED_BACK,
+                progress,
+                error=error,
+            )
+            try:
+                await session.reload()
+            except Exception as reload_exc:
+                self.core.audit.record(
+                    "transaction_reload_degraded",
+                    transaction_id=journal.transaction_id,
+                    error_type=type(reload_exc).__name__,
+                )
+            return ""
+        except Exception as rollback_exc:
+            with contextlib.suppress(Exception):
+                self._journal_phase(
+                    journal,
+                    TransactionPhase.RECOVERY_FAILED,
+                    progress,
+                    error=error,
+                    rollback_error=f"{type(rollback_exc).__name__}: {rollback_exc}",
+                )
+            return f"Rollback also failed: {rollback_exc}"
 
     def _validate_target(self, session: ModelSession, change_set: ChangeSet) -> RevisionRef:
         if session.dirty:
@@ -699,21 +1238,22 @@ class TransactionService:
         artifact_id: str,
         *,
         kind: str,
-        producer: str,
+        producer: str | tuple[str, ...],
         model: type[BaseModel],
         missing_code: str,
         label: str,
     ) -> tuple[ArtifactRef, Any]:
+        producers = (producer,) if isinstance(producer, str) else producer
         try:
             artifact = self.artifacts.get(artifact_id)
-            if artifact.kind != kind or artifact.producer != producer:
+            if artifact.kind != kind or artifact.producer not in producers:
                 raise ValueError("artifact type does not match")
             document = model.model_validate_json(self.artifacts.read_text(artifact_id))
         except (ToolError, ValidationError, ValueError, UnicodeError) as exc:
             raise ToolError(
                 missing_code,
                 f"{label} {artifact_id!r} is unavailable or invalid.",
-                f"Use an ID returned by the {producer} workflow.",
+                f"Use an ID returned by the {' or '.join(producers)} workflow.",
             ) from exc
         return artifact, document
 
@@ -727,9 +1267,17 @@ class TransactionService:
             memory_mb=self.core.settings.sandbox.memory_mb,
         )
         input_path = work / "input.json"
+        context = current_operation_context()
         self._write_new(
             input_path,
-            json.dumps({**payload, "policy": policy.to_dict()}, ensure_ascii=False).encode("utf-8"),
+            json.dumps(
+                {
+                    **payload,
+                    "policy": policy.to_dict(),
+                    "context": context.model_dump(mode="json") if context else None,
+                },
+                ensure_ascii=False,
+            ).encode("utf-8"),
         )
         process = await asyncio.create_subprocess_exec(
             *self._worker_command(input_path),
@@ -746,6 +1294,13 @@ class TransactionService:
                     process.communicate(),
                     timeout=float(self.core.settings.automation.transaction_timeout_s),
                 )
+            except asyncio.CancelledError:
+                jail.kill()
+                if process.returncode is None:
+                    with contextlib.suppress(ProcessLookupError):
+                        process.kill()
+                await process.wait()
+                raise
             except asyncio.TimeoutError as exc:
                 jail.kill()
                 with contextlib.suppress(ProcessLookupError):
@@ -774,6 +1329,7 @@ class TransactionService:
                 "environment": "minimal",
                 "network": "blocked",
                 "controls": list(dict.fromkeys(controls)),
+                "correlation_id": response.get("correlation_id"),
             }
             return response, worker
         finally:
@@ -827,13 +1383,22 @@ class TransactionService:
             if digest.hexdigest() != expected_sha256:
                 raise OSError("staged target checksum mismatch")
             self._replace_target(temp, target)
+            self._fsync_directory(target.parent)
         finally:
             with contextlib.suppress(OSError):
                 temp.unlink()
 
     @staticmethod
     def _replace_target(source: Path, target: Path) -> None:
-        os.replace(source, target)
+        deadline = time.monotonic() + 2.0
+        while True:
+            try:
+                os.replace(source, target)
+                return
+            except PermissionError:
+                if time.monotonic() >= deadline:
+                    raise
+                time.sleep(0.01)
 
     @asynccontextmanager
     async def _target_lock(self, target: Path):
@@ -847,6 +1412,8 @@ class TransactionService:
                 fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
                 with os.fdopen(fd, "w", encoding="utf-8") as handle:
                     json.dump({"pid": os.getpid(), "token": token}, handle)
+                    handle.flush()
+                    os.fsync(handle.fileno())
                 break
             except (FileExistsError, PermissionError):
                 stale = False
@@ -854,7 +1421,10 @@ class TransactionService:
                     owner = json.loads(lock.read_text(encoding="utf-8"))
                     stale = not self._pid_exists(int(owner.get("pid", 0)))
                 except (OSError, ValueError, json.JSONDecodeError):
-                    stale = False
+                    try:
+                        stale = time.time() - lock.stat().st_mtime >= 1.0
+                    except OSError:
+                        stale = False
                 if stale:
                     stale_path = lock.with_name(f"{lock.name}.{secrets.token_hex(4)}.stale")
                     try:
@@ -882,24 +1452,15 @@ class TransactionService:
 
     @staticmethod
     def _pid_exists(pid: int) -> bool:
-        if pid <= 0:
-            return False
-        if sys.platform != "win32":
-            try:
-                os.kill(pid, 0)
-            except ProcessLookupError:
-                return False
-            except PermissionError:
-                return True
-            return True
-        try:
-            import ctypes
+        return process_is_running(pid)
 
-            query_limited_information = 0x1000
-            handle = ctypes.windll.kernel32.OpenProcess(query_limited_information, False, pid)
-            if not handle:
-                return False
-            ctypes.windll.kernel32.CloseHandle(handle)
-            return True
-        except Exception:
-            return False
+    @staticmethod
+    def _fsync_directory(path: Path) -> None:
+        if os.name == "nt":
+            return
+        flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+        fd = os.open(path, flags)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)

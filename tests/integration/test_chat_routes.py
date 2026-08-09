@@ -78,6 +78,35 @@ async def test_the_panel_can_remember_a_choice_for_this_run(chat_core):
     assert chat_core.chat.keys["anthropic"] == "sk-ant"
 
 
+async def test_local_only_blocks_model_discovery_before_network(chat_core, monkeypatch):
+    chat_core.store.settings.chat.local_only = True
+
+    def should_not_run(*_args, **_kwargs):
+        raise AssertionError("network helper was called")
+
+    monkeypatch.setattr("ifc_console.chat.routes.list_models", should_not_run)
+    client = _client(chat_core)
+    response = client.post(
+        "/api/chat/models",
+        headers=_auth(chat_core),
+        json={"provider": "openai", "base_url": "https://api.openai.com/v1"},
+    )
+    assert response.status_code == 400
+    assert "local_only" in response.json()["error"]
+
+
+async def test_invalid_provider_url_is_not_remembered(chat_core):
+    chat_core.chat.base_url = "http://localhost:8000/v1"
+    client = _client(chat_core)
+    response = client.post(
+        "/api/chat/select",
+        headers=_auth(chat_core),
+        json={"base_url": "file:///tmp/provider"},
+    )
+    assert response.status_code == 400
+    assert chat_core.chat.base_url == "http://localhost:8000/v1"
+
+
 async def test_stream_returns_sse_events(chat_core, monkeypatch):
     def fake_stream(provider, **kwargs):
         yield {"type": "content", "text": "there are three walls"}

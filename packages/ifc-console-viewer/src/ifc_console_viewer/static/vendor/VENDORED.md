@@ -9,6 +9,10 @@ bundler, no CDN. These files were copied from npm on 2026-07-16.
 | `OrbitControls.js` | `three` (examples/jsm/controls) | 0.180.0 | MIT |
 | `web-ifc-api.js`, `web-ifc.wasm` | `web-ifc` | 0.0.71 | MPL-2.0 (`LICENSE.web-ifc.md`) |
 
+Release hashes are pinned in `scripts/check_vendor_assets.py`. CI verifies
+them before testing and packaging, so an asset change requires an explicit
+version, license, hash, and browser review.
+
 Local modifications:
 
 - `OrbitControls.js`: the single bare `from 'three'` import specifier was

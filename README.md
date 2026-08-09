@@ -72,8 +72,10 @@ and chat.
 
 ## The mode switch
 
-One switch, owned by you; the LLM cannot change it. Anything finer-grained
-(per-tool prompts, allowlists) belongs to your AI client.
+One switch, owned by you; the LLM cannot change it. Internally, every operation
+declares typed capabilities and `ask`/`edit` expand to compatibility profiles.
+This keeps the simple interactive switch while giving SDKs, automation, and
+future enterprise policy one enforceable permission vocabulary.
 
 | mode | what the LLM can do |
 | ---- | ------------------- |
@@ -81,7 +83,8 @@ One switch, owned by you; the LLM cannot change it. Anything finer-grained
 | `edit` | change and save the model; saves still make backups |
 
 Switch with `/mode`. Every mutation path is gated, saves are atomic with
-timestamped backups, and each session writes an audit log.
+timestamped backups, and each session writes a redacted, integrity-chained
+audit log. Verify a stored chain with `ifc-console sessions verify <id>`.
 
 ## The code sandbox
 
@@ -101,17 +104,27 @@ like running a stranger's script.
 
 ## What the LLM gets
 
-**35 core tools**: project info, spatial tree, selector queries, element
+**36 core tools**: project info, spatial tree, selector queries, element
 details, property sets, schema docs, validation, quantities, clash detection,
 CSV export, file list/open/save, workspace tools for multi-file work
 (find, attach, switch), the offline knowledge search, and a gated Python
 `execute_ifc_code` power tool. Durable validation jobs add progress,
 cancellation, revision checks, and checksum-verified JSON/SARIF artifacts.
-Structured property previews add caller-only approval, verified commit,
+Resumable validation and streaming-query batches add bounded concurrency,
+fail-fast or continue policies, immutable input manifests, verified result
+reuse, and aggregate artifacts without requiring an open model or an LLM.
+Versioned JSON/YAML workflows compose those batches into dependency graphs with
+no-execution planning, durable progress, cancellation, dead-process recovery,
+safe resume, and one content-addressed result manifest. Run one with
+`ifc-console run workflow.yaml --plan`, then without `--plan` to execute it.
+Structured property and classification previews add caller-only approval, verified commit,
 automatic rollback, and guarded restore without giving an AI direct commit
-authority. Large IFC transaction and artifact copies are streamed with checksum
-verification. Artifact pins and reference-aware dry-run cleanup keep retained
-jobs and transaction history safe.
+authority. Commit and restore are durable jobs with explicit cancellation
+boundaries and fsynced recovery journals. Large IFC transaction and artifact
+copies are streamed with checksum verification. Artifact pins and
+reference-aware dry-run cleanup keep retained
+jobs and transaction history safe. Correlation IDs connect operation calls,
+jobs, workers, transaction records, artifacts, and audit events.
 
 **4 more while the viewer runs**: read your click-selection, highlight
 elements, apply color themes, and screenshot the canvas so it can check
@@ -141,13 +154,27 @@ from ifc_console import Workbench
 with Workbench.open("tower.ifc") as wb:
     walls = wb.query("IfcWall, Pset_WallCommon.FireRating=F30")
     issues = wb.validate()
-    tools = wb.tools()            # JSON Schema tool definitions, any provider
+    tools = wb.tools()            # schemas + capabilities, any provider
     wb.call("query_elements", query="IfcDoor")
 ```
 
 `tools()` plus `call()` is a complete agent binding, and it is deliberately
 vendor neutral: no LLM client, no API key, no provider SDK. The ask/edit gate
 still applies. Full reference: [Python SDK](https://nbharathik.github.io/ifc-console/sdk/).
+
+Trusted local packages can add typed operations through the versioned,
+deny-by-default [plugin API](https://nbharathik.github.io/ifc-console/plugins/).
+One registered operation is immediately available through the SDK, MCP, and
+chat under the same capability checks and audit trail.
+
+The same SDK runs headless multi-model workflows without opening a model:
+
+```python
+with Workbench.open(home=".ifc-console-ci") as wb:
+    plan = wb.plan_workflow("workflow.yaml")
+    run = wb.submit_workflow_plan(plan)
+    completed = wb.wait_workflow(run.workflow_id)
+```
 
 ## The 3D viewer
 

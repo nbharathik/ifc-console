@@ -22,6 +22,7 @@ class ArtifactRef(BaseModel):
     created_at: datetime
     producer: str
     revision: RevisionRef | None = None
+    correlation_ids: tuple[str, ...] = ()
     metadata: dict[str, Any] = Field(default_factory=dict)
     references: tuple[str, ...] = Field(default=())
 

@@ -149,7 +149,19 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
             return text.partition(". ")[0]
 
         tools = sorted(await mcp.list_tools(), key=lambda t: t.name)
-        listing = [{"name": tool.name, "purpose": purpose(tool.description)} for tool in tools]
+        listing = []
+        for tool in tools:
+            decision = core.policy.evaluate(list(tool.required_capabilities))
+            listing.append(
+                {
+                    "name": tool.name,
+                    "purpose": purpose(tool.description),
+                    "required_capabilities": [
+                        item.value for item in tool.required_capabilities
+                    ],
+                    "permitted": decision.allowed,
+                }
+            )
         mode = core.policy.mode.value
         data = {
             "server": {"name": "ifc-console", "version": __version__},
@@ -161,6 +173,10 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
                     else "mutations and saves run; saves make automatic backups"
                 ),
                 "note": "only the user can change the mode (/mode in their terminal)",
+                "profile": f"{mode}:tool",
+                "granted_capabilities": [
+                    item.value for item in core.policy.granted_capabilities()
+                ],
             },
             "viewer": {
                 "enabled": core.viewer.enabled,

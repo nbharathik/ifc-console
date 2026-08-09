@@ -79,6 +79,14 @@ def test_project_file_may_not_enable_system_access(tmp_path: Path) -> None:
     assert store.settings.exec.allow_system_access is False
 
 
+def test_project_file_may_not_enable_edit_mode(tmp_path: Path) -> None:
+    _write(tmp_path / ".ifc-console" / "settings.json", {"mode": {"default": "edit"}})
+    store = SettingsStore(home=tmp_path / "h", project_dir=tmp_path, env={})
+    assert store.settings.mode.default == "ask"
+    assert store.provenance["mode.default"] == "default"
+    assert any("mode.default" in warning for warning in store.warnings)
+
+
 def test_local_overrides_project(tmp_path: Path) -> None:
     _write(tmp_path / ".ifc-console" / "settings.json", {"server": {"port": 9100}})
     _write(tmp_path / ".ifc-console" / "settings.local.json", {"server": {"port": 9200}})
@@ -138,6 +146,17 @@ def test_project_files_cannot_weaken_the_sandbox(tmp_path: Path) -> None:
     store = SettingsStore(home=tmp_path / "h", project_dir=tmp_path, env={})
     assert store.settings.sandbox.mode == "auto"
     assert any("sandbox.mode" in w for w in store.warnings)
+
+
+def test_project_files_cannot_enable_plugins(tmp_path: Path) -> None:
+    _write(
+        tmp_path / ".ifc-console" / "settings.json",
+        {"plugins": {"enabled": True, "allow": ["untrusted"]}},
+    )
+    store = SettingsStore(home=tmp_path / "h", project_dir=tmp_path, env={})
+    assert store.settings.plugins.enabled is False
+    assert store.settings.plugins.allow == []
+    assert any("plugins.enabled" in warning for warning in store.warnings)
 
 
 def test_unknown_key_warns(tmp_path: Path) -> None:

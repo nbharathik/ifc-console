@@ -18,10 +18,19 @@ jobs:
       - uses: astral-sh/setup-uv@v5
         with:
           python-version: ${{ matrix.python }}
+      - name: Verify frozen dependencies and vendored assets
+        run: |
+          uv lock --check
+          uv run python scripts/check_vendor_assets.py
       - name: Sync dependencies
         run: uv sync --extra dev
       - name: Lint
-        run: uv run ruff check src tests packages
+        run: |
+          uv run ruff check src tests packages scripts
+          uv run python -m compileall -q src packages
+          node --check packages/ifc-console-viewer/src/ifc_console_viewer/static/app.js
+          node --check packages/ifc-console-viewer/src/ifc_console_viewer/static/chat.js
+          node --check packages/ifc-console-viewer/src/ifc_console_viewer/static/worker.js
       - name: Tests
         run: uv run pytest
       - name: Both wheels build and the viewer stays out of the base one
@@ -37,5 +46,6 @@ jobs:
       - uses: astral-sh/setup-uv@v5
       - name: Build docs
         run: |
+          uv lock --check
           uv sync --extra docs
           uv run mkdocs build --strict

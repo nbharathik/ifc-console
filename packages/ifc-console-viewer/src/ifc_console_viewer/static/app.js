@@ -2798,7 +2798,15 @@ function initSidePanel(panelId, splitId, btnId, widthKey, openKey, side, openByD
 }
 
 const applyTreePanel =
-  initSidePanel("tree-panel", "split-tree", "btn-panel-tree", "treeWidth", "treeOpen", "left", true);
+  initSidePanel(
+    "tree-panel",
+    "split-tree",
+    "btn-panel-tree",
+    "treeWidth",
+    "treeOpen",
+    "left",
+    window.innerWidth > 620,
+  );
 const applyPropsPanel =
   initSidePanel("props-panel", "split-props", "btn-panel-props", "propsWidth", "propsOpen", "right", false);
 

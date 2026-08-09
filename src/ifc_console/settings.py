@@ -38,7 +38,10 @@ class ServerSettings(BaseModel):
     # configured once and keep working across restarts (like wiring up a
     # Blender addon once). Set false for a fresh token every run.
     persistent_token: bool = True
-    token_in_config_snippets: bool = True
+    # Keep bearer credentials out of copied client configuration by default.
+    # The bridge reads the machine token directly, so its snippets remain
+    # complete without exposing a secret.
+    token_in_config_snippets: bool = False
 
 
 class ExecSettings(BaseModel):
@@ -122,6 +125,13 @@ class KnowledgeSettings(BaseModel):
     schemas: list[str] = Field(default_factory=lambda: ["IFC2X3", "IFC4", "IFC4X3"])
 
 
+class PluginSettings(BaseModel):
+    """Trusted Python extensions. Disabled and deny-by-default."""
+
+    enabled: bool = False
+    allow: list[str] = Field(default_factory=list)
+
+
 class RecentsSettings(BaseModel):
     max: int = Field(default=20, ge=1)
 
@@ -158,6 +168,7 @@ class Settings(BaseModel):
     viewer: ViewerSettings = Field(default_factory=ViewerSettings)
     chat: ChatSettings = Field(default_factory=ChatSettings)
     knowledge: KnowledgeSettings = Field(default_factory=KnowledgeSettings)
+    plugins: PluginSettings = Field(default_factory=PluginSettings)
     recents: RecentsSettings = Field(default_factory=RecentsSettings)
     sessions: SessionsSettings = Field(default_factory=SessionsSettings)
     automation: AutomationSettings = Field(default_factory=AutomationSettings)
@@ -168,7 +179,6 @@ class Settings(BaseModel):
 # Keys project-level files may set: nothing here can widen file access,
 # enable system access, or weaken authentication.
 PROJECT_SAFE_KEYS = {
-    "mode.default",
     "server.port",
     "exec.timeout_seconds",
     "exec.output_char_limit",
@@ -329,6 +339,14 @@ class SettingsStore:
         return self.home / "jobs"
 
     @property
+    def batches_dir(self) -> Path:
+        return self.home / "batches"
+
+    @property
+    def workflows_dir(self) -> Path:
+        return self.home / "workflows"
+
+    @property
     def transactions_dir(self) -> Path:
         return self.home / "transactions"
 
@@ -387,6 +405,8 @@ class SettingsStore:
             self.backups_dir,
             self.artifacts_dir,
             self.jobs_dir,
+            self.batches_dir,
+            self.workflows_dir,
             self.transactions_dir,
         ):
             d.mkdir(parents=True, exist_ok=True)

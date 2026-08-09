@@ -29,6 +29,22 @@ def test_workbench_is_exported_from_the_package():
     assert "Workbench" in dir(ifc_console)
 
 
+def test_batch_record_is_exported_from_the_package():
+    import ifc_console
+    from ifc_console.core.batches import BatchRecord
+
+    assert ifc_console.BatchRecord is BatchRecord
+
+
+def test_workflow_contracts_are_exported_from_the_package():
+    import ifc_console
+    from ifc_console.core.workflows import WorkflowPlan, WorkflowRecord, WorkflowSpec
+
+    assert ifc_console.WorkflowPlan is WorkflowPlan
+    assert ifc_console.WorkflowRecord is WorkflowRecord
+    assert ifc_console.WorkflowSpec is WorkflowSpec
+
+
 def test_open_loads_the_model(wb: Workbench):
     assert wb.model["loaded"] is True
     assert wb.model["schema"] == "IFC4"
@@ -90,6 +106,23 @@ def test_typed_operation_definitions_and_results(wb: Workbench):
     assert validation.valid is True
 
 
+def test_sdk_exposes_capability_profiles_and_audit_verification(wb: Workbench):
+    from ifc_console import Capability
+
+    tools = {item["name"]: item for item in wb.tools()}
+    assert tools["save_ifc_file"]["required_capabilities"] == [
+        "file:write",
+        "model:commit",
+    ]
+    assert tools["save_ifc_file"]["permitted"] is False
+    assert Capability.MODEL_READ in wb.granted_capabilities()
+    assert wb.capability_decision([Capability.MODEL_APPROVE]).allowed is False
+    assert wb.capability_decision(
+        [Capability.MODEL_APPROVE], authority="caller"
+    ).allowed is True
+    assert wb.verify_audit().valid is True
+
+
 def test_workspace_context_tracks_model_revisions(wb: Workbench):
     before = wb.context
     assert before.workspace_id.startswith("workspace-")
@@ -131,6 +164,63 @@ def test_validation_jobs_and_artifacts_use_typed_sdk(wb: Workbench, tmp_path: Pa
     assert unconfirmed.value.code == "APPROVAL_REQUIRED"
 
 
+def test_validation_batches_use_typed_sdk(wb: Workbench, tmp_path: Path):
+    first = Path(wb.model["path"])
+    second = tmp_path / "second.ifc"
+    shutil.copy2(first, second)
+
+    submitted = wb.submit_validation_batch([first, second], concurrency=1)
+    snapshots = list(wb.watch_batch(submitted.batch_id, poll_interval=0.01))
+    completed = snapshots[-1]
+
+    assert completed.state.value == "succeeded"
+    assert completed.summary["input_count"] == 2
+    assert completed.aggregate_artifact is not None
+    assert wb.batch(completed.batch_id) == completed
+    assert completed in wb.batches()
+
+    query = wb.submit_query_batch(
+        [first, second], query="IfcWall", output_format="jsonl", limit=2
+    )
+    query_result = wb.wait_batch(query.batch_id, timeout=90)
+    assert query_result.state.value == "succeeded"
+    assert query_result.children[0].summary["matched"] == 3
+    assert len(
+        wb.read_artifact_text(query_result.children[0].artifacts[0].artifact_id).splitlines()
+    ) == 2
+
+
+def test_workflows_use_typed_sdk(wb: Workbench, tmp_path: Path):
+    manifest = tmp_path / "workflow.yaml"
+    manifest.write_text(
+        """version: '1'
+name: sdk-gate
+inputs:
+  - id: models
+    paths: [work.ifc]
+steps:
+  - id: walls
+    operation:
+      kind: query
+      version: '1'
+      query: IfcWall
+      limit: 2
+""",
+        encoding="utf-8",
+    )
+
+    plan = wb.plan_workflow(manifest)
+    assert plan.total_children == 1
+    submitted = wb.submit_workflow_plan(plan)
+    snapshots = list(wb.watch_workflow(submitted.workflow_id, poll_interval=0.01))
+    completed = snapshots[-1]
+
+    assert completed.state.value == "succeeded"
+    assert completed.steps[0].summary["row_count"] == 2
+    assert wb.workflow(completed.workflow_id) == completed
+    assert completed in wb.workflows()
+
+
 def test_validation_job_refuses_a_dirty_sdk_model(wb: Workbench):
     wb.set_mode("edit")
     wb.run_code(
@@ -164,15 +254,44 @@ def test_safe_property_changes_require_caller_approval_and_can_restore(wb: Workb
     commit = wb.commit_change_set(preview.change_set_id, approval_id=approval.approval_id)
     assert commit.result.schema_valid is True
     assert wb.commit_record(commit.commit_id) == commit
+    commit_job = next(record for record in wb.jobs() if record.kind == "commit")
+    assert commit_job.summary["commit_id"] == commit.commit_id
+    assert commit_job.phase == "receipt_persisted"
+    assert commit_job.transaction_id is not None
+    assert wb.transaction_journal(commit_job.transaction_id).receipt_artifact_id == commit.commit_id
+    assert wb.transaction_journals()
     assert (
         wb.psets(wall["global_id"])["results"][0]["psets"]["Pset_WallCommon"]["FireRating"] == "F60"
     )
 
     restored = wb.restore_commit(commit.commit_id, confirm=True)
     assert restored.result.restored_sha256 == commit.result.previous_sha256
+    restore_job = next(record for record in wb.jobs() if record.kind == "restore")
+    assert restore_job.summary["restore_id"] == restored.restore_id
     assert (
         wb.psets(wall["global_id"])["results"][0]["psets"]["Pset_WallCommon"]["FireRating"] == "F30"
     )
+
+
+def test_sdk_previews_property_creation_and_classification_assignment(wb: Workbench):
+    wall = next(item for item in wb.query("IfcWall") if item["name"] == "Wall-1")
+    created_property = wb.preview_property_change(
+        wall["global_id"],
+        pset_name="Company_QA",
+        property_name="ReviewStatus",
+        value="Checked",
+        create_missing=True,
+    )
+    classification = wb.preview_classification_assignment(
+        wall["global_id"],
+        classification_name="Company Classification",
+        identification="WALL-EXT",
+        reference_name="External wall",
+    )
+
+    assert created_property.change_set.changes[0].kind == "property_create"
+    assert classification.change_set.operation == "classification.assign"
+    assert classification.change_set.changes[0].kind == "classification_assignment"
 
 
 def test_every_advertised_tool_is_callable(wb: Workbench):

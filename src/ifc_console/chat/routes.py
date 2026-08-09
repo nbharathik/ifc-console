@@ -16,7 +16,13 @@ from starlette.routing import Route
 
 from ifc_console.chat import SYSTEM_PROMPT
 from ifc_console.chat.agent import converse
-from ifc_console.chat.providers import PROVIDERS, ProviderError, key_source, list_models
+from ifc_console.chat.providers import (
+    PROVIDERS,
+    ProviderError,
+    key_source,
+    list_models,
+    validate_base_url,
+)
 from ifc_console.viewer import assets
 
 if TYPE_CHECKING:
@@ -115,11 +121,19 @@ def build_chat_routes(core: AppCore) -> list[Route]:
         import asyncio
 
         try:
+            base_url = validate_base_url(
+                body.get("base_url") or provider.base_url,
+                local_only=core.settings.chat.local_only,
+            )
             names = await asyncio.to_thread(
-                list_models, provider, key, body.get("base_url") or None
+                list_models,
+                provider,
+                key,
+                base_url,
+                local_only=core.settings.chat.local_only,
             )
         except ProviderError as exc:
-            return JSONResponse({"error": str(exc)}, status_code=502)
+            return JSONResponse({"error": str(exc)}, status_code=400)
         return JSONResponse({"models": names})
 
     async def remember(request) -> JSONResponse:
@@ -130,12 +144,26 @@ def build_chat_routes(core: AppCore) -> list[Route]:
         provider = (body.get("provider") or "").lower()
         if provider and provider not in PROVIDERS:
             return JSONResponse({"error": "unknown provider"}, status_code=400)
+        raw_base_url = None
+        if body.get("base_url") is not None:
+            raw_base_url = str(body["base_url"]).strip()
+            try:
+                normalized_base_url = (
+                    validate_base_url(
+                        raw_base_url,
+                        local_only=core.settings.chat.local_only,
+                    )
+                    if raw_base_url
+                    else ""
+                )
+            except ProviderError as exc:
+                return JSONResponse({"error": str(exc)}, status_code=400)
         if provider:
             core.chat.provider = provider
         if body.get("model") is not None:
             core.chat.model = str(body["model"]).strip()
-        if body.get("base_url") is not None:
-            core.chat.base_url = str(body["base_url"]).strip()
+        if raw_base_url is not None:
+            core.chat.base_url = normalized_base_url
         if body.get("api_key"):
             core.chat.keys[provider or core.chat.provider] = str(body["api_key"]).strip()
         return JSONResponse({"ok": True, "provider": core.chat.provider, "model": core.chat.model})
