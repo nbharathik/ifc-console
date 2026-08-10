@@ -1,6 +1,6 @@
 # Automation workflows
 
-IFC-Console 0.2 can execute a versioned JSON or YAML workflow without opening a
+IFC-Console 0.1.4 can execute a versioned JSON or YAML workflow without opening a
 model, starting a server, or involving an LLM. A workflow is a deterministic
 directed acyclic graph of read-only validation and selector-query steps. The
 CLI and Python SDK are clients of the same durable `WorkflowService`.

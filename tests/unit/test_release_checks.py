@@ -19,10 +19,10 @@ ROOT = Path(__file__).resolve().parents[2]
 def _project(
     root: Path,
     *,
-    core: str = "0.2.0",
-    viewer: str = "0.2.0",
+    core: str = "0.1.4",
+    viewer: str = "0.1.4",
     viewer_runtime: str | None = None,
-    viewer_requirement: str = ">=0.2,<0.3",
+    viewer_requirement: str = ">=0.1,<0.2",
     release_label: str = "2026-08-09",
 ) -> None:
     core_dir = root / "src" / "ifc_console"
@@ -47,20 +47,20 @@ def _project(
 def test_release_metadata_accepts_matching_versions_and_tag(tmp_path: Path) -> None:
     _project(tmp_path)
 
-    version, issues = release_issues(tmp_path, tag="v0.2.0")
+    version, issues = release_issues(tmp_path, tag="v0.1.4")
 
-    assert version == "0.2.0"
+    assert version == "0.1.4"
     assert issues == []
 
 
 def test_release_metadata_reports_every_consistency_problem(tmp_path: Path) -> None:
-    _project(tmp_path, core="0.2.0", viewer="0.3.0", viewer_runtime="0.4.0")
+    _project(tmp_path, core="0.1.4", viewer="0.3.0", viewer_runtime="0.4.0")
     (tmp_path / "packages" / "ifc-console-viewer" / "pyproject.toml").write_text(
         'version = "0.3.0"\nrequires-python = ">=3.11"\n', encoding="utf-8"
     )
     (tmp_path / "CHANGELOG.md").write_text("## [0.1.4]\n", encoding="utf-8")
 
-    _, issues = release_issues(tmp_path, tag="v0.2")
+    _, issues = release_issues(tmp_path, tag="v0.1")
 
     assert any("package versions differ" in issue for issue in issues)
     assert any("viewer versions differ" in issue for issue in issues)
@@ -73,7 +73,7 @@ def test_tagged_release_rejects_an_unreleased_changelog(tmp_path: Path) -> None:
     _project(tmp_path, release_label="Unreleased")
 
     assert release_issues(tmp_path)[1] == []
-    _, tagged_issues = release_issues(tmp_path, tag="v0.2.0")
+    _, tagged_issues = release_issues(tmp_path, tag="v0.1.4")
 
     assert any("release date" in issue for issue in tagged_issues)
 
@@ -82,13 +82,13 @@ def test_tagged_release_rejects_an_unreleased_changelog(tmp_path: Path) -> None:
 def test_tagged_release_requires_a_real_calendar_date(tmp_path: Path, release_label: str) -> None:
     _project(tmp_path, release_label=release_label)
 
-    _, issues = release_issues(tmp_path, tag="v0.2.0")
+    _, issues = release_issues(tmp_path, tag="v0.1.4")
 
     assert any("release date" in issue for issue in issues)
 
 
 def test_release_rejects_a_viewer_range_that_crosses_minor_versions(tmp_path: Path) -> None:
-    _project(tmp_path, viewer_requirement=">=0.2,<1")
+    _project(tmp_path, viewer_requirement=">=0.1,<1")
 
     _, issues = release_issues(tmp_path)
 
@@ -134,7 +134,7 @@ def test_release_archive_paths_reject_traversal_and_platform_absolute_names() ->
     ):
         assert _unsafe_archive_name(name)
 
-    assert not _unsafe_archive_name("ifc_console-0.2.0/src/ifc_console/__init__.py")
+    assert not _unsafe_archive_name("ifc_console-0.1.4/src/ifc_console/__init__.py")
 
 
 def test_release_python_range_comparison_ignores_metadata_order() -> None:
@@ -144,7 +144,7 @@ def test_release_python_range_comparison_ignores_metadata_order() -> None:
 def test_viewer_static_allowlist_rejects_unexpected_public_files() -> None:
     expected = [f"ifc_console_viewer/static/{asset}" for asset in REQUIRED_ASSETS]
     expected_source = [
-        f"ifc_console_viewer-0.2.0/src/ifc_console_viewer/static/{asset}"
+        f"ifc_console_viewer-0.1.4/src/ifc_console_viewer/static/{asset}"
         for asset in REQUIRED_ASSETS
     ]
 
@@ -156,20 +156,20 @@ def test_viewer_static_allowlist_rejects_unexpected_public_files() -> None:
     assert _unexpected_viewer_static(
         [
             *expected_source,
-            "ifc_console_viewer-0.2.0/src/ifc_console_viewer/static/secrets.json",
+            "ifc_console_viewer-0.1.4/src/ifc_console_viewer/static/secrets.json",
         ]
-    ) == ["ifc_console_viewer-0.2.0/src/ifc_console_viewer/static/secrets.json"]
+    ) == ["ifc_console_viewer-0.1.4/src/ifc_console_viewer/static/secrets.json"]
     assert _unexpected_viewer_static([*expected, "ifc_console_viewer/not-public.txt"]) == []
 
 
 @pytest.mark.parametrize(
     "name",
     [
-        "ifc_console-0.2.0/.tmp/cache.bin",
-        "ifc_console-0.2.0/.vscode/settings.json",
-        "ifc_console-0.2.0/uv.lock",
-        "ifc_console-0.2.0/docs/assets/brand/console.png",
-        r"ifc_console-0.2.0\.tmp\cache.bin",
+        "ifc_console-0.1.4/.tmp/cache.bin",
+        "ifc_console-0.1.4/.vscode/settings.json",
+        "ifc_console-0.1.4/uv.lock",
+        "ifc_console-0.1.4/docs/assets/brand/console.png",
+        r"ifc_console-0.1.4\.tmp\cache.bin",
     ],
 )
 def test_source_archive_exclusion_recognizes_sensitive_entries(name: str) -> None:
@@ -179,9 +179,9 @@ def test_source_archive_exclusion_recognizes_sensitive_entries(name: str) -> Non
 @pytest.mark.parametrize(
     "name",
     [
-        "ifc_console-0.2.0/src/ifc_console/__init__.py",
-        "ifc_console-0.2.0/docs/assets/brand/console.svg",
-        "ifc_console-0.2.0/docs/uv.lock",
+        "ifc_console-0.1.4/src/ifc_console/__init__.py",
+        "ifc_console-0.1.4/docs/assets/brand/console.svg",
+        "ifc_console-0.1.4/docs/uv.lock",
     ],
 )
 def test_source_archive_exclusion_allows_intended_entries(name: str) -> None:

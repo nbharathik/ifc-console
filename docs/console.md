@@ -94,7 +94,7 @@ nearby IFC files, filtered as you type.
 Unique prefixes work: `/stat` runs `/status`. Unknown commands suggest the
 closest match.
 
-Two names changed in 0.2 so they stop looking alike. `/open` became part of
+Two names changed in 0.1.4 so they stop looking alike. `/open` became part of
 `/file`, and `/model` (entity counts) became `/info`, which no longer reads
 like a typo for `/models` (the loaded-model list). Both old names still work
 and print where they went.

@@ -133,7 +133,7 @@ an AI-visible tool profile. The returned operation envelope contains a
 
 ## Typed operation contracts
 
-The typed 0.2 SDK contracts are additive. Existing dictionary methods remain
+The typed 0.1.4 SDK contracts are additive. Existing dictionary methods remain
 available. Code that wants validation and editor type support can use the typed
 definitions, envelopes, and reference result models:
 

@@ -49,7 +49,7 @@ class Command:
 
 
 REGISTRY: dict[str, Command] = {}
-# Names that moved in 0.2. They keep working; typing one prints where it went.
+# Names that moved in 0.1.4. They keep working; typing one prints where it went.
 RENAMED = {"open": "file", "model": "info"}
 ALIASES = {"exit": "quit", **RENAMED}
 

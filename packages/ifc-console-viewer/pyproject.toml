@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "ifc-console-viewer"
-version = "0.2.0"
+version = "0.1.4"
 description = "Static assets for the ifc-console 3D web viewer (three.js + web-ifc)."
 readme = "README.md"
 requires-python = ">=3.10,<3.15"

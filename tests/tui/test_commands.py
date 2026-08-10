@@ -333,7 +333,7 @@ async def test_viewer_url_requires_server(console: FakeConsole) -> None:
     assert "/viewer#t=" in console.text
 
 
-# ------------------------------------------------------- 0.2 command rework
+# ----------------------------------------------------- 0.1.4 command rework
 async def test_renamed_commands_still_work_and_say_where_they_went(console) -> None:
     await commands.dispatch(console, "/model")
     assert "/model is now /info" in console.text

@@ -7,7 +7,7 @@ the web-ifc WASM parser, and the viewer SPA. Install it with
 
 from pathlib import Path
 
-__version__ = "0.2.0"
+__version__ = "0.1.4"
 __all__ = ["__version__", "static_dir"]
 
 

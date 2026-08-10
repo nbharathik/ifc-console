@@ -56,13 +56,13 @@ validation = [
 viewer = [
     # 8 MB of three.js, web-ifc WASM, and the viewer SPA. Optional so an
     # install that only needs the MCP tools, the CLI, or the SDK stays small.
-    "ifc-console-viewer>=0.2,<0.3",
+    "ifc-console-viewer>=0.1,<0.2",
 ]
 dev = [
     "httpx>=0.27",
     # Starlette's current TestClient prefers its supported httpx2 transport.
     "httpx2>=2,<3",
-    "ifc-console-viewer>=0.2,<0.3",
+    "ifc-console-viewer>=0.1,<0.2",
     "ifctester>=0.8",
     "pytest>=8",
     "pytest-asyncio>=0.23",

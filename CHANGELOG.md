@@ -4,7 +4,7 @@ Notable user-facing changes to ifc-console are recorded here. The project uses
 semantic versioning for its MCP schema, documented Python SDK, versioned plugin
 API, and stable command-line exit codes.
 
-## [0.2.0] - 2026-08-10
+## [0.1.4] - 2026-08-10
 
 ### Added
 
@@ -90,7 +90,7 @@ API, and stable command-line exit codes.
 - First public release with the standalone MCP server, ask/edit safety switch,
   Textual console, core IFC query and edit tools, and local 3D viewer.
 
-[0.2.0]: https://github.com/nbharathik/ifc-console/compare/v0.1.2...v0.2.0
+[0.1.4]: https://github.com/nbharathik/ifc-console/compare/v0.1.2...v0.1.4
 [0.1.2]: https://github.com/nbharathik/ifc-console/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/nbharathik/ifc-console/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/nbharathik/ifc-console/releases/tag/v0.1.0

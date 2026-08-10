@@ -63,7 +63,7 @@ zero-setup bridge between an LLM client and an IFC file.
 
 ```console
 $ ifc-console
-IFC CONSOLE  v0.2.0
+IFC CONSOLE  v0.1.4
 a terminal interface to connect IFC files to LLMs
   model  /file to pick
   mode   ask  (AI is query-only; /mode edit lets it change the model)

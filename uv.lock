@@ -576,7 +576,7 @@ provides-extras = ["dev", "docs", "validation", "viewer"]
 
 [[package]]
 name = "ifc-console-viewer"
-version = "0.2.0"
+version = "0.1.4"
 source = { editable = "packages/ifc-console-viewer" }
 
 [[package]]
