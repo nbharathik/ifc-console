@@ -1,5 +1,5 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling==1.31.0"]
 build-backend = "hatchling.build"
 
 [project]
@@ -8,7 +8,8 @@ dynamic = ["version"]
 description = "A terminal interface to connect IFC files to LLMs: a standalone MCP server for IFC/BIM with an ask/edit safety switch and a local 3D viewer."
 readme = "README.md"
 requires-python = ">=3.10,<3.15"
-license = { text = "Apache-2.0" }
+license = "Apache-2.0"
+license-files = ["LICENSE"]
 authors = [{ name = "nbharathik" }]
 keywords = ["ifc", "bim", "mcp", "ifcopenshell", "llm", "claude", "openbim"]
 classifiers = [
@@ -18,6 +19,13 @@ classifiers = [
     "License :: OSI Approved :: Apache Software License",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Typing :: Typed",
     "Topic :: Scientific/Engineering",
 ]
 dependencies = [
@@ -48,13 +56,13 @@ validation = [
 viewer = [
     # 8 MB of three.js, web-ifc WASM, and the viewer SPA. Optional so an
     # install that only needs the MCP tools, the CLI, or the SDK stays small.
-    "ifc-console-viewer>=0.2,<1",
+    "ifc-console-viewer>=0.2,<0.3",
 ]
 dev = [
     "httpx>=0.27",
     # Starlette's current TestClient prefers its supported httpx2 transport.
     "httpx2>=2,<3",
-    "ifc-console-viewer",
+    "ifc-console-viewer>=0.2,<0.3",
     "ifctester>=0.8",
     "pytest>=8",
     "pytest-asyncio>=0.23",
@@ -81,8 +89,9 @@ path = "src/ifc_console/__init__.py"
 packages = ["src/ifc_console"]
 
 [tool.hatch.build.targets.sdist]
-# tests stay in so packagers can run the suite; the lockfile and the README
-# screenshots are not used by any installer.
+# Tests stay in for downstream PEP 517 packagers. The uv workspace source is
+# checkout-only, so an extracted base sdist should be installed with pip or
+# `uv pip`, not synchronized as the original two-package workspace.
 exclude = [
     "uv.lock",
     "docs/assets/brand/*.png",
@@ -90,6 +99,7 @@ exclude = [
     "dist",
     ".github",
     ".tmp",
+    ".vscode",
     "packages",
     "site",
 ]

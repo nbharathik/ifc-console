@@ -1,17 +1,25 @@
-"""Who is on that port? Identification for friendly conflict errors.
+"""Who is on that port? Authenticated identification for conflict errors.
 
 MCP clients pin http://127.0.0.1:<port>/mcp, so when the port is occupied it
 matters a lot whether the occupant is your own running ifc-console session
-(fine: clients talk to it) or some other application (bad: clients would
-send their requests, bearer token included, to a stranger). The probe asks
-the occupant to identify itself before we word the error.
+(fine: clients talk to it) or some other application. The probe uses a fresh
+nonce and keyed proof, so it never sends the bearer token to an unverified
+listener.
 """
 
 from __future__ import annotations
 
+import json
+import secrets
 import socket
-import urllib.error
 import urllib.request
+
+from ifc_console.http_identity import (
+    IDENTITY_NONCE_BYTES,
+    IDENTITY_PATH,
+    IDENTITY_RESPONSE_LIMIT,
+    identity_matches,
+)
 
 # Occupant kinds, from best to worst.
 FREE = "free"
@@ -43,18 +51,14 @@ def port_status(port: int, token: str | None = None) -> tuple[str, str]:
         except OSError:
             pass
 
-    # Ask anonymously first. Whoever holds the port is not trusted yet, and the
-    # token is the credential for this machine's console.
-    status, body = _probe(port, None)
-    if status is None:
+    payload, nonce = _probe_identity(port)
+    if payload is None:
         return FOREIGN, "an application that is not ifc-console (no HTTP answer)"
-    if not token or "ifc-console" not in body:
-        return classify_http(status, body)
-    # It identifies as ifc-console, so it is worth asking whether it is ours.
-    status, body = _probe(port, token)
-    if status is None:
-        return FOREIGN, "an application that is not ifc-console (no HTTP answer)"
-    return classify_http(status, body)
+    if payload.get("name") != "ifc-console":
+        return FOREIGN, "an application that is not ifc-console"
+    if token and identity_matches(payload, token, nonce, port):
+        return IFC_CONSOLE, "your running ifc-console session (same token)"
+    return IFC_CONSOLE_OTHER, "an unverified ifc-console listener (different token)"
 
 
 class _NoRedirects(urllib.request.HTTPRedirectHandler):
@@ -64,22 +68,25 @@ class _NoRedirects(urllib.request.HTTPRedirectHandler):
         return None
 
 
-def _probe(port: int, token: str | None) -> tuple[int | None, str]:
-    request = urllib.request.Request(f"http://127.0.0.1:{port}/api/status")
-    if token:
-        request.add_header("Authorization", f"Bearer {token}")
-    opener = urllib.request.build_opener(_NoRedirects)
+def _probe_identity(port: int) -> tuple[dict | None, str]:
+    nonce = secrets.token_hex(IDENTITY_NONCE_BYTES)
+    request = urllib.request.Request(
+        f"http://127.0.0.1:{port}{IDENTITY_PATH}?nonce={nonce}",
+        headers={"Accept": "application/json"},
+    )
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirects())
     try:
         with opener.open(request, timeout=2) as response:
-            return response.status, response.read(4096).decode("utf-8", errors="replace")
-    except urllib.error.HTTPError as exc:
-        try:
-            body = exc.read(4096).decode("utf-8", errors="replace")
-        except Exception:
-            body = ""
-        return exc.code, body
-    except Exception:
-        return None, ""
+            raw = response.read(IDENTITY_RESPONSE_LIMIT + 1)
+            content_type = response.headers.get("Content-Type", "")
+        if len(raw) > IDENTITY_RESPONSE_LIMIT:
+            return None, nonce
+        if content_type.partition(";")[0].strip().casefold() != "application/json":
+            return None, nonce
+        payload = json.loads(raw.decode("utf-8"))
+        return (payload if isinstance(payload, dict) else None), nonce
+    except (OSError, UnicodeError, ValueError, json.JSONDecodeError):
+        return None, nonce
 
 
 def conflict_hint(kind: str, port: int) -> str:
@@ -96,8 +103,8 @@ def conflict_hint(kind: str, port: int) -> str:
             "IFC_CONSOLE_HOME / `ifc-console token show`, or use --port"
         )
     return (
-        "a different application owns this port, and MCP clients pointing "
-        "here would send it their requests and bearer token; move ifc-console "
+        "a different application owns this port; the stdio bridge will not "
+        "send it the bearer token. Move ifc-console "
         "permanently with `ifc-console settings set server.port <n>` and "
         "re-add clients (`ifc-console mcp-config`)"
     )

@@ -15,6 +15,7 @@ import contextlib
 import ipaddress
 import json
 import os
+import socket
 import threading
 import urllib.error
 import urllib.request
@@ -30,6 +31,12 @@ USER_AGENT = "ifc-console-chat"
 STREAM_TIMEOUT = 300.0
 # Listing models is a plain GET; nothing justifies a long wait there.
 LIST_TIMEOUT = 30.0
+_MAX_ERROR_BODY = 64 * 1024
+_MAX_MODELS_BODY = 4 * 1024 * 1024
+_MAX_SSE_LINE = 1024 * 1024
+_MAX_SSE_TOTAL = 64 * 1024 * 1024
+_MAX_MODELS = 10_000
+_MAX_MODEL_NAME = 500
 
 
 @dataclass(frozen=True)
@@ -168,14 +175,27 @@ def validate_base_url(url: str, *, local_only: bool = False) -> str:
     return _validated_url(url, local_only=local_only, base=True)
 
 
+def _require_loopback_resolution(url: str) -> None:
+    parsed = urlsplit(url)
+    host = parsed.hostname
+    if host is None:
+        raise ProviderError("local provider URL has no host")
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    try:
+        rows = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    except OSError as exc:
+        raise ProviderError(f"cannot resolve local provider host: {exc}") from None
+    addresses = {row[4][0] for row in rows if row[4]}
+    if not addresses or any(not ipaddress.ip_address(address).is_loopback for address in addresses):
+        raise ProviderError("chat.local_only provider resolved outside loopback")
+
+
 class _SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
     def __init__(self, *, local_only: bool) -> None:
         self.local_only = local_only
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):
-        current = urlsplit(
-            _validated_url(req.full_url, local_only=self.local_only, base=False)
-        )
+        current = urlsplit(_validated_url(req.full_url, local_only=self.local_only, base=False))
         target = urlsplit(_validated_url(newurl, local_only=self.local_only, base=False))
 
         def origin(parsed):
@@ -201,6 +221,8 @@ def _request(
     secrets: tuple[str, ...] = (),
 ):
     url = _validated_url(url, local_only=local_only, base=False)
+    if local_only:
+        _require_loopback_resolution(url)
     data = json.dumps(payload).encode() if payload is not None else None
     request = urllib.request.Request(url, data=data, headers=headers, method=method)
     handlers: list[Any] = [_SafeRedirectHandler(local_only=local_only)]
@@ -212,7 +234,8 @@ def _request(
     except urllib.error.HTTPError as exc:
         body = ""
         with contextlib.suppress(Exception):
-            body = exc.read().decode("utf-8", "replace")
+            raw_body = exc.read(_MAX_ERROR_BODY + 1)
+            body = raw_body[:_MAX_ERROR_BODY].decode("utf-8", "replace")
         detail = ""
         try:
             parsed = json.loads(body)
@@ -249,10 +272,24 @@ def list_models(
         local_only=local_only,
         secrets=(key,),
     ) as response:
-        payload = json.loads(response.read().decode("utf-8", "replace"))
+        raw = response.read(_MAX_MODELS_BODY + 1)
+        if len(raw) > _MAX_MODELS_BODY:
+            raise ProviderError("provider model list exceeded the response-size limit")
+        try:
+            payload = json.loads(raw.decode("utf-8", "replace"))
+        except (json.JSONDecodeError, RecursionError) as exc:
+            raise ProviderError(f"provider returned invalid model-list JSON: {exc}") from None
+    if not isinstance(payload, dict):
+        raise ProviderError("provider model list is not a JSON object")
     rows = payload.get("data") or payload.get("models") or []
+    if not isinstance(rows, list):
+        raise ProviderError("provider model list has an invalid data field")
+    if len(rows) > _MAX_MODELS:
+        raise ProviderError("provider returned too many models")
     names = [row.get("id") or row.get("name") for row in rows if isinstance(row, dict)]
-    return sorted(name for name in names if name)
+    return sorted(
+        name for name in names if isinstance(name, str) and 0 < len(name) <= _MAX_MODEL_NAME
+    )
 
 
 def _relax(payload: dict, message: str) -> dict | None:
@@ -318,7 +355,22 @@ def _sse_lines(response, cancel: threading.Event | None = None) -> Iterator[tupl
     billing for tokens nobody will read.
     """
     event = ""
-    for raw in response:
+    total = 0
+    while True:
+        if hasattr(response, "readline"):
+            raw = response.readline(_MAX_SSE_LINE + 1)
+        else:
+            try:
+                raw = next(response)
+            except StopIteration:
+                return
+        if not raw:
+            return
+        if len(raw) > _MAX_SSE_LINE:
+            raise ProviderError("provider sent an oversized streaming line")
+        total += len(raw)
+        if total > _MAX_SSE_TOTAL:
+            raise ProviderError("provider stream exceeded the response-size limit")
         if cancel is not None and cancel.is_set():
             return
         line = raw.decode("utf-8", "replace").rstrip("\r\n")
@@ -390,6 +442,8 @@ def _stream_openai(
             try:
                 chunk = json.loads(data)
             except json.JSONDecodeError:
+                continue
+            if not isinstance(chunk, dict):
                 continue
             if chunk.get("usage"):
                 usage = chunk["usage"]
@@ -506,6 +560,8 @@ def _stream_anthropic(
             try:
                 chunk = json.loads(data)
             except json.JSONDecodeError:
+                continue
+            if not isinstance(chunk, dict):
                 continue
             kind = event or chunk.get("type", "")
             if kind == "content_block_start":

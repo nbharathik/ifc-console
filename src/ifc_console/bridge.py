@@ -20,11 +20,18 @@ import sys
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Any
 
 from ifc_console import __version__
+from ifc_console.http_identity import (
+    IDENTITY_NONCE_BYTES,
+    IDENTITY_PATH,
+    IDENTITY_RESPONSE_LIMIT,
+    identity_matches,
+)
 
 log = logging.getLogger("ifc-console.bridge")
 
@@ -34,8 +41,10 @@ _TIMEOUT = 300.0  # a big model can make one tool call genuinely slow
 # firewall setups drop the SYN instead of refusing it, which would otherwise
 # make every check while the console is down wait out the whole timeout.
 _CONNECT_TIMEOUT = 0.4
+_IDENTITY_TIMEOUT = 2.0
 _POLL_SECONDS = 3.0
 _PROTOCOL_FALLBACK = "2025-06-18"
+_MAX_HTTP_RESPONSE_BYTES = 32 * 1024 * 1024
 
 _NOT_RUNNING = (
     "ifc-console is not running. Ask the user to start it in a terminal "
@@ -49,6 +58,13 @@ _AUTH_FAILED = (
     "this machine stores) and to restart ifc-console."
 )
 
+_IDENTITY_FAILED = (
+    "A process is listening on the configured port, but it did not pass the "
+    "ifc-console identity check. Another application may own the port, the "
+    "bridge token may be stale, or the bridge and console versions may not "
+    "match. Start the matching ifc-console version on the configured port and retry."
+)
+
 # Answers that keep a client happy while the console is down. A client that
 # gets an error here marks the whole server broken, which is the bug.
 _EMPTY_RESULTS: dict[str, dict[str, Any]] = {
@@ -60,15 +76,64 @@ _EMPTY_RESULTS: dict[str, dict[str, Any]] = {
 }
 
 
+class BridgeProtocolError(OSError):
+    """The loopback peer returned an invalid or oversized response."""
+
+
+class BridgeIdentityError(BridgeProtocolError):
+    """The loopback peer could not prove possession of the bearer token."""
+
+
+class _NoRedirects(urllib.request.HTTPRedirectHandler):
+    """Redirects are never part of the bridge/server contract."""
+
+    def redirect_request(self, *args: Any, **kwargs: Any) -> None:
+        return None
+
+
+def _read_bounded(response: Any, limit: int) -> bytes:
+    raw = response.read(limit + 1)
+    if len(raw) > limit:
+        raise BridgeProtocolError(f"loopback response exceeds {limit} bytes")
+    return raw
+
+
 class Bridge:
     def __init__(self, url: str, token: str, cache_file: Path | None = None) -> None:
+        target = urllib.parse.urlsplit(url)
+        try:
+            port = target.port
+        except ValueError as exc:
+            raise ValueError("bridge URL has an invalid port") from exc
+        if (
+            target.scheme != "http"
+            or target.hostname is None
+            or target.hostname.casefold() not in {"127.0.0.1", "localhost", "::1"}
+            or target.username is not None
+            or target.password is not None
+            or port is None
+            or not 1 <= port <= 65535
+            or target.path != "/mcp"
+            or target.query
+            or target.fragment
+        ):
+            raise ValueError("bridge URL must be an exact loopback http://host:port/mcp URL")
+        if (
+            not token
+            or len(token) > 4096
+            or not token.isascii()
+            or any(ord(character) < 33 or ord(character) == 127 for character in token)
+        ):
+            raise ValueError("bridge token must contain 1-4096 visible ASCII characters")
         self.url = url
         self.token = token
+        self._target = target
+        self._port = port
         self.cache_file = cache_file
         # A plain urlopen() consults the system proxy settings on every call,
         # which costs seconds on Windows and would route a loopback request
         # through a corporate proxy. This opener never uses one.
-        self._opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        self._opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirects())
         self.online = False
         self._out_lock = threading.Lock()
         self._tools: dict[str, Any] | None = self._load_cache()
@@ -97,8 +162,52 @@ class Bridge:
             pass  # a cache we cannot write is not worth failing over
 
     # -- transport ------------------------------------------------------------
+    def _verify_console_identity(self, timeout: float = _IDENTITY_TIMEOUT) -> None:
+        """Authenticate the listener before offering it the bearer token."""
+        nonce = secrets.token_hex(IDENTITY_NONCE_BYTES)
+        query = urllib.parse.urlencode({"nonce": nonce})
+        identity_url = urllib.parse.urlunsplit(
+            (
+                self._target.scheme,
+                self._target.netloc,
+                IDENTITY_PATH,
+                query,
+                "",
+            )
+        )
+        request = urllib.request.Request(
+            identity_url,
+            method="GET",
+            headers={"Accept": "application/json"},
+        )
+        try:
+            identity_timeout = min(max(float(timeout), 0.05), _IDENTITY_TIMEOUT)
+            with self._opener.open(request, timeout=identity_timeout) as response:
+                raw = _read_bounded(response, IDENTITY_RESPONSE_LIMIT)
+                content_type = response.headers.get("Content-Type", "")
+            if content_type.partition(";")[0].strip().casefold() != "application/json":
+                raise BridgeIdentityError("identity response is not JSON")
+            payload = json.loads(raw.decode("utf-8"))
+            if not identity_matches(payload, self.token, nonce, self._port):
+                raise BridgeIdentityError("loopback listener identity proof did not match")
+        except BridgeIdentityError:
+            raise
+        except (OSError, UnicodeError, ValueError, json.JSONDecodeError) as exc:
+            raise BridgeIdentityError("loopback listener identity check failed") from exc
+
+    def _console_ready(self) -> bool:
+        if not self.reachable():
+            return False
+        try:
+            self._verify_console_identity()
+            return True
+        except BridgeIdentityError as exc:
+            log.debug("identity probe failed: %s", exc)
+            return False
+
     def post(self, payload: dict, timeout: float = _TIMEOUT) -> dict | None:
         """One JSON-RPC round trip. None means the request had no response."""
+        self._verify_console_identity(timeout)
         body = json.dumps(payload).encode("utf-8")
         headers = {
             "Content-Type": "application/json",
@@ -115,21 +224,27 @@ class Bridge:
             headers=headers,
         )
         with self._opener.open(request, timeout=timeout) as response:
-            raw = response.read()
+            raw = _read_bounded(response, _MAX_HTTP_RESPONSE_BYTES)
             content_type = response.headers.get("Content-Type", "")
         if not raw:
             return None
         if "text/event-stream" in content_type:
-            return _parse_sse(raw.decode("utf-8", errors="replace"))
-        return json.loads(raw.decode("utf-8", errors="replace"))
+            parsed = _parse_sse(raw.decode("utf-8", errors="replace"))
+            if parsed is None and payload.get("id") is not None:
+                raise BridgeProtocolError("loopback response contains no valid SSE event")
+            return parsed
+        parsed = json.loads(raw.decode("utf-8", errors="replace"))
+        if not isinstance(parsed, dict):
+            raise BridgeProtocolError("loopback response must be a JSON object")
+        return parsed
 
     def reachable(self) -> bool:
         """Is anything listening on the console's port? One TCP connect, no
         HTTP and no token, so it is both the cheapest and the fastest check."""
-        authority = self.url.split("//", 1)[-1].split("/", 1)[0]
-        host, _, port = authority.rpartition(":")
         try:
-            with socket.create_connection((host, int(port)), timeout=_CONNECT_TIMEOUT):
+            with socket.create_connection(
+                (self._target.hostname, self._port), timeout=_CONNECT_TIMEOUT
+            ):
                 return True
         except (OSError, ValueError):
             return False
@@ -169,7 +284,7 @@ class Bridge:
         def loop() -> None:
             while not self.online:
                 time.sleep(_POLL_SECONDS)
-                if self.reachable():
+                if self._console_ready():
                     self._set_online(True)
                     return
 
@@ -180,7 +295,12 @@ class Bridge:
     def offline_result(
         self, method: str, params: dict, *, reason: str = "CONSOLE_NOT_RUNNING"
     ) -> dict[str, Any]:
-        hint = _AUTH_FAILED if reason == "CONSOLE_AUTH_FAILED" else _NOT_RUNNING
+        if reason == "CONSOLE_AUTH_FAILED":
+            hint = _AUTH_FAILED
+        elif reason == "CONSOLE_IDENTITY_FAILED":
+            hint = _IDENTITY_FAILED
+        else:
+            hint = _NOT_RUNNING
         if method == "initialize":
             return {
                 "protocolVersion": params.get("protocolVersion") or _PROTOCOL_FALLBACK,
@@ -200,9 +320,13 @@ class Bridge:
                 "error": {
                     "code": reason,
                     "message": (
-                        "the ifc-console session rejected this connection."
-                        if reason == "CONSOLE_AUTH_FAILED"
-                        else "the ifc-console session is not running."
+                        "the configured listener failed the authenticated identity check."
+                        if reason == "CONSOLE_IDENTITY_FAILED"
+                        else (
+                            "the ifc-console session rejected this connection."
+                            if reason == "CONSOLE_AUTH_FAILED"
+                            else "the ifc-console session is not running."
+                        )
                     ),
                     "hint": hint,
                 },
@@ -249,7 +373,10 @@ class Bridge:
             log.debug("forward of %s failed: %s", method, exc)
             # A console that answers 401 is running, just not for this token:
             # saying "not running" would send the user hunting the wrong thing.
-            if isinstance(exc, urllib.error.HTTPError) and exc.code in (401, 403):
+            if isinstance(exc, BridgeIdentityError):
+                reason = "CONSOLE_IDENTITY_FAILED"
+                self._set_online(False)
+            elif isinstance(exc, urllib.error.HTTPError) and exc.code in (401, 403):
                 reason = "CONSOLE_AUTH_FAILED"
                 self._set_online(True)
             else:

@@ -8,7 +8,7 @@ import pytest
 from pydantic import BaseModel
 
 from ifc_console.app import AppCore
-from ifc_console.application.operations import build_operations
+from ifc_console.application.operations import OperationService, build_operations, enveloped
 from ifc_console.core.operations import OperationRegistry
 from ifc_console.core.results import Envelope
 from ifc_console.mcp.server import build_mcp
@@ -61,6 +61,28 @@ async def test_application_service_validates_arguments_before_execution(tmp_path
         assert result.ok is False
         assert result.error is not None
         assert result.error.code == "INVALID_INPUT"
+    finally:
+        core.shutdown()
+
+
+async def test_unexpected_operation_error_does_not_reveal_exception_text(
+    tmp_path: Path,
+) -> None:
+    core = _core(tmp_path)
+    registry = OperationRegistry()
+
+    @registry.tool(name="broken_builtin")
+    @enveloped(core, "broken_builtin")
+    async def broken_builtin() -> Envelope:
+        raise RuntimeError("api_key=unexpected-secret")
+
+    try:
+        result = await OperationService(core, registry).call("broken_builtin", {})
+        assert result.ok is False
+        assert result.error is not None
+        assert result.error.code == "INTERNAL_ERROR"
+        assert result.error.message == "operation broken_builtin failed"
+        assert "unexpected-secret" not in result.model_dump_json()
     finally:
         core.shutdown()
 

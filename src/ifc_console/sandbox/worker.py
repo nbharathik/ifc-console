@@ -20,10 +20,18 @@ import contextlib
 import io
 import os
 import sys
+import threading
 from typing import Any, BinaryIO
 
 from ifc_console.sandbox import protocol
 from ifc_console.sandbox.policy import SandboxPolicy
+
+_MAX_ERROR_CHARS = 100_000
+
+
+def _clip(value: Any, limit: int = _MAX_ERROR_CHARS) -> str:
+    text = str(value)
+    return text if len(text) <= limit else text[:limit] + "...[truncated]"
 
 
 class _Worker:
@@ -34,6 +42,7 @@ class _Worker:
         self.ifc: Any = None
         self.path: str | None = None
         self.load_key: str | None = None
+        self._execution_state = threading.local()
 
     # -- startup ---------------------------------------------------------------
     def init(self, request: dict[str, Any]) -> dict[str, Any]:
@@ -42,7 +51,10 @@ class _Worker:
         self.policy = SandboxPolicy.from_dict(request.get("policy") or {})
         applied = limits.apply_self_limits(self.policy.memory_mb)
         preloaded = _preload()
-        controls = hooks.install(self.policy)
+        controls = hooks.install(
+            self.policy,
+            is_user_code=lambda: bool(getattr(self._execution_state, "active", False)),
+        )
         return {
             "ok": True,
             "pid": os.getpid(),
@@ -75,13 +87,25 @@ class _Worker:
         from ifc_console.session import executor
 
         code = request["code"]
-        output_limit = int(request.get("output_limit") or 40_000)
+        if not isinstance(code, str) or len(code) > 1_000_000:
+            return {
+                "ok": False,
+                "kind": "guard",
+                "message": "code exceeds the sandbox source-size limit",
+            }
+        output_limit = max(
+            1_000,
+            min(
+                int(request.get("output_limit") or 40_000),
+                protocol.MAX_EXEC_OUTPUT_CHARS,
+            ),
+        )
         allowed_dirs = [Path(p) for p in request.get("allowed_dirs") or []]
 
         try:
             compiled = executor.prepare(code)
         except SyntaxError as exc:
-            return {"ok": False, "kind": "syntax", "message": str(exc)}
+            return {"ok": False, "kind": "syntax", "message": _clip(exc)}
 
         namespace = build_namespace(
             self.ifc,
@@ -93,18 +117,22 @@ class _Worker:
         before = self._max_id()
         try:
             with entity_mutation_lock(enabled=True):
-                result = executor.run(compiled, namespace, output_limit=output_limit)
+                self._execution_state.active = True
+                try:
+                    result = executor.run(compiled, namespace, output_limit=output_limit)
+                finally:
+                    self._execution_state.active = False
         except SandboxViolation as exc:
-            return {"ok": False, "kind": "violation", "message": str(exc)}
+            return {"ok": False, "kind": "violation", "message": _clip(exc)}
         except GuardError as exc:
-            return {"ok": False, "kind": "guard", "message": str(exc)}
+            return {"ok": False, "kind": "guard", "message": _clip(exc)}
         except BaseException as exc:  # noqa: BLE001 - reported, not handled
             return {
                 "ok": False,
                 "kind": "error",
                 "type": type(exc).__name__,
-                "message": str(exc),
-                "traceback": executor.format_traceback(exc),
+                "message": _clip(exc),
+                "traceback": _clip(executor.format_traceback(exc)),
             }
         return {
             "ok": True,
@@ -127,7 +155,9 @@ class _Worker:
             try:
                 request = protocol.read_frame(self.rx)
             except protocol.ProtocolError as exc:
-                protocol.write_frame(self.tx, {"ok": False, "kind": "protocol", "message": str(exc)})
+                protocol.write_frame(
+                    self.tx, {"ok": False, "kind": "protocol", "message": str(exc)}
+                )
                 return
             if request is None:
                 return
@@ -154,7 +184,7 @@ class _Worker:
                         "ok": False,
                         "kind": "worker",
                         "type": type(exc).__name__,
-                        "message": str(exc),
+                        "message": _clip(exc),
                     }
             reply["id"] = request.get("id")
             protocol.write_frame(self.tx, reply)

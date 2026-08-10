@@ -121,9 +121,7 @@ async def test_stream_returns_sse_events(chat_core, monkeypatch):
     )
     assert response.status_code == 200
     events = [
-        json.loads(line[6:])
-        for line in response.text.splitlines()
-        if line.startswith("data: ")
+        json.loads(line[6:]) for line in response.text.splitlines() if line.startswith("data: ")
     ]
     kinds = [event["type"] for event in events]
     assert kinds[0] == "content" and kinds[-1] == "done"
@@ -153,6 +151,52 @@ async def test_an_empty_conversation_is_refused(chat_core):
     client = _client(chat_core)
     response = client.post("/api/chat/stream", headers=_auth(chat_core), json={"turns": []})
     assert response.status_code == 400
+
+
+@pytest.mark.parametrize("path", ["/api/chat/models", "/api/chat/select", "/api/chat/stream"])
+async def test_chat_routes_reject_invalid_json_objects(chat_core, path: str):
+    client = _client(chat_core)
+    malformed = client.post(
+        path,
+        headers={**_auth(chat_core), "Content-Type": "application/json"},
+        content="{not-json",
+    )
+    assert malformed.status_code == 400
+
+    array = client.post(path, headers=_auth(chat_core), json=[])
+    assert array.status_code == 400
+
+
+async def test_chat_stream_rejects_malformed_and_oversized_fields(chat_core):
+    client = _client(chat_core)
+    cases = [
+        {"turns": "not-a-list"},
+        {"turns": [{"role": "tool", "text": "x"}]},
+        {"turns": [{"role": "user", "text": "x" * 100_001}]},
+        {"turns": [{"role": "user", "text": "x"}], "tools": "false"},
+        {"turns": [{"role": "user", "text": "x"}], "temperature": 99},
+        {"turns": [{"role": "user", "text": "x"}], "max_tokens": 1.5},
+    ]
+    for payload in cases:
+        response = client.post("/api/chat/stream", headers=_auth(chat_core), json=payload)
+        assert response.status_code == 400
+
+
+async def test_unexpected_chat_failure_does_not_echo_exception_text(chat_core, monkeypatch):
+    def failing(provider, **kwargs):
+        raise RuntimeError("internal-secret-detail")
+        yield  # pragma: no cover
+
+    monkeypatch.setattr("ifc_console.chat.agent.stream", failing)
+    client = _client(chat_core)
+    response = client.post(
+        "/api/chat/stream",
+        headers=_auth(chat_core),
+        json={"turns": [{"role": "user", "text": "hi"}]},
+    )
+    assert response.status_code == 200
+    assert "internal provider error" in response.text
+    assert "internal-secret-detail" not in response.text
 
 
 async def test_the_chat_page_and_assets_ship_with_the_viewer_extra(chat_core):

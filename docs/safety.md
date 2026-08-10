@@ -41,11 +41,14 @@ the one thing the client cannot: whether the model file can change at all.
 2. **Gate** (policy matrix): QUERY runs in both modes. EDIT is blocked in ask
    and runs in edit. SYSTEM also needs `exec.allow_system_access`, and never
    runs in ask.
-3. **Isolate** (process): read-only runs, which is everything in ask mode, go to
-   a separate sandbox process with no network, no subprocesses, no credentials
-   in its environment, and read access limited to the model directories. Only
-   mutating code stays in-process, because the edit has to land in the model the
-   console is holding. See [Code sandbox](sandbox.md).
+3. **Isolate** (process): read-only runs, which includes every code run allowed
+   in ask mode, are candidates for a separate sandbox process with no network,
+   no subprocesses, no credentials in its environment, and read access limited
+   to the model directories. In the default `sandbox.mode=auto`, an ineligible
+   run or unavailable worker falls back to the in-process guards and reports
+   `sandboxed: false`. Use `sandbox.mode=strict` to refuse that fallback.
+   Mutating code always stays in-process because the edit has to land in the
+   model the console is holding. See [Code sandbox](sandbox.md).
 4. **Guard** (runtime): guarded runs use a curated namespace: import allowlist,
    a write-blocking `open`, a raising `ifc_api` proxy, and a model object that
    rejects mutation methods. Guards catch what the classifier missed, in the
@@ -69,22 +72,27 @@ the one thing the client cannot: whether the model file can change at all.
   with the model-stated intent, mode changes with who made them, saves, taints)
   under `~/.ifc-console/sessions/<id>/`. Inspect with `/audit` or
   `ifc-console sessions show <id>`.
-- **Network surface.** The server binds to 127.0.0.1 only, and every HTTP and
-  WebSocket request needs the bearer token. The token is persistent per machine
-  (stored owner-readable in `~/.ifc-console/token`) so clients are configured once.
-  `ifc-console token rotate` invalidates it instantly; `server.persistent_token
-  false` switches to a fresh token per run.
-- **Loopback boundary.** On top of the token, every request must present a
+- **Network surface.** The server binds to 127.0.0.1 only. MCP and session API
+  requests require the bearer token. The generic viewer assets and browser page
+  shells are public, but expose no session data; the viewer WebSocket serves
+  nothing before its first-frame token handshake verifies. The unauthenticated
+  identity route returns only a nonce-bound HMAC proof used by the stdio bridge.
+  The token is persistent per machine (stored owner-readable in
+  `~/.ifc-console/token`) so clients are configured once. `ifc-console token
+  rotate` invalidates it instantly; `server.persistent_token false` switches to
+  a fresh token per run.
+- **Loopback boundary.** Every HTTP and WebSocket entry point must present a
   loopback Host and (when a browser sends one) a loopback Origin. This defeats
-  DNS rebinding and cross-site calls: a malicious web page cannot reach the
-  session even from your own machine, token or not. The viewer token rides the
-  URL fragment, which never leaves the browser, and the viewer WebSocket serves
-  nothing before its first-frame token handshake verifies.
-- **Port squatting.** Clients pin `http://127.0.0.1:<port>/mcp`, so if another
-  local program listened on your port, clients would send it their requests,
-  token included. ifc-console refuses to start on an occupied port and identifies
-  the occupant (so does `doctor`). If it happens, move the port and rotate the
-  token.
+  DNS rebinding and cross-site calls. The initial viewer token rides the URL
+  fragment, which browsers do not send in HTTP requests or referrers; the SPA
+  immediately removes it from the address bar and keeps it in per-tab session
+  storage for reloads.
+- **Port squatting.** The default stdio bridge sends a fresh nonce first and
+  requires a domain-separated HMAC proof before it sends the bearer token or an
+  MCP request. ifc-console also refuses to start on an occupied port and
+  identifies the occupant (so does `doctor`). Direct HTTP client configurations
+  do send their bearer token to the configured endpoint, so move the port and
+  rotate the token if an untrusted program may have received direct requests.
 
 ## Untrusted model content (indirect prompt injection)
 
@@ -127,13 +135,17 @@ adversary**. CPython cannot sandbox itself: a creative enough payload can escape
 object-graph confinement, and the test suite documents one such bypass on
 purpose.
 
-That is exactly why read-only code no longer runs in-process. In the
-[sandbox](sandbox.md) the same escape is worthless, because the operations it
-would reach for fail at a level the object graph cannot touch: no network, no
-subprocesses, no credentials, no files outside the model directories. So:
+That is exactly why eligible read-only code uses the [sandbox](sandbox.md). In
+that process the same escape is worthless, because the operations it would
+reach for fail at a level the object graph cannot touch: no network, no
+subprocesses, no inherited credential environment, and no files outside the
+model directories. Common credential stores are blocked inside allowed roots,
+but an arbitrarily named secret there remains readable. The default `auto` mode
+can still fall back to in-process guards; `strict` refuses instead. So:
 
-- In `ask` mode, the default, generated code is contained by a process
-  boundary, not only by the namespace it was handed.
+- In `ask` mode, the default, generated code uses the process boundary whenever
+  the sandbox is eligible and available. Use `strict` when fallback is not
+  acceptable.
 - Mutating code still runs in-process behind the guards alone. Treat `edit` mode
   as a deliberate grant, and review models from untrusted sources in `ask` first.
 - The disk-integrity promise remains the strongest one: the suite asserts the

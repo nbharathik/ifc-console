@@ -39,9 +39,19 @@ _MODES = [m.value for m in Mode]
 
 # --------------------------------------------------------------------------- parser
 class _VersionAction(argparse.Action):
-    def __call__(self, parser, namespace, values, option_string=None):
+    def __call__(self, parser, namespace, values, _option_string=None):
         print(_version_line())
         parser.exit()
+
+
+def _port(value: str) -> int:
+    try:
+        port = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError("port must be an integer") from None
+    if not 1024 <= port <= 65535:
+        raise argparse.ArgumentTypeError("port must be between 1024 and 65535")
+    return port
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -74,7 +84,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="stdio proxy to a running console; survives being started first.",
     )
     bridge.add_argument(
-        "--port", type=int, default=None, help="Console port (default from settings)."
+        "--port", type=_port, default=None, help="Console port (default from settings)."
     )
     bridge.add_argument("--token", default=None, help="Defaults to the persistent machine token.")
     bridge.set_defaults(func=_cmd_bridge)
@@ -88,7 +98,7 @@ def build_parser() -> argparse.ArgumentParser:
     cfg.add_argument("--transport", choices=["bridge", "http", "stdio"], default=None)
     cfg.add_argument("--file", default=None, help="Model path to pin in stdio snippets.")
     cfg.add_argument("--mode", choices=_MODES, default=None)
-    cfg.add_argument("--port", type=int, default=None)
+    cfg.add_argument("--port", type=_port, default=None)
     cfg.set_defaults(func=_cmd_mcp_config)
 
     doctor = sub.add_parser("doctor", help="Diagnose the environment.")
@@ -235,8 +245,12 @@ def build_parser() -> argparse.ArgumentParser:
     batch_cancel.add_argument("--json", action="store_true")
     batch_cancel.set_defaults(func=_cmd_batch_cancel)
 
-    workflows = sub.add_parser("workflows", help="Inspect durable workflow runs.")
+    workflows = sub.add_parser("workflows", help="Inspect the workflow schema and durable runs.")
     workflows_sub = workflows.add_subparsers(dest="workflows_cmd", required=True)
+    workflows_schema = workflows_sub.add_parser(
+        "schema", help="Print the version 1 workflow manifest JSON Schema."
+    )
+    workflows_schema.set_defaults(func=_cmd_workflows_schema)
     workflows_list = workflows_sub.add_parser("list", help="List durable workflow runs.")
     workflows_list.add_argument("--limit", type=int, default=50)
     workflows_list.add_argument("--json", action="store_true")
@@ -266,9 +280,7 @@ def build_parser() -> argparse.ArgumentParser:
     transactions = sub.add_parser(
         "transactions", help="Inspect durable commit and restore recovery journals."
     )
-    transactions_sub = transactions.add_subparsers(
-        dest="transactions_cmd", required=True
-    )
+    transactions_sub = transactions.add_subparsers(dest="transactions_cmd", required=True)
     transactions_list = transactions_sub.add_parser("list")
     transactions_list.add_argument("--json", action="store_true")
     transactions_list.set_defaults(func=_cmd_transactions_list)
@@ -343,12 +355,8 @@ def build_parser() -> argparse.ArgumentParser:
         "classify", help="Preview a direct occurrence classification assignment."
     )
     changes_classify.add_argument("model", help="IFC model to inspect without modifying it.")
-    changes_classify.add_argument(
-        "--global-id", action="append", required=True, dest="global_ids"
-    )
-    changes_classify.add_argument(
-        "--system", required=True, dest="classification_name"
-    )
+    changes_classify.add_argument("--global-id", action="append", required=True, dest="global_ids")
+    changes_classify.add_argument("--system", required=True, dest="classification_name")
     changes_classify.add_argument("--identification", required=True)
     changes_classify.add_argument("--name", required=True, dest="reference_name")
     changes_classify.add_argument("--expected-revision", default=None)
@@ -482,7 +490,7 @@ def build_parser() -> argparse.ArgumentParser:
 def _add_run_flags(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--file", default=None, help="IFC file to load at startup.")
     parser.add_argument("--mode", choices=_MODES, default=None, help="Session mode.")
-    parser.add_argument("--port", type=int, default=None, help="MCP HTTP port (default 8383).")
+    parser.add_argument("--port", type=_port, default=None, help="MCP HTTP port (default 8383).")
     parser.add_argument(
         "--viewer",
         action="store_true",
@@ -517,7 +525,7 @@ def _version_line() -> str:
 # --------------------------------------------------------------------------- helpers
 def _make_store(args: argparse.Namespace, *, include_project: bool = True) -> SettingsStore:
     overrides: dict[str, Any] = {}
-    if getattr(args, "port", None):
+    if getattr(args, "port", None) is not None:
         overrides["server.port"] = args.port
     if getattr(args, "mode", None):
         overrides["mode.default"] = args.mode
@@ -741,9 +749,6 @@ def _cmd_bridge(args: argparse.Namespace) -> int:
     """stdout is the protocol here; every log line goes to stderr."""
     from ifc_console.bridge import Bridge
 
-    if args.port is not None and not 1024 <= args.port <= 65535:
-        print(f"error: --port must be 1024-65535, got {args.port}", file=sys.stderr)
-        return 2
     # MCP clients launch the bridge with cwd inside an arbitrary repo. A
     # cloned project's settings must not steer where this machine's token is
     # sent, so project layers are ignored; mcp-config pins ports via --port.
@@ -751,7 +756,7 @@ def _cmd_bridge(args: argparse.Namespace) -> int:
     # stderr only: the client owns this process, and a second writer would
     # fight the console for the rotating log file handle on Windows.
     _setup_logging(store, level=store.settings.logging.level, to_file=False)
-    port = args.port or store.settings.server.port
+    port = args.port if args.port is not None else store.settings.server.port
     if not args.token and not store.settings.server.persistent_token:
         print(
             "error: bridge needs --token when server.persistent_token=false; "
@@ -920,7 +925,7 @@ def build_config_snippet(
 
 def _cmd_mcp_config(args: argparse.Namespace) -> int:
     store = _make_store(args)
-    port = args.port or store.settings.server.port
+    port = args.port if args.port is not None else store.settings.server.port
     mode = args.mode or store.settings.mode.default
     persistent = store.settings.server.persistent_token
     if args.transport == "bridge" and not persistent:
@@ -1123,9 +1128,7 @@ def _cmd_jobs_commit(args: argparse.Namespace) -> int:
         core.start_audit()
         core.add_allowed_dir(model.parent)
         await core.open_model(model)
-        submitted = await core.jobs.submit_commit(
-            args.change_set_id, approval_id=args.approval_id
-        )
+        submitted = await core.jobs.submit_commit(args.change_set_id, approval_id=args.approval_id)
         completed = submitted
         async for update in core.jobs.watch(submitted.job_id):
             completed = update
@@ -1256,8 +1259,7 @@ def _print_batch(record: Any, *, as_json: bool) -> None:
             print(f"      error {child.failure.code}: {child.failure.message}")
     if record.aggregate_artifact is not None:
         print(
-            f"manifest   {record.aggregate_artifact.artifact_id}  "
-            f"{record.aggregate_artifact.name}"
+            f"manifest   {record.aggregate_artifact.artifact_id}  {record.aggregate_artifact.name}"
         )
 
 
@@ -1471,8 +1473,7 @@ def _print_workflow(record: Any, *, as_json: bool) -> None:
             print(f"     error {step.failure.code}: {step.failure.message}")
     if record.aggregate_artifact is not None:
         print(
-            f"manifest    {record.aggregate_artifact.artifact_id}  "
-            f"{record.aggregate_artifact.name}"
+            f"manifest    {record.aggregate_artifact.artifact_id}  {record.aggregate_artifact.name}"
         )
 
 
@@ -1585,6 +1586,13 @@ def _cmd_workflows_list(args: argparse.Namespace) -> int:
         return 0
     finally:
         core.shutdown()
+
+
+def _cmd_workflows_schema(_args: argparse.Namespace) -> int:
+    from ifc_console.core.workflows import WorkflowSpec
+
+    print(json.dumps(WorkflowSpec.model_json_schema(), indent=2))
+    return 0
 
 
 def _cmd_workflows_show(args: argparse.Namespace) -> int:
@@ -1837,10 +1845,7 @@ def _cmd_artifacts_gc(args: argparse.Namespace) -> int:
             if args.json:
                 print(result.model_dump_json(indent=2))
             else:
-                print(
-                    f"deleted {result.deleted_count} artifact(s), "
-                    f"{result.deleted_bytes} byte(s)"
-                )
+                print(f"deleted {result.deleted_count} artifact(s), {result.deleted_bytes} byte(s)")
             return 0
         if args.json:
             print(plan.model_dump_json(indent=2))
@@ -2011,9 +2016,7 @@ def _cmd_changes_commit(args: argparse.Namespace) -> int:
         core.start_audit()
         core.add_allowed_dir(model.parent)
         await core.open_model(model)
-        submitted = await core.jobs.submit_commit(
-            args.change_set_id, approval_id=args.approval_id
-        )
+        submitted = await core.jobs.submit_commit(args.change_set_id, approval_id=args.approval_id)
         completed = await core.jobs.wait(submitted.job_id)
         if completed.state.value != "succeeded":
             failure = completed.failure

@@ -5,11 +5,11 @@ from __future__ import annotations
 import hashlib
 import json
 from datetime import datetime
-from enum import StrEnum
 from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from ifc_console._compat import StrEnum
 from ifc_console.core.artifacts import ArtifactRef
 from ifc_console.core.batches import BatchSpec
 from ifc_console.core.capabilities import Capability
@@ -171,8 +171,7 @@ class WorkflowSpec(BaseModel):
             missing_needs = set(step.needs).difference(known_steps)
             if missing_needs:
                 raise ValueError(
-                    f"workflow step {step.id!r} names unknown dependencies: "
-                    f"{sorted(missing_needs)}"
+                    f"workflow step {step.id!r} names unknown dependencies: {sorted(missing_needs)}"
                 )
         dependencies = {step.id: set(step.needs) for step in self.steps}
         ready = [step_id for step_id, needs in dependencies.items() if not needs]
@@ -216,9 +215,7 @@ class WorkflowPlan(BaseModel):
     )
 
     @staticmethod
-    def compute_plan_id(
-        spec: WorkflowSpec, steps: tuple[WorkflowStepPlan, ...]
-    ) -> str:
+    def compute_plan_id(spec: WorkflowSpec, steps: tuple[WorkflowStepPlan, ...]) -> str:
         identity = {
             "spec": spec.model_dump(mode="json"),
             "steps": [step.model_dump(mode="json") for step in steps],
@@ -238,9 +235,7 @@ class WorkflowPlan(BaseModel):
         )
         if self.required_capabilities != expected_capabilities:
             raise ValueError("workflow plan required capabilities are not canonical")
-        if tuple(step.id for step in self.steps) != tuple(
-            step.id for step in self.spec.steps
-        ):
+        if tuple(step.id for step in self.steps) != tuple(step.id for step in self.spec.steps):
             raise ValueError("workflow plan steps must match its specification")
         if self.total_children != sum(len(step.batch_spec.inputs) for step in self.steps):
             raise ValueError("workflow plan total_children does not match its captured inputs")
@@ -319,9 +314,7 @@ class WorkflowRecord(BaseModel):
 
     @model_validator(mode="after")
     def validate_steps(self) -> WorkflowRecord:
-        if tuple(step.id for step in self.steps) != tuple(
-            step.id for step in self.plan.steps
-        ):
+        if tuple(step.id for step in self.steps) != tuple(step.id for step in self.plan.steps):
             raise ValueError("workflow record steps must match its immutable plan")
         for recorded, planned in zip(self.steps, self.plan.steps, strict=True):
             if (

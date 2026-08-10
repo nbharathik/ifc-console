@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 from datetime import datetime
-from enum import StrEnum
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from ifc_console._compat import StrEnum
 from ifc_console.core.context import OperationContext
 
 
@@ -65,23 +65,13 @@ class TransactionJournal(BaseModel):
     expected_before_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     desired_after_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     candidate_path: str | None = None
-    rollback_artifact_id: str | None = Field(
-        default=None, pattern=r"^sha256:[0-9a-f]{64}$"
-    )
-    expected_receipt_id: str | None = Field(
-        default=None, pattern=r"^sha256:[0-9a-f]{64}$"
-    )
-    receipt_artifact_id: str | None = Field(
-        default=None, pattern=r"^sha256:[0-9a-f]{64}$"
-    )
+    rollback_artifact_id: str | None = Field(default=None, pattern=r"^sha256:[0-9a-f]{64}$")
+    expected_receipt_id: str | None = Field(default=None, pattern=r"^sha256:[0-9a-f]{64}$")
+    receipt_artifact_id: str | None = Field(default=None, pattern=r"^sha256:[0-9a-f]{64}$")
     job_id: str | None = Field(default=None, pattern=r"^job-[0-9a-f]{16}$")
-    change_set_id: str | None = Field(
-        default=None, pattern=r"^sha256:[0-9a-f]{64}$"
-    )
+    change_set_id: str | None = Field(default=None, pattern=r"^sha256:[0-9a-f]{64}$")
     approval_id: str | None = Field(default=None, pattern=r"^sha256:[0-9a-f]{64}$")
-    source_commit_id: str | None = Field(
-        default=None, pattern=r"^sha256:[0-9a-f]{64}$"
-    )
+    source_commit_id: str | None = Field(default=None, pattern=r"^sha256:[0-9a-f]{64}$")
     result_document: dict[str, Any] | None = None
     context: OperationContext | None = None
     error: str | None = None

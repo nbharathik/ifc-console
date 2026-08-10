@@ -25,7 +25,8 @@ from ifc_console.sandbox.limits import ProcessJail
 from ifc_console.sandbox.policy import SandboxPolicy
 
 _STARTUP_TIMEOUT = 120.0
-_STDERR_KEEP = 40
+_STDERR_KEEP = 16
+_STDERR_CHUNK = 4096
 
 
 class SandboxError(RuntimeError):
@@ -77,10 +78,7 @@ def worker_path(narrow: bool = True) -> list[str]:
             continue
         for location in spec.submodule_search_locations or () if spec else ():
             wanted.append(os.path.dirname(os.path.abspath(location)))
-    wanted += [
-        p for p in entries
-        if os.path.basename(p) in ("site-packages", "dist-packages")
-    ]
+    wanted += [p for p in entries if os.path.basename(p) in ("site-packages", "dist-packages")]
     resolved = [p for p in wanted if os.path.isdir(p)]
     return list(dict.fromkeys(resolved)) or entries
 
@@ -103,8 +101,14 @@ def _child_env(scratch: Path, *, narrow_path: bool = True) -> dict[str, str]:
     if sys.platform == "win32":
         # The loader needs these to start a process at all; none of them
         # identify the user or carry a credential.
-        for name in ("SYSTEMROOT", "SystemRoot", "SystemDrive", "PATHEXT",
-                     "NUMBER_OF_PROCESSORS", "PROCESSOR_ARCHITECTURE"):
+        for name in (
+            "SYSTEMROOT",
+            "SystemRoot",
+            "SystemDrive",
+            "PATHEXT",
+            "NUMBER_OF_PROCESSORS",
+            "PROCESSOR_ARCHITECTURE",
+        ):
             value = os.environ.get(name)
             if value:
                 env[name] = value
@@ -146,9 +150,7 @@ class SandboxProcess:
             self._reset()
             return self._spawn(timeout, single_process=False, narrow_path=False)
 
-    def _spawn(
-        self, timeout: float, *, single_process: bool, narrow_path: bool
-    ) -> dict[str, Any]:
+    def _spawn(self, timeout: float, *, single_process: bool, narrow_path: bool) -> dict[str, Any]:
         self.scratch.mkdir(parents=True, exist_ok=True)
         self.jail = ProcessJail(self.policy.memory_mb, single_process=single_process)
         kwargs: dict[str, Any] = {}
@@ -216,7 +218,8 @@ class SandboxProcess:
         proc = self.proc
         if proc is None or proc.stdin is None or proc.poll() is not None:
             raise SandboxError(self._dead_reason or "the sandbox worker is not running")
-        payload = {**payload, "id": next(self._ids)}
+        request_id = next(self._ids)
+        payload = {**payload, "id": request_id}
         try:
             proc.stdin.write(protocol.encode(payload))
             proc.stdin.flush()
@@ -230,6 +233,9 @@ class SandboxProcess:
         if reply is None:
             detail = self.stderr_tail() or self._dead_reason or "no output"
             raise SandboxError(f"the sandbox worker exited: {detail}")
+        if reply.get("id") != request_id:
+            self.terminate("the sandbox worker returned a mismatched response id")
+            raise SandboxError("the sandbox worker returned a mismatched response id")
         return reply
 
     def stderr_tail(self) -> str:
@@ -254,5 +260,5 @@ class SandboxProcess:
         proc = self.proc
         assert proc is not None and proc.stderr is not None
         with contextlib.suppress(Exception):
-            for line in iter(proc.stderr.readline, b""):
-                self._stderr.append(line.decode("utf-8", "replace").rstrip())
+            while chunk := proc.stderr.read1(_STDERR_CHUNK):
+                self._stderr.append(chunk.decode("utf-8", "replace").rstrip())

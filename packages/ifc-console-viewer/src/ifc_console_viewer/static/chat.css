@@ -41,6 +41,17 @@
 
 .chat-root * { box-sizing: border-box; }
 .chat-root :focus-visible { outline: 2px solid var(--chat-accent); outline-offset: 1px; }
+.chat-sr {
+  position: absolute !important;
+  width: 1px !important;
+  height: 1px !important;
+  padding: 0 !important;
+  margin: -1px !important;
+  overflow: hidden !important;
+  clip: rect(0, 0, 0, 0) !important;
+  white-space: nowrap !important;
+  border: 0 !important;
+}
 .chat-root ::-webkit-scrollbar { width: 8px; height: 8px; }
 .chat-root ::-webkit-scrollbar-track { background: transparent; }
 .chat-root ::-webkit-scrollbar-thumb {
@@ -619,6 +630,24 @@
 
 @media (prefers-reduced-motion: reduce) {
   .chat-msg, .chat-cursor, .shimmer, .chat-dialog, .chat-icon.spin svg { animation: none; }
+  .chat-root *, .chat-root *::before, .chat-root *::after { transition: none !important; }
+}
+
+@media (pointer: coarse) {
+  :where(.chat-root button) { min-height: 36px; }
+  .chat-root .chat-icon { width: 36px; height: 36px; }
+}
+
+@media (forced-colors: active) {
+  .chat-route,
+  .chat-mode,
+  .chat-tool,
+  .chat-dot { forced-color-adjust: none; }
+  .chat-context:focus-visible,
+  .chat-root button:focus-visible,
+  .chat-root input:focus-visible,
+  .chat-root select:focus-visible,
+  .chat-root textarea:focus-visible { outline-color: Highlight; }
 }
 
 /* ------------------------------------------------------- standalone page */

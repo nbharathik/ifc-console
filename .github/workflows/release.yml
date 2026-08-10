@@ -1,52 +1,207 @@
 name: Release
 
 # Publishes to PyPI via trusted publishing when a v* tag is pushed.
-# One-time setup: on PyPI, add a trusted publisher for this repository,
-# workflow "release.yml", environment "pypi". No token secrets needed.
+# One-time setup: add this workflow/environment to the existing core project
+# and configure a pending publisher for the unclaimed viewer project. A pending
+# publisher enables first upload but does not reserve the package name.
 
 on:
   push:
     tags: ["v*"]
 
+permissions:
+  contents: read
+
+env:
+  UV_LOCKED: "1"
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 jobs:
-  test:
-    runs-on: ubuntu-latest
+  compatibility:
+    name: Test (${{ matrix.os }}, Python ${{ matrix.python }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python: ["3.10", "3.11", "3.12", "3.13", "3.14"]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9 # v7
+        with:
+          enable-cache: false
+          python-version: ${{ matrix.python }}
+          version: "0.12.3"
       - run: uv lock --check
-      - run: uv run python scripts/check_vendor_assets.py
       - run: uv sync --extra dev
-      - run: uv run ruff check src tests packages scripts
+      - run: uv run python scripts/check_release.py --tag "$RELEASE_TAG"
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+      - run: uv run python -m compileall -q src tests packages scripts
       - run: uv run pytest
 
-  publish:
-    needs: test
+  dependencies:
+    name: Audit dependencies (${{ matrix.os }}, Python ${{ matrix.python }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python: ["3.10", "3.11", "3.14"]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9 # v7
+        with:
+          enable-cache: false
+          python-version: ${{ matrix.python }}
+          version: "0.12.3"
+      - run: uv lock --check
+      - name: Audit locked runtime dependencies and production extras
+        shell: bash
+        env:
+          AUDIT_PYTHON: ${{ matrix.python }}
+        run: |
+          uv export --no-dev --no-emit-workspace --extra validation --extra viewer --format requirements-txt --output-file audit-requirements.txt --quiet
+          uvx --python "$AUDIT_PYTHON" --from pip-audit==2.10.1 pip-audit -r audit-requirements.txt --disable-pip
+
+  test:
+    name: Inspect and build release candidate
     runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9 # v7
+        with:
+          enable-cache: false
+          python-version: "3.12"
+          version: "0.12.3"
+      - run: uv run python scripts/check_release.py --tag "$RELEASE_TAG"
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+      - run: uv lock --check
+      - run: uv run python scripts/check_vendor_assets.py
+      - name: Audit GitHub Actions
+        run: uvx zizmor==1.29.0 --pedantic .github/workflows
+      - name: Audit Python source
+        run: uvx --python 3.12 --from bandit==1.8.6 bandit -q -r src -ll
+      - run: uv sync --extra dev --extra docs
+      - run: uv run ruff check src tests packages scripts
+      - run: uv run python -m compileall -q src tests packages scripts
+      - name: Check viewer JavaScript syntax
+        run: |
+          node --check packages/ifc-console-viewer/src/ifc_console_viewer/static/app.js
+          node --check packages/ifc-console-viewer/src/ifc_console_viewer/static/chat.js
+          node --check packages/ifc-console-viewer/src/ifc_console_viewer/static/chat-page.js
+          node --check packages/ifc-console-viewer/src/ifc_console_viewer/static/parser.js
+          node --check packages/ifc-console-viewer/src/ifc_console_viewer/static/worker.js
+      - run: uv run mkdocs build --strict
+      - name: Build both distributions and the example plugin
+        run: |
+          uv build
+          uv build --package ifc-console-viewer
+          uv build --project examples/plugins/company_checks --out-dir dist/plugin-example
+      - name: Verify the split
+        run: uv run python scripts/check_wheels.py --stage-dir dist/publish
+      - name: Smoke-test base-only and viewer installs
+        run: |
+          uv venv .release-smoke-base
+          uv pip install --python .release-smoke-base/bin/python dist/ifc_console-*.whl
+          .release-smoke-base/bin/python -c "import ifc_console; from ifc_console.viewer import assets; assert assets.static_dir() is None; print(ifc_console.__version__)"
+          .release-smoke-base/bin/ifc-console --version
+          uv pip install --python .release-smoke-base/bin/python --no-deps dist/plugin-example/*.whl
+          .release-smoke-base/bin/python -c "from importlib.metadata import entry_points; matches = [entry for entry in entry_points(group='ifc_console.plugins') if entry.name == 'company_checks']; assert len(matches) == 1; assert matches[0].load()().manifest.api_version == '1'"
+          uv venv .release-smoke-viewer
+          uv pip install --python .release-smoke-viewer/bin/python dist/*.whl
+          .release-smoke-viewer/bin/python -c "import ifc_console, ifc_console_viewer; from ifc_console.viewer import assets; assert assets.static_dir() is not None; print(ifc_console.__version__)"
+          uv venv .release-smoke-sdist
+          uv pip install --python .release-smoke-sdist/bin/python dist/ifc_console-*.tar.gz
+          .release-smoke-sdist/bin/ifc-console --version
+      - name: Preserve the verified distributions
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-distributions-${{ github.sha }}
+          path: dist/publish/
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
+  publish:
+    name: Publish distributions
+    needs: [compatibility, dependencies, test]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
     environment: pypi
     permissions:
       id-token: write  # trusted publishing
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
-      - name: Build both distributions
-        run: |
-          uv build
-          uv build --package ifc-console-viewer
-      - name: Verify the split
-        run: uv run python scripts/check_wheels.py
-      - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
+      - name: Retrieve the verified distributions
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-distributions-${{ github.sha }}
+          path: publish
+      - name: Publish the optional viewer first
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1
+        with:
+          packages-dir: publish/viewer/
+      - name: Publish the core only after the viewer succeeds
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1
+        with:
+          packages-dir: publish/core/
 
-  docs:
+  docs-build:
+    name: Build release documentation
     needs: publish
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
-      contents: write  # push to gh-pages
+      contents: read
+      pages: read  # read the configured Pages URL and metadata
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
-      - name: Deploy docs to GitHub Pages
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9 # v7
+        with:
+          enable-cache: false
+          version: "0.12.3"
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
+      - name: Build documentation
         run: |
+          uv lock --check
           uv sync --extra docs
-          uv run mkdocs gh-deploy --force
+          uv run mkdocs build --strict
+      - name: Upload GitHub Pages artifact
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: site/
+
+  docs:
+    name: Deploy release documentation
+    needs: docs-build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    concurrency:
+      group: github-pages
+      cancel-in-progress: false
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    permissions:
+      pages: write  # create the Pages deployment
+      id-token: write  # attest the deployment source with OIDC
+    steps:
+      - name: Deploy GitHub Pages artifact
+        id: deployment
+        uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5.0.0

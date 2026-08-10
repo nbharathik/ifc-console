@@ -31,6 +31,9 @@ log = logging.getLogger("ifc-console.viewer")
 _PING_INTERVAL = 30.0
 _SCREENSHOT_TIMEOUT = 10.0
 _MAX_SCREENSHOT_B64 = 12_000_000
+_MAX_SCREENSHOT_DIMENSION = 8192
+_MAX_GUID_LENGTH = 128
+_MAX_MODEL_ID_LENGTH = 200
 
 _PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
 _JPEG_MAGIC = b"\xff\xd8\xff"
@@ -241,12 +244,22 @@ class ViewerHub:
         ftype = frame.get("type")
         client.touch()
         if ftype == "selection":
-            guids = [g for g in frame.get("guids", []) if isinstance(g, str)][:500]
+            supplied_guids = frame.get("guids")
+            guids = (
+                [
+                    guid
+                    for guid in supplied_guids
+                    if isinstance(guid, str) and 0 < len(guid) <= _MAX_GUID_LENGTH
+                ][:500]
+                if isinstance(supplied_guids, list)
+                else []
+            )
             requested_model = frame.get("model_id")
             if requested_model is None:
                 model_id = self.core.models.active_id
             elif (
                 isinstance(requested_model, str)
+                and len(requested_model) <= _MAX_MODEL_ID_LENGTH
                 and self.core.models.get(requested_model) is not None
             ):
                 model_id = requested_model
@@ -355,13 +368,20 @@ class ViewerHub:
         finally:
             self._shots.pop(shot_id, None)
 
-        if frame.get("error"):
+        error = frame.get("error")
+        if error:
             raise ToolError(
                 "VIEWER_ERROR",
-                f"the viewer could not capture a screenshot: {frame['error']}",
+                f"the viewer could not capture a screenshot: {str(error)[:500]}",
                 "Ask the user to check the viewer tab, then retry.",
             )
         data_b64 = frame.get("data_b64") or ""
+        if not isinstance(data_b64, str):
+            raise ToolError(
+                "VIEWER_ERROR",
+                "the viewer returned image data in an invalid format.",
+                "Retry once; report a bug if this persists.",
+            )
         if len(data_b64) > _MAX_SCREENSHOT_B64:
             raise ToolError(
                 "RESULT_TOO_LARGE",
@@ -382,8 +402,23 @@ class ViewerHub:
                 "the viewer returned data that is not a PNG or JPEG image.",
                 "Retry once; report a bug if this persists.",
             )
-        width = int(frame.get("width") or 0)
-        height = int(frame.get("height") or 0)
+        try:
+            width = int(frame.get("width") or 0)
+            height = int(frame.get("height") or 0)
+        except (TypeError, ValueError) as exc:
+            raise ToolError(
+                "VIEWER_ERROR",
+                "the viewer returned invalid image dimensions.",
+                "Retry once; report a bug if this persists.",
+            ) from exc
+        if not (
+            1 <= width <= _MAX_SCREENSHOT_DIMENSION and 1 <= height <= _MAX_SCREENSHOT_DIMENSION
+        ):
+            raise ToolError(
+                "VIEWER_ERROR",
+                "the viewer returned image dimensions outside the accepted range.",
+                "Retry with a smaller max_size.",
+            )
         return data, width, height
 
     # -- event bridge -----------------------------------------------------------------

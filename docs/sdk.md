@@ -77,7 +77,8 @@ in the console.
 
 ```python
 wb.build_knowledge()                       # once, a few seconds, no network
-wb.search_knowledge("which pset carries fire rating")
+hits = wb.search_knowledge("rename elements recipe")
+recipe = wb.knowledge_record(hits[0]["key"])
 wb.api_docs("pset.add_pset")["meta"]["signature"]
 ```
 
@@ -85,10 +86,12 @@ wb.api_docs("pset.add_pset")["meta"]["signature"]
 
 `tools()` hands out plain JSON Schema definitions and `call()` runs one by
 name. No LLM vendor is involved, and nothing here depends on a particular API
-client, so the same two calls drive any provider's tool-use loop.
+client, so the same two calls drive any provider's tool-use loop. Pass
+`permitted_only=True` if the client should receive only operations allowed by
+the current ask or edit profile.
 
 ```python
-tools = wb.tools()
+tools = wb.tools(permitted_only=True)
 # [{"name": "query_elements", "required_capabilities": ["model:read"], ...}, ...]
 
 result = wb.call("query_elements", query="IfcDoor", limit=10)
@@ -130,9 +133,9 @@ an AI-visible tool profile. The returned operation envelope contains a
 
 ## Typed operation contracts
 
-The v2 SDK contracts are being introduced additively. Existing dictionary
-methods remain available. Code that wants validation and editor type support
-can use the typed definitions, envelopes, and reference result models:
+The typed 0.2 SDK contracts are additive. Existing dictionary methods remain
+available. Code that wants validation and editor type support can use the typed
+definitions, envelopes, and reference result models:
 
 ```python
 from ifc_console import QueryElementsData, ValidationData, Workbench
@@ -159,6 +162,19 @@ Use `call_result(name, **arguments)` when you want the typed `Envelope` rather
 than the dictionary returned by `call()`. `operation_definitions()` returns
 typed `OperationDefinition` values, while `tools()` remains the provider-neutral
 dictionary form intended for LLM client libraries.
+
+The distribution includes a PEP 561 `py.typed` marker. Pyright, mypy, and IDEs
+can therefore use the inline annotations from an installed wheel. Public
+contracts needed by callers are available directly from `ifc_console`,
+including `Envelope`, `ErrorInfo`, the workflow specification types, and the
+plugin API types.
+
+A runnable JSON report example lives at `examples/sdk/model_report.py` in the
+repository:
+
+```bash
+uv run python examples/sdk/model_report.py tower.ifc
+```
 
 ## Validation jobs and artifacts
 

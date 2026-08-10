@@ -1,0 +1,75 @@
+name: Security audit
+
+on:
+  schedule:
+    - cron: "23 4 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  UV_LOCKED: "1"
+
+concurrency:
+  group: security-audit
+  cancel-in-progress: true
+
+jobs:
+  source:
+    name: Python source
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9 # v7
+        with:
+          enable-cache: false
+          version: "0.12.3"
+      - name: Scan Python source
+        run: uvx --python 3.12 --from bandit==1.8.6 bandit -q -r src -ll
+
+  dependencies:
+    name: Dependencies (${{ matrix.os }}, Python ${{ matrix.python }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python: ["3.10", "3.11", "3.14"]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9 # v7
+        with:
+          enable-cache: false
+          python-version: ${{ matrix.python }}
+          version: "0.12.3"
+      - name: Verify dependency lock
+        run: uv lock --check
+      - name: Audit locked runtime dependencies and production extras
+        shell: bash
+        env:
+          AUDIT_PYTHON: ${{ matrix.python }}
+        run: |
+          uv export --no-dev --no-emit-workspace --extra validation --extra viewer --format requirements-txt --output-file audit-requirements.txt --quiet
+          uvx --python "$AUDIT_PYTHON" --from pip-audit==2.10.1 pip-audit -r audit-requirements.txt --disable-pip
+
+  workflows:
+    name: GitHub Actions
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9 # v7
+        with:
+          enable-cache: false
+          version: "0.12.3"
+      - name: Audit GitHub Actions
+        run: uvx zizmor==1.29.0 --pedantic .github/workflows

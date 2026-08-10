@@ -30,13 +30,13 @@ defaults < user file < project file < project local file < env vars < CLI flags
 
 !!! info "Project files are sandboxed"
     A cloned repository must not weaken your safety settings, so project-level
-    files may only set a safe subset: `server.port`,
-    `exec.timeout_seconds`, `exec.output_char_limit`, `viewer.enabled_default`,
-    `viewer.max_model_mb`, `logging.level`, `tui.theme`. Anything else in a
-    project file is ignored with a warning. In particular, `files.allowed_dirs`,
-    `mode.default`, `exec.allow_system_access`, every `sandbox.*` key, and every
-    `plugins.*` key can only come from your own user file, environment, or
-    flags.
+    files may only set `tui.theme`. Anything else in a project file is ignored
+    with a warning. Security, networking, feature exposure, logging verbosity,
+    and resource budgets can only come from your own user file, environment, or
+    explicit command-line flags. In particular, a cloned project cannot change
+    `server.port`, enable the viewer, raise execution or model-size limits,
+    enable system access, weaken the sandbox, widen allowed directories, or
+    enable plugins.
 
 ## All keys
 
@@ -47,7 +47,7 @@ defaults < user file < project file < project local file < env vars < CLI flags
 | `server.persistent_token` | `true` | one token per machine (configure clients once); false = fresh token per run |
 | `server.token_in_config_snippets` | `false` | include the token in printed snippets; opt in only when the destination is trusted |
 | `exec.timeout_seconds` | `30` | wall clock limit per execute_ifc_code run |
-| `exec.output_char_limit` | `40000` | envelope size cap before truncation |
+| `exec.output_char_limit` | `40000` | per-field output cap before truncation; maximum `1000000` keeps sandbox replies within the protocol frame |
 | `exec.allow_system_access` | `false` | permit SYSTEM-class code in edit mode |
 | `exec.system_modules_extra` | `[]` | extra module names to treat as SYSTEM |
 | `sandbox.mode` | `auto` | where read-only code runs: `auto` (sandbox, fall back if it cannot), `strict` (refuse instead of falling back), `off` |

@@ -3,6 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
   <title>ifc-console viewer</title>
   <link rel="stylesheet" href="/viewer/static/app.css">
   <link rel="stylesheet" href="/viewer/static/chat.css">
@@ -26,8 +27,11 @@
     <span id="schema" class="meta" hidden></span>
     <span id="mode" class="meta mode">...</span>
     <span id="dirty" class="meta warn" hidden>Unsaved</span>
-    <span id="live" class="dot off" role="status" aria-label="Server disconnected"
-          title="Server connection"></span>
+    <span id="live" class="connection off" role="status" aria-live="polite"
+          aria-label="Server disconnected" title="Server connection">
+      <span class="connection-mark" aria-hidden="true"></span>
+      <span class="connection-label">Offline</span>
+    </span>
     <span class="spacer"></span>
     <button id="btn-clear-hl" class="text-action" hidden
             title="Clear highlights placed by the assistant">
@@ -80,13 +84,14 @@
   </header>
 
   <main id="layout">
-    <aside id="tree-panel">
-      <div class="panel-title">Model tree</div>
+    <aside id="tree-panel" aria-labelledby="tree-panel-title">
+      <div id="tree-panel-title" class="panel-title">Model tree</div>
       <div class="panel-search">
         <input id="search-input" type="search" autocomplete="off" spellcheck="false"
                placeholder="Search name or IfcWall"
                title="Type a name, or an IFC class / selector such as IfcWall or Name=/W.*/"
-               aria-label="Search elements">
+               aria-label="Search elements" aria-describedby="search-help">
+        <span id="search-help" class="sr-only">Enter searches. Escape clears the search.</span>
         <button id="search-clear" class="icon-btn" hidden
                 aria-label="Clear search" title="Clear search (Esc)">
           <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
@@ -96,18 +101,21 @@
         </button>
       </div>
       <div class="panel-body">
-        <div id="search-results" hidden></div>
-        <div id="tree" role="tree"></div>
+        <div id="search-results" role="region" aria-label="Search results"
+             aria-live="polite" hidden></div>
+        <nav id="tree" aria-label="Model hierarchy"></nav>
       </div>
     </aside>
     <div id="split-tree" class="splitter" role="separator" aria-orientation="vertical"
-         aria-label="Resize model tree"
-         title="Drag to resize; double-click to reset"></div>
+         aria-label="Resize model tree" aria-controls="tree-panel" tabindex="0"
+         title="Drag or use arrow keys to resize; Home resets"></div>
 
-    <section id="canvas-wrap">
-      <canvas id="canvas"></canvas>
+    <section id="canvas-wrap" aria-label="Model viewport">
+      <p id="viewport-help" class="sr-only">Arrow keys pan the model. F fits the model. M measures distance. G toggles the grid. Question mark opens all controls.</p>
+      <canvas id="canvas" tabindex="0" aria-label="Interactive 3D model viewport"
+              aria-describedby="viewport-help"></canvas>
       <div id="overlay" class="overlay" data-state="loading"
-           role="status" aria-live="polite">
+           role="status" aria-live="polite" aria-atomic="true" aria-busy="true">
         <div class="overlay-card loading-card">
           <span class="loading-label">Loading model</span>
           <div class="progress-track"><div class="loading-bar indeterminate"></div></div>
@@ -125,7 +133,7 @@
         </svg>
       </button>
 
-      <div id="tools-panel" class="popover" hidden>
+      <div id="tools-panel" class="popover" role="dialog" aria-label="View tools" hidden>
         <div class="popover-title">Visibility</div>
         <div class="tool-list">
           <button id="tool-isolate" class="tool-btn"
@@ -232,7 +240,8 @@
         <ul id="legend-items"></ul>
       </div>
 
-      <div id="settings-panel" class="popover" hidden>
+      <div id="settings-panel" class="popover" role="dialog"
+           aria-label="Viewer settings" hidden>
         <div class="popover-title">Display</div>
         <label class="switch-row">
           <span class="switch-text">
@@ -257,7 +266,8 @@
         <p class="tool-note">The theme follows the console: <kbd>/theme</kbd></p>
       </div>
 
-      <div id="help-panel" class="popover" hidden>
+      <div id="help-panel" class="popover" role="dialog"
+           aria-label="Viewer controls" hidden>
         <div class="popover-title">Navigation</div>
         <table>
           <tr><td>drag</td><td>orbit</td></tr>
@@ -268,21 +278,25 @@
           <tr><td><kbd>F</kbd></td><td>fit the whole model</td></tr>
           <tr><td><kbd>G</kbd></td><td>toggle the ground grid</td></tr>
           <tr><td><kbd>M</kbd></td><td>measure between two points</td></tr>
+          <tr><td>arrow keys</td><td>pan when the viewport is focused</td></tr>
+          <tr><td><kbd>?</kbd></td><td>open or close this controls guide</td></tr>
           <tr><td><kbd>Esc</kbd></td><td>leave the active tool</td></tr>
           <tr><td>tree click</td><td>select an element or branch</td></tr>
           <tr><td>tree checkbox</td><td>hide or show a branch</td></tr>
           <tr><td>view tools</td><td>isolate, hide, section, measure, views</td></tr>
         </table>
       </div>
+      <button id="panel-scrim" class="panel-scrim" tabindex="-1" hidden
+              aria-label="Close side panel"></button>
     </section>
 
     <div id="split-props" class="splitter" role="separator" aria-orientation="vertical"
-         aria-label="Resize properties"
-         title="Drag to resize; double-click to reset"></div>
-    <aside id="props-panel">
-      <div class="panel-title">Properties</div>
+         aria-label="Resize properties" aria-controls="props-panel" tabindex="0"
+         title="Drag or use arrow keys to resize; Home resets"></div>
+    <aside id="props-panel" aria-labelledby="props-panel-title">
+      <div id="props-panel-title" class="panel-title">Properties</div>
       <div class="panel-body">
-        <div id="props"><p class="hint">click an element to inspect it</p></div>
+        <div id="props"><p class="hint">Select an element to inspect its IFC data.</p></div>
       </div>
     </aside>
     <div id="chat-dock-resize" role="separator" aria-orientation="vertical"
@@ -291,8 +305,8 @@
   </main>
 
   <footer id="statusbar">
-    <span id="sel-info">No selection</span>
-    <span id="hl-info"></span>
+    <span id="sel-info" role="status" aria-live="polite" aria-atomic="true">No selection</span>
+    <span id="hl-info" role="status" aria-live="polite" aria-atomic="true"></span>
     <span class="spacer"></span>
     <span id="stats"></span>
     <button id="btn-help" class="icon-btn" aria-expanded="false"

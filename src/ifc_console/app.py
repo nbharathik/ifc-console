@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import secrets
 import threading
 import time
@@ -35,6 +36,7 @@ from ifc_console.knowledge import KnowledgeBase
 from ifc_console.plugins import PluginManager
 from ifc_console.policy.modes import Mode, PolicyEngine
 from ifc_console.recents import RecentsStore
+from ifc_console.sandbox.policy import COMMON_CREDENTIAL_PATHS
 from ifc_console.sandbox.runner import SandboxRunner
 from ifc_console.session.backups import BackupStore
 from ifc_console.session.model import ModelSession
@@ -96,7 +98,7 @@ class AppCore:
         self.token = (
             store.load_server_token() if s.server.persistent_token else secrets.token_hex(16)
         )
-        self.port = port or s.server.port
+        self.port = port if port is not None else s.server.port
         self.transport = transport
         self.viewer = ViewerState()
         self.chat = ChatState(
@@ -322,6 +324,27 @@ class AppCore:
         return value, False
 
     # -- allowed directories ------------------------------------------------------
+    def generated_code_deny_paths(self) -> list[Path]:
+        """Credential locations that generated Python must never read."""
+        candidates = [self.store.home]
+        user_home = Path.home()
+        candidates.extend(user_home / name for name in COMMON_CREDENTIAL_PATHS)
+        for root in self.allowed_dirs:
+            candidates.extend(root / name for name in COMMON_CREDENTIAL_PATHS)
+
+        denied: list[Path] = []
+        seen: set[str] = set()
+        for candidate in candidates:
+            try:
+                resolved = candidate.expanduser().resolve(strict=False)
+            except (OSError, RuntimeError):
+                resolved = Path(os.path.abspath(os.path.expanduser(os.fspath(candidate))))
+            key = os.path.normcase(str(resolved))
+            if key not in seen:
+                seen.add(key)
+                denied.append(resolved)
+        return denied
+
     def add_allowed_dir(self, directory: Path) -> None:
         try:
             resolved = directory.resolve()
@@ -716,6 +739,7 @@ class AppCore:
         self._knowledge_thread.start()
 
     def shutdown(self) -> None:
+        self.plugins.close()
         self.workflows.close()
         self.batches.close()
         self.jobs.close()
@@ -726,6 +750,7 @@ class AppCore:
 
     async def ashutdown(self) -> None:
         """Await job cleanup so transaction rollback finishes before sessions close."""
+        self.plugins.close()
         await self.workflows.aclose()
         await self.batches.aclose()
         await self.jobs.aclose()

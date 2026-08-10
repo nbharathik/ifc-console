@@ -30,9 +30,7 @@ def test_user_file_overrides_default(tmp_path: Path) -> None:
 def test_env_overrides_user(tmp_path: Path) -> None:
     home = tmp_path / "h"
     _write(home / "settings.json", {"server": {"port": 9001}})
-    store = SettingsStore(
-        home=home, project_dir=tmp_path, env={"IFC_CONSOLE_SERVER_PORT": "9002"}
-    )
+    store = SettingsStore(home=home, project_dir=tmp_path, env={"IFC_CONSOLE_SERVER_PORT": "9002"})
     assert store.settings.server.port == 9002
     assert store.provenance["server.port"] == "env"
 
@@ -52,9 +50,7 @@ def test_include_project_false_ignores_project_layers(tmp_path: Path) -> None:
     # The bridge runs with cwd inside arbitrary repos: a cloned project must
     # not be able to redirect the machine token to another port.
     _write(tmp_path / ".ifc-console" / "settings.json", {"server": {"port": 31337}})
-    store = SettingsStore(
-        home=tmp_path / "h", project_dir=tmp_path, env={}, include_project=False
-    )
+    store = SettingsStore(home=tmp_path / "h", project_dir=tmp_path, env={}, include_project=False)
     assert store.settings.server.port == 8383
     assert store.provenance["server.port"] == "default"
 
@@ -64,6 +60,33 @@ def test_project_file_may_set_safe_key(tmp_path: Path) -> None:
     store = SettingsStore(home=tmp_path / "h", project_dir=tmp_path, env={})
     assert store.settings.tui.theme == "light"
     assert store.provenance["tui.theme"] == "project"
+
+
+def test_project_file_cannot_expand_exposure_logging_or_resource_budgets(
+    tmp_path: Path,
+) -> None:
+    _write(
+        tmp_path / ".ifc-console" / "settings.json",
+        {
+            "exec": {"timeout_seconds": 3600, "output_char_limit": 9_000_000},
+            "viewer": {"enabled_default": True, "max_model_mb": 999_999},
+            "logging": {"level": "debug"},
+        },
+    )
+    store = SettingsStore(home=tmp_path / "h", project_dir=tmp_path, env={})
+    assert store.settings.exec.timeout_seconds == 30
+    assert store.settings.exec.output_char_limit == 40_000
+    assert store.settings.viewer.enabled_default is False
+    assert store.settings.viewer.max_model_mb == 200
+    assert store.settings.logging.level == "info"
+    for key in (
+        "exec.timeout_seconds",
+        "exec.output_char_limit",
+        "viewer.enabled_default",
+        "viewer.max_model_mb",
+        "logging.level",
+    ):
+        assert any(key in warning for warning in store.warnings)
 
 
 def test_project_file_may_not_widen_allowed_dirs(tmp_path: Path) -> None:
@@ -87,12 +110,13 @@ def test_project_file_may_not_enable_edit_mode(tmp_path: Path) -> None:
     assert any("mode.default" in warning for warning in store.warnings)
 
 
-def test_local_overrides_project(tmp_path: Path) -> None:
+def test_project_files_cannot_redirect_the_server_port(tmp_path: Path) -> None:
     _write(tmp_path / ".ifc-console" / "settings.json", {"server": {"port": 9100}})
     _write(tmp_path / ".ifc-console" / "settings.local.json", {"server": {"port": 9200}})
     store = SettingsStore(home=tmp_path / "h", project_dir=tmp_path, env={})
-    assert store.settings.server.port == 9200
-    assert store.provenance["server.port"] == "project-local"
+    assert store.settings.server.port == 8383
+    assert store.provenance["server.port"] == "default"
+    assert sum("server.port" in warning for warning in store.warnings) == 2
 
 
 def test_set_and_unset_user(tmp_path: Path) -> None:
@@ -113,6 +137,16 @@ def test_invalid_value_rejected(tmp_path: Path) -> None:
         raise AssertionError("should have rejected bad enum value")
     except Exception:
         pass
+
+
+def test_output_limit_cannot_exceed_the_sandbox_protocol_budget(tmp_path: Path) -> None:
+    _write(
+        tmp_path / "h" / "settings.json",
+        {"exec": {"output_char_limit": 1_000_001}},
+    )
+    store = SettingsStore(home=tmp_path / "h", project_dir=tmp_path, env={})
+    assert store.settings.exec.output_char_limit == 40_000
+    assert any("invalid settings" in warning for warning in store.warnings)
 
 
 def test_string_settings_keep_boolean_looking_words(tmp_path: Path) -> None:
@@ -157,6 +191,25 @@ def test_project_files_cannot_enable_plugins(tmp_path: Path) -> None:
     assert store.settings.plugins.enabled is False
     assert store.settings.plugins.allow == []
     assert any("plugins.enabled" in warning for warning in store.warnings)
+
+
+def test_oversized_project_settings_are_ignored_without_unbounded_reads(tmp_path: Path) -> None:
+    path = tmp_path / ".ifc-console" / "settings.json"
+    path.parent.mkdir()
+    path.write_text('{"tui":{"theme":"light"},"padding":"' + "x" * 1_048_576 + '"}')
+    store = SettingsStore(home=tmp_path / "h", project_dir=tmp_path, env={})
+    assert store.settings.tui.theme == "dark"
+    assert any("byte limit" in warning for warning in store.warnings)
+
+
+def test_deeply_nested_project_settings_are_ignored(tmp_path: Path) -> None:
+    nested: dict = {"value": "light"}
+    for index in range(40):
+        nested = {f"level_{index}": nested}
+    _write(tmp_path / ".ifc-console" / "settings.json", nested)
+    store = SettingsStore(home=tmp_path / "h", project_dir=tmp_path, env={})
+    assert store.settings.tui.theme == "dark"
+    assert any("nested too deeply" in warning for warning in store.warnings)
 
 
 def test_unknown_key_warns(tmp_path: Path) -> None:

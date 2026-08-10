@@ -1,0 +1,16 @@
+[build-system]
+requires = ["hatchling==1.31.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "ifc-console-company-checks-example"
+version = "0.1.0"
+description = "Example typed operation plugin for ifc-console."
+requires-python = ">=3.10"
+dependencies = ["ifc-console>=0.2,<0.3"]
+
+[project.entry-points."ifc_console.plugins"]
+company_checks = "company_ifc_checks:CompanyChecks"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/company_ifc_checks"]

@@ -142,7 +142,9 @@ def test_openai_messages_carry_tool_calls_and_results():
         {
             "role": "assistant",
             "text": "",
-            "tool_calls": [{"id": "c1", "name": "query_elements", "arguments": '{"query":"IfcWall"}'}],
+            "tool_calls": [
+                {"id": "c1", "name": "query_elements", "arguments": '{"query":"IfcWall"}'}
+            ],
         },
         {"role": "tool", "tool_call_id": "c1", "text": '{"ok":true}'},
     ]
@@ -158,7 +160,9 @@ def test_anthropic_messages_use_content_blocks():
         {
             "role": "assistant",
             "text": "checking",
-            "tool_calls": [{"id": "c1", "name": "query_elements", "arguments": '{"query":"IfcWall"}'}],
+            "tool_calls": [
+                {"id": "c1", "name": "query_elements", "arguments": '{"query":"IfcWall"}'}
+            ],
         },
         {"role": "tool", "tool_call_id": "c1", "text": '{"ok":true}'},
     ]
@@ -192,6 +196,48 @@ def test_sse_lines_split_events_and_data():
     assert pairs == [("content_block_delta", '{"a":1}'), ("", "[DONE]")]
 
 
+def test_sse_lines_reject_oversized_provider_frames(monkeypatch):
+    monkeypatch.setattr(providers, "_MAX_SSE_LINE", 8)
+    with pytest.raises(ProviderError, match="oversized"):
+        list(providers._sse_lines(iter([b"data: 123456789\n"])))
+
+
+def test_local_only_rechecks_dns_resolution_before_a_request(monkeypatch):
+    monkeypatch.setattr(
+        providers.socket,
+        "getaddrinfo",
+        lambda *_args, **_kwargs: [
+            (providers.socket.AF_INET, providers.socket.SOCK_STREAM, 6, "", ("10.0.0.5", 80))
+        ],
+    )
+    with pytest.raises(ProviderError, match="outside loopback"):
+        providers._require_loopback_resolution("http://localhost:8000/v1")
+
+
+def test_local_only_accepts_only_all_loopback_dns_answers(monkeypatch):
+    monkeypatch.setattr(
+        providers.socket,
+        "getaddrinfo",
+        lambda *_args, **_kwargs: [
+            (
+                providers.socket.AF_INET,
+                providers.socket.SOCK_STREAM,
+                6,
+                "",
+                ("127.0.0.1", 8000),
+            ),
+            (
+                providers.socket.AF_INET6,
+                providers.socket.SOCK_STREAM,
+                6,
+                "",
+                ("::1", 8000, 0, 0),
+            ),
+        ],
+    )
+    providers._require_loopback_resolution("http://localhost:8000/v1")
+
+
 # ------------------------------------------------------------------ tool loop
 def fake_stream(*scripts):
     """A provider that replays scripted event lists, one per round."""
@@ -221,14 +267,18 @@ async def chat_core(core, work_model):
 
 async def collect(core, monkeypatch, script, **kwargs):
     monkeypatch.setattr("ifc_console.chat.agent.stream", script)
-    return [event async for event in converse(core, turns=[{"role": "user", "text": "hi"}], **kwargs)]
+    return [
+        event async for event in converse(core, turns=[{"role": "user", "text": "hi"}], **kwargs)
+    ]
 
 
 async def test_plain_answer_streams_through(chat_core, monkeypatch):
     events = await collect(
         chat_core,
         monkeypatch,
-        fake_stream([{"type": "content", "text": "three walls"}, {"type": "finish", "reason": "stop"}]),
+        fake_stream(
+            [{"type": "content", "text": "three walls"}, {"type": "finish", "reason": "stop"}]
+        ),
     )
     assert [e["type"] for e in events] == ["content", "finish"]
 
@@ -238,7 +288,9 @@ async def test_a_tool_call_runs_and_feeds_the_result_back(chat_core, monkeypatch
         [
             {
                 "type": "tool_calls",
-                "calls": [{"id": "c1", "name": "query_elements", "arguments": '{"query": "IfcWall"}'}],
+                "calls": [
+                    {"id": "c1", "name": "query_elements", "arguments": '{"query": "IfcWall"}'}
+                ],
             }
         ],
         [{"type": "content", "text": "there are three walls"}],
@@ -256,7 +308,12 @@ async def test_a_tool_call_runs_and_feeds_the_result_back(chat_core, monkeypatch
 
 async def test_the_loop_stops_at_the_round_limit(chat_core, monkeypatch):
     chat_core.store.settings.chat.max_tool_rounds = 2
-    call = [{"type": "tool_calls", "calls": [{"id": "c", "name": "get_session_status", "arguments": "{}"}]}]
+    call = [
+        {
+            "type": "tool_calls",
+            "calls": [{"id": "c", "name": "get_session_status", "arguments": "{}"}],
+        }
+    ]
     events = await collect(chat_core, monkeypatch, fake_stream(call, call))
     assert any(e["type"] == "error" and "tool rounds" in e["text"] for e in events)
 
@@ -299,7 +356,9 @@ async def test_the_ask_mode_gate_still_applies(chat_core):
     text, info = await run_tool(
         chat_core,
         "execute_ifc_code",
-        json.dumps({"code": "ifc_api.root.create_entity(ifc, ifc_class='IfcWall')", "description": "x"}),
+        json.dumps(
+            {"code": "ifc_api.root.create_entity(ifc, ifc_class='IfcWall')", "description": "x"}
+        ),
     )
     assert info["ok"] is False
     assert "ASK_MODE_BLOCKED" in text

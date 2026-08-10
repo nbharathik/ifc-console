@@ -10,7 +10,7 @@ git clone https://github.com/nbharathik/ifc-console && cd ifc-console
 uv sync --extra dev
 uv run ifc-console doctor
 uv run pytest          # full suite; expect all passed + 1 documented xfail
-uv run ruff check src tests
+uv run ruff check src tests packages scripts
 ```
 
 Standard src-layout package (`src/ifc_console/`), hatchling build, uv-managed.
@@ -43,11 +43,12 @@ for error paths.
 
 ## The vendored viewer
 
-`src/ifc_console/viewer/static/vendor/` contains three.js and web-ifc exactly as
-shipped on npm (one import specifier rewritten in OrbitControls.js so no import
-map is needed). `VENDORED.md` in that folder records versions, licenses, and the
-upgrade procedure. Do not edit `web-ifc-api.js` or the WASM: MPL-2.0 files ship
-unmodified.
+`packages/ifc-console-viewer/src/ifc_console_viewer/static/vendor/` contains
+three.js and web-ifc exactly as shipped on npm (one import specifier is rewritten
+in OrbitControls.js so no import map is needed). `VENDORED.md` in that folder
+records versions, licenses, hashes, and the upgrade procedure. Do not edit
+`web-ifc-api.js` or the WASM: MPL-2.0 files ship unmodified. Verify the bundle
+with `uv run python scripts/check_vendor_assets.py`.
 
 ## Style
 
@@ -67,14 +68,42 @@ unmodified.
 ```bash
 uv sync --extra docs
 uv run mkdocs serve    # live preview at 127.0.0.1:8000
-uv run mkdocs build    # static site into site/
+uv run mkdocs build --strict    # static site into site/
 ```
 
 ## CI and releases
 
-Every push and pull request runs the suite on three operating systems and two
+Every push and pull request runs the suite on three operating systems and five
 Python versions, plus a wheel build that checks the viewer assets are included
 and a strict docs build.
 
-Releases are cut by the maintainer pushing a `v*` tag: CI re-runs the tests,
-publishes to PyPI via trusted publishing, and deploys these docs.
+Configure GitHub Pages once under **Settings > Pages > Build and deployment**
+with **Source** set to **GitHub Actions**. The docs and release workflows build
+with read-only repository and Pages access, upload an official Pages artifact,
+then hand that artifact to a minimal deployment job. Only that job has
+`pages: write` and `id-token: write`. Both workflows deploy through the
+`github-pages` environment and share one concurrency group. If you add
+environment branch or tag rules, allow `main` and the intended `v*` release
+tags.
+
+Before a release, `uv run python scripts/check_release.py --tag vX.Y.Z` verifies
+that the tag, both package versions, Python ranges, and changelog agree. Releases
+are cut by the maintainer pushing that tag: CI re-runs the tests, validates both
+distributions, publishes to PyPI via trusted publishing, and deploys these docs.
+
+The split distribution needs a trusted publisher for both `ifc-console` and
+`ifc-console-viewer`. Configure the existing core project and add a pending
+publisher for the unclaimed viewer name from the PyPI account publishing page.
+Use this repository, workflow `release.yml`, and the protected GitHub
+environment `pypi` for both. A pending publisher enables the first upload but
+does not reserve the name. The workflow
+builds, inspects, and smoke-tests artifacts in a job without OIDC permission.
+Its minimal publishing job can only retrieve those verified files and publish
+them after the environment gate. It publishes the companion viewer first, so a
+viewer-project configuration error cannot leave a core release whose optional
+dependency is unavailable.
+
+An extracted base source archive is not the original two-package uv workspace:
+the companion `packages/` directory and checkout-only lockfile are deliberately
+excluded. Install that archive through the standard PEP 517 path with `pip` or
+`uv pip`; the release workflow smoke-tests this path directly.

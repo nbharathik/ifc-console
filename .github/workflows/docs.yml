@@ -1,7 +1,7 @@
 name: Docs
 
-# Deploys the docs site whenever docs change on main. Releases also deploy
-# (release.yml), so the site never lags a tagged version either.
+# Builds and deploys the docs site whenever docs change on main. Releases also
+# deploy through release.yml, and both paths share one Pages deployment lock.
 
 on:
   push:
@@ -11,15 +11,55 @@ on:
       - "mkdocs.yml"
       - ".github/workflows/docs.yml"
 
+permissions:
+  contents: read
+
+env:
+  UV_LOCKED: "1"
+
+concurrency:
+  group: github-pages
+  cancel-in-progress: false
+
 jobs:
-  deploy:
+  build:
+    name: Build documentation
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
-      contents: write  # push to gh-pages
+      contents: read
+      pages: read  # read the configured Pages URL and metadata
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
-      - name: Deploy docs to GitHub Pages
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9 # v7
+        with:
+          version: "0.12.3"
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
+      - name: Build documentation
         run: |
+          uv lock --check
           uv sync --extra docs
-          uv run mkdocs gh-deploy --force
+          uv run mkdocs build --strict
+      - name: Upload GitHub Pages artifact
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: site/
+
+  deploy:
+    name: Deploy documentation
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    permissions:
+      pages: write  # create the Pages deployment
+      id-token: write  # attest the deployment source with OIDC
+    steps:
+      - name: Deploy GitHub Pages artifact
+        id: deployment
+        uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5.0.0

@@ -35,21 +35,79 @@ def styles() -> str:
 def test_every_element_the_script_looks_up_exists(html: str, script: str) -> None:
     ids = set(re.findall(r'id="([^"]+)"', html))
     looked_up = set(re.findall(r'\$\("([^"]+)"\)', script))
-    assert not looked_up - ids, f"app.js reads ids that index.html does not define: {looked_up - ids}"
+    assert not looked_up - ids, (
+        f"app.js reads ids that index.html does not define: {looked_up - ids}"
+    )
 
 
 def test_panel_ids_passed_as_strings_exist(html: str, script: str) -> None:
     """initSidePanel and POPOVERS name their elements in string literals."""
     ids = set(re.findall(r'id="([^"]+)"', html))
-    for name in ("tree-panel", "props-panel", "split-tree", "split-props",
-                 "settings-panel", "help-panel", "tools-panel"):
+    for name in (
+        "tree-panel",
+        "props-panel",
+        "split-tree",
+        "split-props",
+        "settings-panel",
+        "help-panel",
+        "tools-panel",
+    ):
         assert name in ids
 
 
 def test_search_and_saved_view_controls_are_present(html: str) -> None:
-    for name in ("search-input", "search-clear", "search-results",
-                 "saved-views", "view-name", "tool-save-view"):
+    for name in (
+        "search-input",
+        "search-clear",
+        "search-results",
+        "saved-views",
+        "view-name",
+        "tool-save-view",
+    ):
         assert f'id="{name}"' in html, f"{name} is missing from index.html"
+
+
+def test_viewport_and_splitters_are_keyboard_operable(html: str, script: str) -> None:
+    assert re.search(r'<canvas id="canvas"[^>]*tabindex="0"', html)
+    for name in ("split-tree", "split-props"):
+        assert re.search(rf'id="{name}"[^>]*role="separator"[^>]*tabindex="0"', html)
+    assert "controls.listenToKeyEvents(canvas)" in script
+    assert 'event.key !== "ArrowLeft"' in script
+    assert 'event.key !== "ArrowRight"' in script
+
+
+def test_dynamic_model_navigation_uses_native_controls(script: str) -> None:
+    assert 'el("button", "tree-label")' in script
+    assert 'el("button", "tree-toggle"' in script
+    assert 'el("button", "search-hit")' in script
+    assert 'label.addEventListener("keydown"' in script
+
+
+def test_viewer_states_are_announced_and_recoverable(html: str, script: str) -> None:
+    assert 'id="overlay"' in html and 'aria-live="polite"' in html
+    assert 'id="live"' in html and 'class="connection-label"' in html
+    assert '{ label: "Try again", run: () => loadModel() }' in script
+    assert 'motionPreference.addEventListener("change"' in script
+
+
+def test_chat_loading_is_single_flight_and_honors_the_latest_panel_state(
+    script: str,
+) -> None:
+    assert "let chatLoadPromise = null" in script
+    assert "let chatDesiredOpen = false" in script
+    assert "const requestVersion = ++chatRequestVersion" in script
+    assert 'chatLoadPromise ||= import("/viewer/static/chat.js")' in script
+    assert "requestVersion !== chatRequestVersion || !chatDesiredOpen" in script
+
+
+def test_compact_layout_reconciles_open_panels_after_resize(script: str) -> None:
+    assert 'window.addEventListener("resize", reconcileCompactLayout)' in script
+    reconciler = script.split("function reconcileCompactLayout()", 1)[1].split(
+        "function setChatAvailable", 1
+    )[0]
+    assert "if (chatDesiredOpen)" in reconciler
+    assert "treeOpen && propsOpen" in reconciler
+    assert "uiState.propsOpen = false" in reconciler
 
 
 def test_no_style_attributes_or_inline_scripts(html: str) -> None:
@@ -62,6 +120,28 @@ def test_stylesheet_defines_every_custom_property_it_uses(styles: str) -> None:
     used = set(re.findall(r"var\((--[a-z-]+)", styles))
     defined = set(re.findall(r"^\s*(--[a-z-]+):", styles, re.MULTILINE))
     assert not used - defined, f"undefined CSS variables: {sorted(used - defined)}"
+
+
+def _assert_plain_object_check(script: str) -> None:
+    check = script.split("function isPlainObject(value)", 1)[1].split("\n}", 1)[0]
+    assert "value !== null" in check
+    assert 'typeof value === "object"' in check
+    assert "!Array.isArray(value)" in check
+    assert "Object.getPrototypeOf(value) === Object.prototype" in check
+
+
+def test_viewer_persisted_ui_requires_a_plain_object_and_write_is_best_effort(
+    script: str,
+) -> None:
+    _assert_plain_object_check(script)
+    loader = script.split("const uiState = (() =>", 1)[1].split("function saveUi()", 1)[0]
+    assert "const saved = JSON.parse(" in loader
+    assert "return isPlainObject(saved) ? saved : {};" in loader
+
+    writer = script.split("function saveUi()", 1)[1].split("function applySceneSettings()", 1)[0]
+    assert "try {" in writer
+    assert 'localStorage.setItem("ifc-console-viewer-ui"' in writer
+    assert "} catch {" in writer
 
 
 # ------------------------------------------------- the viewer is an extra now
@@ -149,6 +229,20 @@ def test_settings_are_a_dialog_not_an_inline_panel(chat_js: str, chat_css: str):
     assert "chat-scrim" in chat_js, "the dialog needs a scrim to close on"
 
 
+def test_chat_dialog_contains_focus_and_restores_it(chat_js: str):
+    assert "settingsReturnFocus" in chat_js
+    assert 'event.key === "Tab"' in chat_js
+    assert 'aria-controls="chat-settings"' in chat_js
+    assert "target.focus()" in chat_js
+
+
+def test_chat_status_and_send_state_are_accessible(chat_js: str):
+    assert 'role="log" aria-label="Conversation"' in chat_js
+    assert 'data-role="announce" role="status"' in chat_js
+    assert 'send.setAttribute("aria-label", "Stop response")' in chat_js
+    assert 'send.setAttribute("aria-label", "Send message")' in chat_js
+
+
 def test_escape_closes_the_dialog_before_stopping_the_stream(chat_js: str):
     handler = chat_js.split('root.addEventListener("keydown"', 1)[1].split("});", 1)[0]
     assert handler.index("closeSettings()") < handler.index("aborter?.abort()")
@@ -182,6 +276,20 @@ def test_no_api_key_is_ever_written_to_browser_storage(chat_js: str):
             assert "key" not in line.lower(), line.strip()
 
 
+def test_chat_persisted_settings_require_a_plain_object_and_write_is_best_effort(
+    chat_js: str,
+) -> None:
+    _assert_plain_object_check(chat_js)
+    loader = chat_js.split("function loadSettings()", 1)[1].split("function chosenModel()", 1)[0]
+    assert "if (!isPlainObject(saved)) saved = {};" in loader
+    assert "byProvider: isPlainObject(saved.byProvider) ? saved.byProvider : {}" in loader
+
+    writer = chat_js.split("function saveSettings()", 1)[1].split("const provider =", 1)[0]
+    assert "try {" in writer
+    assert "localStorage.setItem(STORE, JSON.stringify(settings));" in writer
+    assert "} catch {" in writer
+
+
 def test_the_transcript_survives_a_reload_but_not_the_tab(chat_js: str):
     assert "sessionStorage.setItem(HISTORY" in chat_js
     assert "localStorage.setItem(HISTORY" not in chat_js
@@ -202,7 +310,7 @@ def test_chat_distinguishes_the_ai_model_from_the_open_ifc_model(chat_js: str):
 
 def test_chat_makes_provider_egress_visible(chat_js: str, chat_css: str):
     for label in ("local", "network", "blocked"):
-        assert f'.chat-route.{label}' in chat_css
+        assert f".chat-route.{label}" in chat_css
     assert "Prompts stay on this machine." in chat_js
     assert "Blocked by chat.local_only" in chat_js
 

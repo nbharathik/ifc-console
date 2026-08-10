@@ -47,7 +47,7 @@ class OperationDefinition(BaseModel):
 def _argument_model(fn: OperationHandler) -> type[BaseModel]:
     signature = inspect.signature(fn)
     hints = get_type_hints(fn, include_extras=True)
-    fields: dict[str, tuple[Any, Any]] = {}
+    fields: dict[str, Any] = {}
     for name, parameter in signature.parameters.items():
         if parameter.kind in (parameter.VAR_POSITIONAL, parameter.VAR_KEYWORD):
             continue
@@ -178,6 +178,15 @@ class OperationRegistry:
     def remove_tool(self, name: str) -> None:
         self._specs.pop(name, None)
         self.handlers.pop(name, None)
+
+    def _snapshot(self) -> dict[str, OperationSpec]:
+        return dict(self._specs)
+
+    def _restore(self, snapshot: dict[str, OperationSpec]) -> None:
+        self._specs.clear()
+        self._specs.update(snapshot)
+        self.handlers.clear()
+        self.handlers.update({name: spec.handler for name, spec in snapshot.items()})
 
     def definitions(self) -> list[OperationDefinition]:
         return [self._specs[name].definition() for name in sorted(self._specs)]

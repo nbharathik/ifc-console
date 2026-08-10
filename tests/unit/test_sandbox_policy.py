@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 from pathlib import Path
 
+from ifc_console.sandbox import protocol
 from ifc_console.sandbox.client import _child_env, worker_executable, worker_path
 from ifc_console.sandbox.hooks import _under
 from ifc_console.sandbox.policy import SandboxPolicy, runtime_roots
@@ -70,10 +72,25 @@ def test_child_env_carries_no_credentials(tmp_path: Path, monkeypatch) -> None:
 def test_child_env_keeps_only_what_the_interpreter_needs(tmp_path: Path) -> None:
     env = _child_env(tmp_path)
     allowed = {
-        "PYTHONPATH", "PYTHONNOUSERSITE", "PYTHONDONTWRITEBYTECODE", "PYTHONUNBUFFERED",
-        "PYTHONSAFEPATH", "PYTHONUTF8", "TMPDIR", "TEMP", "TMP", "PATH",
-        "SYSTEMROOT", "SystemRoot", "SystemDrive", "PATHEXT",
-        "NUMBER_OF_PROCESSORS", "PROCESSOR_ARCHITECTURE", "HOME", "LANG", "LC_ALL",
+        "PYTHONPATH",
+        "PYTHONNOUSERSITE",
+        "PYTHONDONTWRITEBYTECODE",
+        "PYTHONUNBUFFERED",
+        "PYTHONSAFEPATH",
+        "PYTHONUTF8",
+        "TMPDIR",
+        "TEMP",
+        "TMP",
+        "PATH",
+        "SYSTEMROOT",
+        "SystemRoot",
+        "SystemDrive",
+        "PATHEXT",
+        "NUMBER_OF_PROCESSORS",
+        "PROCESSOR_ARCHITECTURE",
+        "HOME",
+        "LANG",
+        "LC_ALL",
     }
     assert set(env) <= allowed
 
@@ -88,3 +105,15 @@ def test_worker_path_is_narrower_than_sys_path() -> None:
 
 def test_worker_executable_is_a_real_interpreter() -> None:
     assert os.path.isfile(worker_executable())
+
+
+def test_worst_case_configured_output_fits_one_protocol_frame() -> None:
+    text = "\0" * protocol.MAX_EXEC_OUTPUT_CHARS
+    encoded = protocol.encode({"ok": True, "stdout": text, "result": text})
+    assert len(encoded) <= protocol.MAX_FRAME
+
+
+def test_protocol_round_trips_lone_unicode_surrogates() -> None:
+    encoded = protocol.encode({"stdout": "\ud800"})
+    header_size = 8
+    assert json.loads(encoded[header_size:].decode("utf-8"))["stdout"] == "\ud800"

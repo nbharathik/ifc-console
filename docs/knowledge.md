@@ -64,7 +64,8 @@ ifc-console knowledge status
 ifc-console knowledge search "which pset carries fire rating"
 ```
 
-From the SDK: `wb.search_knowledge(...)` and `wb.api_docs(...)`.
+From the SDK: `wb.search_knowledge(...)`, `wb.knowledge_record(key)`, and
+`wb.api_docs(...)`.
 
 ## Why SQLite and not embeddings
 

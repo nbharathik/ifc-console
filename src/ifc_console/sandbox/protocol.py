@@ -14,7 +14,11 @@ from typing import Any, BinaryIO
 
 MAGIC = b"IFCS"
 _HEADER = struct.Struct(">4sI")
-MAX_FRAME = 128 * 1024 * 1024
+MAX_FRAME = 16 * 1024 * 1024
+# Two independently clipped text fields can share one reply. At one million
+# characters each, even JSON's six-byte control-character escapes stay below
+# MAX_FRAME with room for metadata and error text.
+MAX_EXEC_OUTPUT_CHARS = 1_000_000
 
 
 class ProtocolError(RuntimeError):
@@ -22,7 +26,9 @@ class ProtocolError(RuntimeError):
 
 
 def encode(payload: dict[str, Any]) -> bytes:
-    body = json.dumps(payload, ensure_ascii=False, default=str).encode("utf-8")
+    body = json.dumps(payload, ensure_ascii=False, default=str).encode(
+        "utf-8", errors="backslashreplace"
+    )
     if len(body) > MAX_FRAME:
         raise ProtocolError(f"frame of {len(body)} bytes exceeds the {MAX_FRAME} limit")
     return _HEADER.pack(MAGIC, len(body)) + body

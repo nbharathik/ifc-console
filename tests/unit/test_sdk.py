@@ -2,16 +2,18 @@
 
 from __future__ import annotations
 
+import inspect
 import os
 import shutil
 import subprocess
 import sys
 import textwrap
+from importlib import resources
 from pathlib import Path
 
 import pytest
 
-from ifc_console.sdk import IfcConsoleError, Workbench
+from ifc_console.sdk import AsyncWorkbench, IfcConsoleError, Workbench
 
 
 @pytest.fixture
@@ -38,11 +40,35 @@ def test_batch_record_is_exported_from_the_package():
 
 def test_workflow_contracts_are_exported_from_the_package():
     import ifc_console
-    from ifc_console.core.workflows import WorkflowPlan, WorkflowRecord, WorkflowSpec
+    from ifc_console.core.workflows import (
+        WorkflowInputSpec,
+        WorkflowPlan,
+        WorkflowQueryOperation,
+        WorkflowRecord,
+        WorkflowSpec,
+        WorkflowStepSpec,
+    )
 
     assert ifc_console.WorkflowPlan is WorkflowPlan
     assert ifc_console.WorkflowRecord is WorkflowRecord
     assert ifc_console.WorkflowSpec is WorkflowSpec
+    assert ifc_console.WorkflowInputSpec is WorkflowInputSpec
+    assert ifc_console.WorkflowStepSpec is WorkflowStepSpec
+    assert ifc_console.WorkflowQueryOperation is WorkflowQueryOperation
+
+
+def test_plugin_and_envelope_contracts_are_exported_from_the_package():
+    import ifc_console
+    from ifc_console.core.results import Envelope
+    from ifc_console.plugins import PluginAPI, PluginManifest
+
+    assert ifc_console.Envelope is Envelope
+    assert ifc_console.PluginAPI is PluginAPI
+    assert ifc_console.PluginManifest is PluginManifest
+
+
+def test_package_declares_inline_typing():
+    assert resources.files("ifc_console").joinpath("py.typed").is_file()
 
 
 def test_open_loads_the_model(wb: Workbench):
@@ -96,6 +122,15 @@ def test_tools_are_provider_neutral_schemas(wb: Workbench):
     assert "rows" in one["data_schema"]["properties"]
 
 
+def test_tools_can_filter_operations_blocked_by_the_current_profile(wb: Workbench):
+    all_tools = {tool["name"] for tool in wb.tools()}
+    permitted = {tool["name"] for tool in wb.tools(permitted_only=True)}
+
+    assert "save_ifc_file" in all_tools
+    assert "save_ifc_file" not in permitted
+    assert "query_elements" in permitted
+
+
 def test_typed_operation_definitions_and_results(wb: Workbench):
     definitions = {item.name: item for item in wb.operation_definitions()}
     assert definitions["query_elements"].data_schema is not None
@@ -117,9 +152,7 @@ def test_sdk_exposes_capability_profiles_and_audit_verification(wb: Workbench):
     assert tools["save_ifc_file"]["permitted"] is False
     assert Capability.MODEL_READ in wb.granted_capabilities()
     assert wb.capability_decision([Capability.MODEL_APPROVE]).allowed is False
-    assert wb.capability_decision(
-        [Capability.MODEL_APPROVE], authority="caller"
-    ).allowed is True
+    assert wb.capability_decision([Capability.MODEL_APPROVE], authority="caller").allowed is True
     assert wb.verify_audit().valid is True
 
 
@@ -179,15 +212,14 @@ def test_validation_batches_use_typed_sdk(wb: Workbench, tmp_path: Path):
     assert wb.batch(completed.batch_id) == completed
     assert completed in wb.batches()
 
-    query = wb.submit_query_batch(
-        [first, second], query="IfcWall", output_format="jsonl", limit=2
-    )
+    query = wb.submit_query_batch([first, second], query="IfcWall", output_format="jsonl", limit=2)
     query_result = wb.wait_batch(query.batch_id, timeout=90)
     assert query_result.state.value == "succeeded"
     assert query_result.children[0].summary["matched"] == 3
-    assert len(
-        wb.read_artifact_text(query_result.children[0].artifacts[0].artifact_id).splitlines()
-    ) == 2
+    assert (
+        len(wb.read_artifact_text(query_result.children[0].artifacts[0].artifact_id).splitlines())
+        == 2
+    )
 
 
 def test_workflows_use_typed_sdk(wb: Workbench, tmp_path: Path):
@@ -346,6 +378,14 @@ def test_unknown_setting_is_refused(tmp_path: Path):
         Workbench.open(None, home=tmp_path / "home", settings={"nope.nothing": 1})
 
 
+def test_invalid_setting_override_is_validated(tmp_path: Path):
+    with pytest.raises(IfcConsoleError) as excinfo:
+        Workbench.open(None, home=tmp_path / "home", settings={"server.port": 80})
+
+    assert excinfo.value.code == "INVALID_INPUT"
+    assert "server.port" in excinfo.value.message
+
+
 def test_workbench_opens_without_a_model(tmp_path: Path):
     with Workbench.open(home=tmp_path / "home") as wb:
         assert wb.model["loaded"] is False
@@ -403,8 +443,35 @@ def test_attached_models_are_listed(wb: Workbench, minimal_ifc4_path: Path):
 def test_close_is_idempotent(tmp_path: Path):
     wb = Workbench.open(home=tmp_path / "home")
     wb.close()
+    wb.close()
     with pytest.raises(RuntimeError):
         wb.status()
+
+
+def test_explicit_close_inside_context_is_safe(tmp_path: Path):
+    with Workbench.open(home=tmp_path / "home") as wb:
+        wb.close()
+
+
+@pytest.mark.parametrize(
+    "method_name",
+    ["ask", "submit_validation_job", "submit_validation_batch", "submit_query_batch"],
+)
+def test_sync_and_async_sdk_methods_expose_the_same_parameters(method_name: str):
+    sync = inspect.signature(getattr(Workbench, method_name))
+    async_ = inspect.signature(getattr(AsyncWorkbench, method_name))
+
+    assert tuple(sync.parameters) == tuple(async_.parameters)
+
+
+def test_sdk_lifecycle_errors_use_the_public_exception(tmp_path: Path):
+    with pytest.raises(IfcConsoleError) as missing:
+        Workbench.open(tmp_path / "missing.ifc", home=tmp_path / "home")
+    assert missing.value.code == "FILE_NOT_FOUND"
+
+    with pytest.raises(IfcConsoleError) as invalid_mode:
+        Workbench.open(home=tmp_path / "other-home", mode="unsafe")
+    assert invalid_mode.value.code == "INVALID_INPUT"
 
 
 # ---------------------------------------------------------------- wb.ask(...)

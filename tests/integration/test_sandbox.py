@@ -7,6 +7,8 @@ read outside the allowed directories, or write anywhere but its scratch.
 
 from __future__ import annotations
 
+import importlib.util
+import os
 from pathlib import Path
 
 import pytest
@@ -91,6 +93,21 @@ def test_runtime_errors_come_back_with_a_traceback(sandbox) -> None:
     assert "ZeroDivisionError" in reply["traceback"]
 
 
+def test_large_exception_text_is_clipped_and_the_worker_survives(sandbox) -> None:
+    reply = run(sandbox, "raise RuntimeError('x' * 2_000_000)")
+    assert reply["ok"] is False
+    assert reply["kind"] == "error"
+    assert len(reply["message"]) < 110_000
+    assert len(reply["traceback"]) < 110_000
+    assert run(sandbox, "1 + 1")["result"] == "2"
+
+
+def test_lone_unicode_surrogates_do_not_break_the_protocol(sandbox) -> None:
+    reply = run(sandbox, "print(chr(0xD800))\nchr(0xD800)")
+    assert reply["ok"] is True
+    assert reply["stdout"].startswith("\ud800")
+
+
 def test_syntax_errors_are_reported_as_syntax(sandbox) -> None:
     reply = run(sandbox, "for x in :")
     assert reply["ok"] is False
@@ -125,6 +142,72 @@ def test_escaped_code_cannot_reach_the_outside_world(sandbox, label, code) -> No
     reply = run(sandbox, ESCAPE + code)
     assert reply["ok"] is False, f"{label} was not blocked"
     assert reply["kind"] == "violation", f"{label}: {reply.get('message')}"
+
+
+@pytest.mark.parametrize(
+    ("label", "code"),
+    [
+        ("ctypes memory", "b['__import__']('ctypes').string_at(b'abc', 1)"),
+        ("raw thread", "b['__import__']('_thread').start_new_thread(lambda: None, ())"),
+        ("raw descriptor", "b['open'](2, closefd=False)"),
+    ],
+)
+def test_escaped_code_cannot_use_native_escape_primitives(sandbox, label, code) -> None:
+    reply = run(sandbox, ESCAPE + code)
+    assert reply["ok"] is False, f"{label} was not blocked"
+    assert reply["kind"] == "violation", f"{label}: {reply.get('message')}"
+
+
+def test_escaped_code_cannot_create_a_sqlite_database(sandbox) -> None:
+    target = sandbox.scratch_dir / "escape.sqlite"  # type: ignore[attr-defined]
+    reply = run(
+        sandbox,
+        ESCAPE + f"b['__import__']('sqlite3').connect(r'{target}')",
+    )
+    assert reply["ok"] is False
+    assert reply["kind"] == "violation"
+    assert not target.exists()
+
+
+def test_escaped_code_cannot_create_an_unhooked_subinterpreter(sandbox) -> None:
+    if importlib.util.find_spec("_xxsubinterpreters") is None:
+        pytest.skip("this Python build has no subinterpreter module")
+    reply = run(sandbox, ESCAPE + "b['__import__']('_xxsubinterpreters').create()")
+    assert reply["ok"] is False
+    assert reply["kind"] == "violation"
+
+
+def test_traceback_frames_are_hidden_while_generated_code_runs(sandbox) -> None:
+    code = ESCAPE + (
+        "try:\n"
+        "    1 / 0\n"
+        "except Exception as exc:\n"
+        "    print(exc.__traceback__.tb_frame.f_globals)\n"
+    )
+    reply = run(sandbox, code)
+    assert reply["ok"] is False
+    assert reply["kind"] == "violation"
+
+    ordinary_error = run(sandbox, "1 / 0")
+    assert ordinary_error["kind"] == "error"
+    assert "ZeroDivisionError" in ordinary_error["traceback"]
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX dir_fd behavior")
+def test_relative_os_open_cannot_hide_a_directory_fd(sandbox) -> None:
+    target = sandbox.model_dir / "dir-fd-escape.txt"  # type: ignore[attr-defined]
+    code = ESCAPE + (
+        "o = b['__import__']('os')\n"
+        f"fd = o.open(r'{sandbox.model_dir}', o.O_RDONLY)\n"  # type: ignore[attr-defined]
+        "try:\n"
+        "    o.open('dir-fd-escape.txt', o.O_WRONLY | o.O_CREAT, dir_fd=fd)\n"
+        "finally:\n"
+        "    o.close(fd)\n"
+    )
+    reply = run(sandbox, code)
+    assert reply["ok"] is False
+    assert reply["kind"] == "violation"
+    assert not target.exists()
 
 
 def test_escaped_code_cannot_read_outside_the_allowed_directories(sandbox) -> None:
@@ -167,7 +250,7 @@ def test_the_environment_holds_no_credentials(sandbox) -> None:
 @pytest.mark.parametrize(
     "label, tamper",
     [
-        ("busy flag", "h._state.busy = True" ),
+        ("busy flag", "h._state.busy = True"),
         ("module busy flag", "setattr(h, '_state', type('s', (), {'busy': True})())"),
         ("deny prefixes", "h._DENIED_PREFIXES = ()"),
         ("deny exact", "h._DENIED_EXACT = frozenset()"),
@@ -256,6 +339,40 @@ async def test_ask_mode_queries_are_sandboxed(ask_harness) -> None:
     assert out["data"]["result"] == "3"
 
 
+async def test_sandbox_blocks_project_credentials_but_allows_the_ifc(
+    ask_harness, work_model: Path
+) -> None:
+    root = work_model.parent
+    credentials = [
+        root / ".npmrc",
+        root / ".aws" / "credentials",
+        root / ".git" / "config",
+        root / ".envrc",
+        root / ".env" / "secret.txt",
+        root / "frontend" / ".npmrc",
+        root / "packages" / "service" / ".aws" / "credentials",
+    ]
+    for target in credentials:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("PROJECT-SECRET", encoding="utf-8")
+
+    for target in credentials:
+        out = await ask_harness.call(
+            "execute_ifc_code",
+            code=f"open(r'{target}', encoding='utf-8').read()",
+        )
+        assert out["ok"] is False
+        assert out["error"]["code"] == "EXEC_BLOCKED"
+        assert "PROJECT-SECRET" not in str(out)
+
+    allowed = await ask_harness.call(
+        "execute_ifc_code",
+        code=f"open(r'{work_model}', encoding='utf-8').read(7)",
+    )
+    assert allowed["ok"] is True
+    assert allowed["data"]["result"] == "'ISO-103'"
+
+
 async def test_mutations_run_in_process_so_the_edit_lands(harness_factory, work_model) -> None:
     from ifc_console.policy.modes import Mode
 
@@ -269,9 +386,7 @@ async def test_mutations_run_in_process_so_the_edit_lands(harness_factory, work_
     assert out["data"]["mutated"] is True
 
 
-async def test_unsaved_changes_fall_back_with_a_stated_reason(
-    harness_factory, work_model
-) -> None:
+async def test_unsaved_changes_fall_back_with_a_stated_reason(harness_factory, work_model) -> None:
     from ifc_console.policy.modes import Mode
 
     h = await harness_factory(model=work_model, mode=Mode.EDIT)
@@ -287,9 +402,7 @@ async def test_unsaved_changes_fall_back_with_a_stated_reason(
     assert out["data"]["result"] == "4"  # the in-memory edit is visible
 
 
-async def test_strict_mode_refuses_instead_of_falling_back(
-    harness_factory, work_model
-) -> None:
+async def test_strict_mode_refuses_instead_of_falling_back(harness_factory, work_model) -> None:
     from ifc_console.policy.modes import Mode
 
     h = await harness_factory(model=work_model, mode=Mode.EDIT)
@@ -327,8 +440,7 @@ def test_a_runaway_run_is_killed_and_the_console_survives(tmp_path, model_path) 
         process.start(timeout=300)
         with pytest.raises(SandboxTimeout):
             process.request(
-                {"op": "run", "code": "while True: pass", "output_limit": 100,
-                 "allowed_dirs": []},
+                {"op": "run", "code": "while True: pass", "output_limit": 100, "allowed_dirs": []},
                 timeout=3,
             )
         assert not process.alive

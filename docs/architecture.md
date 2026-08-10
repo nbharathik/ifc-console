@@ -113,7 +113,7 @@ One process, one active model, several faces over one core.
   (`viewer/`), its HTTP routes answer 404 while disabled, and its four MCP
   tools form an optional category. Nothing in the core query/edit path imports
   viewer code, and its 8 MB asset bundle ships as a separate
-  distribution (`ifc-console[viewer]`); without it the 35 core tools still work.
+  distribution (`ifc-console[viewer]`); without it the 36 core tools still work.
 
 ## Threading model in one paragraph
 

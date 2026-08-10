@@ -28,28 +28,68 @@ import ifcopenshell.util.element
 import ifcopenshell.util.selector
 import ifcopenshell.util.unit
 
+from ifc_console.sandbox.policy import is_sensitive_generated_path
+
 
 class GuardError(RuntimeError):
     """A runtime guard blocked the operation."""
 
 
 SAFE_IMPORT_ROOTS = {
-    "math", "json", "re", "csv", "itertools", "functools", "collections",
-    "statistics", "datetime", "textwrap", "uuid", "string", "fractions",
-    "decimal", "heapq", "bisect", "enum", "dataclasses", "typing", "pprint",
-    "unicodedata", "operator", "copy", "io", "ifcopenshell",
+    "math",
+    "json",
+    "re",
+    "csv",
+    "itertools",
+    "functools",
+    "collections",
+    "statistics",
+    "datetime",
+    "textwrap",
+    "uuid",
+    "string",
+    "fractions",
+    "decimal",
+    "heapq",
+    "bisect",
+    "enum",
+    "dataclasses",
+    "typing",
+    "pprint",
+    "unicodedata",
+    "operator",
+    "copy",
+    "io",
+    "ifcopenshell",
 }
 
 _REMOVED_BUILTINS = {
-    "exec", "eval", "compile", "input", "breakpoint", "exit", "quit", "help",
-    "open", "__import__",
+    "exec",
+    "eval",
+    "compile",
+    "input",
+    "breakpoint",
+    "exit",
+    "quit",
+    "help",
+    "open",
+    "__import__",
 }
 
 # Attributes of the model file object blocked while mutation is locked.
 BLOCKED_FILE_ATTRS = {
-    "create_entity", "add", "remove", "batch", "unbatch", "assign_inverse",
-    "unassign_inverse", "write", "wrapped_data", "begin_transaction",
-    "end_transaction", "discard_transaction",
+    "create_entity",
+    "add",
+    "remove",
+    "batch",
+    "unbatch",
+    "assign_inverse",
+    "unassign_inverse",
+    "write",
+    "wrapped_data",
+    "begin_transaction",
+    "end_transaction",
+    "discard_transaction",
 }
 
 # io stays importable (StringIO/BytesIO are legitimate query tools), but its
@@ -214,13 +254,11 @@ def entity_mutation_lock(enabled: bool = True) -> Iterator[None]:
     orig_setitem = cls.__setitem__
     orig_file = cls.file
 
-    def blocked_setattr(self: Any, name: str, value: Any) -> None:
+    def blocked_setattr(_self: Any, _name: str, _value: Any) -> None:
         raise GuardError(_ENTITY_LOCKED_MSG.format(what="assigning entity attributes"))
 
-    def blocked_setitem(self: Any, idx: Any, value: Any) -> None:
-        raise GuardError(
-            _ENTITY_LOCKED_MSG.format(what="assigning entity attributes by index")
-        )
+    def blocked_setitem(_self: Any, _idx: Any, _value: Any) -> None:
+        raise GuardError(_ENTITY_LOCKED_MSG.format(what="assigning entity attributes by index"))
 
     cls.__setattr__ = blocked_setattr
     cls.__setitem__ = blocked_setitem
@@ -233,13 +271,23 @@ def entity_mutation_lock(enabled: bool = True) -> Iterator[None]:
         cls.file = orig_file
 
 
+def _normalized(path: Path) -> str:
+    try:
+        resolved = os.path.realpath(os.fspath(path))
+    except (OSError, TypeError, ValueError):
+        resolved = os.path.abspath(os.fspath(path))
+    return os.path.normcase(os.path.abspath(resolved))
+
+
 def _inside_any(path: Path, roots: list[Path]) -> bool:
+    normalized = _normalized(path)
     for root in roots:
         try:
-            path.relative_to(root)
-            return True
+            common = os.path.commonpath((normalized, _normalized(root)))
         except ValueError:
             continue
+        if common == _normalized(root):
+            return True
     return False
 
 
@@ -260,14 +308,16 @@ def make_open_guard(
                 "save_ifc_file for model output, or ask the user for system access."
             )
         try:
-            p = Path(os.fspath(file)).resolve()
+            raw_path = Path(os.fspath(file))
+            p = raw_path.resolve()
         except TypeError as exc:
             raise GuardError("only path-based, read-mode open() is allowed") from exc
-        # Mirrors the sandbox deny list: the console home holds the bearer
-        # token, and a session launched from the home directory would
-        # otherwise have it inside an allowed root.
-        if _inside_any(p, denied):
-            raise GuardError(f"reading {p} is blocked: it is inside the ifc-console home")
+        if (
+            is_sensitive_generated_path(raw_path)
+            or is_sensitive_generated_path(p)
+            or _inside_any(p, denied)
+        ):
+            raise GuardError(f"reading {p} is blocked: it may contain credentials")
         if not _inside_any(p, allowed_dirs):
             allowed = ", ".join(str(r) for r in allowed_dirs) or "(none)"
             raise GuardError(f"reading {p} is outside the allowed directories: {allowed}")
@@ -335,9 +385,7 @@ def build_namespace(
     deny_dirs: list[Path] | None = None,
 ) -> dict[str, Any]:
     """Fresh globals dict for one execute_ifc_code run."""
-    ns_builtins = {
-        k: v for k, v in vars(_builtins).items() if k not in _REMOVED_BUILTINS
-    }
+    ns_builtins = {k: v for k, v in vars(_builtins).items() if k not in _REMOVED_BUILTINS}
     ns_builtins["open"] = make_open_guard(allowed_dirs, allow_system, deny_dirs)
     ns_builtins["__import__"] = make_import_guard(
         allow_system=allow_system,

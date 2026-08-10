@@ -11,6 +11,7 @@ import contextlib
 import json
 import os
 import secrets
+import stat
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -19,7 +20,11 @@ from typing import Any
 
 from pydantic import BaseModel, Field, ValidationError
 
+from ifc_console.sandbox.protocol import MAX_EXEC_OUTPUT_CHARS
+
 ENV_PREFIX = "IFC_CONSOLE_"
+_MAX_SETTINGS_BYTES = 1024 * 1024
+_MAX_SETTINGS_DEPTH = 32
 
 
 def user_dir() -> Path:
@@ -46,7 +51,7 @@ class ServerSettings(BaseModel):
 
 class ExecSettings(BaseModel):
     timeout_seconds: float = Field(default=30.0, gt=0)
-    output_char_limit: int = Field(default=40_000, ge=1_000)
+    output_char_limit: int = Field(default=40_000, ge=1_000, le=MAX_EXEC_OUTPUT_CHARS)
     allow_system_access: bool = False
     system_modules_extra: list[str] = Field(default_factory=list)
 
@@ -179,12 +184,6 @@ class Settings(BaseModel):
 # Keys project-level files may set: nothing here can widen file access,
 # enable system access, or weaken authentication.
 PROJECT_SAFE_KEYS = {
-    "server.port",
-    "exec.timeout_seconds",
-    "exec.output_char_limit",
-    "viewer.enabled_default",
-    "viewer.max_model_mb",
-    "logging.level",
     "tui.theme",
 }
 
@@ -200,6 +199,19 @@ def _flatten(d: dict[str, Any], prefix: str = "") -> dict[str, Any]:
         else:
             out[key] = v
     return out
+
+
+def _within_settings_depth(value: dict[str, Any]) -> bool:
+    stack: list[tuple[Any, int]] = [(value, 0)]
+    while stack:
+        current, depth = stack.pop()
+        if depth > _MAX_SETTINGS_DEPTH:
+            return False
+        if isinstance(current, dict):
+            stack.extend((item, depth + 1) for item in current.values())
+        elif isinstance(current, list):
+            stack.extend((item, depth + 1) for item in current)
+    return True
 
 
 def _set_dot(d: dict[str, Any], key: str, value: Any) -> None:
@@ -246,9 +258,19 @@ def _coerce(current: Any, raw: str) -> Any:
 
 def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-    os.replace(tmp, path)
+    tmp = path.with_name(f".{path.name}.{secrets.token_hex(6)}.tmp")
+    try:
+        fd = os.open(tmp, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(json.dumps(payload, indent=2, ensure_ascii=False) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, path)
+        with contextlib.suppress(OSError):
+            path.chmod(0o600)
+    finally:
+        with contextlib.suppress(OSError):
+            tmp.unlink()
 
 
 def _valid_token(path: Path) -> str | None:
@@ -410,6 +432,8 @@ class SettingsStore:
             self.transactions_dir,
         ):
             d.mkdir(parents=True, exist_ok=True)
+            with contextlib.suppress(OSError):
+                d.chmod(0o700)
         if not self.user_file.exists():
             payload = {
                 "_readme": "ifc-console user settings; `ifc-console settings list` shows all keys",
@@ -422,12 +446,25 @@ class SettingsStore:
         if not path.exists():
             return {}
         try:
-            raw = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
+            if not stat.S_ISREG(path.stat().st_mode):
+                self.warnings.append(f"{label}: settings path {path} is not a regular file")
+                return {}
+            with path.open("rb") as fh:
+                encoded = fh.read(_MAX_SETTINGS_BYTES + 1)
+            if len(encoded) > _MAX_SETTINGS_BYTES:
+                self.warnings.append(
+                    f"{label}: settings file {path} exceeds the {_MAX_SETTINGS_BYTES} byte limit"
+                )
+                return {}
+            raw = json.loads(encoded.decode("utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError, RecursionError) as exc:
             self.warnings.append(f"{label}: unreadable settings file {path}: {exc}")
             return {}
         if not isinstance(raw, dict):
             self.warnings.append(f"{label}: {path} is not a JSON object; ignored")
+            return {}
+        if not _within_settings_depth(raw):
+            self.warnings.append(f"{label}: {path} is nested too deeply; ignored")
             return {}
         for k in _META_KEYS:
             raw.pop(k, None)

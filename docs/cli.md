@@ -8,7 +8,7 @@ ifc-console check MODEL [...]           validate a model for CI (schema + IDS)
 ifc-console run MANIFEST [--plan]       plan or run a versioned workflow
 ifc-console jobs <subcommand>            run and inspect durable automation jobs
 ifc-console batch <subcommand>           validate or query many IFCs with resume support
-ifc-console workflows <subcommand>       inspect, watch, cancel, or resume workflows
+ifc-console workflows <subcommand>       print the schema or manage workflow runs
 ifc-console transactions <subcommand>    inspect commit/restore recovery journals
 ifc-console artifacts <subcommand>       inspect and export durable outputs
 ifc-console changes <subcommand>         preview, approve, commit, or restore edits
@@ -31,7 +31,7 @@ Accepted by the bare command and by `serve`:
 | `--file PATH` | load this model at startup (optional; `/file` works any time) |
 | `--mode ask\|edit` | session mode (default from settings, normally ask = AI is query-only) |
 | `--port N` | HTTP port (default 8383) |
-| `--viewer` | enable the 3D web viewer at startup (`/viewer` works any time) |
+| `--viewer` | enable the optional 3D web viewer at startup (install `ifc-console[viewer]`; `/viewer` works any time) |
 | `--allow-dir PATH` | extra directory the LLM may open/save models in (repeatable) |
 | `--log-level debug\|info\|warning\|error` | log verbosity |
 | `--no-tui` | headless HTTP daemon instead of the console (bare command only) |
@@ -65,10 +65,12 @@ package is missing.
 
 ## doctor
 
-Checks ifc-console, Python, ifcopenshell, mcp, textual, uvicorn, the bundled viewer
-assets, settings readability, and port availability. With `--file` it also
-parses the model and reports schema, product count, and parse time. `--json` for
-machines. Exit code 0 only if everything essential is ok.
+Checks ifc-console, Python, ifcopenshell, mcp, textual, uvicorn, settings
+readability, port availability, and whether the optional viewer assets are
+installed and complete. With `--file` it also parses the model and reports
+schema, product count, and parse time. `--json` is available for machines. Exit
+code 0 only if everything essential is ok; an uninstalled optional viewer is
+reported as optional, not as a core failure.
 
 ## jobs and artifacts
 
@@ -155,6 +157,7 @@ the supervisor does not deserialize the complete result set.
 ## workflow automation
 
 ```bash
+ifc-console workflows schema > workflow-v1.schema.json
 ifc-console run workflow.yaml --plan --json
 ifc-console run workflow.yaml --output-dir reports --json
 ifc-console workflows list
@@ -263,7 +266,9 @@ client rather than by hand. It always starts, so the client always connects, and
 it forwards to the console as soon as one is running; while there is none, tool
 calls come back as `CONSOLE_NOT_RUNNING` with a hint. The token defaults to this
 machine's stored one when persistence is enabled; otherwise pass `--token` from
-the running console.
+the running console. Before sending that token, the bridge challenges the
+loopback listener with a fresh nonce and verifies a port-bound HMAC identity
+proof. A different application occupying the port does not receive the token.
 
 ## token
 

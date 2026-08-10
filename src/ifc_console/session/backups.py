@@ -6,9 +6,11 @@ Backup failure aborts the save; never save without the backup.
 from __future__ import annotations
 
 import contextlib
+import glob
 import hashlib
 import json
 import os
+import secrets
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
@@ -71,7 +73,7 @@ class BackupStore:
             return []
         namespace = self._namespace(target.resolve())
         return sorted(
-            self.directory.glob(f"{namespace}.*.ifc"),
+            self.directory.glob(f"{glob.escape(namespace)}.*.ifc"),
             key=lambda p: p.stat().st_mtime,
             reverse=True,
         )
@@ -101,7 +103,7 @@ class BackupStore:
 
     @staticmethod
     def _write_manifest(path: Path, payload: dict[str, Any]) -> None:
-        tmp = path.with_name(f".{path.name}.tmp")
+        tmp = path.with_name(f".{path.name}.{secrets.token_hex(6)}.tmp")
         try:
             with tmp.open("w", encoding="utf-8", newline="\n") as handle:
                 json.dump(payload, handle, indent=2, ensure_ascii=False)

@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import StrEnum
 from typing import Literal
+
+from ifc_console._compat import StrEnum
 
 
 class Capability(StrEnum):

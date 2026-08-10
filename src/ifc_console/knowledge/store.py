@@ -336,7 +336,7 @@ class Store:
         args: list[Any] = []
         for token in tokens:
             args.extend([f"%{token}%"] * 3)
-        sql = f"SELECT * FROM record WHERE {clauses}"
+        sql = f"SELECT * FROM record WHERE {clauses}"  # nosec B608
         if kinds:
             sql += f" AND kind IN ({','.join('?' * len(kinds))})"
             args.extend(kinds)

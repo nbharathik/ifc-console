@@ -14,6 +14,57 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+COMMON_CREDENTIAL_PATHS = (
+    ".ssh",
+    ".gnupg",
+    ".aws",
+    ".azure",
+    ".kube",
+    ".docker",
+    ".git",
+    ".config",
+    ".cargo",
+    ".gradle",
+    ".m2",
+    ".gem",
+    ".nuget",
+    ".terraform.d",
+    ".local/share/keyrings",
+    ".netrc",
+    "_netrc",
+    ".git-credentials",
+    ".pypirc",
+    ".npmrc",
+    ".env",
+    ".envrc",
+    ".env.local",
+    ".env.development",
+    ".env.production",
+    ".env.staging",
+    ".env.test",
+)
+
+_SENSITIVE_COMPONENTS = frozenset(
+    path.casefold() for path in COMMON_CREDENTIAL_PATHS if "/" not in path
+)
+_SENSITIVE_SEQUENCES = ((".local", "share", "keyrings"),)
+
+
+def is_sensitive_generated_path(path: str | os.PathLike[str]) -> bool:
+    """Whether a path names a common credential file or store."""
+    normalized = os.path.normpath(os.fspath(path))
+    if os.altsep:
+        normalized = normalized.replace(os.altsep, os.sep)
+    parts = tuple(part.casefold() for part in normalized.split(os.sep) if part)
+    for part in parts:
+        if part in _SENSITIVE_COMPONENTS or part.startswith(".env."):
+            return True
+    return any(
+        parts[index : index + len(sequence)] == sequence
+        for sequence in _SENSITIVE_SEQUENCES
+        for index in range(len(parts) - len(sequence) + 1)
+    )
+
 
 def _norm(path: str | os.PathLike[str]) -> str:
     """Absolute, symlink-resolved, comparable on this platform."""

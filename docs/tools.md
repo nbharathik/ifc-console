@@ -233,6 +233,57 @@ Writes query results to a CSV file. Allowed in ask mode: writing a report
 file is not editing the model. The path must lie inside the allowed
 directories, and every write is audited (`artifact_write`).
 
+## Durable jobs and artifacts
+
+These six operations expose long validation work without blocking a client
+connection. Job state and content-addressed artifacts survive the session that
+created them. See [Python SDK](sdk.md) for direct typed lifecycle methods and
+artifact export.
+
+### submit_validation_job
+
+| arg | type | default |
+| --- | ---- | ------- |
+| `ids_paths` | list of IDS paths | [] |
+| `express_rules` | bool | false |
+| `max_issues` | int 1-2000 | 200 |
+| `model` | model id | active model |
+| `expected_revision` | revision id or null | null |
+
+Submits schema and optional IDS validation to a restricted worker and returns a
+durable `job_id` immediately. The source model must be clean because the worker
+is bound to verified on-disk bytes. Pass `expected_revision` to reject a stale
+caller before scheduling.
+
+### get_job
+
+`job_id` returns state, phase, progress, events, failure details, and artifact
+references. `wait_seconds` may be 0 to 3600 and waits only that long for a
+terminal record; callers can poll again without losing the job.
+
+### list_jobs
+
+Optional `limit` from 1 to 500, default 50. Returns recent durable jobs newest
+first.
+
+### cancel_job
+
+`job_id` requests cancellation of a queued or running job. A completed job is
+returned unchanged. Transaction jobs stop accepting cancellation after their
+commit point; validation workers are terminated before a cancellation record is
+published.
+
+### list_artifacts
+
+Optional `limit` from 1 to 500, default 50. Returns recent content-addressed
+artifact metadata, including media type, byte length, and SHA-256 identity.
+
+### get_artifact
+
+`artifact_id` returns one artifact's verified metadata. MCP does not return
+arbitrary artifact bytes. Use the SDK or `ifc-console artifacts export` to copy
+content through the allowed-directory and checksum checks.
+
 ## Structured change previews
 
 ### preview_property_change
@@ -274,10 +325,12 @@ Runs Python against the loaded model with `ifc`, `ifcopenshell`, `ifc_api`,
 pre-injected. stdout is captured; a final bare expression is returned like a
 REPL. Gating per the [safety model](safety.md).
 
-Read-only runs execute in an isolated process with no network, no subprocesses,
-and no file access outside the model directories; mutating runs stay in-process
-so the edit reaches the live model. `sandboxed` in the output says which path
-ran, and `note` explains any fallback. See [Code sandbox](sandbox.md).
+Eligible read-only runs use an isolated process with no network, no
+subprocesses, and no file access outside the model directories. In auto mode an
+ineligible run or unavailable worker uses guarded in-process fallback and says
+so; strict mode refuses it. Mutating runs always stay in-process so the edit
+reaches the live model. `sandboxed` in the output says which path ran, and
+`note` explains any fallback. See [Code sandbox](sandbox.md).
 
 Output fields: `stdout`, `result`, `classification`, `mutated`, `sandboxed`,
 `duration_ms`, and `note` when there is something to say. Errors:
@@ -381,7 +434,7 @@ The viewer is not part of the core surface. These four tools are **registered
 only while the viewer is enabled** (`--viewer` at launch or `/viewer` in the
 console). Enable it mid-session and they join the tool list live; `/viewer off`
 removes them (clients pick up the change on their next tool refresh). Sessions
-without the viewer, including all stdio sessions, expose exactly the 24 core
+without the viewer, including all stdio sessions, expose exactly the 36 core
 tools above.
 
 When registered, all four still need a connected browser tab, or they return
@@ -436,28 +489,53 @@ Errors: `VIEWER_TIMEOUT` (10 s), `VIEWER_ERROR`, `RESULT_TOO_LARGE`.
 
 | code | meaning |
 | ---- | ------- |
-| `NO_MODEL_LOADED` | open a model first (`list_ifc_files` + `open_ifc_file`, or /file) |
-| `FILE_NOT_FOUND` / `FILE_EXISTS` | path problems on open/save |
-| `PATH_NOT_ALLOWED` | outside the allowed directories |
-| `UNSAVED_CHANGES` | refusing to drop unsaved work |
-| `INVALID_INPUT` / `INVALID_QUERY` | bad arguments; query errors include a cheat sheet |
-| `ASK_MODE_BLOCKED` | mutation or save attempted in ask mode; the AI should ask for /mode edit |
-| `EXEC_BLOCKED` / `EXEC_ERROR` / `EXEC_TIMEOUT` | code run gated, failed, or timed out |
-| `SANDBOX_UNAVAILABLE` | `sandbox.mode` is strict and this run could not be sandboxed |
-| `MODEL_BUSY` | session paused after a timeout; user reloads |
-| `MODEL_TOO_LARGE` | over the `files.max_open_mb` (or viewer) size budget |
-| `MODEL_NOT_FOUND` | no resident model with that `model_id`; call `list_models` |
-| `MODEL_READ_ONLY` | write aimed at an attached model; only the active one is writable |
-| `NOT_FOUND` | a named thing (element root, schema entity, attachment) does not exist |
-| `NO_MATCH` / `NO_GEOMETRY` | a clash selector matched nothing, or nothing with solid geometry |
-| `TOO_MANY_ELEMENTS` | a clash selector matched more than `max_elements`; narrow it |
-| `WORKSPACE_BUDGET` | over `workspace.max_resident` or `workspace.max_total_mb` |
-| `WORKSPACE_DISABLED` | workspace indexing is disabled in settings |
-| `CONSOLE_NOT_RUNNING` / `CONSOLE_AUTH_FAILED` | the stdio bridge cannot reach or authenticate to the console |
-| `EXTRA_NOT_INSTALLED` | an optional package is needed; the hint names the install |
-| `VIEWER_NOT_CONNECTED` / `VIEWER_TIMEOUT` / `VIEWER_ERROR` | viewer tools without a healthy tab |
-| `RESULT_TOO_LARGE` | narrow the request |
-| `INTERNAL_ERROR` | a bug; the audit log has details |
+| `APPROVAL_MISMATCH` / `APPROVAL_NOT_FOUND` / `APPROVAL_REQUIRED` | an approval is absent, unknown, or does not match the change set |
+| `ARTIFACT_CORRUPT` / `ARTIFACT_NOT_FOUND` | the recorded artifact is absent or failed integrity checks |
+| `ARTIFACT_EXPORT_FAILED` | the artifact could not be exported to the requested destination |
+| `ARTIFACT_GC_CONFLICT` / `ARTIFACT_GC_FAILED` | artifact collection conflicted with current state or failed |
+| `ARTIFACT_STORE_BUSY` / `ARTIFACT_STORE_CORRUPT` | the artifact store is locked or failed integrity checks |
+| `ASK_MODE_BLOCKED` | a mutation or save was attempted in ask mode; switch explicitly to edit mode |
+| `BATCH_NOT_FOUND` / `BATCH_NOT_RESUMABLE` | the batch is unknown or cannot resume from its current state |
+| `BATCH_SERVICE_CLOSED` / `BATCH_STORE_FAILED` | the batch service is closed or its persistent store failed |
+| `BATCH_SOURCE_CHANGED` / `BATCH_TIMEOUT` | a source changed after planning or the wait timed out |
+| `CAPABILITY_DENIED` | the current authority or policy profile does not grant the operation |
+| `CHANGESET_INVALID` / `CHANGESET_NOT_FOUND` | the staged change set is invalid or unknown |
+| `CHAT_FAILED` | the chat provider, response stream, or tool loop failed safely |
+| `COMMIT_FAILED` / `COMMIT_NOT_FOUND` | a commit failed or the requested commit record is unknown |
+| `CONSOLE_AUTH_FAILED` / `CONSOLE_NOT_RUNNING` | the stdio bridge could not authenticate to or reach the console |
+| `EXEC_BLOCKED` / `EXEC_ERROR` / `EXEC_TIMEOUT` | code execution was denied, failed, or timed out |
+| `EXTRA_NOT_INSTALLED` | an optional package is required; the error hint names the install command |
+| `FILE_EXISTS` / `FILE_NOT_FOUND` | the destination already exists or the source path does not exist |
+| `INTERNAL_ERROR` | an unexpected product error occurred; inspect the local audit log |
+| `INVALID_INPUT` / `INVALID_OUTPUT` / `INVALID_QUERY` | arguments, structured output, or selector syntax failed validation |
+| `JOB_CANCELLED` / `JOB_NOT_CANCELLABLE` / `JOB_NOT_FOUND` | the job was cancelled, cannot be cancelled now, or is unknown |
+| `JOB_RESULT_INVALID` / `JOB_SPEC_INVALID` | a job result or submitted job specification failed validation |
+| `JOB_SERVICE_CLOSED` / `JOB_WORKER_FAILED` / `JOB_TIMEOUT` | the job service is closed, its worker failed, or the wait timed out |
+| `KNOWLEDGE_DISABLED` / `KNOWLEDGE_NOT_READY` | knowledge indexing is disabled or has not been built yet |
+| `MODEL_BUSY` | the model session is paused after a timed-out operation and must be reloaded |
+| `MODEL_NOT_FOUND` / `NO_MODEL_LOADED` | the requested resident model is absent or no active model is open |
+| `MODEL_READ_ONLY` | a write targeted an attached model; only the active model is writable |
+| `MODEL_TOO_LARGE` | a model exceeds the configured open or viewer size budget |
+| `NOT_FOUND` / `PROPERTY_NOT_FOUND` | a requested entity, attachment, or property does not exist |
+| `NO_GEOMETRY` / `NO_MATCH` | a selector produced no usable solid geometry or no elements |
+| `PATH_NOT_ALLOWED` | the resolved path is outside the explicitly allowed directories |
+| `RESTORE_CONFLICT` / `RESTORE_NOT_FOUND` | restore conflicts with current state or its commit is unknown |
+| `RESULT_TOO_LARGE` / `TOO_MANY_ELEMENTS` | narrow the request to stay inside output or element limits |
+| `REVISION_CONFLICT` / `SOURCE_CHANGED` | model or source identity changed after the operation was planned |
+| `SANDBOX_UNAVAILABLE` | strict sandboxing was requested but an isolated worker was unavailable |
+| `TRANSACTION_INTERRUPTED` / `TRANSACTION_RECOVERY_REQUIRED` | a transaction was interrupted or requires recovery before more writes |
+| `TRANSACTION_JOURNAL_BUSY` / `TRANSACTION_JOURNAL_CORRUPT` / `TRANSACTION_JOURNAL_INVALID` | the transaction journal is locked, corrupt, or invalid |
+| `UNSAVED_CHANGES` | the operation refused to discard unsaved model changes |
+| `VALIDATION_FAILED` | validation could not complete or its result was invalid |
+| `VIEWER_ERROR` / `VIEWER_NOT_CONNECTED` / `VIEWER_TIMEOUT` | the viewer failed, has no healthy tab, or did not answer in time |
+| `WORKFLOW_CANCELLED` / `WORKFLOW_NOT_FOUND` / `WORKFLOW_NOT_RESUMABLE` | the workflow was cancelled, is unknown, or cannot resume |
+| `WORKFLOW_DEPENDENCY_FAILED` / `WORKFLOW_STEP_FAILED` / `WORKFLOW_SUPERVISOR_FAILED` | a dependency, step, or supervisor failed |
+| `WORKFLOW_INPUT_EMPTY` / `WORKFLOW_INPUT_LIMIT` | workflow input discovery returned nothing or exceeded its bound |
+| `WORKFLOW_INTERRUPTED` / `WORKFLOW_TIMEOUT` | workflow execution was interrupted or the wait timed out |
+| `WORKFLOW_MANIFEST_INVALID` / `WORKFLOW_MANIFEST_TOO_LARGE` / `WORKFLOW_PATH_INVALID` | the manifest or one of its paths failed validation or its size limit |
+| `WORKFLOW_SERVICE_CLOSED` / `WORKFLOW_STORE_CORRUPT` / `WORKFLOW_STORE_FAILED` | the workflow service is closed or its persistent store is corrupt or failed |
+| `WORKFLOW_SOURCE_CHANGED` | a workflow source changed after planning |
+| `WORKSPACE_BUDGET` / `WORKSPACE_DISABLED` | workspace indexing exceeded its budget or is disabled |
 
 ## Resources and prompts
 

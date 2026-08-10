@@ -12,6 +12,13 @@ const STORE = "ifc-console-chat";
 const HISTORY = "ifc-console-chat-history";
 const HISTORY_LIMIT = 40;
 
+function isPlainObject(value) {
+  return value !== null
+    && typeof value === "object"
+    && !Array.isArray(value)
+    && Object.getPrototypeOf(value) === Object.prototype;
+}
+
 // ---------------------------------------------------------------- token / api
 const hashParams = new URLSearchParams(location.hash.replace(/^#/, ""));
 const token = hashParams.get("t") || sessionStorage.getItem("ifc-console-token") || "";
@@ -132,35 +139,41 @@ const I = {
 const TEMPLATE = `
 <header class="chat-head">
   <span class="chat-title">Assistant</span>
-  <span class="chat-dot" data-role="dot" title=""></span>
+  <span class="chat-dot" data-role="dot" role="status" aria-live="polite"
+        aria-label="Assistant unavailable" title=""></span>
   <span class="chat-spacer"></span>
   <div class="chat-actions">
     <button class="chat-icon" data-act="clear" title="New chat" aria-label="New chat">${I.plus}</button>
     <button class="chat-icon" data-act="settings" title="Provider, model and tools"
-            aria-label="Chat settings">${I.gear}</button>
+            aria-label="Chat settings" aria-haspopup="dialog"
+            aria-controls="chat-settings" aria-expanded="false">${I.gear}</button>
     <button class="chat-icon" data-role="close" title="Close the panel"
             aria-label="Close the chat panel" hidden>${I.close}</button>
   </div>
 </header>
 
-<button class="chat-context" data-act="settings" title="Change the provider or model">
+<button class="chat-context" data-act="settings" title="Change the provider or model"
+        aria-haspopup="dialog" aria-controls="chat-settings" aria-expanded="false">
   <span class="chat-context-model" data-role="modelname">no AI model</span>
   <span class="chat-context-meta" data-role="context"></span>
 </button>
 
-<div class="chat-log" data-role="log"></div>
+<div class="chat-log" data-role="log" role="log" aria-label="Conversation"
+     aria-live="off"></div>
 
 <footer class="chat-composer">
   <div class="chat-input-wrap">
     <textarea data-role="input" rows="1" placeholder="Ask about the model..." aria-label="Message"></textarea>
-    <button class="chat-send" data-act="send" title="Send" aria-label="Send">${I.send}</button>
+    <button class="chat-send" data-act="send" title="Send" aria-label="Send message">${I.send}</button>
   </div>
-  <div class="chat-hint" data-role="status"></div>
+  <div class="chat-hint" data-role="status" role="status" aria-live="polite"></div>
+  <div class="chat-sr" data-role="announce" role="status" aria-live="polite"></div>
 </footer>
 
-<div class="chat-modal" data-role="modal" hidden>
-  <div class="chat-scrim" data-act="close-settings"></div>
-  <div class="chat-dialog" role="dialog" aria-modal="true" aria-label="Chat settings">
+<div class="chat-modal" id="chat-settings" data-role="modal" hidden>
+  <div class="chat-scrim" data-act="close-settings" aria-hidden="true"></div>
+  <div class="chat-dialog" role="dialog" aria-modal="true" aria-label="Chat settings"
+       tabindex="-1">
     <header class="chat-dialog-head">
       <span>Settings</span>
       <button class="chat-icon" data-act="close-settings" aria-label="Close settings">${I.close}</button>
@@ -188,7 +201,7 @@ const TEMPLATE = `
                   title="Reload the model list" aria-label="Reload models">${I.refresh}</button>
         </div>
         <input class="chat-custom" type="text" data-role="modelcustom" hidden
-               placeholder="model id" spellcheck="false">
+               placeholder="model id" spellcheck="false" aria-label="Custom AI model id">
       </div>
 
       <div class="chat-section">Behaviour</div>
@@ -252,6 +265,7 @@ export function mountChat(root, options = {}) {
   let aborter = null;
   let localOnly = false;
   let sessionStatus = {};
+  let settingsReturnFocus = null;
   const settings = loadSettings();
 
   if (options.onClose) {
@@ -269,12 +283,13 @@ export function mountChat(root, options = {}) {
     let saved = {};
     try {
       saved = JSON.parse(localStorage.getItem(STORE) || "{}");
+      if (!isPlainObject(saved)) saved = {};
     } catch {
       saved = {};
     }
     return {
       provider: saved.provider || "",
-      byProvider: saved.byProvider || {},
+      byProvider: isPlainObject(saved.byProvider) ? saved.byProvider : {},
       system: saved.system || "",
       tools: saved.tools !== false,
       temp: saved.temp ?? "",
@@ -299,7 +314,11 @@ export function mountChat(root, options = {}) {
     settings.tools = el("tools").checked;
     settings.temp = el("temp").value;
     settings.maxtok = el("maxtok").value;
-    localStorage.setItem(STORE, JSON.stringify(settings));
+    try {
+      localStorage.setItem(STORE, JSON.stringify(settings));
+    } catch {
+      // Storage can be unavailable in private mode or full.
+    }
 
     const key = el("key").value.trim();
     postJSON("/api/chat/select", { provider: id, model, base_url, api_key: key || undefined })
@@ -378,6 +397,10 @@ export function mountChat(root, options = {}) {
     el("modelname").title = p ? `${p.label}${model ? " · " + model : ""}` : "";
     el("dot").className = "chat-dot" + (ready ? " ok" : "");
     el("dot").title = ready ? "ready" : "needs an AI model or API key";
+    el("dot").setAttribute(
+      "aria-label",
+      ready ? "Assistant ready" : "Assistant needs an AI model or API key",
+    );
     send.disabled = !ready && !busy;
     if (!turns.length && !busy) empty();
     if (p) {
@@ -500,15 +523,25 @@ export function mountChat(root, options = {}) {
     }
   }
 
-  function openSettings() {
+  function openSettings(trigger = document.activeElement) {
+    settingsReturnFocus = root.contains(trigger) ? trigger : input;
     el("modal").hidden = false;
+    for (const button of root.querySelectorAll('[data-act="settings"]')) {
+      button.setAttribute("aria-expanded", "true");
+    }
     el("provider").focus();
   }
 
   function closeSettings() {
     el("modal").hidden = true;
+    for (const button of root.querySelectorAll('[data-act="settings"]')) {
+      button.setAttribute("aria-expanded", "false");
+    }
     saveSettings();
-    input.focus();
+    const target = settingsReturnFocus && settingsReturnFocus.isConnected
+      ? settingsReturnFocus : input;
+    settingsReturnFocus = null;
+    target.focus();
   }
 
   // ---------------------------------------------------------------- messages
@@ -523,7 +556,8 @@ export function mountChat(root, options = {}) {
          </div>`
       : `<p class="chat-empty-lead">Nothing answers yet: choose an AI provider and model, and add a key if the provider needs one.</p>
          <div class="chat-setup">
-           <button class="chat-btn primary" data-act="settings">Configure assistant</button>
+           <button class="chat-btn primary" data-act="settings" aria-haspopup="dialog"
+                   aria-controls="chat-settings" aria-expanded="false">Configure assistant</button>
          </div>`;
     log.innerHTML = `
       <div class="chat-empty">
@@ -661,10 +695,13 @@ export function mountChat(root, options = {}) {
   async function run() {
     const view = addAssistant();
     busy = true;
+    log.setAttribute("aria-busy", "true");
+    el("announce").textContent = "Assistant is responding.";
     send.disabled = false;
     send.innerHTML = I.stop;
     send.classList.add("stop");
     send.title = "Stop";
+    send.setAttribute("aria-label", "Stop response");
     aborter = new AbortController();
 
     let answer = "";
@@ -784,7 +821,8 @@ export function mountChat(root, options = {}) {
       const seconds = Math.max((performance.now() - firstToken) / 1000, 0.01);
       bits.push(`${(usage.out / seconds).toFixed(0)} tok/s`);
     }
-    if (aborter.signal.aborted) bits.push("stopped");
+    const stopped = aborter.signal.aborted;
+    if (stopped) bits.push("stopped");
     if (capped) bits.push("hit the token cap");
     view.stats.textContent = bits.join(" · ");
     if (text) view.stats.appendChild(copyButton(text));
@@ -799,10 +837,15 @@ export function mountChat(root, options = {}) {
     }
 
     busy = false;
+    log.setAttribute("aria-busy", "false");
+    el("announce").textContent = stopped
+      ? "Assistant response stopped."
+      : error && !text ? "Assistant response failed." : "Assistant response ready.";
     aborter = null;
     send.innerHTML = I.send;
     send.classList.remove("stop");
     send.title = "Send";
+    send.setAttribute("aria-label", "Send message");
     render();
     refreshContext();
     input.focus();
@@ -842,6 +885,25 @@ export function mountChat(root, options = {}) {
     }
   });
   root.addEventListener("keydown", (event) => {
+    if (!el("modal").hidden && event.key === "Tab") {
+      const focusable = [...el("modal").querySelectorAll(
+        'button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), summary, [tabindex]:not([tabindex="-1"])',
+      )].filter((node) => !node.hidden && node.offsetParent !== null);
+      const first = focusable[0];
+      const last = focusable.at(-1);
+      if (!first) return;
+      if (!focusable.includes(document.activeElement)) {
+        event.preventDefault();
+        first.focus();
+      } else if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+      return;
+    }
     if (event.key !== "Escape") return;
     if (!el("modal").hidden) {
       closeSettings();
@@ -852,9 +914,10 @@ export function mountChat(root, options = {}) {
     }
   });
   root.addEventListener("click", (event) => {
-    const action = event.target.closest("[data-act]")?.dataset.act;
+    const actionButton = event.target.closest("[data-act]");
+    const action = actionButton?.dataset.act;
     if (action === "send") submit();
-    else if (action === "settings") openSettings();
+    else if (action === "settings") openSettings(actionButton);
     else if (action === "close-settings") closeSettings();
     else if (action === "models") loadModels();
     else if (action === "clear") {

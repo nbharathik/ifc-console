@@ -6,8 +6,8 @@ First stop, always:
 ifc-console doctor --file your-model.ifc
 ```
 
-It checks the interpreter, every dependency, the bundled viewer assets, settings
-readability, port availability, and (with `--file`) parses your model.
+It checks the interpreter, core dependencies, optional viewer asset status,
+settings readability, port availability, and (with `--file`) parses your model.
 
 ## Common issues
 
@@ -119,17 +119,17 @@ ifc-console refuses to start on an occupied port and tells you **who owns it**.
 
 - **"your running ifc-console session (same token)"**: you already have a session
   up; your clients are talking to it. For a second parallel session use
-  `--port 8390`, and wire the second port up once too. Per project, drop a
-  `.ifc-console/settings.json` with `{"server": {"port": 8390}}` next to the models
-  and that folder always uses its own port.
-- **"an ifc-console session with a different token"**: probably a different
-  `IFC_CONSOLE_HOME`; check `ifc-console token show` on both sides.
+  `--port 8390`, and wire the second port up once too. Project settings cannot
+  change the server port; set a persistent user port with `ifc-console settings
+  set server.port 8390` only if it should apply to every launch.
+- **"an unverified ifc-console listener (different token)"**: probably a
+  different `IFC_CONSOLE_HOME`; check `ifc-console token show` on both sides.
 - **"an application that is not ifc-console"**: some other program owns your
-  configured port. Do not leave this as is: MCP clients pointing at that URL
-  would send their requests, bearer token included, to that program. Move
-  permanently with `ifc-console settings set server.port 8390`, re-add clients
-  (`ifc-console mcp-config`), and consider `ifc-console token rotate` if the foreign
-  app may have seen requests.
+  configured port. The default stdio bridge verifies a nonce-bound HMAC proof
+  before sending its bearer token, so the foreign listener does not receive it.
+  Move permanently with `ifc-console settings set server.port 8390` and re-add
+  clients (`ifc-console mcp-config`). Rotate the token if any direct HTTP client
+  may already have sent it to the foreign listener.
 
 Inside a running console, `/port 8390` moves the live server.
 
@@ -152,6 +152,18 @@ Guarded (mutation-locked) code managed to mutate the in-memory model. The
 classifier missed it and the canary caught it. Nothing on disk changed.
 `/reload` restores a pristine copy; the audit log records what ran.
 
+### The viewer or chat says its assets are not installed
+
+The base package keeps working without the browser bundle. Add the optional
+assets, then restart ifc-console:
+
+```bash
+uv tool install "ifc-console[viewer]"
+# or: pip install "ifc-console[viewer]"
+```
+
+`ifc-console doctor` reports the bundle on its `viewer assets` line.
+
 ### The viewer shows "model too large"
 
 `viewer.max_model_mb` (default 200) refused the download.
@@ -160,8 +172,9 @@ large models in the browser takes memory and patience.
 
 ### The viewer tab shows "unauthorized"
 
-Open it through `/viewer` (the URL carries the token). A stale tab from a
-previous run holds the old token: close it and `/viewer` again.
+Open it through `/viewer` (the URL carries the token). After token rotation, or
+when per-run tokens are enabled, a stale tab can hold the old token: close it
+and run `/viewer` again.
 
 ### Mutations are blocked and the LLM keeps apologizing
 

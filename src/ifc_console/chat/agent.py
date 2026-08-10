@@ -21,7 +21,6 @@ from ifc_console.chat.providers import (
     PROVIDERS,
     Provider,
     ProviderError,
-    redact,
     resolve_key,
     stream,
     validate_base_url,
@@ -253,14 +252,8 @@ async def _stream_round(provider: Provider, **kwargs) -> AsyncIterator[dict[str,
         except ProviderError as exc:
             emit({"type": "error", "text": str(exc)})
         except Exception as exc:  # never leave the panel hanging
-            log.exception("chat provider failed")
-            secret = str(kwargs.get("key") or "")
-            emit(
-                {
-                    "type": "error",
-                    "text": f"{type(exc).__name__}: {redact(str(exc), (secret,))}",
-                }
-            )
+            log.error("chat provider failed with %s", type(exc).__name__)
+            emit({"type": "error", "text": "internal provider error"})
         finally:
             emit(_QUEUE_DONE)
 

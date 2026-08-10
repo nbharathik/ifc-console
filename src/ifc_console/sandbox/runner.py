@@ -2,8 +2,8 @@
 
 The honest boundary, stated once so the rest of the code can be short:
 
-- Non-mutating runs go to the worker. That is every run in ask mode, and
-  query-classified code in edit mode. The worker reads the model from disk,
+- Eligible non-mutating runs go to the worker. That includes runs in ask mode
+  and query-classified code in edit mode. The worker reads the model from disk,
   so it can only be used when the in-memory model matches the file.
 - Mutating runs stay in-process, because the edit has to land in the model
   the rest of the console is holding. Those runs already required the user
@@ -90,7 +90,7 @@ class SandboxRunner:
         return SandboxPolicy.build(
             read_dirs=list(self.core.allowed_dirs),
             scratch_dir=scratch,
-            deny_dirs=[self.core.store.home],
+            deny_dirs=self.core.generated_code_deny_paths(),
             memory_mb=self.settings.memory_mb,
         )
 

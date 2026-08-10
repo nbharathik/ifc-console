@@ -61,6 +61,7 @@ or `fail_fast`.
 ## Plan and run
 
 ```bash
+ifc-console workflows schema > workflow-v1.schema.json
 ifc-console run workflow.yaml --plan --json
 ifc-console run workflow.yaml --output-dir reports --json
 
@@ -70,6 +71,11 @@ ifc-console workflows watch workflow-0123456789abcdef
 ifc-console workflows cancel workflow-0123456789abcdef
 ifc-console workflows resume workflow-0123456789abcdef --output-dir reports
 ```
+
+`workflows schema` prints the authoritative JSON Schema without starting a
+model, server, or automation service. Point an editor or manifest generator at
+that file for completion and validation. The command is safe to run in CI and
+its output is versioned by the manifest's required `version` field.
 
 Planning resolves inputs, checks policy and paths, hashes every IFC and IDS
 source, validates the graph, reports the child count and required capabilities,
@@ -123,6 +129,41 @@ Typed in-memory specifications can use `plan_workflow_spec(spec,
 base_dir=...)`. Async applications use the same method names on
 `AsyncWorkbench`. Both clients also expose `submit_workflow`, `workflows`,
 `wait_workflow`, `cancel_workflow`, and `resume_workflow`.
+
+All types needed to build a manifest are exported from the top-level package:
+
+```python
+from pathlib import Path
+
+from ifc_console import (
+    Workbench,
+    WorkflowInputSpec,
+    WorkflowQueryOperation,
+    WorkflowSpec,
+    WorkflowStepSpec,
+)
+
+spec = WorkflowSpec(
+    name="wall-inventory",
+    inputs=(WorkflowInputSpec(id="models", paths=("models/*.ifc",)),),
+    steps=(
+        WorkflowStepSpec(
+            id="walls",
+            operation=WorkflowQueryOperation(query="IfcWall"),
+        ),
+    ),
+)
+
+with Workbench.open(home=".ifc-console-ci") as wb:
+    plan = wb.plan_workflow_spec(spec, base_dir=Path.cwd())
+    completed = wb.wait_workflow(
+        wb.submit_workflow_plan(plan).workflow_id,
+    )
+```
+
+`examples/workflows/submission-gate.yaml` is a copyable project template. Its
+paths are intentionally relative to the manifest, so copy it beside the
+project's `models` and `requirements` folders before planning it.
 
 ## Security boundaries and current scope
 

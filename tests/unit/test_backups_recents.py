@@ -59,6 +59,15 @@ def test_same_named_models_have_independent_retention(tmp_path: Path) -> None:
     assert {path.read_text() for path in second_backups} <= {"b1", "b2"}
 
 
+def test_backup_listing_escapes_glob_characters_in_model_names(tmp_path: Path) -> None:
+    target = tmp_path / "model[revision].ifc"
+    target.write_text("ISO-10303-21;", encoding="utf-8")
+    store = BackupStore(tmp_path / "backups")
+    created = store.backup(target)
+    assert created is not None
+    assert store.list_for(target) == [created]
+
+
 def test_recents_mru_and_cap(tmp_path: Path) -> None:
     store = RecentsStore(tmp_path / "recents.json", max_entries=2)
     for name in ("a", "b", "c"):

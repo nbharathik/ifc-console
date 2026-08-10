@@ -14,19 +14,66 @@ from dataclasses import dataclass
 from ifc_console.policy.modes import OpClass
 
 SYSTEM_MODULES = {
-    "os", "sys", "subprocess", "shutil", "pathlib", "socket", "http", "urllib",
-    "requests", "ftplib", "ctypes", "multiprocessing", "threading", "importlib",
-    "builtins", "pickle", "marshal", "tempfile", "webbrowser", "asyncio",
+    "os",
+    "sys",
+    "subprocess",
+    "shutil",
+    "pathlib",
+    "socket",
+    "http",
+    "urllib",
+    "requests",
+    "ftplib",
+    "ctypes",
+    "multiprocessing",
+    "threading",
+    "importlib",
+    "builtins",
+    "pickle",
+    "marshal",
+    "tempfile",
+    "webbrowser",
+    "asyncio",
+    "_thread",
+    "sqlite3",
+    "mmap",
+    "fcntl",
+    "gc",
+    "_xxsubinterpreters",
 }
 
 MUTATING_FILE_METHODS = {
-    "create_entity", "add", "remove", "batch", "unbatch",
-    "assign_inverse", "unassign_inverse",
+    "create_entity",
+    "add",
+    "remove",
+    "batch",
+    "unbatch",
+    "assign_inverse",
+    "unassign_inverse",
 }
 
 DUNDER_ESCAPES = {
-    "__globals__", "__subclasses__", "__bases__", "__mro__", "__code__",
-    "__builtins__", "__loader__", "__spec__", "__dict__",
+    "__globals__",
+    "__subclasses__",
+    "__bases__",
+    "__mro__",
+    "__code__",
+    "__builtins__",
+    "__loader__",
+    "__spec__",
+    "__dict__",
+    "__traceback__",
+    "__closure__",
+}
+
+INTROSPECTION_ESCAPES = {
+    "tb_frame",
+    "f_back",
+    "f_globals",
+    "f_locals",
+    "gi_frame",
+    "cr_frame",
+    "ag_frame",
 }
 
 
@@ -163,7 +210,10 @@ class _Visitor(ast.NodeVisitor):
                     len(node.args) >= 2
                     and isinstance(node.args[1], ast.Constant)
                     and isinstance(node.args[1].value, str)
-                    and node.args[1].value.startswith("__")
+                    and (
+                        node.args[1].value.startswith("__")
+                        or node.args[1].value in INTROSPECTION_ESCAPES
+                    )
                 ):
                     self.system.append(f"dunder getattr: {_snippet(node)}")
             elif name == "open":
@@ -205,8 +255,8 @@ class _Visitor(ast.NodeVisitor):
 
     # -- S3: dunder escapes -----------------------------------------------------
     def visit_Attribute(self, node: ast.Attribute) -> None:
-        if node.attr in DUNDER_ESCAPES:
-            self.system.append(f"dunder access: .{node.attr}")
+        if node.attr in DUNDER_ESCAPES or node.attr in INTROSPECTION_ESCAPES:
+            self.system.append(f"introspection access: .{node.attr}")
         self.generic_visit(node)
 
     def visit_Name(self, node: ast.Name) -> None:

@@ -34,9 +34,7 @@ def test_transaction_job_and_journal_commands_are_registered() -> None:
 
 def test_batch_commands_are_registered() -> None:
     parser = build_parser()
-    validate = parser.parse_args(
-        ["batch", "validate", "one.ifc", "two.ifc", "--concurrency", "2"]
-    )
+    validate = parser.parse_args(["batch", "validate", "one.ifc", "two.ifc", "--concurrency", "2"])
     resume = parser.parse_args(["batch", "resume", "batch-0123456789abcdef"])
     query = parser.parse_args(
         ["batch", "query", "one.ifc", "--selector", "IfcWall", "--format", "csv"]
@@ -53,11 +51,21 @@ def test_workflow_commands_are_registered() -> None:
     run = parser.parse_args(["run", "workflow.yaml", "--plan"])
     watch = parser.parse_args(["workflows", "watch", "workflow-0123456789abcdef"])
     resume = parser.parse_args(["workflows", "resume", "workflow-0123456789abcdef"])
+    schema = parser.parse_args(["workflows", "schema"])
 
     assert run.func.__name__ == "_cmd_workflow_run"
     assert run.plan is True
     assert watch.func.__name__ == "_cmd_workflows_watch"
     assert resume.func.__name__ == "_cmd_workflows_resume"
+    assert schema.func.__name__ == "_cmd_workflows_schema"
+
+
+def test_workflow_schema_command_prints_the_versioned_contract(capsys) -> None:
+    assert main(["workflows", "schema"]) == 0
+    schema = json.loads(capsys.readouterr().out)
+    assert schema["title"] == "WorkflowSpec"
+    assert schema["properties"]["version"]["const"] == "1"
+    assert set(schema["properties"]) >= {"name", "inputs", "steps"}
 
 
 def test_structured_creation_and_classification_cli_options_are_registered() -> None:
@@ -282,9 +290,7 @@ def test_durable_validation_batch_cli(tmp_path, monkeypatch, capsys):
     assert len(list(query_output.iterdir())) == 3
 
 
-def test_workflow_cli_plans_executes_exports_and_restores(
-    tmp_path, monkeypatch, capsys
-):
+def test_workflow_cli_plans_executes_exports_and_restores(tmp_path, monkeypatch, capsys):
     home = tmp_path / "home"
     monkeypatch.setenv("IFC_CONSOLE_HOME", str(home))
     model = tmp_path / "model.ifc"

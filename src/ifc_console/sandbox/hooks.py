@@ -20,9 +20,14 @@ from __future__ import annotations
 import os
 import sys
 import threading
+from collections.abc import Callable
 from typing import Any
 
-from ifc_console.sandbox.policy import SandboxPolicy, runtime_roots
+from ifc_console.sandbox.policy import (
+    SandboxPolicy,
+    is_sensitive_generated_path,
+    runtime_roots,
+)
 
 
 class SandboxViolation(PermissionError):
@@ -62,6 +67,11 @@ _DENIED_PREFIXES: tuple[str, ...] = (
     "os.seteuid",
     "os.setegid",
     "msvcrt.",
+    "ctypes.",
+    "_thread.",
+    "sqlite3.",
+    "mmap.",
+    "fcntl.",
     "code.__init__",
     "code.interact",
     "cpython.run_command",
@@ -82,7 +92,29 @@ _DENIED_EXACT: frozenset[str] = frozenset(
         "ctypes.cdata",
         "ctypes.cdata/buffer",
         "ctypes.set_exception",
+        "cpython.PyInterpreterState_New",
     }
+)
+
+_USER_CODE_DENIED_EXACT: frozenset[str] = frozenset(
+    {
+        "object.__getattr__",
+        "object.__setattr__",
+        "object.__delattr__",
+        "sys._getframe",
+        "sys._current_frames",
+        "sys._current_exceptions",
+        "sys.settrace",
+        "sys.setprofile",
+        "sys.addaudithook",
+        "gc.get_objects",
+        "gc.get_referrers",
+        "gc.get_referents",
+    }
+)
+
+_DENIED_IMPORT_ROOTS: frozenset[str] = frozenset(
+    {"_interpreters", "_xxinterpchannels", "_xxsubinterpreters", "interpreters"}
 )
 
 # Path-bearing events, checked against the policy rather than denied outright:
@@ -106,6 +138,17 @@ _READ_PATH_EVENTS: dict[str, tuple[int, ...]] = {
     "os.scandir": (0,),
     "os.chdir": (0,),
     "glob.glob": (0,),
+}
+
+_DIR_FD_INDEXES: dict[str, tuple[int, ...]] = {
+    "os.remove": (1,),
+    "os.rename": (2, 3),
+    "os.rmdir": (1,),
+    "os.mkdir": (2,),
+    "os.link": (2, 3),
+    "os.symlink": (2,),
+    "os.chmod": (2,),
+    "os.chown": (3,),
 }
 
 _WRITE_FLAGS = os.O_WRONLY | os.O_RDWR | os.O_APPEND | os.O_CREAT | os.O_TRUNC
@@ -142,14 +185,22 @@ def _as_path(value: Any) -> str | None:
         return None
 
 
-def _check_indexes(check_path, args: tuple[Any, ...], indexes: tuple[int, ...], write: bool) -> None:
+def _check_indexes(
+    check_path, args: tuple[Any, ...], indexes: tuple[int, ...], write: bool
+) -> None:
     for i in indexes:
+        if len(args) > i and isinstance(args[i], int):
+            raise SandboxViolation("sandbox: access through a raw file descriptor is blocked")
         path = _as_path(args[i]) if len(args) > i else None
         if path is not None:
             check_path(path, write=write)
 
 
-def install(policy: SandboxPolicy) -> list[str]:
+def install(
+    policy: SandboxPolicy,
+    *,
+    is_user_code: Callable[[], bool] | None = None,
+) -> list[str]:
     """Arm the boundary. Returns the list of controls now in force."""
     global _installed
     if _installed:
@@ -165,22 +216,27 @@ def install(policy: SandboxPolicy) -> list[str]:
     # ifc_console.sandbox.hooks._DENIED_PREFIXES must not widen the boundary.
     denied_exact = _DENIED_EXACT
     denied_prefixes = _DENIED_PREFIXES
+    denied_import_roots = _DENIED_IMPORT_ROOTS
+    user_code_denied = _USER_CODE_DENIED_EXACT
     write_events = _WRITE_PATH_EVENTS
     read_events = _READ_PATH_EVENTS
+    dir_fd_indexes = _DIR_FD_INDEXES
     network_events = ("socket.", "urllib.", "http.client.", "ftplib.", "smtplib.")
     process_events = ("subprocess.", "os.system", "os.exec", "os.spawn", "os.fork")
     state = threading.local()
 
     def check_path(path: str, *, write: bool) -> None:
         resolved = _norm(path)
+        if is_sensitive_generated_path(path) or is_sensitive_generated_path(resolved):
+            raise SandboxViolation(
+                f"sandbox: reading {path} is blocked because it may contain credentials"
+            )
         # The scratch is the worker's own directory and lives under the console
         # home, which is denied wholesale. Carve it out before the deny check,
         # or the sandbox has nowhere at all to write.
         in_scratch = _under(resolved, write_roots)
         if not in_scratch and _under(resolved, deny_roots):
-            raise SandboxViolation(
-                f"sandbox: {path} is in a directory the sandbox may never touch"
-            )
+            raise SandboxViolation(f"sandbox: {path} is in a directory the sandbox may never touch")
         if write:
             if not in_scratch:
                 raise SandboxViolation(
@@ -195,11 +251,18 @@ def install(policy: SandboxPolicy) -> list[str]:
             )
 
     def check_open(args: tuple[Any, ...]) -> None:
+        if args and isinstance(args[0], int):
+            raise SandboxViolation("sandbox: opening a raw file descriptor is blocked")
         path = _as_path(args[0]) if args else None
         if path is None:
             return
         mode = args[1] if len(args) > 1 else None
         flags = args[2] if len(args) > 2 else None
+        if mode is None and not os.path.isabs(path):
+            raise SandboxViolation(
+                "sandbox: relative low-level file opens are blocked because their "
+                "directory capability is not visible to the audit hook"
+            )
         write = bool(mode) and any(c in str(mode) for c in "wax+")
         if isinstance(flags, int):
             write = write or bool(flags & _WRITE_FLAGS)
@@ -223,6 +286,13 @@ def install(policy: SandboxPolicy) -> list[str]:
             state.busy = False
 
     def hook(event: str, args: tuple[Any, ...]) -> None:
+        if event == "import" and args:
+            import_root = str(args[0]).split(".", 1)[0]
+            if import_root in denied_import_roots:
+                raise SandboxViolation(
+                    f"sandbox: importing {import_root} is blocked because it can "
+                    "create an interpreter outside the audit boundary"
+                )
         # `open` is by far the hottest event, and it carries no categorical
         # denial, so it is answered first.
         if event == "open":
@@ -239,6 +309,18 @@ def install(policy: SandboxPolicy) -> list[str]:
                 f"sandbox: {event} is blocked. The sandbox has no network, no "
                 "subprocesses, and no access outside the model directories."
             )
+        if is_user_code is not None:
+            try:
+                active = is_user_code()
+            except BaseException:  # noqa: BLE001 - a broken gate must fail closed
+                active = True
+            if active and event in user_code_denied:
+                raise SandboxViolation(
+                    f"sandbox: {event} is blocked while generated code is running"
+                )
+        for index in dir_fd_indexes.get(event, ()):
+            if len(args) > index and args[index] not in (None, -1):
+                raise SandboxViolation("sandbox: directory-relative file operations are blocked")
         indexes = write_events.get(event)
         if indexes is not None:
             guarded(lambda a: _check_indexes(check_path, a, indexes, True), args)
@@ -256,6 +338,8 @@ def install(policy: SandboxPolicy) -> list[str]:
     if not allow_process:
         controls.append("subprocess-blocked")
     controls.append("ctypes-blocked")
+    if is_user_code is not None:
+        controls.append("introspection-blocked")
     return controls
 
 

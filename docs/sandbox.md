@@ -5,9 +5,11 @@ decides **whether** that code may change your model. The sandbox decides **what
 the code can do to the rest of your machine**, which is a different question and
 needs a different mechanism.
 
-Read-only runs execute in a separate process that has no network, cannot start
-another process, holds no credentials, and can only read the directories your
-model lives in. That is the whole idea in one sentence.
+Eligible read-only runs use a separate process that has no network, cannot
+start another process, inherits no credential-bearing environment variables,
+blocks common credential stores, and can otherwise read the directories your
+model lives in. The default auto mode reports and uses guarded in-process
+fallback if the model copy or worker is unavailable; strict mode refuses it.
 
 ## Why a separate process
 
@@ -35,7 +37,7 @@ b['__import__']('socket').socket()
 | --- | --- |
 | No network | Every socket, urllib, http, ftp, and smtp operation is refused |
 | No subprocesses | Process creation is refused, and on Windows the OS job object caps the sandbox at one process |
-| No credentials | The worker gets a hand-built environment: no API keys, no cloud credentials, not even the console's own token |
+| Credential reduction | The worker gets a hand-built environment with no inherited keys or tokens, and common credential stores are denied even inside an allowed root |
 | Read allowlist | Only the model directories, the sandbox scratch, and the Python installation |
 | Write allowlist | Only the sandbox's own scratch directory; the model file itself is not writable |
 | No arbitrary memory | `ctypes` calls that load libraries or address raw memory are refused |
@@ -48,19 +50,22 @@ implementation of each operation and cannot be removed once installed. That is
 why the escape above still fails: the block is below the object graph, not
 inside it.
 
-The console's own home directory is denied outright, even when it sits inside a
-directory you allowed. Your bearer token is never readable from the sandbox.
+The console's own home directory and common credential locations such as
+`.ssh`, `.aws`, `.git`, `.config`, package-manager credential files, `.env`,
+`.env.*`, and `.envrc` are denied even when they sit inside a directory you
+allowed. The console bearer token is never readable from the sandbox.
 
 ## What runs where
 
 | Run | Where | Why |
 | --- | --- | --- |
-| Any code in `ask` mode | Sandbox | The default posture: nothing the model writes touches the console process |
-| Query-classified code in `edit` mode | Sandbox | Reading does not need the live model |
+| Any code in `ask` mode | Sandbox when eligible | Auto mode reports guarded fallback; strict mode refuses it |
+| Query-classified code in `edit` mode | Sandbox when eligible | Reading normally does not need the live model |
 | Mutating code in `edit` mode | In-process, behind the guards | The edit has to land in the model the console is holding |
 
-Mutating code is the one path that stays in-process, and reaching it already
-required you to turn on edit mode by hand.
+Mutating code always stays in-process, and reaching it already required you to
+turn on edit mode by hand. A non-mutating run can also use the guarded
+in-process path when sandboxing is off or when auto mode reports a fallback.
 
 The sandbox reads the model **from disk**, so it can only be used when the file
 matches what the console holds in memory. After an unsaved edit the console
@@ -117,8 +122,11 @@ worth paying at all.
 
 The sandbox is a strong containment boundary, not a virtual machine. It does not
 defend against a kernel or interpreter vulnerability, and it does not stop code
-from reading the model you deliberately gave it. Treat it as: generated code
-cannot reach your network, your credentials, or your files, and cannot damage
-anything outside the directories you opened.
+from reading the model directory you deliberately gave it. The worker strips
+environment credentials and blocks common credential stores, but it cannot
+identify an arbitrary secret saved under another name such as `secrets.txt`
+inside an allowed root. Treat every other file under an allowed root as readable
+by generated code. The sandbox still blocks network and subprocess access and
+prevents writes outside its scratch directory.
 
 See also: [Safety model](safety.md).

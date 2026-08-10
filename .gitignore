@@ -21,5 +21,6 @@ site/
 
 # Local development notes (design docs, implementation log, scratch)
 dev/
+.vscode/
 *.ifc
 CLAUDE.md

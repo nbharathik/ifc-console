@@ -91,12 +91,14 @@ audit log. Verify a stored chain with `ifc-console sessions verify <id>`.
 The mode switch decides whether generated code may change your model. The
 sandbox decides what it can do to everything else.
 
-Read-only runs, which is everything in `ask` mode, execute in a separate process
-with **no network, no subprocesses, no credentials in its environment**, a
-memory cap, and read access limited to your model directories. Enforcement sits
-on CPython audit hooks, so even code that escapes the namespace guards and
-reaches the real builtins still cannot open a socket or start a process. Check
-it any time with `/sandbox`.
+Eligible read-only runs, which includes everything allowed in `ask` mode, use a
+separate process with **no network, no subprocesses, no credentials in its
+environment**, a memory cap, and read access limited to your model directories.
+The default `sandbox.mode=auto` reports and uses in-process guards if the model
+copy or worker is unavailable; `/sandbox strict` refuses instead. Enforcement
+inside the worker sits on CPython audit hooks, so even code that escapes the
+namespace guards and reaches the real builtins still cannot open a socket or
+start a process.
 
 Honest caveat: mutating code still runs in-process behind the guards, because
 the edit has to land in the live model. Treat `edit` mode plus untrusted prompts
@@ -159,8 +161,11 @@ with Workbench.open("tower.ifc") as wb:
 ```
 
 `tools()` plus `call()` is a complete agent binding, and it is deliberately
-vendor neutral: no LLM client, no API key, no provider SDK. The ask/edit gate
-still applies. Full reference: [Python SDK](https://nbharathik.github.io/ifc-console/sdk/).
+vendor neutral: no LLM client, no API key, no provider SDK. Use
+`tools(permitted_only=True)` to give an agent only operations its current
+authority can invoke. The wheel includes a PEP 561 marker for IDE and type
+checker support. The ask/edit gate still applies. Full reference:
+[Python SDK](https://nbharathik.github.io/ifc-console/sdk/).
 
 Trusted local packages can add typed operations through the versioned,
 deny-by-default [plugin API](https://nbharathik.github.io/ifc-console/plugins/).
@@ -218,6 +223,7 @@ the code itself, see
 - [The console](https://nbharathik.github.io/ifc-console/console/) and [connecting clients](https://nbharathik.github.io/ifc-console/clients/)
 - [Safety model](https://nbharathik.github.io/ifc-console/safety/), [code sandbox](https://nbharathik.github.io/ifc-console/sandbox/), and [3D viewer](https://nbharathik.github.io/ifc-console/viewer/)
 - [Development](https://nbharathik.github.io/ifc-console/development/)
+- [Changelog](https://github.com/nbharathik/ifc-console/blob/main/CHANGELOG.md)
 
 ## License
 

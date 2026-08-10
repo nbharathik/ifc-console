@@ -25,14 +25,19 @@ the repository's Security tab). Please do not open a public issue.
 
 ### Threat model, honestly
 
-ifc-console runs LLM-written Python (`execute_ifc_code`) inside its own process. The
-ask/edit mode gate, AST classification, runtime guards, and allowed-directory
-checks stop **accidents and default behavior**, not a determined adversary:
-in-process CPython sandboxing can always be escaped by creative enough code. One
-known escape ships as a documented xfail test.
+Eligible read-only generated Python uses a separate restricted process with no
+network or subprocess access, no inherited credential environment, blocks for
+common credential stores, and a read allowlist for model directories. An
+arbitrarily named secret inside an allowed root remains readable. The default
+auto mode reports and uses guarded in-process fallback when isolation is not
+available; strict mode refuses it. Mutating code always runs in-process after
+the user explicitly selects edit mode, where namespace guards reduce accidents
+but are not a secure boundary against adversarial Python. One documented xfail
+records that in-process limitation.
 
-So "guards can be bypassed by adversarial code" is an acknowledged limitation,
-not a new vulnerability. These are the interesting reports:
+An escape from the restricted read-only process is a security issue. A bypass
+of only the edit-mode in-process namespace guards is an acknowledged limitation
+unless it also crosses another boundary. Reports of particular interest are:
 
 - writing to disk, or mutating the on-disk model, from `ask` mode
 - reaching the network or the OS from a guarded run

@@ -1,9 +1,10 @@
 """Process-level sandbox for LLM-authored code.
 
-The in-process guards in `ifc_console.policy.guards` shape what generated
-code can reach. This package decides what it can *do*: the code runs in a
-separate process with no network, no subprocesses, no credentials in its
-environment, a memory cap, and a read-only view of the model directories.
+The in-process guards in `ifc_console.policy.guards` shape what generated code
+can reach. This package provides the stronger path for eligible read-only code:
+a separate process with no network, no subprocesses, no credential environment,
+a memory cap, and a read-only view of the model directories. Auto mode can
+report and use guarded in-process fallback; strict mode refuses it.
 
 Nothing here imports ifcopenshell at module level; the worker pays that cost
 in its own process.

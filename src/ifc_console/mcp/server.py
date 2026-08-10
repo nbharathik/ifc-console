@@ -8,12 +8,15 @@ import hmac
 import inspect
 import json
 import logging
+import re
 from collections.abc import Callable, Iterable
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 
 from ifc_console import __version__
 from ifc_console.core.operations import OperationImage, OperationRegistry, OperationSpec
+from ifc_console.core.results import Envelope
+from ifc_console.http_identity import IDENTITY_PATH, identity_proof, valid_identity_nonce
 from ifc_console.mcp.compat import Image, MCPServer, ToolAnnotations
 
 if TYPE_CHECKING:
@@ -116,6 +119,8 @@ def _projected_handler(spec: OperationSpec, service: OperationService) -> Callab
         bound = inspect.signature(spec.handler).bind(*args, **kwargs)
         return _mcp_value(await service.call(spec.name, dict(bound.arguments)))
 
+    signature = inspect.signature(spec.handler, eval_str=True).replace(return_annotation=Envelope)
+    projected.__signature__ = signature  # type: ignore[attr-defined]
     return projected
 
 
@@ -163,16 +168,19 @@ def build_mcp(core: AppCore) -> MCPServer:
 
 
 _LOOPBACK_HOSTNAMES = frozenset({"127.0.0.1", "localhost", "::1"})
+_LOOPBACK_HOSTPORT = re.compile(
+    r"(?:127\.0\.0\.1|localhost)(?::([0-9]{1,5}))?|\[::1\](?::([0-9]{1,5}))?\Z",
+    re.IGNORECASE,
+)
 
 
 def _loopback_hostport(value: str) -> bool:
     """True when a Host-style `host[:port]` value names this machine."""
-    host = value.strip().lower()
-    if host.startswith("["):  # bracketed IPv6, e.g. [::1]:8383
-        host = host[1:].split("]", 1)[0]
-    elif host.count(":") == 1:
-        host = host.split(":", 1)[0]
-    return host in _LOOPBACK_HOSTNAMES
+    match = _LOOPBACK_HOSTPORT.fullmatch(value)
+    if match is None:
+        return False
+    raw_port = match.group(1) or match.group(2)
+    return raw_port is None or 1 <= int(raw_port) <= 65535
 
 
 class TokenAuthMiddleware:
@@ -180,12 +188,14 @@ class TokenAuthMiddleware:
 
     Every http/ws request must present a loopback Host and, when a browser
     sends one, a loopback Origin; this defeats DNS rebinding and cross-site
-    calls even with a valid token. Auth is `Authorization: Bearer <token>`
-    only; the token never rides a URL. Two paths skip the token gate: the
-    /viewer shell (the SPA authenticates itself with the fragment token) and
-    the /ws upgrade (browsers cannot attach headers there; the first-frame
-    hello in routes.py carries the token). Static viewer assets stay public:
-    generic vendor JS/WASM plus our SPA source, nothing session-specific.
+    calls even with a valid token. API auth is `Authorization: Bearer <token>`;
+    the initial browser navigation carries the token only in its fragment,
+    which is not part of the HTTP request. Browser shells and the WebSocket
+    upgrade skip the token gate and authenticate immediately afterwards. A
+    GET to /api/identify is also exempt so the stdio bridge can authenticate
+    the listener before it sends a bearer token. Static viewer assets stay
+    public: generic vendor JS/WASM plus our SPA source, nothing
+    session-specific.
     """
 
     PROTECTED = ("/mcp", "/api", "/ws", "/viewer", "/chat")
@@ -193,6 +203,16 @@ class TokenAuthMiddleware:
     # exact paths a browser navigates to; the page authenticates itself with
     # the fragment token. The boundary check still applies.
     TOKEN_EXEMPT = ("/viewer", "/chat", "/ws")
+    MAX_MCP_BODY = 8 * 1024 * 1024
+    MAX_CHAT_BODY = 4 * 1024 * 1024
+    SECURITY_HEADERS = (
+        (b"x-content-type-options", b"nosniff"),
+        (b"referrer-policy", b"no-referrer"),
+        (b"x-frame-options", b"DENY"),
+        (b"permissions-policy", b"camera=(), microphone=(), geolocation=()"),
+        (b"cross-origin-opener-policy", b"same-origin"),
+        (b"cross-origin-resource-policy", b"same-origin"),
+    )
 
     def __init__(
         self,
@@ -211,6 +231,17 @@ class TokenAuthMiddleware:
         if scope["type"] not in ("http", "websocket"):
             await self.app(scope, receive, send)
             return
+
+        async def secure_send(message: dict) -> None:
+            if message.get("type") == "http.response.start":
+                headers = list(message.get("headers") or ())
+                present = {name.lower() for name, _value in headers}
+                headers.extend(
+                    (name, value) for name, value in self.SECURITY_HEADERS if name not in present
+                )
+                message = {**message, "headers": headers}
+            await send(message)
+
         if self.core is not None:
             request_id = self._header(scope, b"x-request-id")
             correlation_id = self._header(scope, b"x-correlation-id")
@@ -222,28 +253,49 @@ class TokenAuthMiddleware:
                 request_id=request_id[:200] if request_id else None,
                 correlation_id=correlation_id,
             ):
-                await self._dispatch(scope, receive, send)
+                await self._dispatch(scope, receive, secure_send)
             return
-        await self._dispatch(scope, receive, send)
+        await self._dispatch(scope, receive, secure_send)
 
     async def _dispatch(self, scope: dict, receive: Callable, send: Callable) -> None:
         if not self._boundary_ok(scope):
             await self._deny(scope, send, status=403, ws_code=4403, error="forbidden_origin")
             return
         path = scope.get("path", "")
-        if any(path == p or path.startswith(p + "/") for p in self.PUBLIC):
-            await self.app(scope, receive, send)
+        public = any(path == p or path.startswith(p + "/") for p in self.PUBLIC)
+        protected = any(path == p or path.startswith(p + "/") for p in self.protected)
+        token_exempt = path in self.TOKEN_EXEMPT or (
+            scope.get("type") == "http" and scope.get("method") == "GET" and path == IDENTITY_PATH
+        )
+        if protected and not public and not token_exempt and not self._authorized(scope):
+            await self._deny(scope, send, status=401, ws_code=4401, error="unauthorized")
             return
-        if path in self.TOKEN_EXEMPT:
-            await self.app(scope, receive, send)
-            return
-        if not any(path == p or path.startswith(p + "/") for p in self.protected):
-            await self.app(scope, receive, send)
-            return
-        if self._authorized(scope):
-            await self.app(scope, receive, send)
-            return
-        await self._deny(scope, send, status=401, ws_code=4401, error="unauthorized")
+
+        body_limit = self._body_limit(scope, path)
+        if body_limit is not None:
+            lengths = self._headers(scope, b"content-length")
+            if len(lengths) > 1:
+                await self._deny(scope, send, status=400, ws_code=4400, error="invalid_request")
+                return
+            if lengths:
+                try:
+                    content_length = int(lengths[0])
+                except ValueError:
+                    content_length = -1
+                if content_length < 0:
+                    await self._deny(scope, send, status=400, ws_code=4400, error="invalid_request")
+                    return
+                if content_length > body_limit:
+                    await self._deny(
+                        scope, send, status=413, ws_code=4400, error="payload_too_large"
+                    )
+                    return
+            buffered = await self._buffer_request(receive, body_limit)
+            if buffered is None:
+                await self._deny(scope, send, status=413, ws_code=4400, error="payload_too_large")
+                return
+            receive = buffered
+        await self.app(scope, receive, send)
 
     @staticmethod
     def _header(scope: dict, wanted: bytes) -> str | None:
@@ -251,6 +303,53 @@ class TokenAuthMiddleware:
             if name == wanted:
                 return value.decode("latin-1", errors="replace")
         return None
+
+    @staticmethod
+    def _headers(scope: dict, wanted: bytes) -> list[str]:
+        return [
+            value.decode("latin-1", errors="replace")
+            for name, value in scope.get("headers", [])
+            if name.lower() == wanted
+        ]
+
+    def _body_limit(self, scope: dict, path: str) -> int | None:
+        if scope.get("type") != "http" or scope.get("method") not in {
+            "POST",
+            "PUT",
+            "PATCH",
+        }:
+            return None
+        if path == "/mcp" or path.startswith("/mcp/"):
+            return self.MAX_MCP_BODY
+        if path == "/api/chat" or path.startswith("/api/chat/"):
+            return self.MAX_CHAT_BODY
+        return None
+
+    @staticmethod
+    async def _buffer_request(receive: Callable, limit: int) -> Callable | None:
+        messages: list[dict] = []
+        total = 0
+        while True:
+            message = await receive()
+            messages.append(message)
+            if message.get("type") != "http.request":
+                break
+            total += len(message.get("body") or b"")
+            if total > limit:
+                return None
+            if not message.get("more_body", False):
+                break
+        index = 0
+
+        async def replay() -> dict:
+            nonlocal index
+            if index < len(messages):
+                message = messages[index]
+                index += 1
+                return message
+            return await receive()
+
+        return replay
 
     async def _deny(
         self, scope: dict, send: Callable, *, status: int, ws_code: int, error: str
@@ -263,6 +362,8 @@ class TokenAuthMiddleware:
             "in the ifc-console terminal copies a complete client setup",
             "forbidden_origin": "ifc-console only answers loopback clients; open it via "
             "http://127.0.0.1, not a hostname another machine or site can claim",
+            "invalid_request": "send one valid value for each HTTP framing header",
+            "payload_too_large": "reduce the request size and try again",
         }
         body = json.dumps({"error": error, "hint": hints[error]}).encode()
         await send(
@@ -272,6 +373,7 @@ class TokenAuthMiddleware:
                 "headers": [
                     (b"content-type", b"application/json"),
                     (b"content-length", str(len(body)).encode()),
+                    (b"cache-control", b"no-store"),
                 ],
             }
         )
@@ -279,28 +381,41 @@ class TokenAuthMiddleware:
 
     def _boundary_ok(self, scope: dict) -> bool:
         """Reject DNS-rebound Hosts and cross-site Origins before any auth."""
-        host = origin = None
-        for name, value in scope.get("headers", []):
-            if name == b"host":
-                host = value.decode("latin-1")
-            elif name == b"origin":
-                origin = value.decode("latin-1")
-        if host is not None and not _loopback_hostport(host):
+        hosts = self._headers(scope, b"host")
+        origins = self._headers(scope, b"origin")
+        if len(hosts) != 1 or not _loopback_hostport(hosts[0]):
             return False
-        if origin is not None:
-            parts = urlsplit(origin)
+        if len(origins) > 1:
+            return False
+        if origins:
+            origin = origins[0]
+            try:
+                parts = urlsplit(origin)
+                port = parts.port
+            except ValueError:
+                return False
             if parts.scheme not in ("http", "https"):
                 return False
-            if parts.hostname not in _LOOPBACK_HOSTNAMES:
+            if (
+                parts.hostname is None
+                or parts.hostname.casefold() not in _LOOPBACK_HOSTNAMES
+                or parts.username is not None
+                or parts.password is not None
+                or parts.path
+                or parts.query
+                or parts.fragment
+                or not _loopback_hostport(parts.netloc)
+                or (port is not None and not 1 <= port <= 65535)
+            ):
                 return False
         return True
 
     def _authorized(self, scope: dict) -> bool:
         expected = f"Bearer {self.token}".encode()
-        for name, value in scope.get("headers", []):
-            if name == b"authorization" and hmac.compare_digest(value, expected):
-                return True
-        return False
+        values = [
+            value for name, value in scope.get("headers", []) if name.lower() == b"authorization"
+        ]
+        return len(values) == 1 and hmac.compare_digest(values[0], expected)
 
 
 def build_http_app(core: AppCore, mcp: MCPServer) -> Any:
@@ -315,6 +430,26 @@ def build_http_app(core: AppCore, mcp: MCPServer) -> Any:
     from ifc_console.viewer.routes import build_static_app, build_viewer_routes
 
     app = mcp.streamable_http_app()
+
+    async def identify(request: Request) -> JSONResponse:
+        nonces = request.query_params.getlist("nonce")
+        if len(nonces) != 1 or not valid_identity_nonce(nonces[0]):
+            return JSONResponse(
+                {"error": "invalid_nonce"},
+                status_code=400,
+                headers={"Cache-Control": "no-store"},
+            )
+        nonce = nonces[0]
+        return JSONResponse(
+            {
+                "name": "ifc-console",
+                "version": __version__,
+                "port": core.port,
+                "nonce": nonce,
+                "proof": identity_proof(core.token, nonce, core.port),
+            },
+            headers={"Cache-Control": "no-store"},
+        )
 
     async def status(_request: Request) -> JSONResponse:
         s = core.session
@@ -338,7 +473,10 @@ def build_http_app(core: AppCore, mcp: MCPServer) -> Any:
             }
         )
 
-    extra: list[Any] = [Route("/api/status", status, methods=["GET"])]
+    extra: list[Any] = [
+        Route(IDENTITY_PATH, identify, methods=["GET"]),
+        Route("/api/status", status, methods=["GET"]),
+    ]
     extra.extend(build_viewer_routes(core))
     extra.extend(build_chat_routes(core))
     if viewer_assets.available():

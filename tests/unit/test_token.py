@@ -77,9 +77,7 @@ def test_corrupt_token_file_regenerates(tmp_path: Path) -> None:
     assert store.load_server_token() == token  # and it stuck
 
 
-def test_mcp_config_hides_persistent_token_by_default(
-    tmp_path: Path, monkeypatch, capsys
-) -> None:
+def test_mcp_config_hides_persistent_token_by_default(tmp_path: Path, monkeypatch, capsys) -> None:
     monkeypatch.setenv("IFC_CONSOLE_HOME", str(tmp_path / "home"))
     expected = _store(tmp_path / "home").load_server_token()
     assert main(["mcp-config", "--client", "claude-code", "--transport", "http"]) == 0
@@ -115,9 +113,7 @@ def test_mcp_config_respects_explicit_token_setting(tmp_path: Path, monkeypatch,
     assert "token_in_config_snippets" not in captured.err
 
 
-def test_per_run_token_defaults_mcp_config_to_stdio(
-    tmp_path: Path, monkeypatch, capsys
-) -> None:
+def test_per_run_token_defaults_mcp_config_to_stdio(tmp_path: Path, monkeypatch, capsys) -> None:
     home = tmp_path / "home"
     store = _store(home)
     store.ensure_dirs()
@@ -130,9 +126,7 @@ def test_per_run_token_defaults_mcp_config_to_stdio(
     assert "bridge" not in captured.out
 
 
-def test_per_run_token_rejects_unkeyed_bridge_config(
-    tmp_path: Path, monkeypatch, capsys
-) -> None:
+def test_per_run_token_rejects_unkeyed_bridge_config(tmp_path: Path, monkeypatch, capsys) -> None:
     home = tmp_path / "home"
     store = _store(home)
     store.ensure_dirs()
@@ -141,6 +135,24 @@ def test_per_run_token_rejects_unkeyed_bridge_config(
 
     assert main(["mcp-config", "--transport", "bridge"]) == 2
     assert "persistent_token=true" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["--port", "0", "--no-tui"],
+        ["serve", "--http", "--port", "-1"],
+        ["bridge", "--port", "70000"],
+        ["mcp-config", "--port", "0"],
+        ["mcp-config", "--port", "not-a-port"],
+    ],
+)
+def test_every_cli_port_rejects_invalid_values(argv: list[str], capsys) -> None:
+    with pytest.raises(SystemExit) as raised:
+        main(argv)
+
+    assert raised.value.code == 2
+    assert "port" in capsys.readouterr().err
 
 
 def test_token_cli_show_and_rotate(tmp_path: Path, monkeypatch, capsys) -> None:
@@ -167,9 +179,7 @@ def test_snippet_placeholder_without_token() -> None:
 def test_default_snippets_launch_the_bridge(client: str) -> None:
     """The default wiring survives the client starting before the console."""
     model = r"C:\models\active.ifc"
-    snippet = build_config_snippet(
-        client, None, port=8383, file=model, mode="edit", token="abc123"
-    )
+    snippet = build_config_snippet(client, None, port=8383, file=model, mode="edit", token="abc123")
     assert "bridge" in snippet
     assert "abc123" not in snippet  # no secret written into a client config
     assert "active.ifc" not in snippet
@@ -226,7 +236,9 @@ def test_claude_desktop_http_config_uses_authenticated_bridge() -> None:
 
 
 def test_codex_http_config_has_static_authorization_header() -> None:
-    snippet = build_config_snippet("codex", "http", port=8383, file=None, mode="ask", token="abc123")
+    snippet = build_config_snippet(
+        "codex", "http", port=8383, file=None, mode="ask", token="abc123"
+    )
     assert "[mcp_servers.ifc-console]" in snippet
     assert 'url = "http://127.0.0.1:8383/mcp"' in snippet
     assert 'http_headers = { Authorization = "Bearer abc123" }' in snippet

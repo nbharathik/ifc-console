@@ -24,47 +24,139 @@ from pathlib import Path
 from types import TracebackType
 from typing import Any
 
+from pydantic import ValidationError
+
 from ifc_console.audit import AuditVerification
 from ifc_console.core.artifacts import ArtifactGCPlan, ArtifactGCResult, ArtifactRef
-from ifc_console.core.batches import BatchRecord
+from ifc_console.core.batches import (
+    BatchChildRecord,
+    BatchRecord,
+    BatchSpec,
+    BatchState,
+    QueryBatchOperation,
+    ValidationBatchOperation,
+)
 from ifc_console.core.capabilities import Authority, Capability, CapabilityDecision
 from ifc_console.core.changes import (
+    Approval,
     ApprovalRecord,
+    ChangeSet,
     ChangeSetRecord,
+    ClassificationAssignmentChange,
     CommitRecord,
+    CommitResult,
     IfcScalar,
+    PropertyCreateChange,
+    PropertyValueChange,
     RestoreRecord,
+    RestoreResult,
 )
-from ifc_console.core.context import WorkspaceContext
-from ifc_console.core.jobs import JobRecord
-from ifc_console.core.operation_data import QueryElementsData, ValidationData
-from ifc_console.core.operations import OperationDefinition
-from ifc_console.core.results import Envelope, ToolError
-from ifc_console.core.transaction_journal import TransactionJournal
-from ifc_console.core.workflows import WorkflowPlan, WorkflowRecord, WorkflowSpec
+from ifc_console.core.context import ModelContext, OperationContext, WorkspaceContext
+from ifc_console.core.jobs import (
+    CommitJobSpec,
+    JobEvent,
+    JobFailure,
+    JobRecord,
+    JobState,
+    QueryJobSpec,
+    RestoreJobSpec,
+    SourceFileRef,
+    ValidationJobSpec,
+)
+from ifc_console.core.operation_data import QueryElementsData, ValidationData, ValidationIssue
+from ifc_console.core.operations import OperationAnnotations, OperationDefinition
+from ifc_console.core.results import Envelope, ErrorInfo, ToolError
+from ifc_console.core.revisions import RevisionRef
+from ifc_console.core.transaction_journal import (
+    TransactionJournal,
+    TransactionKind,
+    TransactionPhase,
+)
+from ifc_console.core.workflows import (
+    WorkflowInputSpec,
+    WorkflowPlan,
+    WorkflowQueryOperation,
+    WorkflowRecord,
+    WorkflowSpec,
+    WorkflowState,
+    WorkflowStepPlan,
+    WorkflowStepRecord,
+    WorkflowStepSpec,
+    WorkflowStepState,
+    WorkflowValidationOperation,
+)
+from ifc_console.plugins import (
+    OperationPlugin,
+    PluginAPI,
+    PluginManifest,
+    PluginRecord,
+)
 
 __all__ = [
     "AsyncWorkbench",
+    "Approval",
     "ApprovalRecord",
+    "Authority",
     "ArtifactRef",
     "ArtifactGCPlan",
     "ArtifactGCResult",
     "AuditVerification",
+    "BatchChildRecord",
     "BatchRecord",
+    "BatchSpec",
+    "BatchState",
     "Capability",
     "CapabilityDecision",
+    "ChangeSet",
     "ChangeSetRecord",
+    "ClassificationAssignmentChange",
+    "CommitJobSpec",
     "CommitRecord",
+    "CommitResult",
+    "Envelope",
+    "ErrorInfo",
     "IfcConsoleError",
+    "IfcScalar",
     "JobRecord",
+    "JobEvent",
+    "JobFailure",
+    "JobState",
+    "ModelContext",
+    "OperationAnnotations",
+    "OperationContext",
     "OperationDefinition",
+    "OperationPlugin",
+    "PluginAPI",
+    "PluginManifest",
+    "PluginRecord",
+    "PropertyCreateChange",
+    "PropertyValueChange",
+    "QueryBatchOperation",
     "QueryElementsData",
+    "QueryJobSpec",
+    "RestoreJobSpec",
     "RestoreRecord",
+    "RestoreResult",
+    "RevisionRef",
+    "SourceFileRef",
     "TransactionJournal",
+    "TransactionKind",
+    "TransactionPhase",
     "ValidationData",
+    "ValidationBatchOperation",
+    "ValidationIssue",
+    "ValidationJobSpec",
+    "WorkflowInputSpec",
     "WorkflowPlan",
+    "WorkflowQueryOperation",
     "WorkflowRecord",
     "WorkflowSpec",
+    "WorkflowState",
+    "WorkflowStepPlan",
+    "WorkflowStepRecord",
+    "WorkflowStepSpec",
+    "WorkflowStepState",
+    "WorkflowValidationOperation",
     "Workbench",
     "WorkspaceContext",
 ]
@@ -88,17 +180,38 @@ def _sdk_error(exc: ToolError) -> IfcConsoleError:
 
 def _apply_settings(store: Any, overrides: dict[str, Any]) -> None:
     """In-memory settings for this workbench only; the user's file is untouched."""
+    payload = store.settings.model_dump()
     for dotted, value in overrides.items():
-        target = store.settings
+        target = payload
         *parents, leaf = dotted.split(".")
-        for part in (*parents, leaf):
-            if not hasattr(target, part):
+        if not leaf or any(not part for part in parents):
+            raise IfcConsoleError(
+                "INVALID_INPUT", f"unknown setting {dotted!r}", "See docs/settings.md."
+            )
+        for part in parents:
+            nested = target.get(part)
+            if not isinstance(nested, dict):
                 raise IfcConsoleError(
                     "INVALID_INPUT", f"unknown setting {dotted!r}", "See docs/settings.md."
                 )
-            if part != leaf:
-                target = getattr(target, part)
-        setattr(target, leaf, value)
+            target = nested
+        if leaf not in target:
+            raise IfcConsoleError(
+                "INVALID_INPUT", f"unknown setting {dotted!r}", "See docs/settings.md."
+            )
+        target[leaf] = value
+    try:
+        store.settings = type(store.settings).model_validate(payload)
+    except ValidationError as exc:
+        issues = "; ".join(
+            f"{'.'.join(str(part) for part in issue['loc'])}: {issue['msg']}"
+            for issue in exc.errors(include_url=False, include_input=False)
+        )
+        raise IfcConsoleError(
+            "INVALID_INPUT",
+            f"invalid setting overrides: {issues}",
+            "See docs/settings.md for accepted values and limits.",
+        ) from None
 
 
 def _unwrap(envelope: Any) -> dict[str, Any]:
@@ -118,6 +231,7 @@ class AsyncWorkbench:
 
     def __init__(self, core: Any) -> None:
         self._core = core
+        self._closed = False
 
     # -- construction ---------------------------------------------------------
     @classmethod
@@ -137,7 +251,15 @@ class AsyncWorkbench:
 
         store = SettingsStore(home=Path(home) if home else None)
         _apply_settings(store, settings or {})
-        core = AppCore(store, mode=Mode(mode), transport="sdk")
+        try:
+            selected_mode = Mode(mode)
+        except ValueError:
+            raise IfcConsoleError(
+                "INVALID_INPUT",
+                f"unknown mode {mode!r}",
+                "Use 'ask' for read-only work or 'edit' for mutations.",
+            ) from None
+        core = AppCore(store, mode=selected_mode, transport="sdk")
         core.start_audit()
         for directory in allowed_dirs:
             core.add_allowed_dir(Path(directory))
@@ -151,7 +273,7 @@ class AsyncWorkbench:
         return self
 
     async def __aexit__(
-        self, exc_type: type | None, exc: BaseException | None, tb: TracebackType | None
+        self, exc_type: type | None, exc: BaseException | None, _tb: TracebackType | None
     ) -> None:
         await self.aclose()
 
@@ -179,13 +301,24 @@ class AsyncWorkbench:
         """
         from ifc_console.policy.modes import Mode
 
-        self._core.set_mode(Mode(mode), by="sdk")
+        try:
+            selected_mode = Mode(mode)
+        except ValueError:
+            raise IfcConsoleError(
+                "INVALID_INPUT",
+                f"unknown mode {mode!r}",
+                "Use 'ask' for read-only work or 'edit' for mutations.",
+            ) from None
+        self._core.set_mode(selected_mode, by="sdk")
         return self.mode
 
     async def open_model(self, path: str | Path, **kwargs: Any) -> dict[str, Any]:
         target = Path(path).expanduser().resolve()
         self._core.add_allowed_dir(target.parent)
-        await self._core.open_model(target, **kwargs)
+        try:
+            await self._core.open_model(target, **kwargs)
+        except ToolError as exc:
+            raise _sdk_error(exc) from exc
         return self.model
 
     @property
@@ -203,40 +336,47 @@ class AsyncWorkbench:
         }
 
     def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
         self._core.shutdown()
 
     async def aclose(self) -> None:
         """Await supervised job shutdown and transaction rollback."""
+        if self._closed:
+            return
+        self._closed = True
         await self._core.ashutdown()
 
     # -- the tool surface -----------------------------------------------------
-    async def tools(self) -> list[dict[str, Any]]:
-        """Every tool as a provider-neutral JSON Schema definition."""
-        return [
-            {
-                "name": definition.name,
-                "description": definition.description,
-                "input_schema": definition.input_schema,
-                "output_schema": definition.output_schema,
-                "data_schema": definition.data_schema,
-                "annotations": definition.annotations.model_dump(exclude_none=True),
-                "required_capabilities": [
-                    capability.value for capability in definition.required_capabilities
-                ],
-                "permitted": self._core.policy.evaluate(
-                    list(definition.required_capabilities)
-                ).allowed,
-            }
-            for definition in self.operation_definitions()
-        ]
+    async def tools(self, *, permitted_only: bool = False) -> list[dict[str, Any]]:
+        """Return provider-neutral JSON Schema definitions for the live tool set."""
+        tools: list[dict[str, Any]] = []
+        for definition in self.operation_definitions():
+            permitted = self._core.policy.evaluate(list(definition.required_capabilities)).allowed
+            if permitted_only and not permitted:
+                continue
+            tools.append(
+                {
+                    "name": definition.name,
+                    "description": definition.description,
+                    "input_schema": definition.input_schema,
+                    "output_schema": definition.output_schema,
+                    "data_schema": definition.data_schema,
+                    "annotations": definition.annotations.model_dump(exclude_none=True),
+                    "required_capabilities": [
+                        capability.value for capability in definition.required_capabilities
+                    ],
+                    "permitted": permitted,
+                }
+            )
+        return tools
 
     def operation_definitions(self) -> list[OperationDefinition]:
         """Typed definitions for embedding IFC operations in another client."""
         return self._core.operation_service.definitions()
 
-    def granted_capabilities(
-        self, *, authority: Authority = "tool"
-    ) -> tuple[Capability, ...]:
+    def granted_capabilities(self, *, authority: Authority = "tool") -> tuple[Capability, ...]:
         """Capabilities granted by the current ask/edit compatibility profile."""
         return self._core.policy.granted_capabilities(authority=authority)
 
@@ -346,20 +486,14 @@ class AsyncWorkbench:
         except ToolError as exc:
             raise _sdk_error(exc) from exc
 
-    async def submit_commit_job(
-        self, change_set_id: str, *, approval_id: str
-    ) -> JobRecord:
+    async def submit_commit_job(self, change_set_id: str, *, approval_id: str) -> JobRecord:
         """Submit a journaled commit and return before it completes."""
         try:
-            return await self._core.jobs.submit_commit(
-                change_set_id, approval_id=approval_id
-            )
+            return await self._core.jobs.submit_commit(change_set_id, approval_id=approval_id)
         except ToolError as exc:
             raise _sdk_error(exc) from exc
 
-    async def submit_restore_job(
-        self, commit_id: str, *, confirm: bool = False
-    ) -> JobRecord:
+    async def submit_restore_job(self, commit_id: str, *, confirm: bool = False) -> JobRecord:
         """Submit a journaled restore and return before it completes."""
         try:
             return await self._core.jobs.submit_restore(commit_id, confirm=confirm)
@@ -463,9 +597,7 @@ class AsyncWorkbench:
     def batches(self, *, limit: int = 100) -> list[BatchRecord]:
         return self._core.batches.list(limit=limit)
 
-    async def wait_batch(
-        self, batch_id: str, *, timeout: float | None = None
-    ) -> BatchRecord:
+    async def wait_batch(self, batch_id: str, *, timeout: float | None = None) -> BatchRecord:
         try:
             return await self._core.batches.wait(batch_id, timeout=timeout)
         except ToolError as exc:
@@ -475,9 +607,7 @@ class AsyncWorkbench:
         self, batch_id: str, *, poll_interval: float = 0.1
     ) -> AsyncIterator[BatchRecord]:
         try:
-            async for record in self._core.batches.watch(
-                batch_id, poll_interval=poll_interval
-            ):
+            async for record in self._core.batches.watch(batch_id, poll_interval=poll_interval):
                 yield record
         except ToolError as exc:
             raise _sdk_error(exc) from exc
@@ -503,9 +633,7 @@ class AsyncWorkbench:
         except ToolError as exc:
             raise _sdk_error(exc) from exc
 
-    async def plan_workflow_spec(
-        self, spec: WorkflowSpec, *, base_dir: str | Path
-    ) -> WorkflowPlan:
+    async def plan_workflow_spec(self, spec: WorkflowSpec, *, base_dir: str | Path) -> WorkflowPlan:
         """Resolve a typed in-memory workflow relative to an explicit directory."""
         base = Path(base_dir).expanduser().resolve()
         self._core.add_allowed_dir(base)
@@ -637,9 +765,7 @@ class AsyncWorkbench:
         except ToolError as exc:
             raise _sdk_error(exc) from exc
 
-    def collect_artifacts(
-        self, plan: ArtifactGCPlan, *, confirm: bool = False
-    ) -> ArtifactGCResult:
+    def collect_artifacts(self, plan: ArtifactGCPlan, *, confirm: bool = False) -> ArtifactGCResult:
         try:
             result = self._core.artifact_retention.collect(plan, confirm=confirm)
             self._core.audit.record(
@@ -847,6 +973,10 @@ class AsyncWorkbench:
         data = await self._data("search_ifc_knowledge", query=query, **kwargs)
         return data.get("hits", [])
 
+    async def knowledge_record(self, key: str) -> dict[str, Any]:
+        """Fetch a complete knowledge or recipe record by search-result key."""
+        return await self._data("get_knowledge_record", key=key)
+
     async def api_docs(self, function: str) -> dict[str, Any]:
         return await self._data("get_api_docs", function=function)
 
@@ -942,11 +1072,13 @@ class Workbench:
         return self
 
     def __exit__(
-        self, exc_type: type | None, exc: BaseException | None, tb: TracebackType | None
+        self, exc_type: type | None, exc: BaseException | None, _tb: TracebackType | None
     ) -> None:
         self.close()
 
     def close(self) -> None:
+        if self._loop.closed:
+            return
         try:
             self._run(lambda: self._wb.aclose())
         finally:
@@ -981,15 +1113,13 @@ class Workbench:
         return self._run(lambda: self._wb.open_model(path, **kwargs))
 
     # -- tools ----------------------------------------------------------------
-    def tools(self) -> list[dict[str, Any]]:
-        return self._run(lambda: self._wb.tools())
+    def tools(self, *, permitted_only: bool = False) -> list[dict[str, Any]]:
+        return self._run(lambda: self._wb.tools(permitted_only=permitted_only))
 
     def operation_definitions(self) -> list[OperationDefinition]:
         return self._wb.operation_definitions()
 
-    def granted_capabilities(
-        self, *, authority: Authority = "tool"
-    ) -> tuple[Capability, ...]:
+    def granted_capabilities(self, *, authority: Authority = "tool") -> tuple[Capability, ...]:
         return self._wb.granted_capabilities(authority=authority)
 
     def capability_decision(
@@ -1044,18 +1174,30 @@ class Workbench:
         return self._run(lambda: self._wb.validation_result(**kwargs))
 
     # -- durable jobs and artifacts -------------------------------------------
-    def submit_validation_job(self, **kwargs: Any) -> JobRecord:
-        return self._run(lambda: self._wb.submit_validation_job(**kwargs))
+    def submit_validation_job(
+        self,
+        *,
+        model: str | None = None,
+        ids_paths: tuple[str | Path, ...] = (),
+        express_rules: bool = False,
+        max_issues: int = 200,
+        expected_revision: str | None = None,
+    ) -> JobRecord:
+        return self._run(
+            lambda: self._wb.submit_validation_job(
+                model=model,
+                ids_paths=ids_paths,
+                express_rules=express_rules,
+                max_issues=max_issues,
+                expected_revision=expected_revision,
+            )
+        )
 
     def submit_commit_job(self, change_set_id: str, *, approval_id: str) -> JobRecord:
-        return self._run(
-            lambda: self._wb.submit_commit_job(change_set_id, approval_id=approval_id)
-        )
+        return self._run(lambda: self._wb.submit_commit_job(change_set_id, approval_id=approval_id))
 
     def submit_restore_job(self, commit_id: str, *, confirm: bool = False) -> JobRecord:
-        return self._run(
-            lambda: self._wb.submit_restore_job(commit_id, confirm=confirm)
-        )
+        return self._run(lambda: self._wb.submit_restore_job(commit_id, confirm=confirm))
 
     def job(self, job_id: str) -> JobRecord:
         return self._wb.job(job_id)
@@ -1083,19 +1225,47 @@ class Workbench:
     def submit_validation_batch(
         self,
         inputs: tuple[str | Path, ...] | list[str | Path],
-        **kwargs: Any,
+        *,
+        ids_paths: tuple[str | Path, ...] = (),
+        express_rules: bool = False,
+        max_issues: int = 200,
+        concurrency: int = 2,
+        failure_policy: str = "continue",
     ) -> BatchRecord:
-        return self._run(lambda: self._wb.submit_validation_batch(inputs, **kwargs))
+        return self._run(
+            lambda: self._wb.submit_validation_batch(
+                inputs,
+                ids_paths=ids_paths,
+                express_rules=express_rules,
+                max_issues=max_issues,
+                concurrency=concurrency,
+                failure_policy=failure_policy,
+            )
+        )
 
     def submit_query_batch(
         self,
         inputs: tuple[str | Path, ...] | list[str | Path],
         *,
         query: str,
-        **kwargs: Any,
+        fields: tuple[str, ...] = ("name", "storey", "type_name"),
+        order_by: str = "class",
+        output_format: str = "jsonl",
+        limit: int = 100_000,
+        concurrency: int = 2,
+        failure_policy: str = "continue",
     ) -> BatchRecord:
         return self._run(
-            lambda: self._wb.submit_query_batch(inputs, query=query, **kwargs)
+            lambda: self._wb.submit_query_batch(
+                inputs,
+                query=query,
+                fields=fields,
+                order_by=order_by,
+                output_format=output_format,
+                limit=limit,
+                concurrency=concurrency,
+                failure_policy=failure_policy,
+            )
         )
 
     def batch(self, batch_id: str) -> BatchRecord:
@@ -1107,9 +1277,7 @@ class Workbench:
     def wait_batch(self, batch_id: str, *, timeout: float | None = None) -> BatchRecord:
         return self._run(lambda: self._wb.wait_batch(batch_id, timeout=timeout))
 
-    def watch_batch(
-        self, batch_id: str, *, poll_interval: float = 0.1
-    ) -> Iterator[BatchRecord]:
+    def watch_batch(self, batch_id: str, *, poll_interval: float = 0.1) -> Iterator[BatchRecord]:
         last_update = None
         while True:
             record = self.batch(batch_id)
@@ -1135,9 +1303,7 @@ class Workbench:
     def plan_workflow(self, manifest_path: str | Path) -> WorkflowPlan:
         return self._run(lambda: self._wb.plan_workflow(manifest_path))
 
-    def plan_workflow_spec(
-        self, spec: WorkflowSpec, *, base_dir: str | Path
-    ) -> WorkflowPlan:
+    def plan_workflow_spec(self, spec: WorkflowSpec, *, base_dir: str | Path) -> WorkflowPlan:
         return self._run(lambda: self._wb.plan_workflow_spec(spec, base_dir=base_dir))
 
     def submit_workflow(self, manifest_path: str | Path) -> WorkflowRecord:
@@ -1152,9 +1318,7 @@ class Workbench:
     def workflows(self, *, limit: int = 100) -> list[WorkflowRecord]:
         return self._wb.workflows(limit=limit)
 
-    def wait_workflow(
-        self, workflow_id: str, *, timeout: float | None = None
-    ) -> WorkflowRecord:
+    def wait_workflow(self, workflow_id: str, *, timeout: float | None = None) -> WorkflowRecord:
         return self._run(lambda: self._wb.wait_workflow(workflow_id, timeout=timeout))
 
     def watch_workflow(
@@ -1214,9 +1378,7 @@ class Workbench:
     def plan_artifact_gc(self, *, older_than_days: int | None = None) -> ArtifactGCPlan:
         return self._wb.plan_artifact_gc(older_than_days=older_than_days)
 
-    def collect_artifacts(
-        self, plan: ArtifactGCPlan, *, confirm: bool = False
-    ) -> ArtifactGCResult:
+    def collect_artifacts(self, plan: ArtifactGCPlan, *, confirm: bool = False) -> ArtifactGCResult:
         return self._wb.collect_artifacts(plan, confirm=confirm)
 
     # -- safe structured changes --------------------------------------------
@@ -1292,9 +1454,36 @@ class Workbench:
         return self._run(lambda: self._wb.schema_docs(**kwargs))
 
     # -- talking to a model ---------------------------------------------------
-    def ask(self, prompt: str, **kwargs: Any) -> dict[str, Any]:
+    def ask(
+        self,
+        prompt: str,
+        *,
+        provider: str | None = None,
+        model: str | None = None,
+        api_key: str | None = None,
+        base_url: str | None = None,
+        system: str | None = None,
+        tools: bool = True,
+        history: list[dict[str, Any]] | None = None,
+        on_event: Callable[[dict[str, Any]], None] | None = None,
+        **options: Any,
+    ) -> dict[str, Any]:
         """One question to an LLM that may call the ifc-console tools."""
-        return self._run(lambda: self._wb.ask(prompt, **kwargs), timeout=1800.0)
+        return self._run(
+            lambda: self._wb.ask(
+                prompt,
+                provider=provider,
+                model=model,
+                api_key=api_key,
+                base_url=base_url,
+                system=system,
+                tools=tools,
+                history=history,
+                on_event=on_event,
+                **options,
+            ),
+            timeout=1800.0,
+        )
 
     # -- knowledge ------------------------------------------------------------
     def build_knowledge(self, *, force: bool = False) -> dict[str, Any]:
@@ -1302,6 +1491,9 @@ class Workbench:
 
     def search_knowledge(self, query: str, **kwargs: Any) -> list[dict[str, Any]]:
         return self._run(lambda: self._wb.search_knowledge(query, **kwargs))
+
+    def knowledge_record(self, key: str) -> dict[str, Any]:
+        return self._run(lambda: self._wb.knowledge_record(key))
 
     def api_docs(self, function: str) -> dict[str, Any]:
         return self._run(lambda: self._wb.api_docs(function))

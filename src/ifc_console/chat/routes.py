@@ -30,6 +30,14 @@ if TYPE_CHECKING:
 
 log = logging.getLogger("ifc-console.chat")
 
+_MAX_TURNS = 200
+_MAX_TURN_CHARS = 100_000
+_MAX_TRANSCRIPT_CHARS = 1_000_000
+_MAX_SYSTEM_CHARS = 100_000
+_MAX_MODEL_CHARS = 500
+_MAX_URL_CHARS = 2048
+_MAX_KEY_CHARS = 4096
+
 # The panel talks only to this server; the provider call happens server side,
 # which is what keeps keys out of the browser and the CSP this tight.
 _CSP = (
@@ -37,7 +45,8 @@ _CSP = (
     "connect-src 'self'; "
     "img-src 'self' blob: data:; "
     "script-src 'self'; "
-    "style-src 'self'"
+    "style-src 'self'; "
+    "base-uri 'none'; object-src 'none'; frame-ancestors 'none'; form-action 'none'"
 )
 
 
@@ -53,6 +62,51 @@ def _disabled() -> JSONResponse:
 
 def _sse(payload: dict[str, Any]) -> str:
     return f"data: {json.dumps(payload, default=str)}\n\n"
+
+
+async def _json_object(request) -> tuple[dict[str, Any] | None, JSONResponse | None]:
+    try:
+        body = await request.json()
+    except (ValueError, UnicodeDecodeError, RecursionError):
+        return None, JSONResponse({"error": "request body is not valid JSON"}, status_code=400)
+    if not isinstance(body, dict):
+        return None, JSONResponse({"error": "request body must be a JSON object"}, status_code=400)
+    return body, None
+
+
+def _optional_text(body: dict[str, Any], key: str, limit: int) -> str | None:
+    value = body.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError(f"{key} must be text")
+    if len(value) > limit:
+        raise ValueError(f"{key} is too long")
+    return value
+
+
+def _number_option(
+    body: dict[str, Any], key: str, minimum: float, maximum: float
+) -> int | float | None:
+    value = body.get(key)
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{key} must be a number")
+    if not minimum <= value <= maximum:
+        raise ValueError(f"{key} must be between {minimum:g} and {maximum:g}")
+    return value
+
+
+def _integer_option(body: dict[str, Any], key: str, minimum: int, maximum: int) -> int | None:
+    value = body.get(key)
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"{key} must be an integer")
+    if not minimum <= value <= maximum:
+        raise ValueError(f"{key} must be between {minimum} and {maximum}")
+    return value
 
 
 def build_chat_routes(core: AppCore) -> list[Route]:
@@ -111,18 +165,27 @@ def build_chat_routes(core: AppCore) -> list[Route]:
     async def models(request) -> JSONResponse:
         if not core.chat.enabled:
             return _disabled()
-        body = await request.json()
-        provider = PROVIDERS.get((body.get("provider") or "").lower())
+        body, error = await _json_object(request)
+        if error is not None:
+            return error
+        assert body is not None
+        try:
+            provider_id = (_optional_text(body, "provider", 50) or "").lower()
+            supplied_key = _optional_text(body, "api_key", _MAX_KEY_CHARS)
+            supplied_url = _optional_text(body, "base_url", _MAX_URL_CHARS)
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        provider = PROVIDERS.get(provider_id)
         if provider is None:
             return JSONResponse({"error": "unknown provider"}, status_code=400)
         from ifc_console.chat.providers import resolve_key
 
-        key = resolve_key(provider, body.get("api_key") or core.chat.key_for(provider.id))
+        key = resolve_key(provider, supplied_key or core.chat.key_for(provider.id))
         import asyncio
 
         try:
             base_url = validate_base_url(
-                body.get("base_url") or provider.base_url,
+                supplied_url or provider.base_url,
                 local_only=core.settings.chat.local_only,
             )
             names = await asyncio.to_thread(
@@ -140,13 +203,22 @@ def build_chat_routes(core: AppCore) -> list[Route]:
         """Hold a key and the model choice for this run only. Never written."""
         if not core.chat.enabled:
             return _disabled()
-        body = await request.json()
-        provider = (body.get("provider") or "").lower()
+        body, error = await _json_object(request)
+        if error is not None:
+            return error
+        assert body is not None
+        try:
+            provider = (_optional_text(body, "provider", 50) or "").lower()
+            model = _optional_text(body, "model", _MAX_MODEL_CHARS)
+            api_key = _optional_text(body, "api_key", _MAX_KEY_CHARS)
+            supplied_base_url = _optional_text(body, "base_url", _MAX_URL_CHARS)
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
         if provider and provider not in PROVIDERS:
             return JSONResponse({"error": "unknown provider"}, status_code=400)
         raw_base_url = None
-        if body.get("base_url") is not None:
-            raw_base_url = str(body["base_url"]).strip()
+        if supplied_base_url is not None:
+            raw_base_url = supplied_base_url.strip()
             try:
                 normalized_base_url = (
                     validate_base_url(
@@ -160,49 +232,80 @@ def build_chat_routes(core: AppCore) -> list[Route]:
                 return JSONResponse({"error": str(exc)}, status_code=400)
         if provider:
             core.chat.provider = provider
-        if body.get("model") is not None:
-            core.chat.model = str(body["model"]).strip()
+        if model is not None:
+            core.chat.model = model.strip()
         if raw_base_url is not None:
             core.chat.base_url = normalized_base_url
-        if body.get("api_key"):
-            core.chat.keys[provider or core.chat.provider] = str(body["api_key"]).strip()
+        if api_key:
+            core.chat.keys[provider or core.chat.provider] = api_key.strip()
         return JSONResponse({"ok": True, "provider": core.chat.provider, "model": core.chat.model})
 
     async def stream(request) -> Response:
         if not core.chat.enabled:
             return _disabled()
-        body = await request.json()
-        turns = [
-            {"role": turn.get("role", "user"), "text": str(turn.get("text", ""))}
-            for turn in body.get("turns") or []
-            if turn.get("role") in ("user", "assistant")
-        ]
+        body, error = await _json_object(request)
+        if error is not None:
+            return error
+        assert body is not None
+        raw_turns = body.get("turns")
+        if not isinstance(raw_turns, list) or len(raw_turns) > _MAX_TURNS:
+            return JSONResponse(
+                {"error": f"turns must be a list with at most {_MAX_TURNS} entries"},
+                status_code=400,
+            )
+        turns: list[dict[str, str]] = []
+        transcript_chars = 0
+        for turn in raw_turns:
+            if not isinstance(turn, dict) or turn.get("role") not in ("user", "assistant"):
+                return JSONResponse({"error": "each turn has an invalid role"}, status_code=400)
+            text = turn.get("text", "")
+            if not isinstance(text, str) or len(text) > _MAX_TURN_CHARS:
+                return JSONResponse({"error": "a chat turn is too long"}, status_code=400)
+            transcript_chars += len(text)
+            if transcript_chars > _MAX_TRANSCRIPT_CHARS:
+                return JSONResponse({"error": "chat transcript is too long"}, status_code=400)
+            turns.append({"role": turn["role"], "text": text})
         if not turns:
             return JSONResponse({"error": "no messages"}, status_code=400)
+
+        try:
+            provider_id = _optional_text(body, "provider", 50)
+            model = _optional_text(body, "model", _MAX_MODEL_CHARS)
+            base_url = _optional_text(body, "base_url", _MAX_URL_CHARS)
+            api_key = _optional_text(body, "api_key", _MAX_KEY_CHARS)
+            system = _optional_text(body, "system", _MAX_SYSTEM_CHARS)
+            temperature = _number_option(body, "temperature", 0, 2)
+            top_p = _number_option(body, "top_p", 0, 1)
+            max_tokens = _integer_option(body, "max_tokens", 1, 1_000_000)
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        use_tools = body.get("tools", core.settings.chat.tools)
+        if not isinstance(use_tools, bool):
+            return JSONResponse({"error": "tools must be true or false"}, status_code=400)
 
         async def events():
             try:
                 async for event in converse(
                     core,
                     turns=turns,
-                    provider_id=body.get("provider"),
-                    model=body.get("model"),
-                    base_url=body.get("base_url"),
-                    api_key=body.get("api_key"),
-                    system=body.get("system"),
-                    use_tools=bool(body.get("tools", core.settings.chat.tools)),
+                    provider_id=provider_id,
+                    model=model,
+                    base_url=base_url,
+                    api_key=api_key,
+                    system=system,
+                    use_tools=use_tools,
                     options={
-                        "temperature": body.get("temperature"),
-                        "top_p": body.get("top_p"),
-                        "max_tokens": body.get("max_tokens"),
+                        "temperature": temperature,
+                        "top_p": top_p,
+                        "max_tokens": max_tokens,
                     },
                 ):
                     yield _sse(event)
             except ProviderError as exc:
                 yield _sse({"type": "error", "text": str(exc)})
-            except Exception as exc:  # the panel must always finish cleanly
+            except Exception:  # the panel must always finish cleanly
                 log.exception("chat stream failed")
-                yield _sse({"type": "error", "text": f"{type(exc).__name__}: {exc}"})
+                yield _sse({"type": "error", "text": "internal chat error"})
             yield _sse({"type": "done"})
 
         return StreamingResponse(

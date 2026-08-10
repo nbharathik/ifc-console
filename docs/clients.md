@@ -18,6 +18,13 @@ always connects, and it reaches the console as soon as one is running. If you
 open your AI client first and ifc-console second, it still works, and the tool
 list refreshes by itself.
 
+Before forwarding a request, the bridge sends a fresh random challenge to the
+configured loopback port. It sends the bearer token only after the listener
+returns a valid HMAC proof bound to that port and the identity route. This
+prevents an unrelated application that happens to own the port from collecting
+the token. It does not isolate applications running as the same OS user: those
+can usually read the persistent token file directly.
+
 Configure each client once. With the default persistent-token setting, the
 config holds no IFC path and no token, only the command to launch the bridge.
 After that, start `ifc-console` and use `/file` to open or switch models. Every

@@ -1,9 +1,10 @@
 """Viewer HTTP + WebSocket routes.
 
-Mounted into the same Starlette app as /mcp. Every route except the static
-assets is token-gated by TokenAuthMiddleware; on top of that, everything here
-answers 404 while the viewer is disabled so a session without --viewer exposes
-no viewer surface at all.
+Mounted into the same Starlette app as /mcp. Static assets and browser page
+shells are public; session APIs require bearer authentication and the WebSocket
+authenticates its first frame. The loopback Host/Origin boundary applies to all
+of them. Everything here answers 404 while the viewer is disabled so a session
+without --viewer exposes no active viewer surface.
 """
 
 from __future__ import annotations
@@ -40,6 +41,10 @@ _HELLO_TIMEOUT = 5.0
 _SEARCH_MIN = 2
 _SEARCH_LIMIT = 200
 _SEARCH_MAX = 1000
+_SEARCH_TERM_MAX = 4096
+_GUID_MAX = 128
+_HELLO_FRAME_MAX = 16_384
+_WS_FRAME_MAX = 13_000_000
 
 # The SPA makes zero non-localhost requests; the CSP makes that a guarantee.
 # script-src needs 'unsafe-eval': web-ifc's embind glue builds its invoker
@@ -51,7 +56,8 @@ _CSP = (
     "img-src 'self' blob: data:; "
     "worker-src 'self' blob:; "
     "script-src 'self' 'unsafe-eval' 'wasm-unsafe-eval'; "
-    "style-src 'self'"
+    "style-src 'self'; "
+    "base-uri 'none'; object-src 'none'; frame-ancestors 'none'; form-action 'none'"
 )
 
 
@@ -153,6 +159,8 @@ def build_viewer_routes(core: AppCore) -> list[Any]:
         if session is None or not session.loaded:
             return JSONResponse({"error": "NO_MODEL_LOADED"}, status_code=404)
         guid = request.path_params["guid"]
+        if len(guid) > _GUID_MAX:
+            return JSONResponse({"error": "INVALID_INPUT"}, status_code=400)
 
         def job() -> dict | None:
             try:
@@ -189,6 +197,11 @@ def build_viewer_routes(core: AppCore) -> list[Any]:
         if session is None or not session.loaded:
             return JSONResponse({"error": "NO_MODEL_LOADED"}, status_code=404)
         term = (request.query_params.get("q") or "").strip()
+        if len(term) > _SEARCH_TERM_MAX:
+            return JSONResponse(
+                {"error": "INVALID_INPUT", "message": "search query is too long"},
+                status_code=413,
+            )
         if len(term) < _SEARCH_MIN:
             return JSONResponse({"query": term, "mode": "text", "results": [], "total": 0})
         try:
@@ -230,6 +243,9 @@ def build_viewer_routes(core: AppCore) -> list[Any]:
             # nothing is served before it verifies.
             try:
                 raw = await asyncio.wait_for(websocket.receive_text(), timeout=_HELLO_TIMEOUT)
+                if len(raw) > _HELLO_FRAME_MAX:
+                    await websocket.close(code=4409)
+                    return
                 frame = json.loads(raw)
             except (asyncio.TimeoutError, json.JSONDecodeError):
                 await websocket.close(code=4401)
@@ -247,6 +263,9 @@ def build_viewer_routes(core: AppCore) -> list[Any]:
             await client.send(hub.status_payload())
             while True:
                 raw = await websocket.receive_text()
+                if len(raw) > _WS_FRAME_MAX:
+                    await websocket.close(code=4409)
+                    return
                 try:
                     frame = json.loads(raw)
                 except json.JSONDecodeError:

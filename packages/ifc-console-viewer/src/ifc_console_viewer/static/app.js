@@ -40,17 +40,28 @@ async function api(path, options = {}) {
 const $ = (id) => document.getElementById(id);
 const overlay = $("overlay");
 
-function showOverlay(text) {
+function showOverlay(title, detail = "", action = null, kind = "status") {
   overlay.dataset.state = "message";
+  overlay.setAttribute("role", kind === "error" ? "alert" : "status");
+  overlay.setAttribute("aria-live", kind === "error" ? "assertive" : "polite");
+  overlay.setAttribute("aria-busy", "false");
   overlay.textContent = "";
   const card = el("div", "overlay-card");
-  card.textContent = text;
+  card.appendChild(el("h2", "overlay-title", title));
+  if (detail) card.appendChild(el("p", "overlay-message", detail));
+  if (action) {
+    const button = el("button", "overlay-action", action.label);
+    button.type = "button";
+    button.addEventListener("click", action.run);
+    card.appendChild(button);
+  }
   overlay.appendChild(card);
   overlay.hidden = false;
 }
 function hideOverlay() {
   overlay.hidden = true;
   delete overlay.dataset.state;
+  overlay.setAttribute("aria-busy", "false");
 }
 function showProgress(label, fraction) {
   let card = overlay.querySelector(".loading-card");
@@ -59,20 +70,35 @@ function showProgress(label, fraction) {
     card = el("div", "overlay-card loading-card");
     card.appendChild(el("span", "loading-label"));
     const track = el("div", "progress-track");
+    track.setAttribute("role", "progressbar");
+    track.setAttribute("aria-label", "Model loading progress");
+    track.setAttribute("aria-valuemin", "0");
+    track.setAttribute("aria-valuemax", "100");
     track.appendChild(el("div", "loading-bar"));
     card.appendChild(track);
     overlay.appendChild(card);
   }
   card.querySelector(".loading-label").textContent = label;
   const bar = card.querySelector(".loading-bar");
+  const track = card.querySelector(".progress-track");
+  track.setAttribute("role", "progressbar");
+  track.setAttribute("aria-label", "Model loading progress");
+  track.setAttribute("aria-valuemin", "0");
+  track.setAttribute("aria-valuemax", "100");
   if (fraction === null || fraction === undefined) {
     bar.classList.add("indeterminate");
     bar.style.width = "40%";
+    track.removeAttribute("aria-valuenow");
   } else {
     bar.classList.remove("indeterminate");
-    bar.style.width = `${Math.round(Math.min(1, Math.max(0, fraction)) * 100)}%`;
+    const percent = Math.round(Math.min(1, Math.max(0, fraction)) * 100);
+    bar.style.width = `${percent}%`;
+    track.setAttribute("aria-valuenow", String(percent));
   }
   overlay.dataset.state = "loading";
+  overlay.setAttribute("role", "status");
+  overlay.setAttribute("aria-live", "polite");
+  overlay.setAttribute("aria-busy", "true");
   overlay.hidden = false;
 }
 function hideProgress() {
@@ -93,8 +119,12 @@ try {
     canvas, antialias: true, powerPreference: "high-performance",
   });
 } catch (err) {
-  showOverlay("WebGL is unavailable in this browser, so the 3D view cannot start.\n"
-    + "Enable hardware acceleration or try another browser.");
+  showOverlay(
+    "3D view unavailable",
+    "Enable hardware acceleration or try another browser.",
+    null,
+    "error",
+  );
   throw err;
 }
 renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -106,7 +136,7 @@ canvas.addEventListener("webglcontextlost", (event) => {
   event.preventDefault();
   disposeModel();
   currentEtag = null;
-  showOverlay("the 3D context was lost\nrebuilding the view");
+  showOverlay("3D context lost", "Rebuilding the view.");
 });
 canvas.addEventListener("webglcontextrestored", () => { loadModel(); });
 
@@ -117,8 +147,14 @@ const camera = new THREE.PerspectiveCamera(50, 1, 0.1, 5000);
 camera.position.set(12, 10, 12);
 
 const controls = new OrbitControls(camera, canvas);
-controls.enableDamping = true;
 controls.dampingFactor = 0.12;
+controls.listenToKeyEvents(canvas);
+const motionPreference = window.matchMedia("(prefers-reduced-motion: reduce)");
+const applyMotionPreference = () => {
+  controls.enableDamping = !motionPreference.matches;
+};
+applyMotionPreference();
+motionPreference.addEventListener("change", applyMotionPreference);
 
 scene.add(new THREE.HemisphereLight(0xffffff, 0x445566, 1.6));
 const sun = new THREE.DirectionalLight(0xffffff, 1.4);
@@ -1210,23 +1246,41 @@ async function loadModel() {
       renderTree(null);
       setModelInfo(null);
       updateStats();
-      showOverlay("no model loaded\npick one with /file in the ifc-console terminal");
+      showOverlay(
+        "No model loaded",
+        "Choose a model with /file in the ifc-console terminal. This view updates automatically.",
+      );
       return;
     }
     if (res.status === 413) {
       hideProgress();
       const body = await res.json().catch(() => ({}));
-      showOverlay(`model too large for the viewer\n${body.message || ""}`);
+      showOverlay(
+        "Model too large for the viewer",
+        body.message || "Raise viewer.max_model_mb only if you trust this file.",
+        null,
+        "error",
+      );
       return;
     }
     if (res.status === 401) {
       hideProgress();
-      showOverlay("unauthorized\nre-open the viewer from the ifc-console terminal (/viewer)");
+      showOverlay(
+        "Viewer authorization expired",
+        "Reopen the viewer from the ifc-console terminal with /viewer.",
+        null,
+        "error",
+      );
       return;
     }
     if (!res.ok) {
       hideProgress();
-      showOverlay(`could not fetch the model (HTTP ${res.status})`);
+      showOverlay(
+        "Could not fetch the model",
+        `The local server returned HTTP ${res.status}.`,
+        { label: "Try again", run: () => loadModel() },
+        "error",
+      );
       return;
     }
     const nextEtag = res.headers.get("ETag");
@@ -1244,7 +1298,12 @@ async function loadModel() {
   } catch (err) {
     console.error("[ifc-console] model load failed", err);
     hideProgress();
-    showOverlay(`viewer error: ${err.message || err}`);
+    showOverlay(
+      "Could not build the 3D view",
+      String(err.message || err),
+      { label: "Try again", run: () => loadModel() },
+      "error",
+    );
   } finally {
     loading = false;
     if (reloadQueued) {
@@ -1346,7 +1405,9 @@ function renderTree(rootNode) {
   const container = $("tree");
   container.textContent = "";
   if (!rootNode) return;
-  container.appendChild(buildTreeItem(rootNode, 0));
+  const list = el("ul");
+  list.appendChild(buildTreeItem(rootNode, 0));
+  container.appendChild(list);
 }
 
 // Children build lazily (on first expand, in slices) so a 100k-element model
@@ -1354,7 +1415,6 @@ function renderTree(rootNode) {
 const TREE_SLICE = 250;
 
 function buildTreeItem(node, depth) {
-  const ul = el("ul");
   const li = el("li");
   const row = el("div", "tree-row");
   const children = node.children || [];
@@ -1362,7 +1422,13 @@ function buildTreeItem(node, depth) {
   // Project / Site / Building / Storey come pre-expanded; elements collapsed.
   const expanded = depth < 4;
 
-  const toggle = el("span", "tree-toggle", children.length ? (expanded ? "▾" : "▸") : " ");
+  const toggle = el("button", "tree-toggle", children.length ? (expanded ? "▾" : "▸") : " ");
+  toggle.type = "button";
+  if (!children.length) {
+    toggle.disabled = true;
+    toggle.tabIndex = -1;
+    toggle.setAttribute("aria-hidden", "true");
+  }
   row.appendChild(toggle);
 
   if (spatial && children.length) {
@@ -1370,6 +1436,10 @@ function buildTreeItem(node, depth) {
     checkbox.type = "checkbox";
     checkbox.checked = true;
     checkbox.title = "toggle visibility of this branch";
+    checkbox.setAttribute(
+      "aria-label",
+      `Show ${node._name || String(node.type || "model branch")}`,
+    );
     checkbox.addEventListener("change", () => {
       for (const id of descendantElements(node)) {
         if (checkbox.checked) hiddenByTree.delete(id);
@@ -1381,11 +1451,13 @@ function buildTreeItem(node, depth) {
   }
 
   const cls = String(node.type || "?");
-  const label = el("span", "tree-label");
+  const label = el("button", "tree-label");
+  label.type = "button";
   label.appendChild(el("span", null, node._name ? `${node._name} ` : ""));
   label.appendChild(el("span", "cls", node._name ? `(${cls})` : cls));
   label.dataset.expressId = node.expressID;
   label.title = node._name ? `${node._name} (${cls})` : cls;
+  label.setAttribute("aria-pressed", "false");
   row.appendChild(label);
   li.appendChild(row);
 
@@ -1398,12 +1470,15 @@ function buildTreeItem(node, depth) {
       frag.appendChild(buildTreeItem(children[built], depth + 1));
     }
     if (built < children.length) {
-      const more = el("div", "tree-more", `show ${Math.min(TREE_SLICE, children.length - built)} more (${children.length - built} hidden)`);
+      const moreItem = el("li", "tree-more-item");
+      const more = el("button", "tree-more", `Show ${Math.min(TREE_SLICE, children.length - built)} more (${children.length - built} hidden)`);
+      more.type = "button";
       more.addEventListener("click", () => {
-        more.remove();
+        moreItem.remove();
         buildSlice();
       });
-      frag.appendChild(more);
+      moreItem.appendChild(more);
+      frag.appendChild(moreItem);
     }
     kids.appendChild(frag);
   };
@@ -1412,35 +1487,67 @@ function buildTreeItem(node, depth) {
     if (open && !built) buildSlice();
     kids.hidden = !open;
     toggle.textContent = kids.hidden ? "▸" : "▾";
+    toggle.setAttribute("aria-label", `${kids.hidden ? "Expand" : "Collapse"} ${label.title}`);
+    toggle.setAttribute("aria-expanded", String(!kids.hidden));
+    label.setAttribute("aria-expanded", String(!kids.hidden));
   };
   if (children.length) {
-    kids = el("div");
+    kids = el("ul");
     li.appendChild(kids);
     setOpen(expanded);
     if (!expanded) toggle.textContent = "▸";
-    toggle.addEventListener("click", () => setOpen(kids.hidden));
+    toggle.addEventListener("click", (event) => {
+      event.stopPropagation();
+      setOpen(kids.hidden);
+    });
   }
 
   // Clicking a name only selects; framing stays on F or the view tools.
-  label.addEventListener("click", () => {
+  label.addEventListener("click", (event) => {
+    const additive = event.ctrlKey || event.metaKey;
     if (spatial) {
       setOpen(true); // the label is a much bigger target than the arrow
-      setSelection(descendantElements(node), false);
+      setSelection(descendantElements(node), additive);
     } else if (elements.has(node.expressID)) {
-      setSelection([node.expressID], false);
+      setSelection([node.expressID], additive);
     }
   });
-  ul.appendChild(li);
-  return ul;
+  label.addEventListener("keydown", (event) => {
+    if (event.key === "ArrowRight" && children.length) {
+      event.preventDefault();
+      setOpen(true);
+      kids.querySelector(".tree-label")?.focus();
+    } else if (event.key === "ArrowLeft" && children.length && !kids.hidden) {
+      event.preventDefault();
+      setOpen(false);
+    } else if (["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) {
+      event.preventDefault();
+      const visible = [...$("tree").querySelectorAll(".tree-label")]
+        .filter((item) => item.offsetParent !== null);
+      const index = visible.indexOf(label);
+      const target = event.key === "Home" ? 0
+        : event.key === "End" ? visible.length - 1
+          : Math.min(
+            visible.length - 1,
+            Math.max(0, index + (event.key === "ArrowDown" ? 1 : -1)),
+          );
+      visible[target]?.focus();
+    }
+  });
+  return li;
 }
 
 function markTreeSelection() {
   for (const label of document.querySelectorAll(".tree-label.selected")) {
     label.classList.remove("selected");
+    label.setAttribute("aria-pressed", "false");
   }
   for (const id of selection) {
     const label = document.querySelector(`.tree-label[data-express-id="${id}"]`);
-    if (label) label.classList.add("selected");
+    if (label) {
+      label.classList.add("selected");
+      label.setAttribute("aria-pressed", "true");
+    }
   }
   markSearchSelection();
 }
@@ -1601,6 +1708,7 @@ function pickElementAt(clientX, clientY) {
 const DRAG_THRESHOLD = 6;
 let downAt = null;
 canvas.addEventListener("pointerdown", (e) => {
+  canvas.focus({ preventScroll: true });
   downAt = [e.clientX, e.clientY];
   canvas.classList.remove("is-dragging");
 });
@@ -2015,9 +2123,10 @@ function partsList(titleText, parts) {
   const list = el("div", "part-list");
   for (const part of parts) {
     const id = expressOf.get(part.global_id);
-    const row = el("div", "part-row", `${part.name || part.class}`);
+    const row = el(id !== undefined ? "button" : "div", "part-row", `${part.name || part.class}`);
     row.appendChild(el("span", "cls", ` ${part.class}`));
     if (id !== undefined) {
+      row.type = "button";
       row.classList.add("clickable");
       row.title = "Select this part";
       row.addEventListener("click", () => setSelection([id], false));
@@ -2050,7 +2159,7 @@ function clearProperties() {
   propertiesRequest++;
   const panel = $("props");
   panel.textContent = "";
-  panel.appendChild(el("p", "hint", "click an element to inspect it"));
+  panel.appendChild(el("p", "hint", "Select an element to inspect its IFC data."));
 }
 
 // ---------------------------------------------------------------- websocket
@@ -2068,14 +2177,21 @@ function scheduleReload() {
   reloadTimer = setTimeout(loadModel, 2000);
 }
 
+function setConnectionState(connected, label) {
+  const status = $("live");
+  status.classList.toggle("off", !connected);
+  status.querySelector(".connection-label").textContent = label;
+  status.setAttribute("aria-label", `Server ${label.toLowerCase()}`);
+  status.title = connected ? "Live connection to the local server" : label;
+}
+
 function connect() {
   const scheme = location.protocol === "https:" ? "wss" : "ws";
   ws = new WebSocket(`${scheme}://${location.host}/ws`);
 
   ws.addEventListener("open", () => {
     wsAttempts = 0;
-    $("live").classList.remove("off");
-    $("live").setAttribute("aria-label", "Server connected");
+    setConnectionState(true, "Live");
     wsSend({ type: "hello", token });
   });
 
@@ -2090,16 +2206,24 @@ function connect() {
   });
 
   ws.addEventListener("close", (event) => {
-    $("live").classList.add("off");
-    $("live").setAttribute("aria-label", "Server disconnected");
+    const reconnecting = event.code !== 4401 && event.code !== 4404;
+    setConnectionState(false, reconnecting ? "Reconnecting" : "Offline");
     // 4401 (bad token) and 4404 (viewer switched off) are verdicts, not
     // outages: retrying cannot change either answer.
     if (event.code === 4401) {
-      showOverlay("unauthorized\nre-open the viewer from the ifc-console terminal (/viewer)");
+      showOverlay(
+        "Viewer authorization expired",
+        "Reopen the viewer from the ifc-console terminal with /viewer.",
+        null,
+        "error",
+      );
       return;
     }
     if (event.code === 4404) {
-      showOverlay("the viewer was turned off\ntype /viewer in the ifc-console terminal");
+      showOverlay(
+        "Viewer turned off",
+        "Type /viewer in the ifc-console terminal to start it again.",
+      );
       return;
     }
     wsAttempts += 1;
@@ -2507,6 +2631,7 @@ function clearSearch(refocus) {
   $("search-clear").hidden = true;
   $("search-results").hidden = true;
   $("search-results").textContent = "";
+  $("search-results").setAttribute("aria-busy", "false");
   $("tree").hidden = false;
   if (refocus) $("search-input").focus();
 }
@@ -2514,6 +2639,7 @@ function clearSearch(refocus) {
 function renderSearch(payload) {
   const box = $("search-results");
   box.textContent = "";
+  box.setAttribute("aria-busy", "false");
   searchHits = [];
 
   const head = el("div", "search-head");
@@ -2531,22 +2657,32 @@ function renderSearch(payload) {
   box.appendChild(head);
 
   if (!payload.total) {
-    box.appendChild(el("p", "hint", "no elements match"));
+    box.appendChild(el("p", "hint", "No elements match. Try an IFC class such as IfcDoor."));
   }
 
   for (const row of payload.results) {
     const id = expressOf.get(row.global_id);
     if (id !== undefined) searchHits.push(id);
-    const hit = el("div", "search-hit");
-    hit.appendChild(el("div", "name", row.name || row.class));
+    const hit = el("button", "search-hit");
+    hit.type = "button";
+    hit.appendChild(el("span", "name", row.name || row.class));
     const detail = [row.class, row.storey, row.type_name].filter(Boolean).join(" · ");
-    hit.appendChild(el("div", "meta-line", detail));
+    hit.appendChild(el("span", "meta-line", detail));
     if (id === undefined) {
-      hit.title = "no geometry in this model";
+      hit.disabled = true;
+      hit.title = "No geometry in this model";
     } else {
       hit.dataset.expressId = id;
+      hit.setAttribute("aria-pressed", "false");
+      hit.title = "Select this element. Press Enter to select and zoom.";
       hit.addEventListener("click", () => setSelection([id], false));
       hit.addEventListener("dblclick", () => fitTo([id]));
+      hit.addEventListener("keydown", (event) => {
+        if (event.key !== "Enter") return;
+        event.preventDefault();
+        setSelection([id], false);
+        fitTo([id]);
+      });
     }
     box.appendChild(hit);
   }
@@ -2569,7 +2705,9 @@ function renderSearch(payload) {
 function markSearchSelection() {
   for (const hit of document.querySelectorAll(".search-hit")) {
     const id = Number(hit.dataset.expressId);
-    hit.classList.toggle("selected", selection.has(id));
+    const selected = selection.has(id);
+    hit.classList.toggle("selected", selected);
+    if (!hit.disabled) hit.setAttribute("aria-pressed", String(selected));
   }
 }
 
@@ -2577,7 +2715,8 @@ async function runSearch(term) {
   const request = ++searchRequest;
   const box = $("search-results");
   box.textContent = "";
-  box.appendChild(el("p", "hint", "searching…"));
+  box.setAttribute("aria-busy", "true");
+  box.appendChild(el("p", "hint", "Searching elements…"));
   box.hidden = false;
   $("tree").hidden = true;
   let payload;
@@ -2588,7 +2727,8 @@ async function runSearch(term) {
   } catch (err) {
     if (request !== searchRequest) return;
     box.textContent = "";
-    box.appendChild(el("p", "hint", `search failed (${err.message})`));
+    box.setAttribute("aria-busy", "false");
+    box.appendChild(el("p", "hint", `Search failed (${err.message}). Press Enter to try again.`));
     return;
   }
   if (request !== searchRequest) return;
@@ -2710,15 +2850,27 @@ $("view-name").addEventListener("keydown", (e) => {
 
 // ---------------------------------------------------------------- ui state
 // Panel widths/visibility and scene settings persist across sessions.
+function isPlainObject(value) {
+  return value !== null
+    && typeof value === "object"
+    && !Array.isArray(value)
+    && Object.getPrototypeOf(value) === Object.prototype;
+}
+
 const uiState = (() => {
   try {
-    return JSON.parse(localStorage.getItem("ifc-console-viewer-ui") || "{}");
+    const saved = JSON.parse(localStorage.getItem("ifc-console-viewer-ui") || "{}");
+    return isPlainObject(saved) ? saved : {};
   } catch {
     return {};
   }
 })();
 function saveUi() {
-  localStorage.setItem("ifc-console-viewer-ui", JSON.stringify(uiState));
+  try {
+    localStorage.setItem("ifc-console-viewer-ui", JSON.stringify(uiState));
+  } catch {
+    // Storage can be unavailable in private mode or full.
+  }
 }
 
 function applySceneSettings() {
@@ -2740,6 +2892,25 @@ if (uiState.section) {
 }
 for (const axis of AXES) syncSectionRow(axis);
 
+function syncPanelScrim() {
+  const compact = window.innerWidth <= 620;
+  const sidePanelOpen = !$("tree-panel").classList.contains("collapsed")
+    || !$("props-panel").classList.contains("collapsed");
+  $("panel-scrim").hidden = !compact || !sidePanelOpen;
+}
+
+function closeOtherCompactPanel(openKey) {
+  if (window.innerWidth > 620 || uiState[openKey] !== true) return;
+  if (typeof chatDock !== "undefined" && !chatDock.hidden) setChat(false);
+  if (openKey === "treeOpen" && uiState.propsOpen === true) {
+    uiState.propsOpen = false;
+    applyPropsPanel();
+  } else if (openKey === "propsOpen" && uiState.treeOpen === true) {
+    uiState.treeOpen = false;
+    applyTreePanel();
+  }
+}
+
 function initSidePanel(panelId, splitId, btnId, widthKey, openKey, side, openByDefault) {
   const panel = $(panelId);
   const splitter = $(splitId);
@@ -2754,12 +2925,31 @@ function initSidePanel(panelId, splitId, btnId, widthKey, openKey, side, openByD
   };
   // Properties start closed: an empty panel should not cost the 3D view 320px.
   const isOpen = () => uiState[openKey] ?? openByDefault;
+  const setWidth = (width) => {
+    const value = clampW(width);
+    uiState[widthKey] = value;
+    panel.style.width = `${value}px`;
+    splitter.setAttribute("aria-valuemin", "160");
+    splitter.setAttribute("aria-valuemax", String(clampW(window.innerWidth)));
+    splitter.setAttribute("aria-valuenow", String(value));
+    splitter.setAttribute("aria-valuetext", `${value} pixels`);
+  };
   const apply = () => {
     const open = isOpen();
     panel.classList.toggle("collapsed", !open);
     splitter.classList.toggle("collapsed", !open);
     btn.setAttribute("aria-pressed", String(open));
-    panel.style.width = uiState[widthKey] ? `${clampW(uiState[widthKey])}px` : "";
+    if (uiState[widthKey]) setWidth(uiState[widthKey]);
+    else {
+      panel.style.width = "";
+      const fallback = panelId === "tree-panel" ? 260 : 320;
+      const value = clampW(fallback);
+      splitter.setAttribute("aria-valuemin", "160");
+      splitter.setAttribute("aria-valuemax", String(clampW(window.innerWidth)));
+      splitter.setAttribute("aria-valuenow", String(value));
+      splitter.setAttribute("aria-valuetext", `${value} pixels`);
+    }
+    syncPanelScrim();
   };
   splitter.addEventListener("pointerdown", (e) => {
     e.preventDefault();
@@ -2769,8 +2959,7 @@ function initSidePanel(panelId, splitId, btnId, widthKey, openKey, side, openByD
     const startW = panel.getBoundingClientRect().width;
     const move = (ev) => {
       const dx = ev.clientX - startX;
-      uiState[widthKey] = clampW(side === "left" ? startW + dx : startW - dx);
-      panel.style.width = `${uiState[widthKey]}px`;
+      setWidth(side === "left" ? startW + dx : startW - dx);
     };
     const up = (ev) => {
       splitter.classList.remove("dragging");
@@ -2787,8 +2976,27 @@ function initSidePanel(panelId, splitId, btnId, widthKey, openKey, side, openByD
     saveUi();
     apply();
   });
+  splitter.addEventListener("keydown", (event) => {
+    if (event.key === "Home") {
+      event.preventDefault();
+      delete uiState[widthKey];
+      saveUi();
+      apply();
+      return;
+    }
+    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+    event.preventDefault();
+    const current = uiState[widthKey]
+      || panel.getBoundingClientRect().width
+      || (panelId === "tree-panel" ? 260 : 320);
+    const movement = event.key === "ArrowRight" ? 16 : -16;
+    setWidth(current + (side === "left" ? movement : -movement));
+    saveUi();
+    resize();
+  });
   btn.addEventListener("click", () => {
     uiState[openKey] = !isOpen();
+    closeOtherCompactPanel(openKey);
     saveUi();
     apply();
   });
@@ -2810,25 +3018,46 @@ const applyTreePanel =
 const applyPropsPanel =
   initSidePanel("props-panel", "split-props", "btn-panel-props", "propsWidth", "propsOpen", "right", false);
 
+$("panel-scrim").addEventListener("click", () => {
+  uiState.treeOpen = false;
+  uiState.propsOpen = false;
+  saveUi();
+  applyTreePanel();
+  applyPropsPanel();
+  $("btn-panel-tree").focus();
+});
+
 const POPOVERS = [
   ["btn-settings", "settings-panel"],
   ["btn-help", "help-panel"],
   ["btn-tools", "tools-panel"],
 ];
-function closePopovers(exceptId) {
+function closePopovers(exceptId, restoreFocus = false) {
   for (const [btnId, panelId] of POPOVERS) {
     if (panelId === exceptId) continue;
+    const wasOpen = !$(panelId).hidden;
     $(panelId).hidden = true;
     $(btnId).setAttribute("aria-expanded", "false");
+    if (restoreFocus && wasOpen) $(btnId).focus();
   }
 }
+
+function togglePopover(btnId, panelId) {
+  const button = $(btnId);
+  const panel = $(panelId);
+  const open = panel.hidden;
+  if (open) closePopovers(panelId);
+  panel.hidden = !open;
+  button.setAttribute("aria-expanded", String(open));
+  if (open) {
+    panel.querySelector("button:not(:disabled), input:not(:disabled), select:not(:disabled)")?.focus();
+  }
+}
+
 for (const [btnId, panelId] of POPOVERS) {
   $(btnId).addEventListener("click", (e) => {
     e.stopPropagation();
-    const panel = $(panelId);
-    panel.hidden = !panel.hidden;
-    $(btnId).setAttribute("aria-expanded", String(!panel.hidden));
-    if (!panel.hidden) closePopovers(panelId);
+    togglePopover(btnId, panelId);
   });
   $(panelId).addEventListener("click", (e) => e.stopPropagation());
 }
@@ -2870,36 +3099,113 @@ const chatDock = $("chat-dock");
 const chatResize = $("chat-dock-resize");
 const chatBtn = $("btn-chat");
 let chatPanel = null;
+let chatLoadPromise = null;
+let chatDesiredOpen = false;
+let chatRequestVersion = 0;
 
-async function setChat(open) {
-  if (open && !chatPanel) {
-    const { mountChat } = await import("/viewer/static/chat.js");
-    chatPanel = mountChat(chatDock, { onClose: () => setChat(false) });
-  }
+function applyChatChrome(open) {
   chatDock.hidden = !open;
   chatResize.hidden = !open;
   chatBtn.setAttribute("aria-pressed", String(open));
+}
+
+function closePanelsForChat() {
+  let changed = false;
+  if (window.innerWidth < 900 && $("btn-panel-tree").getAttribute("aria-pressed") === "true") {
+    uiState.treeOpen = false;
+    changed = true;
+  }
+  if (window.innerWidth < 1500 && $("btn-panel-props").getAttribute("aria-pressed") === "true") {
+    uiState.propsOpen = false;
+    changed = true;
+  }
+  if (changed) {
+    applyTreePanel();
+    applyPropsPanel();
+  }
+}
+
+async function setChat(open) {
+  const requestVersion = ++chatRequestVersion;
+  chatDesiredOpen = Boolean(open);
+  uiState.chatOpen = chatDesiredOpen;
+  applyChatChrome(chatDesiredOpen);
   // three panels plus the 3D view do not fit a normal window; the properties
   // panel is the one the chat replaces, so fold it away rather than letterbox
   // the model.
-  const props = $("btn-panel-props");
-  if (open && window.innerWidth < 1500 && props.getAttribute("aria-pressed") === "true") {
-    props.click();
-  }
-  uiState.chatOpen = open;
+  if (chatDesiredOpen) closePanelsForChat();
   saveUi();
-  if (open) {
-    if (uiState.chatWidth) chatDock.style.width = uiState.chatWidth + "px";
-    chatPanel.focus();
+  if (chatDesiredOpen && uiState.chatWidth) {
+    chatDock.style.width = uiState.chatWidth + "px";
   }
   resize();
+  if (!chatDesiredOpen) return;
+
+  try {
+    if (!chatPanel) {
+      chatLoadPromise ||= import("/viewer/static/chat.js")
+        .then(({ mountChat }) => {
+          chatPanel ||= mountChat(chatDock, { onClose: () => setChat(false) });
+          return chatPanel;
+        })
+        .finally(() => { chatLoadPromise = null; });
+      await chatLoadPromise;
+    }
+  } catch (error) {
+    console.error("[ifc-console] chat module failed", error);
+    if (requestVersion === chatRequestVersion && chatDesiredOpen) {
+      chatDesiredOpen = false;
+      uiState.chatOpen = false;
+      applyChatChrome(false);
+      saveUi();
+      resize();
+      showOverlay(
+        "Could not open the assistant",
+        "The local chat module did not load.",
+        { label: "Try again", run: () => setChat(true) },
+        "error",
+      );
+    }
+    return;
+  }
+  if (requestVersion !== chatRequestVersion || !chatDesiredOpen || !chatPanel) return;
+  chatPanel.focus();
+}
+
+function reconcileCompactLayout() {
+  if (window.innerWidth > 620) {
+    syncPanelScrim();
+    return;
+  }
+  const treeOpen = $("btn-panel-tree").getAttribute("aria-pressed") === "true";
+  const propsOpen = $("btn-panel-props").getAttribute("aria-pressed") === "true";
+  let changed = false;
+  if (chatDesiredOpen) {
+    if (treeOpen) {
+      uiState.treeOpen = false;
+      changed = true;
+    }
+    if (propsOpen) {
+      uiState.propsOpen = false;
+      changed = true;
+    }
+  } else if (treeOpen && propsOpen) {
+    uiState.propsOpen = false;
+    changed = true;
+  }
+  if (changed) {
+    saveUi();
+    applyTreePanel();
+    applyPropsPanel();
+  }
+  syncPanelScrim();
 }
 
 // A viewer session with no chat should not offer a button that opens a dead
 // panel, so the console's status decides whether it is there at all.
 function setChatAvailable(on) {
   chatBtn.hidden = !on;
-  if (!on && !chatDock.hidden) setChat(false);
+  if (!on && chatDesiredOpen) setChat(false);
 }
 
 chatBtn.addEventListener("click", () => setChat(chatDock.hidden));
@@ -2925,33 +3231,56 @@ chatResize.addEventListener("pointerdown", (e) => {
 });
 
 if (uiState.chatOpen || queryParams.get("chat") === "1") setChat(true);
+window.addEventListener("resize", reconcileCompactLayout);
+reconcileCompactLayout();
 
 window.addEventListener("keydown", (e) => {
   if (e.key === "Escape") {
     // an active tool owns Escape first, then the popovers
     if (measureMode) setMeasureMode(false);
-    else closePopovers();
+    else {
+      const trigger = POPOVERS.find(([, panelId]) => !$(panelId).hidden)?.[0];
+      closePopovers();
+      if (trigger) $(trigger).focus();
+    }
     return;
   }
-  if (e.ctrlKey || e.metaKey || e.target !== document.body) return;
-  if (e.key === "m") {
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
+  const shortcutSurface = e.target === document.body
+    || e.target === canvas
+    || e.target.closest?.(".tree-label, .search-hit");
+  if (!shortcutSurface) return;
+  const key = e.key.toLowerCase();
+  if (key === "m") {
+    e.preventDefault();
     setMeasureMode(!measureMode);
-  } else if (e.key === "f") {
+  } else if (key === "f") {
+    e.preventDefault();
     fitTo(null);
-  } else if (e.key === "c") {
+  } else if (key === "c") {
+    e.preventDefault();
     if (!chatBtn.hidden) setChat(chatDock.hidden);
-  } else if (e.key === "g") {
+  } else if (key === "g") {
+    e.preventDefault();
     uiState.grid = uiState.grid !== true;
     gridBox.checked = uiState.grid;
     saveUi();
     applySceneSettings();
+  } else if (e.key === "?") {
+    e.preventDefault();
+    togglePopover("btn-help", "help-panel");
   }
 });
 
 // ---------------------------------------------------------------- boot
 async function boot() {
   if (!token) {
-    showOverlay("missing session token\nopen the viewer from the ifc-console terminal (/viewer)");
+    showOverlay(
+      "Missing session token",
+      "Open the viewer from the ifc-console terminal with /viewer.",
+      null,
+      "error",
+    );
     return;
   }
   try {

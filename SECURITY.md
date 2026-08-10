@@ -8,10 +8,14 @@ Do not open a public issue. You should receive a response within a week.
 
 ## Scope and threat model, honestly
 
-ifc-console runs LLM-written Python (`execute_ifc_code`). Non-mutating runs go
-to a separate sandbox process with no network, no subprocesses, no credentials
-in its environment, a memory cap, and read access limited to the model
-directories; enforcement sits on CPython audit hooks. Mutating runs still
+ifc-console runs LLM-written Python (`execute_ifc_code`). Eligible non-mutating
+runs use a separate sandbox process with no network, no subprocesses, no
+inherited credentials in its environment, a memory cap, and read access limited
+to the model directories; enforcement there sits on CPython audit hooks. Common
+credential stores are denied inside those roots, but an arbitrarily named
+secret file in an allowed model directory remains readable. The default
+`sandbox.mode=auto` reports and uses in-process guards if a run is ineligible or
+the worker is unavailable; `strict` refuses that fallback. Mutating runs always
 execute in the server process behind namespace guards, because the edit has to
 land in the live model, and getting there already required the user to switch
 the session to `edit` mode in their own terminal.
@@ -74,8 +78,21 @@ read from the model reach that provider.
 - Keep the default `ask` mode for untrusted prompts and models.
 - `/sandbox strict` refuses a generated read-only run when the sandbox is
   unavailable, instead of falling back to in-process guards.
-- The HTTP server binds to 127.0.0.1 and requires a bearer token; rotate it
-  with `ifc-console token rotate` if it leaks.
+- The HTTP server binds to 127.0.0.1. MCP and session APIs require a bearer
+  token. Browser shells and static assets expose no session data, the viewer
+  WebSocket authenticates its first frame, and the identity route returns only
+  a nonce-bound proof. Rotate the token with `ifc-console token rotate` if it
+  leaks.
+- Before the stdio bridge attaches that token, it sends a fresh random nonce
+  to the configured loopback port and requires a domain-separated HMAC proof
+  bound to the identity route and port. A foreign listener cannot collect the
+  token merely by occupying the configured port, and bridge responses are
+  size-limited. This is not isolation from malicious code running as the same
+  OS user, which can read the persistent token file or inspect peer processes.
+- Project settings cannot change the server port, authentication behavior,
+  allowed directories, sandbox policy, session mode, or plugin allowlist.
+- Keep secrets outside model directories. The sandbox blocks common stores and
+  `.env` variants, but cannot infer that an arbitrary file contains a secret.
 - Every session writes an audit log; `/audit` shows it live and
   `ifc-console sessions show <id>` reads it afterwards.
 - The knowledge index is built from the ifcopenshell package already installed

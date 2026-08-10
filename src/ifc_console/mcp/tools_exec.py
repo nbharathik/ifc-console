@@ -1,10 +1,10 @@
 """execute_ifc_code, the power tool, gated per call by classifier + mode.
 
-Two execution paths. Non-mutating code goes to the sandbox worker: a
-separate process with no network, no subprocesses, and no credentials, so a
-prompt-injected query cannot reach anything. Mutating code runs in-process
-behind the guards, because the edit has to land in the model the console is
-holding; getting there already required the user to turn on edit mode.
+Two execution paths. Eligible non-mutating code goes to the sandbox worker, a
+separate process with no network, no subprocesses, or inherited credential
+environment. Auto mode can report and use guarded in-process fallback; strict
+mode refuses it. Mutating code always runs in-process because the edit has to
+land in the live model and already required edit mode.
 """
 
 from __future__ import annotations
@@ -46,8 +46,9 @@ _DESCRIPTION = (
     "ask them to switch to edit mode. In edit mode mutations run. Include a "
     "one-line `description` of intent; the user sees it in their terminal and "
     "audit log. After mutating, the model is dirty: finish batches with "
-    "save_ifc_file. Read-only runs execute in an isolated sandbox process with "
-    "no network and no file access outside the model directories. Do not "
+    "save_ifc_file. Eligible read-only runs use an isolated sandbox with no "
+    "network and no file access outside the model directories. Auto mode can "
+    "report and use guarded in-process fallback; strict mode refuses it. Do not "
     "import os/subprocess/network modules; that class of code is blocked. This "
     "is not Blender; there is no bpy."
 )
@@ -55,6 +56,7 @@ _DESCRIPTION = (
 # Sandbox failures that mean "the worker could not serve this run" rather
 # than "the code was wrong": auto falls back, strict refuses.
 _UNAVAILABLE_KINDS = frozenset({"worker", "protocol"})
+_MAX_CODE_CHARS = 1_000_000
 
 
 def register(mcp: OperationRegistry, core: AppCore) -> None:
@@ -74,6 +76,13 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
         ] = "",
     ) -> Envelope:
         session = core.session
+
+        if len(code) > _MAX_CODE_CHARS:
+            raise ToolError(
+                "INVALID_INPUT",
+                f"code exceeds the {_MAX_CODE_CHARS:,} character limit.",
+                "Submit a smaller program or move reusable logic into a trusted plugin.",
+            )
 
         try:
             cls = classify(code, extra_system_modules=tuple(settings.exec.system_modules_extra))
@@ -304,7 +313,7 @@ async def _run_in_process(
         allow_system=allow_system,
         allowed_dirs=list(core.allowed_dirs),
         extra_system_modules=tuple(settings.exec.system_modules_extra),
-        deny_dirs=[core.store.home],
+        deny_dirs=core.generated_code_deny_paths(),
     )
 
     def job() -> tuple[executor.ExecResult, int | None, int | None]:

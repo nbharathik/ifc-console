@@ -3,10 +3,11 @@
   <img alt="ifc-console" width="360" src="assets/brand/horizontal-dark.svg#only-dark">
 </p>
 
-**A terminal interface to connect IFC files to LLMs.** `ifc-console` is a
-terminal-first MCP server for IFC/BIM models. One command loads a model with
-IfcOpenShell and starts an MCP endpoint any LLM client can connect to. A console
-lets you pick files, set a safety mode, and watch every tool call live.
+**A local automation interface for IFC models and LLM workflows.** `ifc-console`
+loads models with IfcOpenShell and exposes the same operations through MCP, a
+Python SDK, automation workflows, and an interactive console. You can inspect,
+validate, coordinate, and make approved structured changes without a host BIM
+application or cloud service.
 
 No Blender. No host application. Works on Windows, macOS, and Linux.
 
@@ -32,23 +33,29 @@ zero-setup bridge between an LLM client and an IFC file.
   you flip the switch, in your terminal. Finer permission prompts stay in your
   AI client.
 - **It runs anywhere.** A pure Python package that runs on Windows, macOS,
-  and Linux, with the 3D viewer built in.
+  and Linux. The local 3D viewer is available as an optional install extra.
 - **It is honest.** Errors are machine-readable with hints. Mutations are
   audited to JSONL. Saves are atomic with automatic backups. The docs say
   plainly what the sandbox does and does not guarantee.
 
 ## Highlights
 
-- **24 core MCP tools, plus an optional 4-tool viewer.** Structured queries
-  (project info, spatial tree, selectors, element details, psets, schema docs),
-  file handling, multi-file workspace tools, and a gated Python
-  `execute_ifc_code` power tool.
+- **36 core operations, plus an optional 4-tool viewer.** Structured queries,
+  validation, durable jobs, artifacts, approved change previews, file handling,
+  multi-model workspaces, offline IFC knowledge, and a gated Python
+  `execute_ifc_code` power tool all share one capability policy.
+- **SDK and deterministic automation.** Use synchronous or asynchronous Python
+  without starting a server, or run resumable validation and query workflows
+  across many models from JSON or YAML.
+- **Trusted operation plugins.** Disabled-by-default, user-allowlisted Python
+  packages can add typed operations to the SDK, MCP, and browser assistant
+  together.
 - **Interactive console** styled after coding-agent CLIs: slash commands
   (`/file`, `/mode`, `/viewer`, `/connect`), a completion menu, command history,
   and a live feed of every MCP call.
-- **3D viewer** in your browser, included in every install. Click an
-  element so the LLM knows what "this wall" means. It highlights elements and
-  takes screenshots to check its own work. Fully local and token-protected.
+- **Optional 3D viewer** in your browser. Install `ifc-console[viewer]`, click an
+  element so the LLM knows what "this wall" means, and let it highlight or
+  screenshot results. The viewer stays local and token-protected.
 - **Works with any MCP client:** Claude Code, Claude Desktop, Cursor, VS Code,
   Codex. Streamable HTTP or stdio.
 
@@ -56,7 +63,7 @@ zero-setup bridge between an LLM client and an IFC file.
 
 ```console
 $ ifc-console
-IFC CONSOLE  v0.1.4
+IFC CONSOLE  v0.2.0
 a terminal interface to connect IFC files to LLMs
   model  /file to pick
   mode   ask  (AI is query-only; /mode edit lets it change the model)
@@ -79,3 +86,5 @@ Then, in your LLM client:
 - [Safety model](safety.md): what each mode guarantees.
 - [Code sandbox](sandbox.md): where AI-generated code runs, and what it cannot reach.
 - [MCP tools](tools.md): the full tool reference.
+- [Python SDK](sdk.md): embedded, typed access without a server.
+- [Automation workflows](workflows.md): durable jobs, batches, and workflow graphs.

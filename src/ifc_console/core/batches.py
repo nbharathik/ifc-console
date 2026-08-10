@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 from datetime import datetime
-from enum import StrEnum
 from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from ifc_console._compat import StrEnum
 from ifc_console.core.artifacts import ArtifactRef
 from ifc_console.core.context import OperationContext
 from ifc_console.core.jobs import (
