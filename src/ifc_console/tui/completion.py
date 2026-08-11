@@ -213,7 +213,7 @@ def _connect_args(_core: AppCore, rest: str, _files: FilesProvider | None) -> Me
     )
 
 
-def _open_args(_core: AppCore, rest: str, files: FilesProvider | None) -> MenuState:
+def _open_args(core: AppCore, rest: str, files: FilesProvider | None) -> MenuState:
     entries = files() if files is not None else []
     if entries is None:
         # the scan runs on a thread; the console refreshes the menu when it lands
@@ -221,13 +221,13 @@ def _open_args(_core: AppCore, rest: str, files: FilesProvider | None) -> MenuSt
         return MenuState(prefix="/file ", candidates=(scanning,), context="open")
     entries = list(entries)
     token = rest.strip().lower()
-    cwd = Path.cwd()
+    root = core.launch_dir
     out = []
     for path, detail in entries:
         if token and token not in str(path).lower():
             continue
         try:
-            shown = str(path.relative_to(cwd))
+            shown = str(path.relative_to(root))
         except ValueError:
             shown = str(path)
         out.append(Candidate(insert=shown, annotation=detail, terminal=True))

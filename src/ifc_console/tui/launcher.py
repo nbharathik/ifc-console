@@ -1,7 +1,8 @@
 """File picker modal for the console's /file command.
 
-Lists recent models plus every IFC file found near the working directory,
-filterable as you type.
+Lists recent models from the launch directory plus every IFC file found there,
+filterable as you type. Broader directories allowed for tool access never leak
+into this list.
 """
 
 from __future__ import annotations
@@ -26,39 +27,34 @@ _SCAN_CAP = 400  # stop scanning after this many files; /open <path> always work
 
 
 def discover_ifc_files(core: AppCore) -> list[tuple[Path, str]]:
-    """(path, detail) pairs: recents first, then files near cwd and the
-    allowed directories, newest first."""
+    """Local (path, detail) pairs: recents first, then other files newest first."""
+    root = core.launch_dir
     seen: set[Path] = set()
     out: list[tuple[Path, str]] = []
 
     for entry in core.recents.entries():
-        path = Path(entry["path"])
-        if path.exists() and path.resolve() not in seen:
-            seen.add(path.resolve())
+        path = Path(entry["path"]).resolve()
+        if path.is_relative_to(root) and path.exists() and path not in seen:
+            seen.add(path)
             size_mb = entry.get("size_bytes", 0) / 1_048_576
             out.append((path, f"recent · {size_mb:.1f} MB · {entry.get('schema', '?')}"))
 
-    scan_roots: list[Path] = []
-    for root in [Path.cwd(), *core.allowed_dirs]:
-        if root not in scan_roots:
-            scan_roots.append(root)
-
     found: list[Path] = []
-    for root in scan_roots:
-        try:
-            # cwd itself, then one level of subdirectories: fast and predictable
-            candidates = list(root.glob("*")) + list(root.glob("*/*"))
-        except OSError:
+    try:
+        # the launch directory itself, then one level of subdirectories
+        candidates = list(root.glob("*")) + list(root.glob("*/*"))
+    except OSError:
+        candidates = []
+    for path in candidates:
+        if len(found) >= _SCAN_CAP:
+            break
+        if path.suffix.lower() not in _IFC_SUFFIXES or not path.is_file():
             continue
-        for path in candidates:
-            if len(found) >= _SCAN_CAP:
-                break
-            if path.suffix.lower() not in _IFC_SUFFIXES or not path.is_file():
-                continue
-            resolved = path.resolve()
-            if resolved not in seen:
-                seen.add(resolved)
-                found.append(resolved)
+        resolved = path.resolve()
+        # A symlink below the launch directory must not expose an outside file.
+        if resolved.is_relative_to(root) and resolved not in seen:
+            seen.add(resolved)
+            found.append(resolved)
 
     def mtime(path: Path) -> float:
         try:
@@ -129,12 +125,12 @@ class FilePickerModal(ModalScreen["Path | None"]):
         options = self.query_one("#files", OptionList)
         options.clear_options()
         self._visible = []
-        cwd = Path.cwd()
+        root = self.core.launch_dir
         for path, detail in self._entries:
             if needle and needle not in str(path).lower():
                 continue
             try:
-                shown = path.relative_to(cwd)
+                shown = path.relative_to(root)
             except ValueError:
                 shown = path
             self._visible.append(path)

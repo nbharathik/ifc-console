@@ -112,11 +112,12 @@ connection to the console; `/file` controls which model that session serves.
 ## Opening files
 
 `/file ` (with the space) completes files in the menu: recently opened models
-that still exist, then every `.ifc`, `.ifczip`, and `.ifcxml` in the working
-directory, its immediate subdirectories, and any `--allow-dir` folders, newest
-first. Type any part of a name to filter, pick, done. For files the menu does
-not know, `/file <path>` takes any absolute or relative path, and a bare path
-in the prompt works too.
+from the folder where the console was launched, then every `.ifc`, `.ifczip`,
+and `.ifcxml` there and in its immediate subdirectories, newest first. Recent
+models and `--allow-dir` files outside that launch folder are omitted. Type any
+part of a name to filter, pick, done. For files the menu does not know, `/file
+<path>` takes any absolute or relative path, and a bare path in the prompt works
+too.
 
 Bare `/file` shows the same list in a full-height picker, useful when there are
 many models to scan.

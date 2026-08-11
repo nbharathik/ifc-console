@@ -45,8 +45,9 @@ ifc-console
 
 The console opens and the MCP server starts on
 `http://127.0.0.1:8383/mcp`. You do not need a file path on the command line.
-Type `/file` and pick a model from the list. It shows recent models plus every
-IFC file in the current folder and one level down, filterable as you type. A
+Type `/file` and pick a model from the list. It shows recent models from this
+folder first, followed by every IFC file in the current folder and one level
+down, filterable as you type. Recent models from other folders are omitted. A
 bare path typed into the prompt works too.
 
 Useful first commands:

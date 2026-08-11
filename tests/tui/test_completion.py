@@ -5,6 +5,8 @@ from __future__ import annotations
 import shutil
 from pathlib import Path
 
+from ifc_console.app import AppCore
+from ifc_console.settings import SettingsStore
 from ifc_console.tui import commands, completion
 from ifc_console.tui.launcher import discover_ifc_files
 
@@ -105,6 +107,44 @@ def test_open_lists_discovered_files(core, minimal_ifc4_path: Path, tmp_path: Pa
     state = completion.complete("/open bet", core, files)
     assert inserts(state) == [str(Path("sub") / "beta.ifc")]
     assert state.apply(state.candidates[0]) == f"/file {Path('sub') / 'beta.ifc'}"
+
+
+def test_file_discovery_is_scoped_to_launch_directory(
+    tmp_path: Path, minimal_ifc4_path: Path, monkeypatch
+) -> None:
+    project = tmp_path / "project"
+    outside = tmp_path / "outside"
+    nested = project / "models"
+    nested.mkdir(parents=True)
+    outside.mkdir()
+    recent = project / "recent.ifc"
+    other = nested / "other.ifc"
+    outside_recent = outside / "outside.ifc"
+    for target in (recent, other, outside_recent):
+        shutil.copy2(minimal_ifc4_path, target)
+
+    monkeypatch.chdir(project)
+    scoped_core = AppCore(
+        SettingsStore(home=tmp_path / "home", project_dir=project, env={}),
+        extra_allowed_dirs=(outside,),
+    )
+    scoped_core.recents.touch(
+        recent, size_bytes=recent.stat().st_size, schema="IFC4", mode="ask"
+    )
+    # This is newer in the global history and explicitly allowed for tool
+    # access, but neither fact should make it appear in /file.
+    scoped_core.recents.touch(
+        outside_recent,
+        size_bytes=outside_recent.stat().st_size,
+        schema="IFC4",
+        mode="ask",
+    )
+
+    entries = discover_ifc_files(scoped_core)
+
+    assert [path for path, _detail in entries] == [recent.resolve(), other.resolve()]
+    assert entries[0][1].startswith("recent ")
+    assert "recent" not in entries[1][1]
 
 
 def test_port_shows_only_a_hint(core) -> None:

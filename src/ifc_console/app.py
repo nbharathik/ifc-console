@@ -158,6 +158,11 @@ class AppCore:
         self._model_lifecycle = asyncio.Lock()
         self.ui_theme = s.tui.theme
 
+        # Keep the directory the console was launched from as stable session
+        # state. UI file discovery is deliberately scoped to this directory,
+        # even when broader directories are allowed for MCP/tool access.
+        self.launch_dir = Path.cwd().resolve()
+
         # viewer=True/False comes from the --viewer flag; None defers to
         # settings.
         want_viewer = s.viewer.enabled_default if viewer is None else viewer
@@ -172,7 +177,7 @@ class AppCore:
             self.add_allowed_dir(Path(d))
         for d in extra_allowed_dirs:
             self.add_allowed_dir(d)
-        self.add_allowed_dir(Path.cwd())
+        self.add_allowed_dir(self.launch_dir)
 
     # -- basics ---------------------------------------------------------------
     @property
