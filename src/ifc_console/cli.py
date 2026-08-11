@@ -2153,9 +2153,10 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
     static_dir = viewer_assets.static_dir()
     wanted = ("index.html", "app.js", "vendor/web-ifc.wasm", "vendor/three.module.min.js")
     if static_dir is None:
-        check("viewer assets", "optional", viewer_assets.INSTALL_HINT)
+        check("viewer assets", "FAIL", viewer_assets.INSTALL_HINT)
+        rc = rc or 2
     elif missing := [n for n in wanted if not (static_dir / n).exists()]:
-        check("viewer assets", "FAIL", f"missing: {', '.join(missing)}; reinstall the viewer extra")
+        check("viewer assets", "FAIL", f"missing: {', '.join(missing)}; reinstall ifc-console")
         rc = rc or 2
     else:
         wasm_mb = (static_dir / "vendor/web-ifc.wasm").stat().st_size / 1_048_576

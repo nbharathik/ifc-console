@@ -1,4 +1,4 @@
-"""Tool registration surface: the core set, plus the optional viewer category
+"""Tool registration surface: the core set, plus the viewer-enabled category
 that appears and disappears with the viewer."""
 
 from __future__ import annotations

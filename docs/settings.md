@@ -78,7 +78,7 @@ defaults < user file < project file < project local file < env vars < CLI flags
 | `knowledge.max_results` | `10` | default number of search hits |
 | `plugins.enabled` | `false` | allow loading trusted Python operation plugins |
 | `plugins.allow` | `[]` | exact entry-point names permitted to load |
-| `viewer.enabled_default` | `false` | start with the viewer on (needs the `viewer` extra) |
+| `viewer.enabled_default` | `false` | start with the built-in viewer on |
 | `viewer.max_model_mb` | `200` | refuse to serve larger models to the viewer |
 | `recents.max` | `20` | recents list length |
 | `sessions.retention` | `50` | audit sessions kept |

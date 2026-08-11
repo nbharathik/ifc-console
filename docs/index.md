@@ -18,7 +18,7 @@ No Blender. No host application. Works on Windows, macOS, and Linux.
 +------------+                                   |  +- IfcOpenShell session  |
                                                  |  +- Policy engine (modes) |
         you, in a terminal --------------------> |  +- Interactive console   |
-        your browser (optional 3D viewer) -----> |  +- Web viewer (localhost)|
+        your browser (built-in 3D viewer) -----> |  +- Web viewer (localhost)|
                                                  +---------------------------+
 ```
 
@@ -32,15 +32,15 @@ zero-setup bridge between an LLM client and an IFC file.
   LLM does. In `ask` it can only query. In `edit` it may change the model. Only
   you flip the switch, in your terminal. Finer permission prompts stay in your
   AI client.
-- **It runs anywhere.** A pure Python package that runs on Windows, macOS,
-  and Linux. The local 3D viewer is available as an optional install extra.
+- **It runs anywhere.** A Python package that runs on Windows, macOS, and
+  Linux, with the local 3D viewer included.
 - **It is honest.** Errors are machine-readable with hints. Mutations are
   audited to JSONL. Saves are atomic with automatic backups. The docs say
   plainly what the sandbox does and does not guarantee.
 
 ## Highlights
 
-- **36 core operations, plus an optional 4-tool viewer.** Structured queries,
+- **36 core operations, plus 4 tools enabled with the viewer.** Structured queries,
   validation, durable jobs, artifacts, approved change previews, file handling,
   multi-model workspaces, offline IFC knowledge, and a gated Python
   `execute_ifc_code` power tool all share one capability policy.
@@ -53,9 +53,9 @@ zero-setup bridge between an LLM client and an IFC file.
 - **Interactive console** styled after coding-agent CLIs: slash commands
   (`/file`, `/mode`, `/viewer`, `/connect`), a completion menu, command history,
   and a live feed of every MCP call.
-- **Optional 3D viewer** in your browser. Install `ifc-console[viewer]`, click an
-  element so the LLM knows what "this wall" means, and let it highlight or
-  screenshot results. The viewer stays local and token-protected.
+- **Built-in 3D viewer** in your browser. Click an element so the LLM knows
+  what "this wall" means, and let it highlight or screenshot results. The
+  viewer stays local and token-protected.
 - **Works with any MCP client:** Claude Code, Claude Desktop, Cursor, VS Code,
   Codex. Streamable HTTP or stdio.
 

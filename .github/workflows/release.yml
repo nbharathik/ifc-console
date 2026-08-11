@@ -1,9 +1,7 @@
 name: Release
 
 # Publishes to PyPI via trusted publishing when a v* tag is pushed.
-# One-time setup: add this workflow/environment to the existing core project
-# and configure a pending publisher for the unclaimed viewer project. A pending
-# publisher enables first upload but does not reserve the package name.
+# One-time setup: add this workflow and environment to the PyPI project.
 
 on:
   push:
@@ -43,7 +41,7 @@ jobs:
       - run: uv run python scripts/check_release.py --tag "$RELEASE_TAG"
         env:
           RELEASE_TAG: ${{ github.ref_name }}
-      - run: uv run python -m compileall -q src tests packages scripts
+      - run: uv run python -m compileall -q src tests scripts
       - run: uv run pytest
 
   dependencies:
@@ -70,7 +68,7 @@ jobs:
         env:
           AUDIT_PYTHON: ${{ matrix.python }}
         run: |
-          uv export --no-dev --no-emit-workspace --extra validation --extra viewer --format requirements-txt --output-file audit-requirements.txt --quiet
+          uv export --no-dev --extra validation --format requirements-txt --output-file audit-requirements.txt --quiet
           uvx --python "$AUDIT_PYTHON" --from pip-audit==2.10.1 pip-audit -r audit-requirements.txt --disable-pip
 
   test:
@@ -96,34 +94,30 @@ jobs:
       - name: Audit Python source
         run: uvx --python 3.12 --from bandit==1.8.6 bandit -q -r src -ll
       - run: uv sync --extra dev --extra docs
-      - run: uv run ruff check src tests packages scripts
-      - run: uv run python -m compileall -q src tests packages scripts
+      - run: uv run ruff check src tests scripts
+      - run: uv run python -m compileall -q src tests scripts
       - name: Check viewer JavaScript syntax
         run: |
-          node --check packages/ifc-console-viewer/src/ifc_console_viewer/static/app.js
-          node --check packages/ifc-console-viewer/src/ifc_console_viewer/static/chat.js
-          node --check packages/ifc-console-viewer/src/ifc_console_viewer/static/chat-page.js
-          node --check packages/ifc-console-viewer/src/ifc_console_viewer/static/parser.js
-          node --check packages/ifc-console-viewer/src/ifc_console_viewer/static/worker.js
+          node --check src/ifc_console/viewer/static/app.js
+          node --check src/ifc_console/viewer/static/chat.js
+          node --check src/ifc_console/viewer/static/chat-page.js
+          node --check src/ifc_console/viewer/static/parser.js
+          node --check src/ifc_console/viewer/static/worker.js
       - run: uv run mkdocs build --strict
-      - name: Build both distributions and the example plugin
+      - name: Build the distribution and example plugin
         run: |
           uv build
-          uv build --package ifc-console-viewer
           uv build --project examples/plugins/company_checks --out-dir dist/plugin-example
-      - name: Verify the split
+      - name: Verify the distribution
         run: uv run python scripts/check_wheels.py --stage-dir dist/publish
-      - name: Smoke-test base-only and viewer installs
+      - name: Smoke-test wheel and source installs
         run: |
-          uv venv .release-smoke-base
-          uv pip install --python .release-smoke-base/bin/python dist/ifc_console-*.whl
-          .release-smoke-base/bin/python -c "import ifc_console; from ifc_console.viewer import assets; assert assets.static_dir() is None; print(ifc_console.__version__)"
-          .release-smoke-base/bin/ifc-console --version
-          uv pip install --python .release-smoke-base/bin/python --no-deps dist/plugin-example/*.whl
-          .release-smoke-base/bin/python -c "from importlib.metadata import entry_points; matches = [entry for entry in entry_points(group='ifc_console.plugins') if entry.name == 'company_checks']; assert len(matches) == 1; assert matches[0].load()().manifest.api_version == '1'"
-          uv venv .release-smoke-viewer
-          uv pip install --python .release-smoke-viewer/bin/python dist/*.whl
-          .release-smoke-viewer/bin/python -c "import ifc_console, ifc_console_viewer; from ifc_console.viewer import assets; assert assets.static_dir() is not None; print(ifc_console.__version__)"
+          uv venv .release-smoke
+          uv pip install --python .release-smoke/bin/python dist/ifc_console-*.whl
+          .release-smoke/bin/python -c "import ifc_console; from ifc_console.viewer import assets; assert assets.static_dir() is not None; print(ifc_console.__version__)"
+          .release-smoke/bin/ifc-console --version
+          uv pip install --python .release-smoke/bin/python --no-deps dist/plugin-example/*.whl
+          .release-smoke/bin/python -c "from importlib.metadata import entry_points; matches = [entry for entry in entry_points(group='ifc_console.plugins') if entry.name == 'company_checks']; assert len(matches) == 1; assert matches[0].load()().manifest.api_version == '1'"
           uv venv .release-smoke-sdist
           uv pip install --python .release-smoke-sdist/bin/python dist/ifc_console-*.tar.gz
           .release-smoke-sdist/bin/ifc-console --version
@@ -150,14 +144,10 @@ jobs:
         with:
           name: release-distributions-${{ github.sha }}
           path: publish
-      - name: Publish the optional viewer first
+      - name: Publish ifc-console
         uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1
         with:
-          packages-dir: publish/viewer/
-      - name: Publish the core only after the viewer succeeds
-        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1
-        with:
-          packages-dir: publish/core/
+          packages-dir: publish/
 
   docs-build:
     name: Build release documentation

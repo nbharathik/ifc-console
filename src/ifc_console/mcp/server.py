@@ -79,7 +79,7 @@ Selector examples for query_elements: `IfcWall` or `IfcWall, IfcSlab` or
 `IfcWall, material=concrete` or `IfcWall, Pset_WallCommon.FireRating=F30` or
 `IfcElement, Name=/W.*/`.
 
-The 3D viewer is optional. When the user enables it, four extra tools join
+The 3D viewer is disabled by default. When the user enables it, four extra tools join
 the tool list: get_viewer_selection (what the user click-selected, their way
 of saying "this wall"), highlight_elements (your way of pointing for them),
 apply_color_theme (paint elements by any grouping you compute, with a

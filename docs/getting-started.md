@@ -15,15 +15,12 @@ Install from [PyPI](https://pypi.org/project/ifc-console/) with
 ```bash
 uv tool install ifc-console
 # or: pip install ifc-console
-
-# with the optional 3D viewer (adds an 8 MB asset bundle):
-uv tool install "ifc-console[viewer]"
 ```
 
-This puts the `ifc-console` command on your PATH. The `[viewer]` extra adds the
-3D viewer's asset bundle; everything else works without it. To update later:
-`uv tool upgrade ifc-console` (pip: `pip install --upgrade ifc-console`). For a
-one-off run without installing anything, `uvx ifc-console` works too.
+This puts the `ifc-console` command on your PATH, including the 3D viewer and
+chat assets. To update later: `uv tool upgrade ifc-console` (pip:
+`pip install --upgrade ifc-console`). For a one-off run without installing
+anything, `uvx ifc-console` works too.
 
 !!! note "Working on ifc-console itself?"
     Clone the repo, run `uv sync --extra dev`, and use `uv run ifc-console`
@@ -60,7 +57,7 @@ Useful first commands:
 | `/status` | model, mode, server, viewer summary |
 | `/connect <client>` | show and copy one client's complete bridge setup |
 | `/mode edit` | let the AI change the model (`ask`, the default, is query-only) |
-| `/viewer` | open the 3D viewer in your browser (needs the `viewer` extra) |
+| `/viewer` | open the 3D viewer in your browser |
 | `/kb <query>` | search the offline IFC reference |
 | `/help [command]` | everything else, or one command explained |
 

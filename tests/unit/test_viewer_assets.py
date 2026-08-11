@@ -144,38 +144,39 @@ def test_viewer_persisted_ui_requires_a_plain_object_and_write_is_best_effort(
     assert "} catch {" in writer
 
 
-# ------------------------------------------------- the viewer is an extra now
-def test_assets_resolve_through_the_companion_package():
+# -------------------------------------------------- the viewer ships in core
+def test_assets_resolve_inside_the_main_package():
     from ifc_console.viewer import assets
 
     directory = assets.require_static_dir()
     assert (directory / "index.html").is_file()
     assert directory.name == "static"
-    assert "ifc_console_viewer" in directory.parts
+    assert directory.parent.name == "viewer"
+    assert directory.parent.parent.name == "ifc_console"
 
 
-def test_missing_assets_report_how_to_install_them(monkeypatch):
+def test_missing_assets_report_how_to_repair_the_install(monkeypatch):
     from ifc_console.viewer import assets
 
     assets.static_dir.cache_clear()
-    monkeypatch.setattr(assets, "_IN_TREE", Path("/nonexistent"))
-    monkeypatch.setitem(__import__("sys").modules, "ifc_console_viewer", None)
+    monkeypatch.setattr(assets, "_STATIC", Path("/nonexistent"))
     try:
         assert assets.static_dir() is None
         assert assets.available() is False
         with pytest.raises(FileNotFoundError) as excinfo:
             assets.require_static_dir()
-        assert "ifc-console[viewer]" in str(excinfo.value)
+        assert "reinstall `ifc-console`" in str(excinfo.value)
     finally:
         assets.static_dir.cache_clear()
 
 
-def test_the_base_package_ships_no_static_files():
+def test_the_main_package_ships_the_viewer_static_files():
     import ifc_console
 
     base = Path(ifc_console.__file__).parent
-    assert not list(base.rglob("*.wasm"))
-    assert not (base / "viewer" / "static").exists()
+    static = base / "viewer" / "static"
+    assert (static / "index.html").is_file()
+    assert (static / "vendor" / "web-ifc.wasm").is_file()
 
 
 # ------------------------------------------------------------- the chat panel

@@ -4,18 +4,10 @@ The viewer gives sessions the three things a terminal cannot: **see** the model,
 **point** at elements (both directions), and **capture** screenshots the LLM can
 look at.
 
-The viewer is an optional extra. Its bundle is 8 MB of three.js, the web-ifc
-WASM parser, and the viewer app, so it ships as a separate distribution and the
-base install stays small:
-
-```bash
-uv tool install "ifc-console[viewer]"
-# or: pip install "ifc-console[viewer]"
-```
-
-`ifc-console doctor` reports the bundle on its `viewer assets` line, and
-`/viewer` says how to install it when it is missing. Everything else works
-without it. Even installed, the viewer stays off until you start it.
+The 8 MB bundle of three.js, the web-ifc WASM parser, and the viewer app ships
+inside `ifc-console`. A normal `pip install ifc-console` or
+`uv tool install ifc-console` includes it. `ifc-console doctor` verifies the
+bundle on its `viewer assets` line. The viewer stays off until you start it.
 
 ## Starting it
 

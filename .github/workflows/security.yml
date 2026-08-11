@@ -56,7 +56,7 @@ jobs:
         env:
           AUDIT_PYTHON: ${{ matrix.python }}
         run: |
-          uv export --no-dev --no-emit-workspace --extra validation --extra viewer --format requirements-txt --output-file audit-requirements.txt --quiet
+          uv export --no-dev --extra validation --format requirements-txt --output-file audit-requirements.txt --quiet
           uvx --python "$AUDIT_PYTHON" --from pip-audit==2.10.1 pip-audit -r audit-requirements.txt --disable-pip
 
   workflows:

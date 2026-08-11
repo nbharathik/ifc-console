@@ -28,7 +28,7 @@ while you stay in control from your terminal. No Blender, no host app.
     <tr>
       <td align="center">The console to open an IFC file and decide what the AI is allowed to do.</td>
       <td align="center">An AI assistant connected to ifc-console, answering questions about the open model.</td>
-      <td align="center">The optional viewer in the browser, showing the model tree, the 3D view, and element properties.</td>
+      <td align="center">The built-in viewer in the browser, showing the model tree, the 3D view, and element properties.</td>
     </tr>
   </table>
 </div>
@@ -39,8 +39,7 @@ Install from [PyPI](https://pypi.org/project/ifc-console/) with
 [uv](https://docs.astral.sh/uv/) or pip:
 
 ```bash
-uv tool install ifc-console            # the console, the MCP server, the SDK
-uv tool install "ifc-console[viewer]"  # and the optional 3D viewer bundle
+uv tool install ifc-console
 # or: pip install ifc-console
 ```
 
@@ -183,12 +182,12 @@ with Workbench.open(home=".ifc-console-ci") as wb:
 
 ## The 3D viewer
 
-Install it with the `viewer` extra, then type `/viewer`. It runs entirely on
-localhost behind your session token:
+Type `/viewer` to open it. It runs entirely on localhost behind your session
+token:
 click an element and the LLM knows what "this wall" means; it highlights
 elements back and takes screenshots. Edits refresh the view live.
 
-## The chat panel (optional)
+## The chat panel
 
 Type `/chat` and the 3D view opens in your browser with a chat panel docked
 beside it (`/chat solo` leaves the 3D view out). It drives the same tools an

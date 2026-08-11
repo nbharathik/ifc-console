@@ -4,6 +4,13 @@ Notable user-facing changes to ifc-console are recorded here. The project uses
 semantic versioning for its MCP schema, documented Python SDK, versioned plugin
 API, and stable command-line exit codes.
 
+## Unreleased
+
+### Changed
+
+- The viewer and chat asset bundle now ships inside the main `ifc-console`
+  distribution, so a plain `pip install ifc-console` includes the complete UI.
+
 ## [0.1.4] - 2026-08-10
 
 ### Added

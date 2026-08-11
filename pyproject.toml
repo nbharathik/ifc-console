@@ -53,16 +53,10 @@ validation = [
     # and `ifc-console check --ids`.
     "ifctester>=0.8",
 ]
-viewer = [
-    # 8 MB of three.js, web-ifc WASM, and the viewer SPA. Optional so an
-    # install that only needs the MCP tools, the CLI, or the SDK stays small.
-    "ifc-console-viewer>=0.1,<0.2",
-]
 dev = [
     "httpx>=0.27",
     # Starlette's current TestClient prefers its supported httpx2 transport.
     "httpx2>=2,<3",
-    "ifc-console-viewer>=0.1,<0.2",
     "ifctester>=0.8",
     "pytest>=8",
     "pytest-asyncio>=0.23",
@@ -89,9 +83,8 @@ path = "src/ifc_console/__init__.py"
 packages = ["src/ifc_console"]
 
 [tool.hatch.build.targets.sdist]
-# Tests stay in for downstream PEP 517 packagers. The uv workspace source is
-# checkout-only, so an extracted base sdist should be installed with pip or
-# `uv pip`, not synchronized as the original two-package workspace.
+# Tests stay in for downstream PEP 517 packagers. Checkout-only files and
+# generated artifacts stay out of the source archive.
 exclude = [
     "uv.lock",
     "docs/assets/brand/*.png",
@@ -103,12 +96,6 @@ exclude = [
     "packages",
     "site",
 ]
-
-[tool.uv.workspace]
-members = ["packages/*"]
-
-[tool.uv.sources]
-ifc-console-viewer = { workspace = true }
 
 [tool.ruff]
 line-length = 100

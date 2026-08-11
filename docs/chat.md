@@ -16,12 +16,7 @@ the internet.
 
 `/chat` turns the viewer on as well. In the viewer the dock has its own
 button in the toolbar, `C` toggles it, and the divider between them drags.
-
-It ships with the viewer extra:
-
-```bash
-uv tool install "ifc-console[viewer]"
-```
+The chat and viewer assets are included in every `ifc-console` installation.
 
 ## Providers
 

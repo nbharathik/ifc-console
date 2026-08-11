@@ -30,9 +30,6 @@ if TYPE_CHECKING:
 
 log = logging.getLogger("ifc-console.viewer")
 
-# Resolved through the companion package; None when the extra is missing.
-STATIC_DIR = assets.static_dir()
-
 # How long a fresh socket may sit silent before the hello must have arrived.
 _HELLO_TIMEOUT = 5.0
 

@@ -57,8 +57,8 @@ signatures, typed model schemas, enums, and plugin API records. CI fails on any
 drift. An intended change requires deliberately regenerating both golden files
 with `python scripts/snapshot_api.py` and reviewing the SemVer impact. Separate
 tests cover lazy imports, plugin lifecycle behavior, and the installable
-example plugin. Release checks build both distributions and verify the typed
-marker and package split.
+example plugin. Release checks verify that the wheel and source archive carry
+the typed marker and complete viewer bundle.
 
 ## Optional extras
 

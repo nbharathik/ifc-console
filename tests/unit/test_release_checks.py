@@ -20,27 +20,11 @@ def _project(
     root: Path,
     *,
     core: str = "0.1.4",
-    viewer: str = "0.1.4",
-    viewer_runtime: str | None = None,
-    viewer_requirement: str = ">=0.1,<0.2",
     release_label: str = "2026-08-09",
 ) -> None:
     core_dir = root / "src" / "ifc_console"
-    viewer_dir = root / "packages" / "ifc-console-viewer"
-    viewer_package = viewer_dir / "src" / "ifc_console_viewer"
     core_dir.mkdir(parents=True)
-    viewer_package.mkdir(parents=True)
     (core_dir / "__init__.py").write_text(f'__version__ = "{core}"\n', encoding="utf-8")
-    (viewer_package / "__init__.py").write_text(
-        f'__version__ = "{viewer_runtime or viewer}"\n', encoding="utf-8"
-    )
-    (root / "pyproject.toml").write_text(
-        f'requires-python = ">=3.10,<3.15"\n"ifc-console-viewer{viewer_requirement}",\n',
-        encoding="utf-8",
-    )
-    (viewer_dir / "pyproject.toml").write_text(
-        f'version = "{viewer}"\nrequires-python = ">=3.10,<3.15"\n', encoding="utf-8"
-    )
     (root / "CHANGELOG.md").write_text(f"## [{core}] - {release_label}\n", encoding="utf-8")
 
 
@@ -53,18 +37,12 @@ def test_release_metadata_accepts_matching_versions_and_tag(tmp_path: Path) -> N
     assert issues == []
 
 
-def test_release_metadata_reports_every_consistency_problem(tmp_path: Path) -> None:
-    _project(tmp_path, core="0.1.4", viewer="0.3.0", viewer_runtime="0.4.0")
-    (tmp_path / "packages" / "ifc-console-viewer" / "pyproject.toml").write_text(
-        'version = "0.3.0"\nrequires-python = ">=3.11"\n', encoding="utf-8"
-    )
+def test_release_metadata_reports_tag_and_changelog_problems(tmp_path: Path) -> None:
+    _project(tmp_path, core="0.1.4")
     (tmp_path / "CHANGELOG.md").write_text("## [0.1.4]\n", encoding="utf-8")
 
     _, issues = release_issues(tmp_path, tag="v0.1")
 
-    assert any("package versions differ" in issue for issue in issues)
-    assert any("viewer versions differ" in issue for issue in issues)
-    assert any("Python ranges differ" in issue for issue in issues)
     assert any("release tag" in issue for issue in issues)
     assert any("release heading" in issue for issue in issues)
 
@@ -85,14 +63,6 @@ def test_tagged_release_requires_a_real_calendar_date(tmp_path: Path, release_la
     _, issues = release_issues(tmp_path, tag="v0.1.4")
 
     assert any("release date" in issue for issue in issues)
-
-
-def test_release_rejects_a_viewer_range_that_crosses_minor_versions(tmp_path: Path) -> None:
-    _project(tmp_path, viewer_requirement=">=0.1,<1")
-
-    _, issues = release_issues(tmp_path)
-
-    assert any("viewer dependency range" in issue for issue in issues)
 
 
 def test_tool_reference_covers_the_public_operation_contract() -> None:
@@ -142,24 +112,24 @@ def test_release_python_range_comparison_ignores_metadata_order() -> None:
 
 
 def test_viewer_static_allowlist_rejects_unexpected_public_files() -> None:
-    expected = [f"ifc_console_viewer/static/{asset}" for asset in REQUIRED_ASSETS]
+    expected = [f"ifc_console/viewer/static/{asset}" for asset in REQUIRED_ASSETS]
     expected_source = [
-        f"ifc_console_viewer-0.1.4/src/ifc_console_viewer/static/{asset}"
+        f"ifc_console-0.1.4/src/ifc_console/viewer/static/{asset}"
         for asset in REQUIRED_ASSETS
     ]
 
     assert _unexpected_viewer_static(expected) == []
     assert _unexpected_viewer_static(expected_source) == []
-    assert _unexpected_viewer_static([*expected, "ifc_console_viewer/static/.env"]) == [
-        "ifc_console_viewer/static/.env"
+    assert _unexpected_viewer_static([*expected, "ifc_console/viewer/static/.env"]) == [
+        "ifc_console/viewer/static/.env"
     ]
     assert _unexpected_viewer_static(
         [
             *expected_source,
-            "ifc_console_viewer-0.1.4/src/ifc_console_viewer/static/secrets.json",
+            "ifc_console-0.1.4/src/ifc_console/viewer/static/secrets.json",
         ]
-    ) == ["ifc_console_viewer-0.1.4/src/ifc_console_viewer/static/secrets.json"]
-    assert _unexpected_viewer_static([*expected, "ifc_console_viewer/not-public.txt"]) == []
+    ) == ["ifc_console-0.1.4/src/ifc_console/viewer/static/secrets.json"]
+    assert _unexpected_viewer_static([*expected, "ifc_console/viewer/not-public.txt"]) == []
 
 
 @pytest.mark.parametrize(

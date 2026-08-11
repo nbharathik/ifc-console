@@ -112,8 +112,8 @@ One process, one active model, several faces over one core.
 - **The viewer is a bolt-on, not a pillar.** Its code lives in one subpackage
   (`viewer/`), its HTTP routes answer 404 while disabled, and its four MCP
   tools form an optional category. Nothing in the core query/edit path imports
-  viewer code, and its 8 MB asset bundle ships as a separate
-  distribution (`ifc-console[viewer]`); without it the 36 core tools still work.
+  viewer code. Its 8 MB asset bundle is package data inside the main
+  `ifc-console` distribution, so every installation can enable it.
 
 ## Threading model in one paragraph
 

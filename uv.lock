@@ -12,12 +12,6 @@ resolution-markers = [
     "python_full_version < '3.11' and sys_platform != 'win32'",
 ]
 
-[manifest]
-members = [
-    "ifc-console",
-    "ifc-console-viewer",
-]
-
 [[package]]
 name = "annotated-types"
 version = "0.7.0"
@@ -531,7 +525,6 @@ dependencies = [
 dev = [
     { name = "httpx" },
     { name = "httpx2" },
-    { name = "ifc-console-viewer" },
     { name = "ifctester" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
@@ -544,16 +537,11 @@ docs = [
 validation = [
     { name = "ifctester" },
 ]
-viewer = [
-    { name = "ifc-console-viewer" },
-]
 
 [package.metadata]
 requires-dist = [
     { name = "httpx", marker = "extra == 'dev'", specifier = ">=0.27" },
     { name = "httpx2", marker = "extra == 'dev'", specifier = ">=2,<3" },
-    { name = "ifc-console-viewer", marker = "extra == 'dev'", editable = "packages/ifc-console-viewer" },
-    { name = "ifc-console-viewer", marker = "extra == 'viewer'", editable = "packages/ifc-console-viewer" },
     { name = "ifcopenshell", specifier = ">=0.8.1,<0.9" },
     { name = "ifctester", marker = "extra == 'dev'", specifier = ">=0.8" },
     { name = "ifctester", marker = "extra == 'validation'", specifier = ">=0.8" },
@@ -572,12 +560,7 @@ requires-dist = [
     { name = "uvicorn", specifier = ">=0.30" },
     { name = "websockets", specifier = ">=12" },
 ]
-provides-extras = ["dev", "docs", "validation", "viewer"]
-
-[[package]]
-name = "ifc-console-viewer"
-version = "0.1.4"
-source = { editable = "packages/ifc-console-viewer" }
+provides-extras = ["dev", "docs", "validation"]
 
 [[package]]
 name = "ifcopenshell"

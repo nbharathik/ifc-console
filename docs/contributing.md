@@ -10,7 +10,7 @@ version: `uv sync --extra dev`, then `uv run pytest` and
   [GitHub issue](https://github.com/nbharathik/ifc-console/issues). For bugs,
   include `ifc-console doctor` output. Never upload confidential models.
 - **Scope.** ifc-console is deliberately small: a safe MCP bridge to IfcOpenShell
-  with a console and an optional viewer. Anything that widens the
+  with a console and a built-in viewer. Anything that widens the
   `execute_ifc_code` attack surface, weakens the mode model, or adds network
   calls needs a strong case.
 - **Compatibility.** The MCP tool names, their input schemas, and the response

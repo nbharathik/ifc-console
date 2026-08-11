@@ -6,7 +6,7 @@ First stop, always:
 ifc-console doctor --file your-model.ifc
 ```
 
-It checks the interpreter, core dependencies, optional viewer asset status,
+It checks the interpreter, core dependencies, bundled viewer asset status,
 settings readability, port availability, and (with `--file`) parses your model.
 
 ## Common issues
@@ -152,14 +152,14 @@ Guarded (mutation-locked) code managed to mutate the in-memory model. The
 classifier missed it and the canary caught it. Nothing on disk changed.
 `/reload` restores a pristine copy; the audit log records what ran.
 
-### The viewer or chat says its assets are not installed
+### The viewer or chat says its assets are missing
 
-The base package keeps working without the browser bundle. Add the optional
-assets, then restart ifc-console:
+The installation is incomplete or corrupted. Reinstall the package, then
+restart ifc-console:
 
 ```bash
-uv tool install "ifc-console[viewer]"
-# or: pip install "ifc-console[viewer]"
+uv tool install --reinstall ifc-console
+# or: pip install --force-reinstall ifc-console
 ```
 
 `ifc-console doctor` reports the bundle on its `viewer assets` line.

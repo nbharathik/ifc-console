@@ -1,45 +1,20 @@
-"""Where the viewer's static bundle lives.
-
-The 8 MB of three.js, WASM, and SPA source ships as a separate distribution
-(`ifc-console-viewer`, pulled in by the `viewer` extra) so the base install
-stays small. Nothing else in ifc-console depends on it.
-"""
+"""Locate the viewer and chat static bundle included with ifc-console."""
 
 from __future__ import annotations
 
 import functools
 from pathlib import Path
 
-INSTALL_HINT = (
-    "the viewer assets are not installed; add them with "
-    "`uv tool install \"ifc-console[viewer]\"` or `pip install \"ifc-console[viewer]\"`"
-)
+INSTALL_HINT = "the bundled viewer assets are missing; reinstall `ifc-console`"
 
-# A source checkout can serve the assets straight from the repo, so tests and
-# `uv run` work without installing the companion package first.
-_IN_TREE = (
-    Path(__file__).resolve().parents[3]
-    / "packages"
-    / "ifc-console-viewer"
-    / "src"
-    / "ifc_console_viewer"
-    / "static"
-)
+_STATIC = Path(__file__).resolve().parent / "static"
 
 
 @functools.lru_cache(maxsize=1)
 def static_dir() -> Path | None:
-    """The bundle directory, or None when the extra is not installed."""
-    try:
-        import ifc_console_viewer
-
-        candidate = ifc_console_viewer.static_dir()
-        if (candidate / "index.html").is_file():
-            return candidate
-    except Exception:
-        pass
-    if (_IN_TREE / "index.html").is_file():
-        return _IN_TREE
+    """The bundled asset directory, or None for an incomplete installation."""
+    if (_STATIC / "index.html").is_file():
+        return _STATIC
     return None
 
 
