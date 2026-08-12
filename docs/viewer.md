@@ -1,100 +1,119 @@
 # 3D viewer
 
-The viewer gives sessions the three things a terminal cannot: **see** the model,
-**point** at elements (both directions), and **capture** screenshots the LLM can
-look at.
+The optional browser viewer shows geometry, properties, selections, and AI
+highlights. It runs on localhost.
 
-The viewer ships with every install: three.js and the web-ifc parser are
-bundled in the package, and `ifc-console doctor` verifies them on its
-`viewer assets` line. It stays off until you start it.
+## Install and open
 
-## Starting it
+```bash
+uv tool install "ifc-console[viewer]"
+# or: pip install "ifc-console[viewer]"
+```
 
-- In the console: `/viewer` (enables it if needed, opens your default browser,
-  copies the URL).
-- At launch: `ifc-console --viewer ...` or `viewer.enabled_default true`.
-- Headless: `ifc-console --no-tui --viewer` prints the viewer URL.
+Open a model, then run `/viewer`.
 
-The URL carries the session token in its fragment
-(`http://127.0.0.1:8383/viewer#t=<token>`). The fragment never leaves the
-browser, so the token stays out of server logs and referrers; the page reads
-it, scrubs it from the address bar, and then authenticates every API call and
-the live WebSocket with it. Without the token the data APIs answer 401. The
-server additionally rejects any request whose Host or Origin is not loopback,
-so a malicious website cannot reach the session even from your own machine.
-Everything is served from your machine: three.js and the web-ifc WASM parser
-ship inside the package, and the page makes zero non-localhost requests
-(enforced by its Content-Security-Policy).
+| command | use |
+| ------- | --- |
+| `/viewer` | enable the viewer and open the browser |
+| `/viewer url` | print its URL |
+| `/viewer off` | close tabs and remove viewer tools |
+| `ifc-console --viewer` | enable it at startup |
 
-stdio sessions have no HTTP server, so no viewer. Run the console or `--no-tui`
-if you want it.
+The core console works without the viewer package. `ifc-console doctor` reports
+whether its assets are installed.
 
-## Tool registration follows the viewer
+stdio-only sessions have no HTTP server and therefore no viewer. Use the
+interactive console or `--no-tui`.
 
-The four viewer tools (`get_viewer_selection`, `highlight_elements`,
-`apply_color_theme`, `get_viewer_screenshot`) are an optional category. They
-appear in the MCP tool list only while the viewer is enabled. `/viewer` adds
-them live, `/viewer off` removes them, and sessions that never touch the
-viewer keep the lean core set. Clients that connected before the toggle see
-the change on their next tool refresh or reconnect.
+## Layout
 
-The color theme is the review headline: the LLM computes any grouping (by
-storey, type, material, a property value, validation pass/fail), the viewer
-paints it with colorblind-safe colors, and a legend with labels and counts
-appears in the corner of the canvas. The console theme (`/theme dark|light`)
-also restyles the viewer live, 3D canvas included.
+```text
++----------------+----------------------+----------------+
+| spatial tree   | 3D canvas            | properties     |
+| and search     | select, view, cut    | attributes,    |
+|                | measure, highlight   | psets, qtos    |
++----------------+----------------------+----------------+
+```
 
-## What you can do
+| action | control |
+| ------ | ------- |
+| frame model | ++f++ |
+| select | click; ++ctrl++ + click for multiple |
+| search | name, IFC class, storey, type, or selector |
+| isolate or hide | view menu |
+| measure | ++m++, then two points |
+| section | enable X, Y, or Z plane |
+| save a camera | named saved views |
+| change panels | drag dividers or use panel buttons |
 
-- **Orbit / pan / zoom** with the mouse. Press ++f++ to frame the whole model
-  (it also auto-fits on load). The `?` button lists every mouse and keyboard
-  control.
-- **Select.** Click an element (ctrl+click multi-select). The selection appears
-  in the footer, the properties panel loads attributes and psets, and the server
-  remembers it: the LLM reads it with `get_viewer_selection`. "Delete this wall"
-  becomes unambiguous.
-- **Spatial tree** (left): project > site > building > storeys, with checkboxes
-  toggling whole branches. Clicking a node selects its elements without moving
-  the camera. Long names never truncate: the panel scrolls and shows a hover
-  tooltip.
-- **View tools** (the stack icon, top left of the canvas): isolate or hide the
-  selection, show all, zoom to the selection or the whole model, and jump to
-  view presets (top, front, iso, ...).
-- **Properties** (right): attributes, type, container chain, and property sets of
-  the last clicked element, straight from the server (same source as
-  `get_element`). Each section folds.
-- **Arrange the layout.** Drag the divider next to a panel to resize it
-  (double-click resets), or hide either panel with the two toggle buttons. Sizes
-  persist per browser.
-- **Viewer settings** (the gear, top right): toggle the ground grid (++g++) and
-  the origin axes. The grid is infinite, fades with distance, and sits at the
-  model's lowest level.
+The viewer help button lists all mouse and keyboard controls.
 
-## What the LLM can do
+Search accepts ordinary text or IfcOpenShell selectors:
 
-- `highlight_elements`: color any set of elements, optionally isolating them and
-  fitting the camera. Its way of pointing at things for you.
-- `get_viewer_screenshot`: set a view preset (top, front, iso, ...), fit, and
-  capture the canvas. The image returns inline in the conversation, so the model
-  can verify visual claims it just made.
+```text
+IfcDoor
+Pset_WallCommon.FireRating=F30
+```
 
-## Live sync
+Results use the live in-memory model, including unsaved edits.
 
-The viewer holds a WebSocket to the server. Model edits (edit-mode
-`execute_ifc_code` runs, saves, reloads) push a refresh. The tab refetches the
-**in-memory** model, so you watch unsaved changes appear live, with your
-selection and highlights preserved. The mode badge and unsaved-changes chip stay
-current. Disconnects retry with backoff.
+## Review tools
 
-Multiple tabs are fine. Selection is last-writer-wins, and screenshots go to the
-most recently active tab.
+- **Properties:** attributes, type, container, materials, properties, and
+  quantities for the selected element.
+- **Sections:** combine axis planes for storey slices or corner cuts.
+- **Measurements:** total distance plus X, Y, and Z components.
+- **Saved views:** named camera positions stored in the browser.
+- **Color themes:** labeled groups with a colorblind-safe legend.
+- **Grid and axes:** local visual aids that never modify the IFC model.
+
+When several models are resident, a picker switches which one is displayed.
+The viewer renders one model at a time; it does not create a federated overlay.
+
+## AI tools
+
+Four tools exist only while the viewer is enabled:
+
+| tool | use |
+| ---- | --- |
+| `get_viewer_selection` | read the user's selected elements |
+| `highlight_elements` | color, isolate, and frame elements |
+| `apply_color_theme` | show labeled groups and a legend |
+| `get_viewer_screenshot` | capture a preset or current view |
+
+They require a connected browser tab. Clients may need to refresh their tool
+list after `/viewer` or `/viewer off`.
+
+## Live updates
+
+```text
+model edit -> console memory -> WebSocket -> viewer refresh
+selection  <- shared session state <- browser tab
+```
+
+Edits, saves, reloads, modes, selections, and highlights update live. Multiple
+tabs are supported; the latest selection and most recently active screenshot
+tab win.
+
+## Security
+
+Three.js, web-ifc, and the application are installed locally. The page makes no
+non-localhost requests.
+
+The initial token is placed in the URL fragment, which is not sent in HTTP
+requests. The page removes it from the address bar and authenticates later API
+and WebSocket calls. The server also rejects non-loopback Host and Origin
+values.
+
+The viewer can read model data and report selection. It cannot edit the model
+or change the session mode.
 
 ## Limits
 
-- `viewer.max_model_mb` (default 200) guards the model download. Beyond it the
-  viewer shows "model too large" (raise the setting if you mean it).
-- Geometry is built per product; very large models will be draw-call-bound.
-  Section boxes, measurements, and clipping planes are out of scope for v1.
-- The viewer is deliberately unprivileged: it can read the model and report
-  selection. There is no edit surface and no way to change the session mode from
-  the browser.
+- `viewer.max_model_mb` defaults to 200 MB.
+- Large models may require significant browser memory and parsing time.
+- Section planes are supported; a full 3D section box is not.
+- Attached models can be switched, not overlaid.
+
+See [Troubleshooting](troubleshooting.md) for missing assets, authorization, or
+model-size errors.

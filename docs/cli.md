@@ -1,123 +1,227 @@
-# CLI reference
+# CLI
 
+Run `ifc-console` with no subcommand for the interactive console. Use
+subcommands for servers, CI, automation, and administration.
+
+```text
+ifc-console                         interactive console
+ifc-console serve ...               headless MCP server
+ifc-console doctor ...              diagnose setup
+ifc-console check MODEL ...         validate one model
+ifc-console run MANIFEST ...        plan or run a workflow
+ifc-console jobs|batch|workflows ... durable automation
+ifc-console changes ...             preview and commit structured edits
+ifc-console settings|token|sessions ... administration
 ```
-ifc-console [flags]                     interactive console (default)
-ifc-console serve --stdio|--http        run without the console
-ifc-console check MODEL [...]           validate a model for CI (schema + IDS)
-ifc-console doctor [--file X] [--json]  diagnose the environment
-ifc-console mcp-config [...]            print client wiring snippets
-ifc-console settings <subcommand>       inspect and edit user settings
-ifc-console token show|rotate|path      manage the persistent server token
-ifc-console recents list|clear          recently opened models
-ifc-console sessions list|show|clear    audit-log sessions
-ifc-console --version
-```
 
-## Run flags
+Run `ifc-console <command> --help` for the exact options supported by your
+installed version.
 
-Accepted by the bare command and by `serve`:
+## Common commands
+
+| goal | command |
+| ---- | ------- |
+| open the console | `ifc-console` |
+| diagnose setup | `ifc-console doctor --file model.ifc` |
+| validate for CI | `ifc-console check model.ifc` |
+| print client setup | `ifc-console mcp-config --client codex` |
+| inspect settings | `ifc-console settings list --sources` |
+| plan a workflow | `ifc-console run workflow.yaml --plan` |
+
+## Startup flags
+
+These flags work with the interactive command and `serve` where applicable:
 
 | flag | effect |
 | ---- | ------ |
-| `--file PATH` | load this model at startup (optional; `/file` works any time) |
-| `--mode ask\|edit` | session mode (default from settings, normally ask = AI is query-only) |
-| `--port N` | HTTP port (default 8383) |
-| `--viewer` | enable the 3D web viewer at startup (`/viewer` works any time) |
-| `--allow-dir PATH` | extra directory the LLM may open/save models in (repeatable) |
-| `--log-level debug\|info\|warning\|error` | log verbosity |
-| `--no-tui` | headless HTTP daemon instead of the console |
+| `--file PATH` | open a model at startup |
+| `--mode ask\|edit` | set the starting mode |
+| `--port N` | set the HTTP port; default `8383` |
+| `--viewer` | enable the optional browser viewer |
+| `--chat` | enable the browser chat panel |
+| `--allow-dir PATH` | add a readable root; repeatable |
+| `--log-level LEVEL` | `debug`, `info`, `warning`, or `error` |
+| `--no-tui` | run a headless HTTP server |
 
-## serve
+## Headless servers
 
 ```bash
 ifc-console serve --stdio --file model.ifc --mode ask
 ifc-console serve --http --file model.ifc --viewer
 ```
 
-`--stdio` speaks MCP on stdin/stdout for client-managed configs; logs go to
-stderr and the log file only. `--http` equals `--no-tui`: it prints the
-endpoint, token, and (with `--viewer`) the viewer URL, then serves until
-Ctrl+C.
+- `--stdio` is a private client-owned MCP process with logs on stderr.
+- `--http` is the same server used by `--no-tui`; it prints its URL and token.
 
-## check
+For normal interactive use, keep the console and connect clients through the
+default bridge.
+
+## Diagnose and validate
+
+### `doctor`
+
+```bash
+ifc-console doctor
+ifc-console doctor --file model.ifc --json
+```
+
+Checks Python, dependencies, settings, port availability, viewer assets, and
+optionally model parsing. A core-only install reports viewer assets as
+`optional`, not failed.
+
+### `check`
 
 ```bash
 ifc-console check model.ifc
-ifc-console check model.ifc --ids requirements.ids --format sarif --output report.sarif
+ifc-console check model.ifc --ids requirements.ids \
+  --format sarif --output report.sarif
 ```
 
-One-shot validation for scripts and CI: schema validation (add
-`--express-rules` for the slow EXPRESS where-rules) plus any number of
-`--ids FILE` checks. `--format text|json|sarif|junit`; SARIF uploads straight
-to GitHub code scanning, JUnit to anything that ingests test reports.
-Exit code 0 when everything passes, **5** when the model fails a check, 4 for
-an unreadable file, 2 when an IDS file is given but the optional `ifctester`
-package is missing.
+Runs schema validation and optional IDS checks. Formats are `text`, `json`,
+`sarif`, and `junit`. Add `--express-rules` for slower EXPRESS where-rules.
 
-## doctor
-
-Checks ifc-console, Python, ifcopenshell, mcp, textual, uvicorn, the bundled viewer
-assets, settings readability, and port availability. With `--file` it also
-parses the model and reports schema, product count, and parse time. `--json` for
-machines. Exit code 0 only if everything essential is ok.
-
-## mcp-config
+## Client setup
 
 ```bash
-ifc-console mcp-config --client claude-code|claude-desktop|cursor|vscode|codex \
-                    [--transport http|stdio] [--file X] [--mode M] [--port N]
+ifc-console mcp-config --client claude-code|claude-desktop|cursor|vscode|codex
 ```
 
-Prints a paste-ready snippet for the chosen client, including the machine's
-persistent token. It works without a running server and stays valid across
-restarts. (`/connect` in the console prints the same thing.)
+The default transport is `bridge`: the client starts a small stdio proxy to the
+shared console. Alternatives are `--transport http` and `--transport stdio`.
+Use `/connect <client>` for the same output inside the console.
 
-## token
+`ifc-console bridge [--port N]` is normally launched by the client, not by
+hand. It stays connected while the shared console starts or restarts.
 
-```bash
-ifc-console token show      # print the persistent bearer token
-ifc-console token rotate    # new token; existing client configs must be re-added
-ifc-console token path      # where it is stored (~/.ifc-console/token)
+```text
+client -> bridge -> running console -> active model
 ```
 
-The token is created on first use and reused by every run, which makes client
-config a one-time step. With `server.persistent_token false` each run generates
-its own token instead, and `token show` explains that.
+See [Connecting clients](clients.md).
 
-## settings
+## Durable automation
 
-```bash
-ifc-console settings list [--sources] [--json]   # every key, optionally with provenance
-ifc-console settings get exec.timeout_seconds
-ifc-console settings set viewer.max_model_mb 400
-ifc-console settings unset viewer.max_model_mb
-ifc-console settings path                        # where the user file lives
+```text
+job          one isolated validation, commit, or restore
+batch        the same read-only operation across many IFC files
+workflow     validation and query batches connected by dependencies
+artifact     checksum-verified durable output
 ```
 
-## recents and sessions
+### Jobs and artifacts
 
 ```bash
-ifc-console recents list [--json]
-ifc-console recents clear
-ifc-console sessions list [--json]     # audit sessions, newest first
-ifc-console sessions show <id>         # dump one session's JSONL records
-ifc-console sessions clear             # remove all but the active session
+ifc-console jobs validate model.ifc --ids requirements.ids --output-dir reports
+ifc-console jobs list
+ifc-console jobs show job-0123456789abcdef
+ifc-console jobs cancel job-0123456789abcdef
+
+ifc-console artifacts list
+ifc-console artifacts export sha256:DIGEST report.sarif
+ifc-console artifacts pin sha256:DIGEST
+ifc-console artifacts gc --older-than-days 30 --json
+ifc-console artifacts gc --older-than-days 30 --apply --confirm
+```
+
+Jobs store progress and verified JSON/SARIF outputs under the ifc-console home.
+Artifact collection is a dry run unless both `--apply` and `--confirm` are
+present. Recent, referenced, pinned, and transaction artifacts are protected.
+
+Use `transactions list|show` to inspect commit and restore recovery journals.
+
+### Batches
+
+```bash
+ifc-console batch validate models/*.ifc --concurrency 4
+ifc-console batch query models/*.ifc --selector IfcWall --format jsonl
+ifc-console batch list
+ifc-console batch resume batch-0123456789abcdef
+```
+
+Batches capture input hashes before starting. Resume refuses changed sources,
+reuses verified completed work, and retries unfinished children. Validation
+findings return exit code 5; execution failures return 1.
+
+### Workflows
+
+```bash
+ifc-console workflows schema > workflow-v1.schema.json
+ifc-console run workflow.yaml --plan --json
+ifc-console run workflow.yaml --output-dir reports
+ifc-console workflows list
+ifc-console workflows watch workflow-0123456789abcdef
+ifc-console workflows resume workflow-0123456789abcdef
+```
+
+`--plan` validates the graph, resolves and hashes inputs, and schedules nothing.
+Runs and resumes reject changed sources. See [Automation workflows](workflows.md).
+
+## Structured changes
+
+Structured edits follow one path:
+
+```text
+preview -> inspect -> approve -> commit -> optional restore
+```
+
+```bash
+ifc-console changes preview model.ifc \
+  --global-id 2abc... --pset Pset_WallCommon \
+  --property FireRating --value F60
+
+ifc-console changes approve sha256:CHANGESET --by bim-manager
+ifc-console changes commit model.ifc sha256:CHANGESET \
+  --approval sha256:APPROVAL
+ifc-console changes restore model.ifc sha256:COMMIT --confirm
+```
+
+Classification uses the same flow:
+
+```bash
+ifc-console changes classify model.ifc --global-id 2abc... \
+  --system "Company Classification" --identification WALL-EXT \
+  --name "External wall"
+```
+
+Preview never changes the model. Commit rechecks the source, validates a
+candidate, creates a backup, and replaces the file under a lock. Test the flow
+on a copied or version-controlled model.
+
+## Administration
+
+| command | use |
+| ------- | --- |
+| `settings list|get|set|unset|path` | inspect or change user settings |
+| `token show|rotate|path` | manage the persistent local bearer token |
+| `recents list|clear` | manage recently opened models |
+| `sessions list|show|verify|clear` | inspect and verify audit sessions |
+| `plugins list|doctor` | inspect trusted operation plugins |
+| `knowledge build|status|search` | manage the offline reference index |
+
+Examples:
+
+```bash
+ifc-console settings set sandbox.mode strict
+ifc-console token rotate
+ifc-console sessions verify SESSION_ID
+ifc-console plugins doctor --json
 ```
 
 ## Exit codes
 
 | code | meaning |
 | ---- | ------- |
-| 0 | ok |
-| 1 | runtime error |
-| 2 | environment problem (doctor failures, missing deps) |
-| 3 | bad usage, unknown setting, or no TTY for the console |
-| 4 | file not found or unparseable |
-| 5 | `check` found validation failures |
+| `0` | success |
+| `1` | runtime or automation failure |
+| `2` | environment, dependency, or policy problem |
+| `3` | invalid command usage or no terminal |
+| `4` | file missing or unreadable |
+| `5` | validation ran but findings failed the check |
 
 ## Environment variables
 
-- `IFC_CONSOLE_HOME`: relocate `~/.ifc-console` (settings, logs, backups, sessions).
-- `IFC_CONSOLE_<SECTION>_<KEY>`: override any setting, e.g.
-  `IFC_CONSOLE_SERVER_PORT=9000`, `IFC_CONSOLE_MODE_DEFAULT=ask`. Values parse as JSON
-  when possible (`true`, `42`, `"text"`).
+- `IFC_CONSOLE_HOME` changes the settings, logs, jobs, and artifacts directory.
+- `IFC_CONSOLE_<SECTION>_<KEY>` overrides a setting, for example
+  `IFC_CONSOLE_SERVER_PORT=9000` or `IFC_CONSOLE_MODE_DEFAULT=ask`.
+
+Values are parsed as JSON when possible.

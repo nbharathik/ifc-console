@@ -14,7 +14,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
-from ifc_console.mcp.envelope import ToolError
+from ifc_console.core.results import ToolError
 
 MAX_ISSUES = 200
 

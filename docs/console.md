@@ -1,132 +1,117 @@
 # The console
 
-Running `ifc-console` with no subcommand opens the interactive console. It is
-shaped like a coding-agent CLI: one scrolling surface, a command prompt at the
-bottom, and modal cards when something needs your decision.
+Run `ifc-console` without a subcommand to open the control surface for models,
+permissions, clients, and browser tools. Chat happens in your MCP client or the
+optional browser panel.
 
-```
-+----------------------------------------------------------------------+
-| model.ifc · IFC4 · 2.1 MB   MODE: ASK                                | <- status
-| MCP http://127.0.0.1:8383/mcp   viewer: 1 tab                        | <- server bar
-|                                                                      |
-| 14:02:11  ok  get_ifc_project_info  212ms                            | <- live feed
-| 14:02:19  ok  query_elements  48ms                                   |
-| mode changed to edit (by tui)                                        |
-| ...                                                                  |
-| +------------------------------------------------------------------+ |
-| | ask   the AI can query; changing the model is blocked            | | <- completion
-| | edit  the AI can change and save the model; backups are automatic| |    menu
-| +------------------------------------------------------------------+ |
-| > /mode _                                                            | <- prompt
-+----------------------------------------------------------------------+
+```text
++------------------------------------------------------------+
+| model.ifc | IFC4 | MODE: ASK | MCP 127.0.0.1:8383          |
+|                                                            |
+| 14:02:11  ok  get_ifc_project_info  212ms                  |
+| 14:02:19  ok  query_elements           48ms                |
+|                                                            |
+| > /mode _                                                  |
++------------------------------------------------------------+
 ```
 
-## The three regions
+## Layout and keys
 
-- **Status bars** (top): loaded model, schema, size, session mode (green ask,
-  red edit), unsaved-changes marker, the MCP endpoint, and viewer tab count.
-  Always current.
-- **Feed** (middle): everything that happens, in order. Server lifecycle, every
-  MCP tool call with duration and result, viewer selections, mode changes, and
-  slash-command output. This is also the server's activity log; there is no
-  separate log window. `ctrl+l` or `/clear` clears it, ++page-up++ /
-  ++page-down++ scroll it. File logging to `~/.ifc-console/logs/` continues
-  regardless.
-- **Prompt** (bottom): type slash commands. A completion menu opens above the
-  prompt as you type. ++up++ / ++down++ recall history when it is closed,
-  ++escape++ closes it or clears the line.
+- **Status:** model, mode, dirty state, endpoint, and viewer.
+- **Feed:** server events and every AI operation.
+- **Prompt:** slash commands with completion.
 
-## The completion menu
+| key | action |
+| --- | ------ |
+| ++tab++ | insert a completion |
+| ++up++ / ++down++ | move through choices or history |
+| ++enter++ | select or run |
+| ++escape++ | close the menu or clear the line |
+| ++page-up++ / ++page-down++ | scroll the feed |
+| ++ctrl+l++ | clear the feed |
 
-Everything is picked in place. Type `/` and every command appears with a
-one-line description. Keep typing to narrow the list (`/mo` leaves `/mode` and
-`/model`).
-
-- ++tab++ inserts the highlighted entry without running it.
-- ++up++ / ++down++ (or the mouse wheel) move the highlight.
-- ++enter++ picks the highlighted entry. A command with argument values (like
-  `/mode`) advances to those values; picking a value (like `edit`) runs the
-  line. A command with nothing left to choose (like `/status`) runs at once.
-- Clicking an entry is the same as highlighting it and pressing ++enter++.
-- ++escape++ closes the menu; the next keystroke or ++tab++ reopens it.
-
-The menu knows each command's values: `/mode` offers `ask` and `edit`;
-`/viewer` offers open, `off`, `url`; `/copy` and `/connect` list their targets;
-`/settings` lists every key with its value; `/open` lists recent models and
-nearby IFC files, filtered as you type.
-
-!!! tip "Where do prompts go?"
-    The console is not a chat. You talk to the LLM in your MCP client (Claude
-    Code, Cursor, ...). The console is where you control the session those
-    conversations run against.
+Type `/` to browse commands. Values for `/mode`, `/viewer`, `/connect`, and
+`/settings` complete too.
 
 ## Commands
 
-| command | what it does |
-| ------- | ------------ |
-| `/help` | list all commands |
-| `/file [filter]` | pick an IFC file: recents + files near the working directory, filterable |
-| `/open <path>` | open a model by path (a bare path in the prompt works too) |
-| `/recent` | list recently opened models |
-| `/mode [ask\|edit]` | show or change what the AI may do (switching to edit asks to confirm) |
-| `/theme [dark\|light\|auto]` | switch the console theme (persists; open viewer tabs follow) |
-| `/viewer [off\|url]` | open the 3D viewer (its 4 MCP tools register live); `off` closes tabs and removes them, `url` prints the link |
-| `/connect [client\|all]` | shared-HTTP setup for claude-code, claude-desktop, cursor, vscode, codex |
-| `/copy [client\|url\|viewer\|token]` | copy a complete client setup, MCP URL, viewer URL, or token |
-| `/status` | session summary |
-| `/model` | entity counts for the loaded model |
-| `/save [path]` | save in place, or save-as to a new path |
-| `/reload` | reload from disk, discarding unsaved changes (also recovers a stuck session) |
-| `/port <n>` | move the MCP server to another port |
-| `/audit [n]` | show the last n audit records |
+### Models
+
+| command | use |
+| ------- | --- |
+| `/file [path]` | pick or open the active model |
+| `/workspace [dir]` | browse and select related files |
+| `/models` | list models and attachments |
+| `/attach <path>` / `/detach <id>` | add or remove a model or companion file |
+| `/use <id>` | make a resident model active |
+| `/recent` | show recent models |
+| `/info` | show entity counts |
+| `/save [path]` / `/reload` | keep or discard changes |
+
+### Session and browser
+
+| command | use |
+| ------- | --- |
+| `/mode [ask\|edit]` | show or change AI authority |
+| `/sandbox [auto\|strict\|off\|restart]` | control generated-code isolation |
+| `/viewer [off\|url]` | open, close, or print the viewer URL |
+| `/chat [solo\|off\|provider]` | control browser chat |
+| `/connect [client\|all]` | show and copy client setup |
+| `/copy [client\|url\|viewer\|token]` | copy connection data |
+| `/port <n>` | move the HTTP server |
+| `/theme [dark\|light\|auto]` | change console and viewer theme |
+
+### Help and diagnostics
+
+| command | use |
+| ------- | --- |
+| `/status` | show session status |
+| `/tools [section]` | inspect commands, AI tools, prompts, resources, or settings |
+| `/kb [query]` | search the offline IFC reference |
 | `/settings [key value]` | inspect or change settings |
-| `/clear` | clear the feed |
-| `/quit` (alias `/exit`) | exit (asks about unsaved changes) |
+| `/audit [n]` | show recent audit records |
+| `/help [command]` | show help |
+| `/clear` / `/quit` | clear the feed or exit |
 
-Unique prefixes work: `/stat` runs `/status`. Unknown commands suggest the
-closest match.
+Unique prefixes work when unambiguous, so `/stat` runs `/status`.
 
-`/connect <client>` displays that client's complete setup and copies it to the
-system clipboard automatically. For example, `/connect codex` copies the full
-TOML entry. `/connect all` prints every setup without replacing the clipboard;
-use `/copy codex`, `/copy cursor`, `/copy vscode`, `/copy claude-desktop`, or
-`/copy claude-code` to copy one again. Bare `/copy` and the older `/copy cmd`
-both mean Claude Code.
+## Files and workspaces
 
-The setup omits the active IFC path on purpose. Client config is a one-time
-connection to the console; `/file` controls which model that session serves.
+Start the console in your model folder. `/file` lists recents, supported IFC
+files in that folder, and files one level below it. Type part of a name to
+filter, or pass any allowed absolute or relative path.
 
-## Opening files
+Most sessions need one model. For coordination:
 
-`/open ` (with the space) completes files in the menu: recently opened models
-that still exist, then every `.ifc`, `.ifczip`, and `.ifcxml` in the working
-directory, its immediate subdirectories, and any `--allow-dir` folders, newest
-first. Type any part of a name to filter, pick, done. For files the menu does
-not know, `/open <path>` takes any absolute or relative path, and a bare path
-in the prompt works too.
+```text
+> /workspace C:/models/project
+> /attach structural.ifc
+> /attach requirements.ids
+> /models
+```
 
-`/file` shows the same list in a full-height picker, useful when there are many
-models to scan.
+Only the active model is writable. Attached IFC models are read-only; IDS, BCF,
+and CSV files are companion paths. Workspace settings limit scan depth, model
+count, and total memory. Dirty models are never evicted.
 
-Start ifc-console in your project folder and both show exactly the models you care
-about, no paths to type.
+## Tool catalog
 
-## The mode switch
+`/tools` reads the live registries, including enabled plugins and viewer tools.
 
-`ask` (the default) lets the AI query the model. Every attempt to change or
-save it fails with an error telling it to ask you. `edit` lets it change and
-save; every save makes a timestamped backup first. Switching to `edit` asks you
-to confirm (++y++ / ++n++); `/mode ask` locks the model again instantly. The AI
-has no tool to change the mode.
+```text
+/tools ai query_elements
+/tools settings sandbox.mode
+/tools search validation
+```
 
-Per-operation permission prompts are your AI client's job (Claude Code, Cursor,
-and friends all have them). ifc-console enforces the one thing they cannot:
-whether the model file can change at all. The feed and the audit log record
-every mutating run with the AI's stated intent.
+The catalog shows schemas and permissions but does not run tools or grant
+authority.
 
-## Quitting
+## Edit, save, and exit
 
-Drag over text in the feed and press ++ctrl+c++ to copy the selection. With no
-selection, ++ctrl+c++ is the standard terminal exit (also `/quit`, or
-++ctrl+q++). With unsaved changes you get three choices: save and quit,
-discard and quit, or cancel.
+`ask` is read-only. `/mode edit` allows in-memory changes after confirmation.
+Use `/save` to keep them, `/reload` to discard them, and `/mode ask` to lock the
+model again. AI saving remains disabled unless separately enabled.
+
+Select feed text and press ++ctrl+c++ to copy it. With no selection, ++ctrl+c++
+exits. `/quit` and ++ctrl+q++ also exit and warn about unsaved changes.

@@ -54,6 +54,25 @@ async def test_viewer_tools_appear_when_enabled_at_start(tmp_path) -> None:
     core.shutdown()
 
 
+async def test_missing_viewer_extra_cannot_enable_its_tools(tmp_path, monkeypatch) -> None:
+    """A remembered setting or --viewer must not expose unusable viewer tools
+    in a core-only installation."""
+    from ifc_console.app import AppCore
+    from ifc_console.mcp.server import build_mcp
+    from ifc_console.settings import SettingsStore
+    from ifc_console.viewer import assets
+
+    monkeypatch.setattr(assets, "available", lambda: False)
+    store = SettingsStore(home=tmp_path / "home", project_dir=tmp_path, env={})
+    core = AppCore(store, viewer=True, chat=True)
+    mcp = build_mcp(core)
+    names = {tool.name for tool in await mcp.list_tools()}
+    assert core.viewer.enabled is False
+    assert core.chat.enabled is False
+    assert not names & set(VIEWER_TOOLS)
+    core.shutdown()
+
+
 async def test_viewer_tools_toggle_live(harness_factory, work_model) -> None:
     """/viewer mid-session adds the category; /viewer off removes it again,
     without rebuilding the server."""

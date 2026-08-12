@@ -9,8 +9,8 @@ from __future__ import annotations
 from collections import defaultdict
 from typing import Any
 
+from ifc_console.core.results import ToolError
 from ifc_console.ifc.info import _units
-from ifc_console.mcp.envelope import ToolError
 
 AGGREGATE_BY = ("class", "type", "storey", "material", "none")
 
@@ -41,8 +41,36 @@ def _material_name(element: Any) -> str:
         material = None
     if material is None:
         return "(no material)"
+    return _resolve_material_name(material) or f"({material.is_a()})"
+
+
+def _resolve_material_name(material: Any, depth: int = 0) -> str | None:
+    """A usable group label for any of the material set flavours.
+
+    get_material hands back the usage object for layered elements, whose Name
+    is empty; grouping on that collapses every wall into one row.
+    """
+    if material is None or depth > 3:
+        return None
     name = getattr(material, "Name", None)
-    return name or f"({material.is_a()})"
+    if name:
+        return name
+    for attr in ("ForLayerSet", "ForProfileSet"):
+        target = getattr(material, attr, None)
+        if target is not None:
+            resolved = _resolve_material_name(target, depth + 1)
+            if resolved:
+                return resolved
+    layer_set_name = getattr(material, "LayerSetName", None)
+    if layer_set_name:
+        return layer_set_name
+    for attr in ("MaterialLayers", "MaterialProfiles", "MaterialConstituents"):
+        parts = getattr(material, attr, None) or ()
+        names = [getattr(getattr(p, "Material", None), "Name", None) for p in parts]
+        joined = ", ".join(n for n in names if n)
+        if joined:
+            return joined
+    return None
 
 
 def _group_key(element: Any, aggregate_by: str) -> str:
@@ -83,12 +111,14 @@ def compute_quantities(
         raise ToolError(
             "INVALID_QUERY",
             f"selector failed: {exc}",
-            "Use query_elements selector syntax, e.g. `IfcWall` or "
-            "`IfcSlab, material=concrete`.",
+            "Use query_elements selector syntax, e.g. `IfcWall` or `IfcSlab, material=concrete`.",
         ) from exc
 
     matched = len(elements)
     skipped = max(0, matched - max_elements)
+    # filter_elements returns a set, so an unsorted slice picks a different
+    # subset every session; takeoffs have to be reproducible.
+    elements.sort(key=lambda e: e.id())
     elements = elements[:max_elements]
 
     groups: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))

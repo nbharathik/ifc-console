@@ -9,8 +9,8 @@ How to work on ifc-console itself. To report a bug or a security issue, see
 git clone https://github.com/nbharathik/ifc-console && cd ifc-console
 uv sync --extra dev
 uv run ifc-console doctor
-uv run pytest          # full suite; expect all passed + 1 documented xfail
-uv run ruff check src tests
+uv run pytest          # full suite; see the test summary for expected xfails
+uv run ruff check src tests packages scripts
 ```
 
 Standard src-layout package (`src/ifc_console/`), hatchling build, uv-managed.
@@ -43,17 +43,17 @@ for error paths.
 
 ## The vendored viewer
 
-`src/ifc_console/viewer/static/vendor/` contains three.js and web-ifc exactly as
-shipped on npm (one import specifier rewritten in OrbitControls.js so no import
-map is needed). `VENDORED.md` in that folder records versions, licenses, and the
-upgrade procedure. Do not edit `web-ifc-api.js` or the WASM: MPL-2.0 files ship
-unmodified.
+`packages/ifc-console-viewer/src/ifc_console_viewer/static/vendor/` contains
+three.js and web-ifc exactly as shipped on npm (one import specifier is rewritten
+in OrbitControls.js so no import map is needed). `VENDORED.md` in that folder
+records versions, licenses, hashes, and the upgrade procedure. Do not edit
+`web-ifc-api.js` or the WASM: MPL-2.0 files ship unmodified. Verify the bundle
+with `uv run python scripts/check_vendor_assets.py`.
 
 ## Style
 
 - `ruff check` must stay clean (config in `pyproject.toml`; line length 100,
   isort, bugbear, pyupgrade, simplify).
-- No em or en dashes anywhere in code or docs; use plain punctuation.
 - Every user-facing error carries a `hint` telling the reader (human or LLM)
   what to do next. Hints that mention the terminal name real console commands
   (`/mode`, `/viewer`, `/reload`), not keystrokes.
@@ -67,14 +67,37 @@ unmodified.
 ```bash
 uv sync --extra docs
 uv run mkdocs serve    # live preview at 127.0.0.1:8000
-uv run mkdocs build    # static site into site/
+uv run mkdocs build --strict    # static site into site/
 ```
 
 ## CI and releases
 
-Every push and pull request runs the suite on three operating systems and two
-Python versions, plus a wheel build that checks the viewer assets are included
-and a strict docs build.
+Every push and pull request runs the suite on three operating systems and five
+Python versions, plus builds both wheels and proves the core wheel contains no
+viewer assets while the companion wheel contains the complete reviewed bundle.
 
-Releases are cut by the maintainer pushing a `v*` tag: CI re-runs the tests,
-publishes to PyPI via trusted publishing, and deploys these docs.
+Configure GitHub Pages once under **Settings > Pages > Build and deployment**
+with **Source** set to **GitHub Actions**. The docs and release workflows build
+with read-only repository and Pages access, upload an official Pages artifact,
+then hand that artifact to a minimal deployment job. Only that job has
+`pages: write` and `id-token: write`. Both workflows deploy through the
+`github-pages` environment and share one concurrency group. If you add
+environment branch or tag rules, allow `main` and the intended `v*` release
+tags.
+
+Before a release, `uv run python scripts/check_release.py --tag vX.Y.Z` verifies
+that the tag, both package versions, their compatibility range, and the
+changelog agree. Releases are cut by the maintainer pushing that tag: CI
+re-runs the tests, validates both wheels and source archives, publishes the
+viewer first and then the core package, and deploys these docs.
+
+Configure trusted publishers for both the `ifc-console` and
+`ifc-console-viewer` PyPI projects with this repository, workflow
+`release.yml`, and the protected GitHub environment `pypi`. The workflow
+builds, inspects, and smoke-tests artifacts in a job without OIDC permission.
+Its minimal publishing job can only retrieve those verified files and publish
+them after the environment gate.
+
+The checkout-only lockfile is deliberately excluded from the source archive.
+Install that archive through the standard PEP 517 path with `pip` or `uv pip`;
+the release workflow smoke-tests this path directly.

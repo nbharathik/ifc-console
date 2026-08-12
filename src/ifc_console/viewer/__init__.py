@@ -4,7 +4,7 @@ The viewer is deliberately unprivileged: it can read the model and report
 what the user selected, but it has no mutation surface at all. Everything
 here runs on the server event loop; browsers connect over localhost only.
 
-The viewer ships with every install: static assets (three.js, web-ifc) are
-bundled in the package and the WebSocket dependency is a core requirement.
-It stays off until enabled with /viewer or --viewer.
+The server integration stays lightweight. The static three.js/web-ifc bundle
+and WebSocket runtime are installed only through ``ifc-console[viewer]``. The
+viewer stays off until enabled with ``/viewer`` or ``--viewer``.
 """

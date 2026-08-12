@@ -50,18 +50,27 @@ markdown_extensions:
 nav:
   - Home: index.md
   - Getting started: getting-started.md
-  - Guide:
+  - Use ifc-console:
       - The console: console.md
       - Connecting clients: clients.md
-      - Safety model: safety.md
       - 3D viewer: viewer.md
+      - Chat panel: chat.md
+      - Troubleshooting: troubleshooting.md
+  - Safety:
+      - Safety model: safety.md
+      - Code sandbox: sandbox.md
+  - Build and automate:
+      - Python SDK: sdk.md
+      - Agent applications: agents.md
+      - Automation workflows: workflows.md
+      - Operation plugins: plugins.md
   - Reference:
       - MCP tools: tools.md
       - CLI: cli.md
       - Settings: settings.md
+      - Knowledge index: knowledge.md
       - Versioning: versioning.md
   - Project:
       - Architecture: architecture.md
-      - Troubleshooting: troubleshooting.md
       - Development: development.md
       - Contributing and security: contributing.md

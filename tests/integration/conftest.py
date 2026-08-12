@@ -36,8 +36,20 @@ class Harness:
         self.core.set_mode(mode, by="test")
 
 
-async def _make_core(home: Path, project_dir: Path, model: Path | None, mode: Mode) -> AppCore:
-    store = SettingsStore(home=home, project_dir=project_dir, env={})
+async def _make_core(
+    home: Path,
+    project_dir: Path,
+    model: Path | None,
+    mode: Mode,
+    *,
+    allow_ai_save: bool = False,
+) -> AppCore:
+    store = SettingsStore(
+        home=home,
+        project_dir=project_dir,
+        env={},
+        flag_overrides={"files.allow_ai_save": allow_ai_save},
+    )
     core = AppCore(store, mode=mode)
     core.start_audit()
     if model is not None:
@@ -53,9 +65,17 @@ async def harness_factory(tmp_path: Path):
     async def factory(
         model: Path | None = None,
         mode: Mode = Mode.ASK,
+        *,
+        allow_ai_save: bool = False,
     ) -> AsyncIterator[Harness]:
         home = tmp_path / "home"
-        core = await _make_core(home, tmp_path, model, mode)
+        core = await _make_core(
+            home,
+            tmp_path,
+            model,
+            mode,
+            allow_ai_save=allow_ai_save,
+        )
         created.append(core)
         from ifc_console.mcp.server import build_mcp
 

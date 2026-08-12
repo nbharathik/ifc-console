@@ -32,9 +32,7 @@ class FakeWS:
         self.sent.append(frame)
         if frame.get("type") == "screenshot_request" and self.respond_shots is not None:
             reply = {"type": "screenshot_response", "id": frame["id"], **self.respond_shots}
-            asyncio.get_running_loop().create_task(
-                self.hub.handle_frame(self.client, reply)
-            )
+            asyncio.get_running_loop().create_task(self.hub.handle_frame(self.client, reply))
 
     def frames(self, ftype: str) -> list[dict]:
         return [f for f in self.sent if f.get("type") == ftype]
@@ -77,6 +75,46 @@ async def test_selection_frame_updates_hub_and_emits(core, hub):
     assert core.viewer.selection == ["abc", "def"]
     assert hub.selected_at is not None
     assert any(e["type"] == "viewer_selection" and e["count"] == 2 for e in seen)
+
+
+async def test_selection_rejects_non_lists_and_oversized_identifiers(hub):
+    ws = _attach(hub)
+    await hub.handle_frame(ws.client, {"type": "selection", "guids": "not-a-list"})
+    assert hub.selection == []
+
+    await hub.handle_frame(
+        ws.client,
+        {"type": "selection", "guids": ["valid", "x" * 129, 42]},
+    )
+    assert hub.selection == ["valid"]
+
+
+async def test_closing_latest_tab_restores_other_tabs_selection(core, hub, work_model: Path):
+    await core.open_model(work_model)
+    ws1, ws2 = _attach(hub), _attach(hub)
+    model_id = core.models.active_id
+    await hub.handle_frame(
+        ws1.client, {"type": "selection", "guids": ["first"], "model_id": model_id}
+    )
+    await hub.handle_frame(
+        ws2.client, {"type": "selection", "guids": ["second"], "model_id": model_id}
+    )
+
+    hub.unregister(ws2.client)
+    assert hub.selection == ["first"]
+    assert hub.selection_model_id == model_id
+
+    hub.unregister(ws1.client)
+    assert hub.selection == []
+    assert hub.selection_model_id is None
+
+
+async def test_selection_for_an_unknown_model_is_discarded(core, hub, work_model: Path):
+    await core.open_model(work_model)
+    ws = _attach(hub)
+    await hub.handle_frame(ws.client, {"type": "selection", "guids": ["stale"], "model_id": "gone"})
+    assert hub.selection == []
+    assert hub.selection_model_id is None
 
 
 async def test_broadcast_reaches_all_tabs(hub):
@@ -147,6 +185,31 @@ async def test_screenshot_rejects_non_image_bytes(hub):
     assert err.value.code == "VIEWER_ERROR"
 
 
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"data_b64": {"not": "text"}, "width": 1, "height": 1},
+        {
+            "data_b64": base64.b64encode(TINY_PNG).decode(),
+            "width": "not-a-number",
+            "height": 1,
+        },
+        {
+            "data_b64": base64.b64encode(TINY_PNG).decode(),
+            "width": 9000,
+            "height": 1,
+        },
+    ],
+)
+async def test_screenshot_rejects_malformed_metadata(hub, payload):
+    _attach(hub, respond_shots=payload)
+    with pytest.raises(ToolError) as err:
+        await hub.request_screenshot(
+            view="current", fit=None, max_size=800, format="png", quality=85
+        )
+    assert err.value.code == "VIEWER_ERROR"
+
+
 async def test_screenshot_timeout(hub, monkeypatch):
     monkeypatch.setattr("ifc_console.viewer.hub._SCREENSHOT_TIMEOUT", 0.05)
     _attach(hub)  # never answers
@@ -164,7 +227,10 @@ async def test_model_events_translate_to_frames(core, hub, work_model: Path):
     await asyncio.sleep(0)  # let the scheduled broadcast task run
     frames = ws.frames("model_updated")
     assert frames and frames[-1]["reason"] == "loaded"
-    assert frames[-1]["etag"] == f"{core.session.fingerprint}-{core.session.revision}"
+    assert frames[-1]["etag"] == (
+        f"{core.session.model_id}-{core.session.fingerprint}-{core.session.revision}"
+    )
+    assert ws.frames("status")[-1]["model"] == work_model.name
 
     core.events.emit("model_mutated", tool="test")
     await asyncio.sleep(0)
@@ -183,6 +249,19 @@ async def test_model_load_clears_selection_and_highlight(core, hub, work_model: 
     await core.open_model(work_model)
     assert hub.selection == []
     assert hub.last_highlight is None
+
+
+async def test_eviction_reaches_tabs_and_prunes_selection(core, hub, work_model: Path):
+    await core.open_model(work_model)
+    model_id = core.models.active_id
+    ws = _attach(hub)
+    await hub.handle_frame(ws.client, {"type": "selection", "guids": ["x"], "model_id": model_id})
+    core.models.drop(model_id, force=True)
+    core.events.emit("model_evicted", model_id=model_id, name=work_model.name)
+    await asyncio.sleep(0)
+    assert hub.selection == []
+    assert hub.selection_model_id is None
+    assert ws.frames("status")
 
 
 async def test_status_payload_shape(core, hub, work_model: Path):

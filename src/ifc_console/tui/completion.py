@@ -83,8 +83,13 @@ def _resolve(name: str) -> commands.Command | None:
     cmd = commands.REGISTRY.get(name)
     if cmd is not None:
         return cmd
-    matches = [c for c in commands.REGISTRY if c.startswith(name)]
-    return commands.REGISTRY[matches[0]] if len(matches) == 1 else None
+    matches = commands.resolve_prefix(name)
+    return commands.REGISTRY[matches.pop()] if len(matches) == 1 else None
+
+
+# Commands that do something useful with no argument, so Enter runs them even
+# though Tab can still complete an argument. /file opens the file picker.
+_RUN_ON_ENTER = frozenset({"file", "tools"})
 
 
 # ------------------------------------------------------------- command names
@@ -98,7 +103,7 @@ def _command_menu(token: str) -> MenuState:
         cmd = commands.REGISTRY[name]
         # a command whose argument can be completed (or is required) is not
         # done yet: picking it advances to the argument instead of running
-        has_more = name in _ARG_PROVIDERS or "<" in cmd.usage
+        has_more = (name in _ARG_PROVIDERS and name not in _RUN_ON_ENTER) or "<" in cmd.usage
         out.append(
             Candidate(
                 insert=f"/{name}",
@@ -125,7 +130,14 @@ def _mode_args(core: AppCore, rest: str, _files: FilesProvider | None) -> MenuSt
     current = core.policy.mode.value
     rows = [
         ("ask", "the AI can query; changing the model is blocked"),
-        ("edit", "the AI can change and save the model; backups are automatic"),
+        (
+            "edit",
+            (
+                "the AI can change and save; backups are automatic"
+                if core.policy.allow_ai_save
+                else "the AI can change memory; only you can save"
+            ),
+        ),
     ]
     rows = [(v, note + (" · current" if v == current else "")) for v, note in rows]
     return _choices("mode", rest, rows, context="mode")
@@ -162,6 +174,18 @@ def _viewer_args(core: AppCore, rest: str, _files: FilesProvider | None) -> Menu
     )
 
 
+def _sandbox_args(core: AppCore, rest: str, _files: FilesProvider | None) -> MenuState:
+    current = core.settings.sandbox.mode
+    rows = [
+        ("auto", "sandbox read-only code, fall back when it cannot"),
+        ("strict", "refuse a read-only run that cannot be sandboxed"),
+        ("off", "in-process guards only"),
+        ("restart", "stop the worker; the next run starts a fresh one"),
+    ]
+    rows = [(v, note + (" · current" if v == current else "")) for v, note in rows]
+    return _choices("sandbox", rest, rows, context="sandbox")
+
+
 def _copy_args(_core: AppCore, rest: str, _files: FilesProvider | None) -> MenuState:
     return _choices(
         "copy",
@@ -187,29 +211,34 @@ def _connect_args(_core: AppCore, rest: str, _files: FilesProvider | None) -> Me
         [
             ("claude-code", "user-scoped HTTP command · default"),
             ("claude-desktop", "HTTP bridge config"),
-            ("cursor", "global HTTP config"),
-            ("vscode", "user-profile HTTP config"),
-            ("codex", "shared HTTP config.toml"),
+            ("cursor", "global bridge config"),
+            ("vscode", "user-profile bridge config"),
+            ("codex", "shared bridge config.toml"),
             ("all", "show every client at once"),
         ],
         context="connect",
     )
 
 
-def _open_args(_core: AppCore, rest: str, files: FilesProvider | None) -> MenuState:
-    entries = list(files()) if files is not None else []
+def _open_args(core: AppCore, rest: str, files: FilesProvider | None) -> MenuState:
+    entries = files() if files is not None else []
+    if entries is None:
+        # the scan runs on a thread; the console refreshes the menu when it lands
+        scanning = Candidate(insert="", display="(scanning for IFC files…)", disabled=True)
+        return MenuState(prefix="/file ", candidates=(scanning,), context="open")
+    entries = list(entries)
     token = rest.strip().lower()
-    cwd = Path.cwd()
+    root = core.launch_dir
     out = []
     for path, detail in entries:
         if token and token not in str(path).lower():
             continue
         try:
-            shown = str(path.relative_to(cwd))
+            shown = str(path.relative_to(root))
         except ValueError:
             shown = str(path)
         out.append(Candidate(insert=shown, annotation=detail, terminal=True))
-    return MenuState(prefix="/open ", candidates=tuple(out), context="open")
+    return MenuState(prefix="/file ", candidates=tuple(out), context="open")
 
 
 def _port_args(core: AppCore, rest: str, _files: FilesProvider | None) -> MenuState:
@@ -226,6 +255,7 @@ def _port_args(core: AppCore, rest: str, _files: FilesProvider | None) -> MenuSt
 # Values for settings whose schema is a fixed choice (see settings.py).
 _SETTING_VALUES = {
     "mode.default": ("ask", "edit"),
+    "sandbox.mode": ("auto", "strict", "off"),
     "logging.level": ("debug", "info", "warning", "error"),
     "tui.theme": ("dark", "light", "auto"),
 }
@@ -278,15 +308,94 @@ def _settings_args(core: AppCore, rest: str, _files: FilesProvider | None) -> Me
     return MenuState(prefix=prefix, candidates=tuple(out), context="settings")
 
 
+def _tools_args(core: AppCore, rest: str, _files: FilesProvider | None) -> MenuState:
+    from ifc_console.tui.tool_catalog import SECTION_HELP, SECTIONS
+
+    section, separator, target = rest.lstrip().partition(" ")
+    if not separator:
+        token = section.lower()
+        candidates = tuple(
+            Candidate(
+                insert=name,
+                annotation=SECTION_HELP[name],
+                terminal=True,
+                advance=name not in {"all"},
+            )
+            for name in SECTIONS
+            if name.startswith(token)
+        )
+        return MenuState(prefix="/tools ", candidates=candidates, context="tools")
+
+    section = section.lower()
+    token = target.strip().lower()
+    rows: list[tuple[str, str]] = []
+    if section == "slash":
+        rows = [(item.name, item.help) for item in commands.REGISTRY.values()]
+    elif section == "ai":
+        rows = [(item.name, item.description) for item in core.operations.specs()]
+    elif section == "settings":
+        flat = core.store.flat()
+        rows = [(key, f"current: {json.dumps(flat[key], default=str)}") for key in flat]
+    elif section in {"prompts", "resources"}:
+        rows = [
+            (name, "registered in the live MCP catalog")
+            for name in core.tool_catalog_names.get(section, ())
+        ]
+    elif section == "search":
+        if token:
+            return _EMPTY
+        hint = Candidate(insert="", display="(type text to search the catalog)", disabled=True)
+        return MenuState(prefix="/tools search ", candidates=(hint,), context="tools-search")
+    else:
+        return _EMPTY
+    candidates = tuple(
+        Candidate(insert=name, annotation=note, terminal=True)
+        for name, note in sorted(rows)
+        if token in name.lower()
+    )
+    return MenuState(
+        prefix=f"/tools {section} ",
+        candidates=candidates,
+        context=f"tools-{section}",
+    )
+
+
 Provider = Callable[["AppCore", str, "FilesProvider | None"], MenuState]
 
+
+def _loaded_args(core: AppCore, rest: str, _files: FilesProvider | None) -> MenuState:
+    """Ids of what is already loaded: models first, then attached files."""
+    rows: list[tuple[str, str]] = []
+    for row in core.models.model_rows():
+        note = "active" if row["active"] else "attached, read-only"
+        rows.append((row["model_id"], f"{row['name']} ({note})"))
+    for attachment in core.models.attachments.values():
+        rows.append((attachment.alias, f"{attachment.path.name} ({attachment.kind})"))
+    return _choices("detach", rest, rows, context="loaded")
+
+
+def _use_args(core: AppCore, rest: str, files: FilesProvider | None) -> MenuState:
+    state = _loaded_args(core, rest, files)
+    # only models can become active; attachments are not models
+    ids = {row["model_id"] for row in core.models.model_rows()}
+    return MenuState(
+        prefix="/use ",
+        candidates=tuple(c for c in state.candidates if c.insert in ids),
+        context="loaded",
+    )
+
+
 _ARG_PROVIDERS: dict[str, Provider] = {
+    "tools": _tools_args,
     "mode": _mode_args,
+    "detach": _loaded_args,
+    "use": _use_args,
+    "sandbox": _sandbox_args,
     "theme": _theme_args,
     "viewer": _viewer_args,
     "copy": _copy_args,
     "connect": _connect_args,
-    "open": _open_args,
+    "file": _open_args,
     "port": _port_args,
     "settings": _settings_args,
 }

@@ -8,7 +8,7 @@ import pytest
 
 from ifc_console.cli import build_config_snippet
 from ifc_console.policy.modes import Mode
-from ifc_console.tui import commands
+from ifc_console.tui import commands, completion
 
 pytestmark = pytest.mark.asyncio
 
@@ -41,6 +41,9 @@ class FakeConsole:
 
     async def open_file_picker(self, initial_filter: str = "") -> None:
         self.picker_opened += 1
+
+    async def open_workspace_panel(self, initial_filter: str = "") -> None:
+        self.panel_opened = getattr(self, "panel_opened", 0) + 1
 
     def copy_to_clipboard(self, value: str) -> None:
         self.clipboard = value
@@ -113,6 +116,61 @@ async def test_help_lists_every_command(console: FakeConsole) -> None:
         assert f"/{name}" in console.text
 
 
+async def test_tools_overview_uses_the_live_registries(console: FakeConsole) -> None:
+    await commands.dispatch(console, "/tools")
+    assert "tools & capabilities" in console.text
+    assert "/tools slash" in console.text
+    assert "/tools ai" in console.text
+    assert "/tools prompts" in console.text
+    assert "/tools resources" in console.text
+    assert "AI saving=off; only you can save" in console.text
+
+
+async def test_tools_nested_catalog_and_details(console: FakeConsole) -> None:
+    await commands.dispatch(console, "/tools ai")
+    for tool in console.core.operations.specs():
+        assert tool.name in console.text
+    prompt_menu = completion.complete("/tools prompts model", console.core)
+    assert [candidate.insert for candidate in prompt_menu.candidates] == ["model_audit"]
+
+    console.clear_log()
+    await commands.dispatch(console, "/tools ai save_ifc_file")
+    assert "blocked" in console.text
+    assert "files.allow_ai_save" in console.text
+    assert "output_path" in console.text
+
+    console.clear_log()
+    await commands.dispatch(console, "/tools prompts model_audit")
+    assert "Audit the loaded model" in console.text
+
+    console.clear_log()
+    await commands.dispatch(console, "/tools resources element")
+    assert "resource template" in console.text
+    assert "ifc://element/{global_id}" in console.text
+
+    console.clear_log()
+    await commands.dispatch(console, "/tools settings files.allow_ai_save")
+    assert "current" in console.text and "false" in console.text
+
+
+async def test_tools_searches_across_categories(console: FakeConsole) -> None:
+    await commands.dispatch(console, "/tools search save")
+    assert "catalog search" in console.text
+    assert "save_ifc_file" in console.text
+    assert "files.allow_ai_save" in console.text
+
+    console.clear_log()
+    await commands.dispatch(console, "/tools query_elements")
+    assert "AI tool" in console.text
+    assert "arguments" in console.text
+
+
+async def test_tools_all_prints_every_category(console: FakeConsole) -> None:
+    await commands.dispatch(console, "/tools all")
+    for heading in ("slash commands", "AI tools", "prompts", "resources", "settings"):
+        assert heading in console.text
+
+
 async def test_mode_set_and_query(console: FakeConsole) -> None:
     await commands.dispatch(console, "/mode")
     assert "ask" in console.text
@@ -130,15 +188,17 @@ async def test_mode_escalation_denied_by_confirm(console: FakeConsole) -> None:
     assert "unchanged" in console.text
 
 
-async def test_connect_includes_reusable_http_configs(
+async def test_connect_includes_reusable_configs(
     console: FakeConsole, work_model: Path
 ) -> None:
     await commands.dispatch(console, f"/open {work_model}")
     console.clear_log()
     await commands.dispatch(console, "/connect")
-    assert console.core.token in console.text
-    assert "http://127.0.0.1:" in console.text
-    assert "shared HTTP console" in console.text
+    # the default wiring is the stdio bridge: no token in the client config,
+    # and the client may start before ifc-console does
+    assert "bridge" in console.text
+    assert console.core.token not in console.text
+    assert "may start before ifc-console" in console.text
     assert work_model.name not in console.text
     assert console.clipboard.startswith("claude mcp add")
     assert "setup copied to clipboard" in console.text
@@ -164,9 +224,9 @@ async def test_connect_includes_reusable_http_configs(
 async def test_copy_command_is_user_scoped_and_reusable(console: FakeConsole) -> None:
     await commands.dispatch(console, "/copy cmd")
     legacy = console.clipboard
-    assert "--transport http" in console.clipboard
+    assert "bridge" in console.clipboard
     assert "--scope user" in console.clipboard
-    assert console.core.token in console.clipboard
+    assert console.core.token not in console.clipboard
     assert "--file" not in console.clipboard
     await commands.dispatch(console, "/copy claude-code")
     assert console.clipboard == legacy
@@ -188,33 +248,35 @@ async def test_copy_supports_every_client(
         token=console.core.token,
     )
     assert console.clipboard == expected
-    assert console.core.token in console.clipboard
     assert work_model.name not in console.clipboard
     assert f"{client} setup copied to clipboard" in console.text
 
 
-async def test_connect_respects_hidden_token_setting(console: FakeConsole) -> None:
-    console.core.settings.server.token_in_config_snippets = False
-    await commands.dispatch(console, "/connect codex")
-    assert console.core.token not in console.text
-    assert console.core.token not in console.clipboard
-    assert "<TOKEN>" in console.clipboard
-    assert "&lt;TOKEN&gt;" in console.text or "<TOKEN>" in console.text
-    assert "token is hidden" in console.text
+@pytest.mark.parametrize("client", CLIENTS)
+async def test_http_transport_still_honours_the_hidden_token_setting(client: str) -> None:
+    """The HTTP wiring keeps the token, so the placeholder path must survive."""
+    snippet = build_config_snippet(
+        client, "http", port=8383, file=None, mode="ask", token=None
+    )
+    assert "<TOKEN>" in snippet
 
 
-async def test_copy_warns_when_setup_contains_placeholder(console: FakeConsole) -> None:
-    console.core.settings.server.token_in_config_snippets = False
-    await commands.dispatch(console, "/copy codex")
-    assert console.core.token not in console.clipboard
-    assert "<TOKEN>" in console.clipboard
-    assert "copied setup contains <TOKEN>" in console.text
+async def test_connect_embeds_and_warns_about_a_per_run_token(
+    console: FakeConsole,
+) -> None:
+    console.core.settings.server.persistent_token = False
+    console.core.settings.server.token_in_config_snippets = True
+    await commands.dispatch(console, "/connect")
+    assert console.core.token in console.text
+    assert "must be copied again after every restart" in console.text
 
 
-async def test_connect_warns_when_token_is_not_persistent(console: FakeConsole) -> None:
+async def test_connect_hides_a_per_run_token_by_default(console: FakeConsole) -> None:
     console.core.settings.server.persistent_token = False
     await commands.dispatch(console, "/connect")
-    assert "refresh these client configs after every ifc-console restart" in console.text
+    assert console.core.token not in console.text
+    assert "<TOKEN>" in console.text
+    assert "replace <TOKEN>" in console.text
 
 
 async def test_status_reports_model_and_mode(console: FakeConsole, work_model: Path) -> None:
@@ -225,10 +287,58 @@ async def test_status_reports_model_and_mode(console: FakeConsole, work_model: P
     assert "ask" in console.text
 
 
+async def test_status_names_where_the_next_code_run_goes(
+    console: FakeConsole, work_model: Path
+) -> None:
+    await commands.dispatch(console, f"/open {work_model}")
+    console.clear_log()
+    await commands.dispatch(console, "/status")
+    assert "sandbox" in console.text
+
+
+async def test_sandbox_reports_state_without_a_model(
+    console: FakeConsole, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "ifc_console.sandbox.runner.secure_isolation_supported", lambda: True
+    )
+    await commands.dispatch(console, "/sandbox")
+    assert "auto" in console.text
+    assert "no model is loaded" in console.text
+
+
+async def test_sandbox_explains_the_next_run(
+    console: FakeConsole, work_model: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "ifc_console.sandbox.runner.secure_isolation_supported", lambda: True
+    )
+    await commands.dispatch(console, f"/open {work_model}")
+    console.clear_log()
+    await commands.dispatch(console, "/sandbox")
+    assert "sandboxed" in console.text
+    assert "not running" in console.text  # started lazily, on the first code run
+
+
+async def test_sandbox_mode_change_persists(console: FakeConsole) -> None:
+    await commands.dispatch(console, "/sandbox off")
+    assert console.core.settings.sandbox.mode == "off"
+    assert console.core.store.provenance["sandbox.mode"] == "user"
+    console.clear_log()
+    await commands.dispatch(console, "/sandbox auto")
+    assert console.core.settings.sandbox.mode == "auto"
+
+
+async def test_sandbox_rejects_an_unknown_option(console: FakeConsole) -> None:
+    await commands.dispatch(console, "/sandbox banana")
+    assert "unknown option" in console.text
+    assert console.core.settings.sandbox.mode == "auto"
+
+
 async def test_model_counts(console: FakeConsole, work_model: Path) -> None:
     await commands.dispatch(console, f"/open {work_model}")
     console.clear_log()
-    await commands.dispatch(console, "/model")
+    await commands.dispatch(console, "/info")
     assert "IfcWall" in console.text
 
 
@@ -238,6 +348,11 @@ async def test_save_works_in_ask_mode(console: FakeConsole, work_model: Path) ->
     console.clear_log()
     await commands.dispatch(console, "/save")
     assert "saved" in console.text
+
+
+async def test_mode_status_explains_default_save_ownership(console: FakeConsole) -> None:
+    await commands.dispatch(console, "/mode")
+    assert "only you can save" in console.text
 
 
 async def test_save_writes_in_edit_mode(console: FakeConsole, work_model: Path) -> None:
@@ -279,10 +394,156 @@ async def test_settings_list_and_set(console: FakeConsole) -> None:
     assert "unknown setting" in console.text
 
 
+async def test_enabling_ai_save_requires_confirmation_and_applies_live(
+    console: FakeConsole,
+) -> None:
+    assert console.core.policy.allow_ai_save is False
+    console.confirm_answer = False
+    await commands.dispatch(console, "/settings files.allow_ai_save true")
+    assert console.core.policy.allow_ai_save is False
+    assert console.core.settings.files.allow_ai_save is False
+
+    console.confirm_answer = True
+    await commands.dispatch(console, "/settings files.allow_ai_save true")
+    assert console.core.policy.allow_ai_save is True
+    assert console.core.settings.files.allow_ai_save is True
+
+    await commands.dispatch(console, "/settings files.allow_ai_save false")
+    assert console.core.policy.allow_ai_save is False
+
+
 async def test_viewer_url_requires_server(console: FakeConsole) -> None:
     await commands.dispatch(console, "/viewer url")
-    assert "server is not running" in console.text
+    assert "server is still starting" in console.text
     console.core.server_running = True
     console.clear_log()
     await commands.dispatch(console, "/viewer url")
     assert "/viewer#t=" in console.text
+
+
+# ----------------------------------------------------- 0.1.4 command rework
+async def test_renamed_commands_still_work_and_say_where_they_went(console) -> None:
+    await commands.dispatch(console, "/model")
+    assert "/model is now /info" in console.text
+
+
+async def test_file_with_a_path_opens_it_and_without_one_opens_the_picker(
+    console, work_model: Path
+) -> None:
+    await commands.dispatch(console, "/file")
+    assert console.picker_opened == 1
+    await commands.dispatch(console, f"/file {work_model}")
+    assert console.core.session.loaded
+
+
+async def test_file_with_a_plain_word_filters_the_picker(console) -> None:
+    await commands.dispatch(console, "/file tower")
+    assert console.picker_opened == 1
+
+
+async def test_help_explains_one_command(console) -> None:
+    await commands.dispatch(console, "/help file")
+    assert "/file [path|filter]" in console.text
+    assert "examples" in console.text
+
+
+async def test_help_names_the_old_command_name(console) -> None:
+    await commands.dispatch(console, "/help info")
+    assert "also answers to /model" in console.text
+
+
+async def test_help_groups_every_command(console) -> None:
+    await commands.dispatch(console, "/help")
+    for group in commands._GROUPS:
+        assert group in console.text
+    ungrouped = [c.name for c in commands.REGISTRY.values() if c.group not in commands._GROUPS]
+    assert not ungrouped, f"commands missing from the help groups: {ungrouped}"
+
+
+async def test_kb_reports_when_the_index_is_missing(console) -> None:
+    await commands.dispatch(console, "/kb")
+    assert "not built" in console.text or "building" in console.text
+
+
+# ------------------------------------------------------------- the chat panel
+async def test_chat_enables_the_panel_and_warns_about_the_network(console) -> None:
+    console.core.server_running = True
+    await commands.dispatch(console, "/chat")
+    assert console.core.chat.enabled is True
+    assert "talks to the internet" in console.text
+    assert "/chat" in console.clipboard or "chat" in console.clipboard
+
+
+async def test_chat_opens_the_3d_view_with_the_panel_docked(console) -> None:
+    """The panel answers about the open model, so it opens beside it."""
+    console.core.server_running = True
+    await commands.dispatch(console, "/chat")
+    assert console.core.viewer.enabled is True
+    assert "/viewer?chat=1" in console.clipboard
+
+
+async def test_chat_split_is_still_accepted(console) -> None:
+    console.core.server_running = True
+    await commands.dispatch(console, "/chat split")
+    assert "unknown option" not in console.text
+    assert "chat=1" in console.clipboard
+
+
+async def test_chat_solo_leaves_the_viewer_alone(console) -> None:
+    console.core.server_running = True
+    await commands.dispatch(console, "/chat solo")
+    assert console.core.chat.enabled is True
+    assert console.core.viewer.enabled is False
+    assert "chat=1" not in console.clipboard
+
+
+async def test_chat_off_drops_the_session_key(console) -> None:
+    console.core.server_running = True
+    await commands.dispatch(console, "/chat")
+    console.core.chat.keys["openai"] = "sk-test"
+    await commands.dispatch(console, "/chat off")
+    assert console.core.chat.enabled is False
+    assert console.core.chat.keys == {}
+
+
+async def test_chat_picks_a_provider(console) -> None:
+    console.core.server_running = True
+    await commands.dispatch(console, "/chat anthropic")
+    assert console.core.chat.provider == "anthropic"
+
+
+async def test_chat_rejects_an_unknown_option(console) -> None:
+    await commands.dispatch(console, "/chat nonsense")
+    assert "unknown option" in console.text
+    assert console.core.chat.enabled is False
+
+
+async def test_status_reports_the_chat_panel(console) -> None:
+    await commands.dispatch(console, "/status")
+    assert "chat     off" in console.text
+
+
+# ------------------------------------------------ when the server never bound
+async def test_browser_commands_explain_a_port_conflict(console) -> None:
+    """"server is not running" is useless on its own; say what is holding it."""
+    console.core.server_running = False
+    console.core.server_error = "port 8383 is in use by an ifc-console session"
+    for line in ("/chat", "/viewer"):
+        console.clear_log()
+        await commands.dispatch(console, line)
+        assert "port 8383 is in use" in console.text
+        assert "/port 8384" in console.text
+    assert console.core.chat.enabled is False
+
+
+async def test_browser_commands_say_when_the_server_is_still_starting(console) -> None:
+    console.core.server_running = False
+    console.core.server_error = None
+    await commands.dispatch(console, "/chat")
+    assert "still starting" in console.text
+
+
+async def test_status_shows_why_the_server_is_missing(console) -> None:
+    console.core.server_error = "port 8383 is in use by an ifc-console session"
+    await commands.dispatch(console, "/status")
+    assert "not running" in console.text and "port 8383" in console.text

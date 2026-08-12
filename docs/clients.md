@@ -1,68 +1,43 @@
 # Connecting clients
 
-The recommended setup is one shared Streamable HTTP session:
+Connect each AI client once. After that, every client uses the model currently
+open in the shared ifc-console session.
 
-```text
-Claude, Cursor, VS Code, or Codex
-                 |
-                 v
-http://127.0.0.1:8383/mcp
-                 |
-                 v
-one ifc-console console -> the model currently selected with /file
-```
+## Quick setup
 
-Configure each client once. The config holds only the MCP URL and bearer token,
-never an IFC path. After that, start `ifc-console` and use `/file` to open or
-switch models. Every connected client uses the model owned by that console
-session.
+1. Start `ifc-console`.
+2. Run `/connect <client>`, for example `/connect codex`.
+3. Paste the copied configuration into the location shown by the console.
+4. Restart or reload the client once.
 
-`/connect <client>` prints the setup for one client and copies the complete
-snippet to your clipboard. `/connect all` prints them all without changing the
-clipboard. Use `/copy <client>` whenever you want to copy one again. The same
-output is available without opening the console:
+The normal daily flow is then `ifc-console`, `/file`, and chat. Changing the
+model does not require another client setup.
+
+You can generate the same configuration without opening the console:
 
 ```bash
-ifc-console mcp-config --client claude-code
-ifc-console mcp-config --client claude-desktop
-ifc-console mcp-config --client cursor
-ifc-console mcp-config --client vscode
 ifc-console mcp-config --client codex
 ```
 
-The default is HTTP for every client. `--transport stdio` is an opt-in for a
-separate client-owned server; see [Standalone stdio](#standalone-stdio).
+Accepted names are `claude-code`, `claude-desktop`, `cursor`, `vscode`, and
+`codex`. Use `/connect all` to display every setup or `/copy <client>` to copy
+one again.
 
-## One-time setup
+## Client instructions
 
-1. Run `ifc-console` and type `/connect <client>`, such as `/connect codex`.
-2. Paste the automatically copied setup into the location shown by the TUI.
-3. Restart or reload that client so it discovers the MCP server.
-4. For future sessions, just run `ifc-console`, pick a model with `/file`, and
-   chat.
-
-The bearer token persists in `~/.ifc-console/token`, so restarting ifc-console or
-opening a different file needs no config change. Re-add the configs only after
-changing the port or running `ifc-console token rotate`.
-
-## Claude Code
+### Claude Code
 
 Run the command printed by `/connect claude-code`:
 
 ```bash
-claude mcp add --transport http --scope user ifc-console \
-  http://127.0.0.1:8383/mcp \
-  --header "Authorization: Bearer <token>"
+claude mcp add --scope user ifc-console -- /path/to/ifc-console bridge
 ```
 
-`--scope user` makes the connection available in every project, not just the
-directory where you added it.
+`--scope user` makes the connection available in every project. The generated
+command uses the absolute executable path so it also works when Claude Code
+does not inherit your shell `PATH`.
 
-## Claude Desktop
-
-Claude Desktop launches local MCP entries over stdio, so the generated config
-uses `mcp-remote` as a small bridge to the shared local HTTP console. This needs
-Node.js 18 or newer with `npx` available.
+### Claude Desktop
 
 Open **Settings > Developer > Edit Config** and add the output from
 `/connect claude-desktop` to `claude_desktop_config.json`:
@@ -71,129 +46,113 @@ Open **Settings > Developer > Edit Config** and add the output from
 {
   "mcpServers": {
     "ifc-console": {
-      "command": "npx",
-      "args": [
-        "-y",
-        "mcp-remote@0.1.38",
-        "http://127.0.0.1:8383/mcp",
-        "--allow-http",
-        "--transport",
-        "http-only",
-        "--header",
-        "Authorization:${IFC_CONSOLE_AUTH_HEADER}"
-      ],
-      "env": {
-        "IFC_CONSOLE_AUTH_HEADER": "Bearer <token>"
-      }
+      "command": "/path/to/ifc-console",
+      "args": ["bridge"]
     }
   }
 }
 ```
 
-Then warm the npx cache once in any terminal:
+Save the file and restart Claude Desktop.
 
-```bash
-npx -y mcp-remote@0.1.38 --help
-```
+### Cursor
 
-Claude Desktop gives a starting server 60 seconds to answer, and the first
-uncached `npx` run downloads `mcp-remote` from the npm registry, which can take
-longer than that. Warming the cache once makes every later launch instant. The
-version is pinned so npx keeps serving the cached install instead of checking
-the registry for a newer release on each launch; the warm-up command must use
-the same pinned version, because npx caches each version spec separately.
-
-Save and restart Claude Desktop. The bridge starts when Claude needs the server;
-the ifc-console console must already be running.
-
-## Cursor
-
-For a connection available in every project, open Cursor's global MCP config at
-`~/.cursor/mcp.json` and add:
+Open the global MCP configuration at `~/.cursor/mcp.json` and add:
 
 ```json
 {
   "mcpServers": {
     "ifc-console": {
-      "url": "http://127.0.0.1:8383/mcp",
-      "headers": {
-        "Authorization": "Bearer <token>"
-      }
+      "command": "/path/to/ifc-console",
+      "args": ["bridge"]
     }
   }
 }
 ```
 
-Restart Cursor or reload its MCP servers after saving.
+Restart Cursor or reload its MCP servers.
 
-## VS Code
+### VS Code
 
-Run **MCP: Open User Configuration** from the Command Palette. User profile
-config keeps the connection available across workspaces. Add:
+Run **MCP: Open User Configuration** from the Command Palette and add:
 
 ```json
 {
   "servers": {
     "ifc-console": {
-      "type": "http",
-      "url": "http://127.0.0.1:8383/mcp",
-      "headers": {
-        "Authorization": "Bearer <token>"
-      }
+      "type": "stdio",
+      "command": "/path/to/ifc-console",
+      "args": ["bridge"]
     }
   }
 }
 ```
 
-Save, then start or restart the server from VS Code's MCP controls.
+Save the file, then start or restart the server from VS Code's MCP controls.
 
-## Codex
+### Codex
 
 Add the output from `/connect codex` to `~/.codex/config.toml`:
 
 ```toml
 [mcp_servers.ifc-console]
-url = "http://127.0.0.1:8383/mcp"
-http_headers = { Authorization = "Bearer <token>" }
+command = "/path/to/ifc-console"
+args = ["bridge"]
 ```
 
-Restart Codex after changing the config. Codex desktop, the CLI, and the IDE
-extension use this shared configuration.
+Restart Codex after changing the configuration. The desktop app, CLI, and IDE
+extension share this file.
 
-An older entry may use `bearer_token_env_var = "IFC_CONSOLE_MCP_TOKEN"`. That names
-an environment variable, not the token itself, and the variable must exist
-before Codex starts. Replacing the entry with `/connect codex` output is simpler
-and avoids a missing-variable 401.
+If an older entry contains `bearer_token_env_var`, replace it with the current
+bridge output. The bridge does not require a token in the client configuration.
 
-## Standalone stdio
+## How the default connection works
 
-Use stdio only when you want the client to start and own a separate ifc-console
-process instead of sharing the console:
+The client starts a small stdio bridge, which forwards requests to the console
+over localhost:
+
+```text
+AI client -> ifc-console bridge -> running console -> active model
+```
+
+This design has three useful properties:
+
+- the client and console can start in either order;
+- several clients can share one model and one terminal-owned mode switch;
+- the client configuration contains no IFC path or bearer token.
+
+The bearer token is stored in `~/.ifc-console/token` and normally persists on
+one machine. Rotate it with `ifc-console token rotate`. You only need to
+regenerate client setups after changing the port, rotating the token, or
+disabling persistent tokens.
+
+Before sending the token, the bridge verifies that the listener on the chosen
+port can prove it is the matching ifc-console process. This protects against an
+unrelated program that happens to occupy the port. Programs running as the same
+OS user can usually read the token file, so the bridge is not an isolation
+boundary between applications owned by that user.
+
+## Alternative transports
+
+The generated bridge setup is recommended for interactive use. Two alternatives
+are available:
+
+| transport | use it when | limitation |
+| --------- | ----------- | ---------- |
+| `bridge` | you want the shared console and flexible start order | starts one small proxy per client |
+| `http` | the console always starts first and you want no proxy | direct configs may contain a token |
+| `stdio` | one client should own a separate server process | it does not share `/file`, the console feed, or viewer |
+
+Generate a specific transport with:
 
 ```bash
-ifc-console mcp-config --client <client> --transport stdio
+ifc-console mcp-config --client <client> --transport http
+ifc-console mcp-config --client <client> --transport stdio --file model.ifc
 ```
 
-To set that server's startup model, add a path:
+!!! warning "Keep HTTP tokens private"
+    A direct HTTP configuration may contain a bearer token. Do not commit it.
+    If it leaks, run `ifc-console token rotate` and regenerate the affected
+    configuration.
 
-```bash
-ifc-console mcp-config --client <client> --transport stdio \
-  --file C:/models/model.ifc
-```
-
-An stdio server does not join the console session, does not follow `/file`, and
-has no bearer token (its transport is a private process pipe).
-
-## Which transport should I use?
-
-| you want | pick |
-| -------- | ---- |
-| switch IFC files without editing client config | shared HTTP |
-| several clients using the same loaded model | shared HTTP |
-| the console mode switch, live feed, and 3D viewer | shared HTTP |
-| no separate terminal and one client-owned process | standalone stdio |
-
-!!! warning "Keep the local token private"
-    The generated HTTP snippets contain a bearer token. Do not commit them to a
-    public repository. If the token leaks, run `ifc-console token rotate` and
-    regenerate the client configs once.
+For connection failures, see [Troubleshooting](troubleshooting.md).

@@ -8,6 +8,7 @@ the model failed a check; the other CLI codes keep their meanings.
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 from xml.sax.saxutils import quoteattr
@@ -25,23 +26,32 @@ def run_check(
     ids_paths: list[Path] | None = None,
     express_rules: bool = False,
     max_issues: int = 200,
+    progress: Callable[[str, int, str], None] | None = None,
 ) -> dict[str, Any]:
     """Open the file directly (no session, no worker) and run every check."""
     import ifcopenshell
 
     from ifc_console.ifc.validation import run_ids_validation, run_schema_validation
 
+    notify = progress or (lambda _phase, _amount, _message: None)
+    notify("open", 10, "opening IFC model")
     ifc = ifcopenshell.open(str(model_path))
+    notify("schema", 25, "validating IFC schema")
     checks: dict[str, Any] = {
         "schema": run_schema_validation(ifc, express_rules=express_rules, max_issues=max_issues)
     }
+    notify("schema", 60, "schema validation completed")
     ids_reports: list[dict[str, Any]] = []
-    for ids_path in ids_paths or []:
+    requirements = ids_paths or []
+    for index, ids_path in enumerate(requirements):
+        amount = 60 + int(30 * index / max(1, len(requirements)))
+        notify("ids", amount, f"validating {ids_path.name}")
         entry = run_ids_validation(ifc, ids_path)
         entry["path"] = str(ids_path)
         ids_reports.append(entry)
     if ids_reports:
         checks["ids"] = ids_reports
+    notify("report", 90, "building validation report")
     return {
         "model": str(model_path),
         "schema": getattr(ifc, "schema", None),
@@ -136,9 +146,7 @@ def _render_sarif(report: dict[str, Any]) -> str:
             "message": {"text": finding["message"]},
             "locations": [
                 {
-                    "physicalLocation": {
-                        "artifactLocation": {"uri": Path(report["model"]).name}
-                    },
+                    "physicalLocation": {"artifactLocation": {"uri": Path(report["model"]).name}},
                     "logicalLocations": [{"name": finding["target"]}],
                 }
             ],
@@ -176,7 +184,9 @@ def _render_junit(report: dict[str, Any]) -> str:
         f'<testsuite name="ifc-console check" tests="{tests}" failures="{len(findings)}">',
     ]
     if not findings:
-        lines.append(f"<testcase classname=\"ifc-console.check\" name={quoteattr(Path(report['model']).name)} />")
+        lines.append(
+            f'<testcase classname="ifc-console.check" name={quoteattr(Path(report["model"]).name)} />'
+        )
     for finding in findings:
         classname = quoteattr(f"ifc-console.{finding['rule']}")
         lines.append(f"<testcase classname={classname} name={quoteattr(finding['target'])}>")

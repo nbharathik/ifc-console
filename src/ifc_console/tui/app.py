@@ -79,6 +79,13 @@ class IfcConsoleApp(App):
         self._server = None
         self._server_task: asyncio.Task | None = None
         self._unsubscribe = None
+        # Direct embedders and tests construct the TUI without going through
+        # the CLI's warm-up path. Start the same import warm-up as soon as the
+        # fully constructed core reaches the app, before Textual mounts.
+        from ifc_console import preload
+
+        preload.start()
+        preload.release()
 
     # -- lifecycle ----------------------------------------------------------------
     async def on_mount(self) -> None:
@@ -86,6 +93,7 @@ class IfcConsoleApp(App):
             self.register_theme(theme)
         self.apply_theme(self.core.ui_theme)
         self.core.start_audit()
+        self.core.start_knowledge()
         self._unsubscribe = self.core.events.subscribe(self._on_event)
         await self.push_screen(ConsoleScreen())
 
@@ -137,14 +145,18 @@ class IfcConsoleApp(App):
         app = build_http_app(self.core, mcp)
         self._server = make_uvicorn_server(app, port)
         self._server_task = asyncio.create_task(self._serve())
-        for _ in range(100):  # wait up to ~5s for the port to come up
+        # ~5 s budget. The first ticks are short because a loopback server is
+        # usually up in about 10 ms, and create_task means the first check runs
+        # before _serve has executed a single line.
+        for attempt in range(280):
+            await asyncio.sleep(0.002 if attempt < 50 else 0.02)
             if getattr(self._server, "started", False):
                 self.core.server_running = True
+                self.core.server_error = None
                 self.core.events.emit("server_started", url=self.core.mcp_url, port=port)
                 return True
             if self._server_task.done():
                 break
-            await asyncio.sleep(0.05)
         exc = self._server_task.exception() if self._server_task.done() else None
         if exc is not None:
             reason = str(exc)
@@ -159,6 +171,7 @@ class IfcConsoleApp(App):
                 reason = f"port {port} is in use by {detail}; {conflict_hint(kind, port)}"
         self._server = None
         self._server_task = None
+        self.core.server_error = reason
         self.core.events.emit("server_failed", reason=reason, port=port)
         return False
 

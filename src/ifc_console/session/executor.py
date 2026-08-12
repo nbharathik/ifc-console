@@ -48,9 +48,9 @@ def run(compiled: CompiledCode, namespace: dict[str, Any], *, output_limit: int)
     buffer = io.StringIO()
     result: Any = None
     with contextlib.redirect_stdout(buffer):
-        exec(compiled.body, namespace)  # noqa: S102 - this is the product
+        exec(compiled.body, namespace)  # nosec B102  # noqa: S102
         if compiled.last_expr is not None:
-            result = eval(compiled.last_expr, namespace)  # noqa: S307
+            result = eval(compiled.last_expr, namespace)  # nosec B307  # noqa: S307
     stdout = buffer.getvalue()
     truncated = len(stdout) > output_limit
     if truncated:
@@ -70,6 +70,12 @@ def format_traceback(exc: BaseException, max_frames: int = 3) -> str:
     """Trimmed traceback: header + last frames, paths redacted to basenames."""
     frames = traceback.format_exception(type(exc), exc, exc.__traceback__)
     if len(frames) > max_frames + 1:
-        frames = [frames[0], f"  …[{len(frames) - max_frames - 1} frames hidden]…\n", *frames[-max_frames:]]
+        frames = [
+            frames[0],
+            f"  …[{len(frames) - max_frames - 1} frames hidden]…\n",
+            *frames[-max_frames:],
+        ]
     text = "".join(frames)
-    return _FILE_LINE.sub(lambda m: f'File "{m.group(1).replace(chr(92), "/").rsplit("/", 1)[-1]}"', text)
+    return _FILE_LINE.sub(
+        lambda m: f'File "{m.group(1).replace(chr(92), "/").rsplit("/", 1)[-1]}"', text
+    )

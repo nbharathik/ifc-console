@@ -28,28 +28,68 @@ import ifcopenshell.util.element
 import ifcopenshell.util.selector
 import ifcopenshell.util.unit
 
+from ifc_console.sandbox.policy import is_sensitive_generated_path
+
 
 class GuardError(RuntimeError):
     """A runtime guard blocked the operation."""
 
 
 SAFE_IMPORT_ROOTS = {
-    "math", "json", "re", "csv", "itertools", "functools", "collections",
-    "statistics", "datetime", "textwrap", "uuid", "string", "fractions",
-    "decimal", "heapq", "bisect", "enum", "dataclasses", "typing", "pprint",
-    "unicodedata", "operator", "copy", "io", "ifcopenshell",
+    "math",
+    "json",
+    "re",
+    "csv",
+    "itertools",
+    "functools",
+    "collections",
+    "statistics",
+    "datetime",
+    "textwrap",
+    "uuid",
+    "string",
+    "fractions",
+    "decimal",
+    "heapq",
+    "bisect",
+    "enum",
+    "dataclasses",
+    "typing",
+    "pprint",
+    "unicodedata",
+    "operator",
+    "copy",
+    "io",
+    "ifcopenshell",
 }
 
 _REMOVED_BUILTINS = {
-    "exec", "eval", "compile", "input", "breakpoint", "exit", "quit", "help",
-    "open", "__import__",
+    "exec",
+    "eval",
+    "compile",
+    "input",
+    "breakpoint",
+    "exit",
+    "quit",
+    "help",
+    "open",
+    "__import__",
 }
 
 # Attributes of the model file object blocked while mutation is locked.
 BLOCKED_FILE_ATTRS = {
-    "create_entity", "add", "remove", "batch", "unbatch", "assign_inverse",
-    "unassign_inverse", "write", "wrapped_data", "begin_transaction",
-    "end_transaction", "discard_transaction",
+    "create_entity",
+    "add",
+    "remove",
+    "batch",
+    "unbatch",
+    "assign_inverse",
+    "unassign_inverse",
+    "write",
+    "wrapped_data",
+    "begin_transaction",
+    "end_transaction",
+    "discard_transaction",
 }
 
 # io stays importable (StringIO/BytesIO are legitimate query tools), but its
@@ -90,6 +130,41 @@ class RaisingProxy:
 
     def __repr__(self) -> str:
         return f"<blocked: {object.__getattribute__(self, '_label')}>"
+
+
+class ApiModule:
+    """ifcopenshell.api with its submodules resolved on first use.
+
+    The real package imports submodules lazily, so `ifc_api.pset` is an
+    AttributeError until something imports it. Generated code (and every
+    example in the docs) expects the attribute to work, so resolve it here.
+    """
+
+    def __init__(self, real: Any) -> None:
+        object.__setattr__(self, "_real", real)
+
+    def __getattr__(self, name: str) -> Any:
+        real = object.__getattribute__(self, "_real")
+        try:
+            return getattr(real, name)
+        except AttributeError:
+            pass
+        if name.startswith("_"):
+            raise AttributeError(name)
+        import importlib
+
+        try:
+            return importlib.import_module(f"ifcopenshell.api.{name}")
+        except ImportError as exc:
+            raise AttributeError(
+                f"ifcopenshell.api has no module {name!r}; get_api_docs() lists them"
+            ) from exc
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        raise GuardError("modifying modules is blocked in execute_ifc_code")
+
+    def __repr__(self) -> str:
+        return "<ifcopenshell.api>"
 
 
 class ModuleShim:
@@ -179,13 +254,11 @@ def entity_mutation_lock(enabled: bool = True) -> Iterator[None]:
     orig_setitem = cls.__setitem__
     orig_file = cls.file
 
-    def blocked_setattr(self: Any, name: str, value: Any) -> None:
+    def blocked_setattr(_self: Any, _name: str, _value: Any) -> None:
         raise GuardError(_ENTITY_LOCKED_MSG.format(what="assigning entity attributes"))
 
-    def blocked_setitem(self: Any, idx: Any, value: Any) -> None:
-        raise GuardError(
-            _ENTITY_LOCKED_MSG.format(what="assigning entity attributes by index")
-        )
+    def blocked_setitem(_self: Any, _idx: Any, _value: Any) -> None:
+        raise GuardError(_ENTITY_LOCKED_MSG.format(what="assigning entity attributes by index"))
 
     cls.__setattr__ = blocked_setattr
     cls.__setitem__ = blocked_setitem
@@ -198,18 +271,60 @@ def entity_mutation_lock(enabled: bool = True) -> Iterator[None]:
         cls.file = orig_file
 
 
+@contextlib.contextmanager
+def model_write_lock(enabled: bool = True) -> Iterator[None]:
+    """Block raw ``ifcopenshell.file.write`` while AI persistence is off.
+
+    Edit-mode code still receives the real model so every in-memory mutation
+    API keeps working. Patching only ``write`` closes direct ``ifc.write`` and
+    entity ``.file.write`` routes without affecting viewer ``to_string``.
+    """
+    if not enabled:
+        yield
+        return
+    cls = ifcopenshell.file
+    original = cls.write
+
+    def blocked_write(_self: Any, *_args: Any, **_kwargs: Any) -> None:
+        raise GuardError(
+            "writing an IFC file is disabled by files.allow_ai_save; changes "
+            "remain in memory until the user runs /save"
+        )
+
+    cls.write = blocked_write
+    try:
+        yield
+    finally:
+        cls.write = original
+
+
+def _normalized(path: Path) -> str:
+    try:
+        resolved = os.path.realpath(os.fspath(path))
+    except (OSError, TypeError, ValueError):
+        resolved = os.path.abspath(os.fspath(path))
+    return os.path.normcase(os.path.abspath(resolved))
+
+
 def _inside_any(path: Path, roots: list[Path]) -> bool:
+    normalized = _normalized(path)
     for root in roots:
         try:
-            path.relative_to(root)
-            return True
+            common = os.path.commonpath((normalized, _normalized(root)))
         except ValueError:
             continue
+        if common == _normalized(root):
+            return True
     return False
 
 
-def make_open_guard(allowed_dirs: list[Path], allow_system: bool) -> Callable:
+def make_open_guard(
+    allowed_dirs: list[Path],
+    allow_system: bool,
+    deny_dirs: list[Path] | None = None,
+) -> Callable:
     real_open = _builtins.open
+    denied = list(deny_dirs or ())
 
     def guarded_open(file: Any, mode: str = "r", *args: Any, **kwargs: Any):
         if allow_system:
@@ -220,9 +335,16 @@ def make_open_guard(allowed_dirs: list[Path], allow_system: bool) -> Callable:
                 "save_ifc_file for model output, or ask the user for system access."
             )
         try:
-            p = Path(os.fspath(file)).resolve()
+            raw_path = Path(os.fspath(file))
+            p = raw_path.resolve()
         except TypeError as exc:
             raise GuardError("only path-based, read-mode open() is allowed") from exc
+        if (
+            is_sensitive_generated_path(raw_path)
+            or is_sensitive_generated_path(p)
+            or _inside_any(p, denied)
+        ):
+            raise GuardError(f"reading {p} is blocked: it may contain credentials")
         if not _inside_any(p, allowed_dirs):
             allowed = ", ".join(str(r) for r in allowed_dirs) or "(none)"
             raise GuardError(f"reading {p} is outside the allowed directories: {allowed}")
@@ -287,12 +409,11 @@ def build_namespace(
     allow_system: bool,
     allowed_dirs: list[Path],
     extra_system_modules: tuple[str, ...] = (),
+    deny_dirs: list[Path] | None = None,
 ) -> dict[str, Any]:
     """Fresh globals dict for one execute_ifc_code run."""
-    ns_builtins = {
-        k: v for k, v in vars(_builtins).items() if k not in _REMOVED_BUILTINS
-    }
-    ns_builtins["open"] = make_open_guard(allowed_dirs, allow_system)
+    ns_builtins = {k: v for k, v in vars(_builtins).items() if k not in _REMOVED_BUILTINS}
+    ns_builtins["open"] = make_open_guard(allowed_dirs, allow_system, deny_dirs)
     ns_builtins["__import__"] = make_import_guard(
         allow_system=allow_system,
         allow_mutation=allow_mutation,
@@ -302,7 +423,7 @@ def build_namespace(
     if allow_mutation:
         ifc_obj: Any = ifc_file
         ifcos: Any = ifcopenshell
-        api_obj: Any = ifcopenshell.api
+        api_obj: Any = ApiModule(ifcopenshell.api)
     else:
         ifc_obj = GuardedFile(ifc_file) if ifc_file is not None else None
         ifcos = ModuleShim(ifcopenshell, _LOCKED_MODULE_BLOCKS)

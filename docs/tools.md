@@ -1,273 +1,229 @@
-# MCP tools reference
+# MCP tools
 
-Every tool returns one JSON envelope:
+Use `/tools ai` for the live tool list and exact input schemas. It reflects the
+current mode, plugins, and viewer state. This page explains what each built-in
+tool is for.
 
-```json
-{ "ok": true, "data": { ... }, "meta": { "mode": "ask", "model": "x.ifc",
-  "schema": "IFC4", "dirty": false, "fingerprint": "ab12..." } }
-```
+Start a new session with `orient`, then use narrower tools as needed.
 
-The envelope arrives twice: as machine-readable `structuredContent` (every
-tool advertises the envelope as its `outputSchema`) and as the same JSON in
-the text block for clients that only read text. Cached heavy reads carry
-`meta.cached: true`.
+## Response format
 
-Failures are never protocol errors. They come back as data the LLM can act on:
+Every tool returns the same envelope:
 
 ```json
-{ "ok": false, "error": { "code": "ASK_MODE_BLOCKED",
-  "message": "...", "hint": "Ask the user to run /mode edit..." },
-  "meta": { ... } }
+{"ok": true, "data": {}, "meta": {"mode": "ask", "model": "x.ifc"}}
 ```
 
-Oversized results are truncated with `meta.truncated: true` and a note telling
-the model to narrow the query.
+Failures return data rather than protocol errors:
 
-## Query tools
+```json
+{"ok": false, "error": {"code": "ASK_MODE_BLOCKED", "message": "...", "hint": "..."}}
+```
 
-### get_session_status
+Large results may set `meta.truncated=true`. Narrow the query or use pagination.
+`get_viewer_screenshot` is the only tool that returns image content instead of
+the normal structured envelope.
 
-No arguments. Server version, loaded model (name, path, schema, size), mode,
-dirty flag, and viewer state (enabled, connected tab count, URL).
+## Model queries
 
-### orient
+| tool | main input | result |
+| ---- | ---------- | ------ |
+| `get_session_status` | none | version, model, mode, dirty state, and viewer status |
+| `orient` | none | status, project summary, and a shallow spatial tree |
+| `describe_capabilities` | none | live tools, permissions, and examples |
+| `get_ifc_project_info` | optional `model` | schema, units, project counts, materials, classifications, and header data |
+| `get_spatial_structure` | root, depth, counts | Project to Site to Building to Storey to Space tree |
+| `query_elements` | selector, limit, offset, fields, order | paged element summaries |
+| `get_element` | up to 50 GlobalIds | attributes, properties, quantities, materials, type, and container |
+| `get_psets` | up to 100 GlobalIds | property and quantity sets only |
+| `get_schema_docs` | entity, pset, or property | schema definitions; works without an open model |
 
-No arguments. One-call orientation: session status, the project summary, and
-the spatial tree to depth 2, in a single round-trip. The recommended first
-call on a fresh connection.
+`query_elements` uses IfcOpenShell selector syntax:
 
-### describe_capabilities
+```text
+IfcWall
+IfcWall, IfcSlab
+IfcWall, material=concrete
+IfcWall, Pset_WallCommon.FireRating=F30
+IfcElement, Name=/W.*1/
+```
 
-No arguments. The live tool list with one-line purposes, the current mode and
-what it permits, viewer state, and worked examples. The tool surface changes
-at runtime (the viewer category comes and goes), so this is the ground truth.
+The default page size is 50. Syntax errors return `INVALID_QUERY` with a short
+selector guide.
 
-### get_ifc_project_info
+Model-reading tools such as project info, spatial structure, element queries,
+validation, quantities, clashes, and georeferencing accept an optional resident
+`model` ID. Omit it to use the active model.
 
-No arguments. Schema, project name/description, units, counts of
-sites/buildings/storeys/spaces, entity counts for common classes, top materials
-and classifications, authoring-tool header info.
+## Knowledge
 
-### get_spatial_structure
+The knowledge index is local and built from the installed IfcOpenShell package.
 
-| arg | type | default |
-| --- | ---- | ------- |
-| `root_global_id` | str or null | project root |
-| `depth` | int 1-20 | 10 |
-| `include_element_counts` | bool | true |
+| tool | use |
+| ---- | --- |
+| `search_ifc_knowledge` | search entities, property sets, properties, types, APIs, and recipes |
+| `get_knowledge_record` | read one result by its returned key |
+| `get_api_docs` | get an exact `ifcopenshell.api` signature or search API names |
 
-The containment tree (Project > Site > Building > Storey > Space) with direct
-element counts per node.
+`search_ifc_knowledge` accepts plain words, an optional kind and schema, and a
+result limit. See [Knowledge index](knowledge.md).
 
-### query_elements
+## Analysis
 
-| arg | type | default |
-| --- | ---- | ------- |
-| `query` | selector string | required |
-| `limit` / `offset` | int | 50 / 0 |
-| `fields` | list | name, storey, type_name |
-| `order_by` | class, name, storey | class |
+| tool | key inputs | result |
+| ---- | ---------- | ------ |
+| `validate_model` | `express_rules=false`, `max_issues=200` | schema validity and grouped issues |
+| `validate_ids` | IDS path, failure limit | buildingSMART IDS results; needs the validation extra |
+| `compute_quantities` | selector, grouping, quantity names | stored `Qto_*` totals in model units |
+| `detect_clashes` | two selectors, tolerance, precision, optional model IDs | overlap or clearance pairs |
+| `get_georeferencing` | none | CRS, map conversion, and north directions |
+| `export_csv` | selector, path, fields, properties | audited CSV report inside an allowed directory |
 
-IfcOpenShell selector syntax, one summary row per element. Examples:
-`IfcWall` · `IfcWall, IfcSlab` · `IfcWall, material=concrete` ·
-`IfcWall, Pset_WallCommon.FireRating=F30` · `IfcElement, Name=/W.*1/`.
-Syntax errors return `INVALID_QUERY` plus a cheat sheet in `data`.
+Clash precision choices:
 
-### get_element
+- `sampled` (default) checks triangle meshes and estimates overlap;
+- `fast` uses bounding boxes and may report false positives;
+- clearance always measures bounding-box gaps.
 
-Up to 50 GlobalIds. `include` selects sections from attributes, psets, qtos,
-materials, type, container, openings, decomposition. Missing ids are reported,
-not fatal.
+Openings, spaces, grids, annotations, and virtual elements are skipped unless
+`physical_only=false`. Cross-model checks use `model` and `other_model`.
 
-### get_psets
+## Jobs and artifacts
 
-Up to 100 GlobalIds. `psets_only` / `qtos_only` filters. Lighter than
-`get_element` when only property sets matter.
+Use jobs for validation that should not block a client connection.
 
-### get_schema_docs
+```text
+submit_validation_job -> get_job -> artifact metadata
+                              \-> cancel_job
+```
 
-`entity` (e.g. `IfcWall`) and optional `attribute`. Official schema
-documentation: definition, attribute table with types and optionality,
-supertype chain, predefined types. Works with no model loaded (defaults to
-IFC4).
+| tool | use |
+| ---- | --- |
+| `submit_validation_job` | start schema and optional IDS validation in a restricted worker |
+| `get_job` | read state, phase, progress, events, failures, and artifacts |
+| `list_jobs` | list recent durable jobs |
+| `cancel_job` | request cancellation before a transaction commit point |
+| `list_artifacts` | list content-addressed output metadata |
+| `get_artifact` | verify one artifact's metadata |
 
-## Analysis tools
+Validation jobs require a clean model because the worker verifies the file on
+disk. MCP returns artifact metadata only; export bytes through the SDK or
+`ifc-console artifacts export`.
 
-### validate_model
+## Structured change previews
 
-| arg | type | default |
-| --- | ---- | ------- |
-| `express_rules` | bool | false |
-| `max_issues` | int 1-2000 | 200 |
+```text
+AI tool: preview -> inspect ChangeSet
+Human SDK/CLI: approve -> commit -> optional restore
+```
 
-Schema validation via the bundled IfcOpenShell validator: pass/fail, issue
-counts by class and severity, and the first `max_issues` issues with entity
-ids. `express_rules` adds the EXPRESS where-rules (much slower on big models).
+| tool | use |
+| ---- | --- |
+| `preview_property_change` | preview one property value across selected elements |
+| `preview_classification_assignment` | preview a direct classification assignment |
+| `get_change_set` | inspect a stored revision-bound ChangeSet |
 
-### validate_ids
+Previewing changes does not modify the model. AI-visible tools cannot approve,
+commit, restore, or change the mode. Those actions remain direct SDK and CLI
+operations.
 
-| arg | type | default |
-| --- | ---- | ------- |
-| `ids_path` | path to an IDS XML file | required |
-| `max_failures` | int 1-500 | 50 |
+Property creation requires `create_missing=true`. Set `nominal_type` when the
+exact IFC value type cannot be inferred.
 
-Checks the model against a buildingSMART IDS (Information Delivery
-Specification): per-specification pass/fail with the failing GlobalIds and
-the reason each requirement failed. Needs the optional `ifctester` package
-(`pip install 'ifc-console[validation]'`); without it the error hint explains
-the install.
+## Generated Python
 
-### compute_quantities
+### `execute_ifc_code`
 
-| arg | type | default |
-| --- | ---- | ------- |
-| `selector` | selector string | required |
-| `aggregate_by` | class, type, storey, material, none | class |
-| `quantities` | list of quantity names | all numeric |
+Inputs:
 
-Quantity takeoff from stored quantity sets (`Qto_*`): per-group sums and
-grand totals with the model's units. Elements without stored quantities are
-counted and reported; a geometry fallback is planned as an opt-in step.
+- `code`: Python source;
+- `description`: a short intent recorded in the activity feed and audit log.
 
-### get_georeferencing
+The environment provides `ifc`, `ifcopenshell`, `ifc_api`, common IfcOpenShell
+utilities, `query(selector)`, and `get_ifc_file()`.
 
-No arguments. Coordinate reference system, map conversion parameters, true
-and grid north. Answers "where is this model really".
+Query code runs in `ask` or `edit`. Mutating code requires `edit`. Eligible
+read-only code uses the sandbox; the response reports `sandboxed` and explains
+any fallback. See [Safety](safety.md) and [Code sandbox](sandbox.md).
 
-### export_csv
+The result includes stdout, the final expression, classification, mutation
+state, sandbox state, duration, and any note.
 
-| arg | type | default |
-| --- | ---- | ------- |
-| `selector` | selector string | required |
-| `path` | target path ending in `.csv` | required |
-| `fields` | list | name, storey, type_name |
-| `properties` | dotted pset columns, e.g. `Pset_WallCommon.FireRating` | [] |
-| `limit` | int 1-100000 | 10000 |
-| `overwrite` | bool | false |
+## Files and workspace
 
-Writes query results to a CSV file. Allowed in ask mode: writing a report
-file is not editing the model. The path must lie inside the allowed
-directories, and every write is audited (`artifact_write`).
+| tool | use |
+| ---- | --- |
+| `list_ifc_files` | list IFC files in allowed directories and recents |
+| `open_ifc_file` | replace the active model; refuses unsaved changes |
+| `save_ifc_file` | atomic save with backup; requires edit mode and AI-save opt-in |
+| `find_files` | search supported files without opening them |
+| `list_models` | list resident models, companion files, and memory budget |
+| `attach` | add a read-only IFC or companion IDS, BCF, or CSV |
+| `detach` | release an attachment; refuses dirty models |
+| `set_active_model` | move the writable focus to another resident model |
 
-## Execution
+Only the active model is writable. Attached IFC files remain read-only.
+`detect_clashes` can compare two resident models, and `validate_ids` accepts an
+attached IDS alias.
 
-### execute_ifc_code
+Paths must stay inside the launch directory, model directory, or an explicitly
+allowed root.
 
-| arg | type | notes |
-| --- | ---- | ----- |
-| `code` | str | Python source; no `bpy`, this is not Blender |
-| `description` | str <= 200 chars | one-line intent, shown in the terminal and audit log |
+## Viewer tools
 
-Runs Python against the loaded model with `ifc`, `ifcopenshell`, `ifc_api`,
-`element_util`, `selector_util`, `unit_util`, `query(sel)`, and `get_ifc_file()`
-pre-injected. stdout is captured; a final bare expression is returned like a
-REPL. Gating per the [safety model](safety.md). Output fields: `stdout`,
-`result`, `classification`, `mutated`, `duration_ms`. Errors:
-`ASK_MODE_BLOCKED`, `EXEC_BLOCKED`, `EXEC_ERROR` (with traceback),
-`EXEC_TIMEOUT`.
+These tools exist only while the optional viewer is enabled and a browser tab
+is connected.
 
-## Files
+| tool | use |
+| ---- | --- |
+| `get_viewer_selection` | read the user's selected elements |
+| `highlight_elements` | color, isolate, clear, or frame up to 500 elements |
+| `apply_color_theme` | paint labeled groups and show a legend |
+| `get_viewer_screenshot` | capture a preset or current view as JPEG or PNG |
 
-### list_ifc_files
-
-Optional `dir`, `recursive`, `limit`. IFC files in the allowed directories plus
-recents: path, size, mtime, schema (peeked cheaply), recent flag.
-
-### open_ifc_file
-
-`path`. Replaces the loaded model (the user sees the switch in their terminal).
-Works in both modes: opening is reading, not editing. Refuses if the current
-model has unsaved changes (`UNSAVED_CHANGES`) and enforces allowed directories.
-
-### save_ifc_file
-
-Optional `output_path` (save-as) and `overwrite`. Atomic write, automatic
-timestamped backup of anything replaced, clears the dirty flag. Refused in ask
-mode (`ASK_MODE_BLOCKED`). Output: `path`, `size_bytes`, `backup_path`,
-`fingerprint`.
-
-## Viewer (optional category)
-
-The viewer is not part of the core surface. These three tools are **registered
-only while the viewer is enabled** (`--viewer` at launch or `/viewer` in the
-console). Enable it mid-session and they join the tool list live; `/viewer off`
-removes them (clients pick up the change on their next tool refresh). Sessions
-without the viewer, including all stdio sessions, expose exactly the 11 core
-tools above.
-
-When registered, all four still need a connected browser tab, or they return
-`VIEWER_NOT_CONNECTED` with a hint on how to start one.
-
-### get_viewer_selection
-
-No arguments. GlobalIds the user click-selected, one summary row each,
-`selected_at` timestamp. The human's way of pointing at things.
-
-### highlight_elements
-
-| arg | type | default |
-| --- | ---- | ------- |
-| `global_ids` | list <= 500 | [] |
-| `color` | `#rrggbb` | `#ff3b30` |
-| `isolate` | bool | false |
-| `fit` | bool | true |
-| `clear` | bool | false |
-
-Colors elements in the user's browser. `isolate` hides everything else; `clear`
-resets. Allowed in every mode (visual only).
-
-### apply_color_theme
-
-| arg | type | default |
-| --- | ---- | ------- |
-| `groups` | list of `{label, global_ids, color?}` (max 24) | required unless clearing |
-| `title` | str <= 80 | "" |
-| `clear` | bool | false |
-
-Paints elements by group with a legend: the LLM computes the grouping (by
-storey, type, material, a pset value, pass/fail), the viewer colors it, the
-user reads it. Groups without an explicit `color` get colorblind-safe palette
-colors; the legend always carries labels and counts, so meaning never rides
-on color alone. Late-joining tabs receive the active theme automatically.
-
-### get_viewer_screenshot
-
-| arg | type | default |
-| --- | ---- | ------- |
-| `view` | top, bottom, front, back, left, right, iso, current | current |
-| `fit` | all, selection, highlighted | none |
-| `max_size` | int 64-2048 | 800 |
-| `format` | jpeg, png | jpeg |
-| `quality` | int 1-100 | 85 |
-
-Captures the canvas and returns it inline as MCP image content plus a text note.
-Errors: `VIEWER_TIMEOUT` (10 s), `VIEWER_ERROR`, `RESULT_TOO_LARGE`.
+All viewer tools are visual and allowed in either mode. See [3D viewer](viewer.md).
 
 ## Error codes
 
+Every failure includes a `hint`. The table groups codes with the same recovery.
+
 | code | meaning |
 | ---- | ------- |
-| `NO_MODEL_LOADED` | open a model first (`list_ifc_files` + `open_ifc_file`, or /file) |
-| `FILE_NOT_FOUND` / `FILE_EXISTS` | path problems on open/save |
-| `PATH_NOT_ALLOWED` | outside the allowed directories |
-| `UNSAVED_CHANGES` | refusing to drop unsaved work |
-| `INVALID_INPUT` / `INVALID_QUERY` | bad arguments; query errors include a cheat sheet |
-| `ASK_MODE_BLOCKED` | mutation or save attempted in ask mode; the AI should ask for /mode edit |
-| `EXEC_BLOCKED` / `EXEC_ERROR` / `EXEC_TIMEOUT` | code run gated, failed, or timed out |
-| `MODEL_BUSY` | session paused after a timeout; user reloads |
-| `MODEL_TOO_LARGE` | over the `files.max_open_mb` (or viewer) size budget |
-| `EXTRA_NOT_INSTALLED` | an optional package is needed; the hint names the install |
-| `VIEWER_NOT_CONNECTED` / `VIEWER_TIMEOUT` / `VIEWER_ERROR` | viewer tools without a healthy tab |
-| `RESULT_TOO_LARGE` | narrow the request |
-| `INTERNAL_ERROR` | a bug; the audit log has details |
+| `APPROVAL_MISMATCH` / `APPROVAL_NOT_FOUND` / `APPROVAL_REQUIRED` | approval is missing or does not match the ChangeSet |
+| `ARTIFACT_CORRUPT` / `ARTIFACT_NOT_FOUND` / `ARTIFACT_EXPORT_FAILED` | artifact is missing, invalid, or cannot be exported |
+| `ARTIFACT_GC_CONFLICT` / `ARTIFACT_GC_FAILED` / `ARTIFACT_STORE_BUSY` / `ARTIFACT_STORE_CORRUPT` | artifact storage or collection failed safely |
+| `ASK_MODE_BLOCKED` / `AI_SAVE_DISABLED` / `CAPABILITY_DENIED` | current mode, save policy, or authority does not allow the operation |
+| `BATCH_NOT_FOUND` / `BATCH_NOT_RESUMABLE` / `BATCH_SERVICE_CLOSED` / `BATCH_STORE_FAILED` / `BATCH_SOURCE_CHANGED` / `BATCH_TIMEOUT` | batch is unavailable, stale, or failed |
+| `CHANGESET_INVALID` / `CHANGESET_NOT_FOUND` | ChangeSet is invalid or unknown |
+| `CHAT_FAILED` | provider, stream, or chat tool loop failed |
+| `COMMIT_FAILED` / `COMMIT_NOT_FOUND` | commit failed or is unknown |
+| `CONSOLE_AUTH_FAILED` / `CONSOLE_NOT_RUNNING` | bridge cannot authenticate to or reach the console |
+| `EXEC_BLOCKED` / `EXEC_ERROR` / `EXEC_TIMEOUT` | generated code was denied, failed, or timed out |
+| `EXTRA_NOT_INSTALLED` | an optional dependency is missing |
+| `FILE_EXISTS` / `FILE_NOT_FOUND` | destination exists or source is missing |
+| `INTERNAL_ERROR` | unexpected product error; inspect local logs |
+| `INVALID_INPUT` / `INVALID_OUTPUT` / `INVALID_QUERY` | arguments, output, or selector syntax is invalid |
+| `JOB_CANCELLED` / `JOB_NOT_CANCELLABLE` / `JOB_NOT_FOUND` / `JOB_RESULT_INVALID` / `JOB_SPEC_INVALID` / `JOB_SERVICE_CLOSED` / `JOB_WORKER_FAILED` / `JOB_TIMEOUT` | durable job was cancelled, unavailable, invalid, or failed |
+| `KNOWLEDGE_DISABLED` / `KNOWLEDGE_NOT_READY` | knowledge search is disabled or still building |
+| `MODEL_BUSY` | timed-out model worker requires `/reload` |
+| `MODEL_NOT_FOUND` / `NO_MODEL_LOADED` / `MODEL_READ_ONLY` / `MODEL_TOO_LARGE` | requested model is missing, read-only, or over budget |
+| `NOT_FOUND` / `PROPERTY_NOT_FOUND` / `NO_GEOMETRY` / `NO_MATCH` | requested data or usable geometry was not found |
+| `PATH_NOT_ALLOWED` | path is outside allowed directories |
+| `RESTORE_CONFLICT` / `RESTORE_NOT_FOUND` | restore is stale or unknown |
+| `RESULT_TOO_LARGE` / `TOO_MANY_ELEMENTS` | narrow the request |
+| `REVISION_CONFLICT` / `SOURCE_CHANGED` | source changed after planning |
+| `SANDBOX_UNAVAILABLE` | strict sandbox worker is unavailable |
+| `TRANSACTION_INTERRUPTED` / `TRANSACTION_RECOVERY_REQUIRED` / `TRANSACTION_JOURNAL_BUSY` / `TRANSACTION_JOURNAL_CORRUPT` / `TRANSACTION_JOURNAL_INVALID` | transaction stopped or its journal needs recovery |
+| `UNSAVED_CHANGES` | operation would discard dirty model state |
+| `VALIDATION_FAILED` | validation could not complete |
+| `VIEWER_ERROR` / `VIEWER_NOT_CONNECTED` / `VIEWER_TIMEOUT` | viewer is unavailable or failed to answer |
+| `WORKFLOW_CANCELLED` / `WORKFLOW_NOT_FOUND` / `WORKFLOW_NOT_RESUMABLE` / `WORKFLOW_DEPENDENCY_FAILED` / `WORKFLOW_STEP_FAILED` / `WORKFLOW_SUPERVISOR_FAILED` / `WORKFLOW_INPUT_EMPTY` / `WORKFLOW_INPUT_LIMIT` / `WORKFLOW_INTERRUPTED` / `WORKFLOW_TIMEOUT` / `WORKFLOW_MANIFEST_INVALID` / `WORKFLOW_MANIFEST_TOO_LARGE` / `WORKFLOW_PATH_INVALID` / `WORKFLOW_SERVICE_CLOSED` / `WORKFLOW_STORE_CORRUPT` / `WORKFLOW_STORE_FAILED` / `WORKFLOW_SOURCE_CHANGED` | workflow is invalid, stale, unavailable, or failed |
+| `WORKSPACE_BUDGET` / `WORKSPACE_DISABLED` | workspace indexing is disabled or over budget |
 
 ## Resources and prompts
 
-Beyond tools, the server exposes MCP **resources**, JSON views clients can
-attach as ambient context: `ifc://model/summary`, `ifc://model/spatial-tree`,
-`ifc://session/audit`, and the template `ifc://element/{global_id}`.
+Resources: `ifc://model/summary`, `ifc://model/spatial-tree`,
+`ifc://session/audit`, and `ifc://element/{global_id}`.
 
-It also ships a small **prompt library**, guided workflows that appear as
-slash-command-style prompts in capable clients: `model_audit`, `qto_report`,
-`explain_element`, `find_unclassified`, `validate_against_ids`, and
-`selector_help`.
+Prompts: `model_audit`, `qto_report`, `explain_element`, `find_unclassified`,
+`validate_against_ids`, and `selector_help`.

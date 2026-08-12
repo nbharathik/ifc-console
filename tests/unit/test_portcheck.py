@@ -6,6 +6,7 @@ import http.server
 import json
 import socket
 import threading
+from urllib.parse import parse_qs, urlsplit
 
 from ifc_console.portcheck import (
     FOREIGN,
@@ -64,9 +65,7 @@ def test_silent_socket_is_foreign() -> None:
 
 
 def test_foreign_http_server_identified() -> None:
-    server = http.server.HTTPServer(
-        ("127.0.0.1", 0), http.server.BaseHTTPRequestHandler
-    )
+    server = http.server.HTTPServer(("127.0.0.1", 0), http.server.BaseHTTPRequestHandler)
     port = server.server_address[1]
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -77,6 +76,44 @@ def test_foreign_http_server_identified() -> None:
         thread.join(timeout=5)
     assert kind == FOREIGN
     assert "not ifc-console" in detail
+
+
+def test_spoofed_identity_never_receives_the_bearer_token() -> None:
+    seen_authorization: list[str | None] = []
+
+    class Spoof(http.server.BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            seen_authorization.append(self.headers.get("Authorization"))
+            nonce = parse_qs(urlsplit(self.path).query).get("nonce", [""])[0]
+            body = json.dumps(
+                {
+                    "name": "ifc-console",
+                    "port": self.server.server_address[1],
+                    "nonce": nonce,
+                    "proof": "00" * 32,
+                }
+            ).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, _format, *_args) -> None:
+            return
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), Spoof)
+    port = server.server_address[1]
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        kind, _detail = port_status(port, "super-secret-token")
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    assert kind == IFC_CONSOLE_OTHER
+    assert seen_authorization == [None]
 
 
 # ---------------------------------------------------------------------- hints

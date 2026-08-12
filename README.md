@@ -8,10 +8,13 @@
   </a>
 </p>
 
-**A terminal interface to connect IFC files to LLMs.** `ifc-console` loads
-your model with IfcOpenShell and serves it over MCP, so any LLM client
-(Claude Code, Claude Desktop, Cursor, VS Code, Codex) can query and edit it,
-while you stay in control from your terminal. No Blender, no host app.
+**A terminal interface that connects IFC files to LLMs.** `ifc-console` loads
+your model with IfcOpenShell and serves it over MCP. Claude, Cursor, VS Code,
+Codex, and other MCP clients can inspect or edit the model while you keep
+control from the terminal.
+
+No Blender or host BIM application is required. It runs locally on Windows,
+macOS, and Linux.
 
 <div align="center">
   <table align="center" width="90%">
@@ -21,114 +24,106 @@ while you stay in control from your terminal. No Blender, no host app.
       <th align="center" width="30%">3D viewer</th>
     </tr>
     <tr>
-      <td align="center"><img alt="The ifc-console terminal with a model loaded and the command menu open" width="92%" src="https://raw.githubusercontent.com/nbharathik/ifc-console/main/docs/assets/brand/console.png"></td>
-      <td align="center"><img alt="Claude Desktop summarising the loaded IFC model" width="92%" src="https://raw.githubusercontent.com/nbharathik/ifc-console/main/docs/assets/brand/claude.png"></td>
-      <td align="center"><img alt="The ifc-console 3D web viewer with model tree, 3D view and properties panel" width="92%" src="https://raw.githubusercontent.com/nbharathik/ifc-console/main/docs/assets/brand/viewer.png"></td>
-    </tr>
-    <tr>
-      <td align="center">The console to open an IFC file and decide what the AI is allowed to do.</td>
-      <td align="center">An AI assistant connected to ifc-console, answering questions about the open model.</td>
-      <td align="center">The optional viewer in the browser, showing the model tree, the 3D view, and element properties.</td>
+      <td align="center"><img alt="The ifc-console terminal with a model loaded" width="92%" src="https://raw.githubusercontent.com/nbharathik/ifc-console/main/docs/assets/brand/console.png"></td>
+      <td align="center"><img alt="Claude Desktop summarising an IFC model" width="92%" src="https://raw.githubusercontent.com/nbharathik/ifc-console/main/docs/assets/brand/claude.png"></td>
+      <td align="center"><img alt="The local ifc-console 3D viewer" width="92%" src="https://raw.githubusercontent.com/nbharathik/ifc-console/main/docs/assets/brand/viewer.png"></td>
     </tr>
   </table>
 </div>
 
+## Why ifc-console
+
+LLMs are good at BIM data work: finding elements, auditing properties, writing
+IfcOpenShell scripts, and explaining schema quirks. ifc-console is the safe,
+zero-setup bridge between an LLM client and an IFC file.
+
+- **You stay in control.** The `ask`/`edit` switch decides whether the LLM may
+  change the in-memory model. AI saving is disabled by default, so only you
+  persist reviewed changes with `/save`.
+- **It runs anywhere.** The core Python package runs on Windows, macOS, and
+  Linux. The local 3D viewer is an optional install.
+- **It is honest.** Errors include useful hints. Mutations are audited, saves
+  are atomic with backups, and the docs state what the sandbox does and does
+  not guarantee.
+
 ## Install and run
 
-Install from [PyPI](https://pypi.org/project/ifc-console/) with
-[uv](https://docs.astral.sh/uv/) or pip:
-
 ```bash
-uv tool install ifc-console    # puts the ifc-console command on your PATH, viewer included
-# or: pip install ifc-console
+uv tool install ifc-console
+# Include the optional 3D viewer and browser chat:
+uv tool install "ifc-console[viewer]"
 ```
 
-Or try it without installing: `uvx ifc-console`. To update later:
-`uv tool upgrade ifc-console`.
+You can use pip instead, or try the core application once with
+`uvx ifc-console`.
 
-Start it in the folder with your models:
+Start it in the folder containing your models:
 
 ```bash
 cd path/to/your/models
 ifc-console
 ```
 
-The MCP server comes up right away. Then, in the console:
+Then:
 
-```
-> /file        pick a model from this folder
-> /connect all one-time HTTP setup for every supported LLM client
-> /copy codex  copy one complete client config to the clipboard
-> /mode edit   let the AI change the model (ask = query-only, the default)
-> /viewer      3D view in your browser
-> /help        everything else
+```text
+> /file             choose an IFC model
+> /connect codex    copy one-time client setup
+> /viewer           open the optional 3D viewer
 ```
 
-Wire up each client once. The token is stable per machine and no IFC path is
-stored in the client config, so your daily loop is just `ifc-console`, `/file`,
-and chat.
+Paste the copied setup into your AI client and restart that client once. Future
+sessions are simply: start ifc-console, choose a file, and chat.
 
-## The mode switch
+## Ask or edit
 
-One switch, owned by you; the LLM cannot change it. Anything finer-grained
-(per-tool prompts, allowlists) belongs to your AI client.
+| mode | what the AI can do |
+| ---- | ------------------ |
+| `ask` (default) | inspect and analyze the model |
+| `edit` | also change the model in memory |
 
-| mode | what the LLM can do |
-| ---- | ------------------- |
-| `ask` (default) | query and generate code; anything that would change the model errors and tells it to ask you |
-| `edit` | change and save the model; saves still make backups |
+Use `/mode edit` only when you want changes. Review them, then `/save` to keep
+them or `/reload` to discard them. The AI cannot change the mode, and AI tools
+cannot save unless you explicitly enable `files.allow_ai_save`.
 
-Switch with `/mode`. Every mutation path is gated, saves are atomic with
-timestamped backups, and each session writes an audit log.
+On CPython 3.12+, eligible read-only generated code normally runs in a
+restricted process without network or subprocess access. Python 3.10 and 3.11
+remain supported, but cannot provide that complete audit-hook boundary; `auto`
+reports a guarded fallback and `strict` refuses it. Mutating code runs in the
+main process because it must reach the live model. Read
+[Safety](https://nbharathik.github.io/ifc-console/safety/) before editing
+untrusted files or prompts.
 
-Honest caveat: the guards stop accidents, not a determined adversary. Treat
-`edit` mode plus untrusted prompts like running a stranger's script.
+## What it includes
 
-## What the LLM gets
+- IFC queries, properties, quantities, validation, clash detection, and CSV
+  export.
+- Multi-model coordination and an offline IFC/IfcOpenShell reference.
+- A Python SDK for scripts, CI, workflows, and agent applications.
+- Optional browser viewer, chat panel, and trusted operation plugins.
 
-**11 core tools**: project info, spatial tree, selector queries, element
-details, property sets, schema docs, file list/open/save, and a gated
-Python `execute_ifc_code` power tool.
+```python
+from ifc_console import Workbench
 
-**3 more while the viewer runs**: read your click-selection, highlight
-elements, and screenshot the canvas so it can check its own work.
-
-Every response is one JSON envelope with an actionable hint on failure.
-Full reference: [MCP tools](https://nbharathik.github.io/ifc-console/tools/).
-
-## The 3D viewer
-
-Type `/viewer`. It runs entirely on localhost behind your session token:
-click an element and the LLM knows what "this wall" means; it highlights
-elements back and takes screenshots. Edits refresh the view live.
-
-## Install from source (for development)
-
-If  you would like to work on the code itself, clone the repo and install from your checkout (needs git and uv):
-```bash
-git clone https://github.com/nbharathik/ifc-console
-cd ifc-console
-uv tool install .
+with Workbench.open("tower.ifc") as wb:
+    walls = wb.query("IfcWall")
+    print(len(walls))
 ```
 
-To update later: `git pull`, then `uv tool install . --force`. For working on
-the code itself, see
-[Development](https://nbharathik.github.io/ifc-console/development/).
-
-## Docs
+## Documentation
 
 - [Getting started](https://nbharathik.github.io/ifc-console/getting-started/)
-- [The console](https://nbharathik.github.io/ifc-console/console/) and [connecting clients](https://nbharathik.github.io/ifc-console/clients/)
-- [Safety model](https://nbharathik.github.io/ifc-console/safety/) and [3D viewer](https://nbharathik.github.io/ifc-console/viewer/)
-- [Development](https://nbharathik.github.io/ifc-console/development/)
+- [Console and client setup](https://nbharathik.github.io/ifc-console/console/)
+- [Safety model](https://nbharathik.github.io/ifc-console/safety/)
+- [Python SDK](https://nbharathik.github.io/ifc-console/sdk/)
+- [MCP tools](https://nbharathik.github.io/ifc-console/tools/) and [CLI](https://nbharathik.github.io/ifc-console/cli/)
+- [Troubleshooting](https://nbharathik.github.io/ifc-console/troubleshooting/)
+
+For development setup and tests, see the [contributing guide](docs/contributing.md).
 
 ## License
 
-Apache-2.0. Bundles three.js (MIT) and web-ifc (MPL-2.0, unmodified); uses
-IfcOpenShell (LGPL-3.0-or-later) as a library.
+The core package is Apache-2.0 and uses IfcOpenShell (LGPL-3.0-or-later). The
+optional viewer includes Three.js (MIT) and web-ifc (MPL-2.0).
 
-## Acknowledgments
-
-Inspired by [Bonsai MCP](https://github.com/Show2Instruct/bonsai-mcp). If you
-would like to work with the Bonsai viewer in Blender instead of a standalone
-terminal, check that project out.
+Inspired by [Bonsai MCP](https://github.com/Show2Instruct/bonsai-mcp).

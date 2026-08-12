@@ -37,7 +37,7 @@ async def test_typing_opens_and_narrows_the_menu(app: IfcConsoleApp) -> None:
         assert menu.display is True
         assert menu.option_count == len(commands.REGISTRY)
         await pilot.press("m", "o")
-        assert menu.option_count == 2  # /mode and /model
+        assert menu.option_count == 2  # /mode, /models
 
 
 async def test_enter_picks_command_then_value_then_runs(app: IfcConsoleApp) -> None:

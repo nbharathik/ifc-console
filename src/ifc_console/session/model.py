@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, TypeVar
 
-from ifc_console.mcp.envelope import ToolError
+from ifc_console.core.results import ToolError
 from ifc_console.session.backups import BackupStore
 
 T = TypeVar("T")
@@ -32,10 +32,19 @@ class ModelSession:
     def __init__(self) -> None:
         self.path: Path | None = None
         self.ifc: Any = None
+        # Registry identity: set once the session joins a ModelRegistry.
+        # Only the active model is writable; attached ones are read-only.
+        self.model_id: str | None = None
+        self.read_only: bool = False
         self.schema: str | None = None
         self.size_bytes: int = 0
         self.loaded_at: str | None = None
         self.fingerprint: str | None = None
+        self.source_sha256: str | None = None
+        # (size, mtime_ns) of the file at the last load or save. While it still
+        # matches and nothing is dirty, the bytes on disk ARE the model, so the
+        # viewer can stream the file instead of re-serializing it.
+        self.disk_key: tuple[int, int] | None = None
         self.dirty: bool = False
         self.tainted: bool = False
         self.poisoned: bool = False
@@ -44,6 +53,9 @@ class ModelSession:
         self.revision: int = 0
         # Remembered across reload()/recover(); 0 disables the size guard.
         self._max_open_mb: int = 0
+        # Bumped by recover(); a job from an older generation must not write
+        # its results back into the session.
+        self._generation: int = 0
         self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ifc-model")
 
     @property
@@ -54,6 +66,31 @@ class ModelSession:
     def name(self) -> str | None:
         return self.path.name if self.path else None
 
+    def matches_disk(self) -> bool:
+        """True when the file on disk is byte-identical to the loaded model.
+
+        Lets a reader stream the file rather than pay a full re-serialization.
+        Deliberately conservative: any doubt answers False.
+        """
+        if self.dirty or self.tainted or self.path is None or self.disk_key is None:
+            return False
+        try:
+            stat = self.path.stat()
+        except OSError:
+            return False
+        if (stat.st_size, stat.st_mtime_ns) != self.disk_key or self.source_sha256 is None:
+            return False
+        try:
+            digest, size_bytes = self._hash_file(self.path)
+            verified_stat = self.path.stat()
+        except OSError:
+            return False
+        return (
+            size_bytes == verified_stat.st_size
+            and (verified_stat.st_size, verified_stat.st_mtime_ns) == self.disk_key
+            and digest == self.source_sha256
+        )
+
     def require_loaded(self) -> None:
         if not self.loaded:
             raise ToolError(
@@ -61,6 +98,15 @@ class ModelSession:
                 "no IFC model is loaded in this session.",
                 "Call list_ifc_files then open_ifc_file, or ask the user to pick a "
                 "model in the ifc-console terminal.",
+            )
+
+    def require_writable(self) -> None:
+        if self.read_only:
+            raise ToolError(
+                "MODEL_READ_ONLY",
+                f"{self.name} is attached read-only; only the active model can change.",
+                "Call set_active_model to make it the active model first, or ask the "
+                "user to run /use in the ifc-console terminal.",
             )
 
     # -- serialized execution ------------------------------------------------
@@ -94,21 +140,31 @@ class ModelSession:
             raise ToolError(timeout_code, message, hint) from None
 
     # -- lifecycle -------------------------------------------------------------
-    def _load_sync(self, path: Path) -> None:
+    def _load_sync(self, path: Path, generation: int) -> None:
         # Imported here, not at module top: ifcopenshell costs about a second
         # and `ifc-console --help` should never pay it.
         import ifcopenshell
 
+        digest_before, size_before = self._hash_file(path)
         ifc = ifcopenshell.open(str(path))
+        digest_after, size_after = self._hash_file(path)
         stat = path.stat()
+        if digest_before != digest_after or size_before != size_after or size_after != stat.st_size:
+            raise ToolError(
+                "SOURCE_CHANGED",
+                f"{path.name} changed while it was being opened.",
+                "Retry after the source file is stable.",
+            )
+        if generation != self._generation:
+            return  # a recover() superseded this job; its result is stale
         self.ifc = ifc
         self.path = path
         self.schema = getattr(ifc, "schema", None)
         self.size_bytes = stat.st_size
         self.loaded_at = datetime.now(timezone.utc).isoformat()
-        self.fingerprint = hashlib.sha256(
-            f"{path}|{stat.st_size}|{stat.st_mtime_ns}".encode()
-        ).hexdigest()[:12]
+        self.source_sha256 = digest_after
+        self.fingerprint = digest_after[:12]
+        self.disk_key = (stat.st_size, stat.st_mtime_ns)
         self.dirty = False
         self.tainted = False
         self.revision += 1
@@ -135,7 +191,8 @@ class ModelSession:
                     "ifc-console terminal.",
                 )
         try:
-            await self.run(lambda: self._load_sync(path), timeout=_LOAD_TIMEOUT)
+            generation = self._generation
+            await self.run(lambda: self._load_sync(path, generation), timeout=_LOAD_TIMEOUT)
         except ToolError:
             raise
         except Exception as exc:
@@ -152,6 +209,10 @@ class ModelSession:
 
     async def recover(self) -> None:
         """Replace a poisoned worker and reload from disk (console /reload)."""
+        # Fence the abandoned job: it keeps running on the old pool and would
+        # otherwise write a stale fingerprint, revision and dirty flag into the
+        # freshly reloaded session minutes later.
+        self._generation += 1
         old = self._pool
         self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ifc-model")
         old.shutdown(wait=False, cancel_futures=True)
@@ -175,23 +236,78 @@ class ModelSession:
             return None
 
     # -- saving ---------------------------------------------------------------
-    def _save_sync(self, target: Path, backups: BackupStore) -> dict[str, Any]:
-        backup_path = backups.backup(target)  # a failed backup aborts the save
+    def _verify_expected_target(self, target: Path) -> None:
+        if self.path is None or target != self.path.resolve() or self.source_sha256 is None:
+            return
+        try:
+            digest, _size = self._hash_file(target)
+        except OSError as exc:
+            raise ToolError(
+                "REVISION_CONFLICT",
+                f"the loaded source {target.name} is no longer readable: {exc}",
+                "Reload the model and review the external change before saving.",
+            ) from exc
+        if digest != self.source_sha256:
+            raise ToolError(
+                "REVISION_CONFLICT",
+                f"{target.name} changed on disk after it was opened.",
+                "Reload the model and review the external change before saving.",
+            )
+
+    def _save_sync(self, target: Path, backups: BackupStore, generation: int) -> dict[str, Any]:
+        self._verify_expected_target(target)
         tmp = target.with_name(f".{target.name}.{secrets.token_hex(4)}.tmp")
         try:
             self.ifc.write(str(tmp))
+            with tmp.open("r+b") as handle:
+                os.fsync(handle.fileno())
+
+            import ifcopenshell
+
+            try:
+                verified = ifcopenshell.open(str(tmp))
+            except Exception as exc:
+                raise ToolError(
+                    "VALIDATION_FAILED",
+                    f"the serialized model could not be reopened: {exc}",
+                    "Reload the model and retry. The original file was not changed.",
+                ) from exc
+            if getattr(verified, "schema", None) != self.schema:
+                raise ToolError(
+                    "VALIDATION_FAILED",
+                    "the serialized model did not reopen with the expected schema.",
+                    "Reload the model and retry. The original file was not changed.",
+                )
+            del verified
+
+            self._verify_expected_target(target)
+            backup_path = backups.backup(target)  # a failed backup aborts the save
+            self._verify_expected_target(target)
             os.replace(tmp, target)
+            self._fsync_directory(target.parent)
         finally:
             if tmp.exists():
                 with contextlib.suppress(OSError):
                     tmp.unlink()
-        digest = hashlib.sha256()
-        with target.open("rb") as fh:
-            for chunk in iter(lambda: fh.read(1 << 20), b""):
-                digest.update(chunk)
-        self.fingerprint = digest.hexdigest()[:12]
+        source_sha256, _size_bytes = self._hash_file(target)
+        fingerprint = source_sha256[:12]
+        saved_stat = target.stat()
+        if generation != self._generation:
+            # The file is written, but a recover() has replaced this session's
+            # model since. Reporting the write back would mark the reloaded
+            # model clean and hand the viewer a fingerprint it is not holding.
+            return {
+                "path": str(target),
+                "size_bytes": saved_stat.st_size,
+                "backup_path": str(backup_path) if backup_path else None,
+                "fingerprint": fingerprint,
+                "superseded": True,
+            }
+        self.fingerprint = fingerprint
+        self.source_sha256 = source_sha256
         self.path = target
-        self.size_bytes = target.stat().st_size
+        self.size_bytes = saved_stat.st_size
+        self.disk_key = (saved_stat.st_size, saved_stat.st_mtime_ns)
         self.dirty = False
         self.revision += 1
         return {
@@ -203,8 +319,11 @@ class ModelSession:
 
     async def save(self, target: Path, backups: BackupStore) -> dict[str, Any]:
         self.require_loaded()
+        self.require_writable()
+        generation = self._generation
         return await self.run(
-            lambda: self._save_sync(target.resolve(), backups), timeout=_SAVE_TIMEOUT
+            lambda: self._save_sync(target.resolve(), backups, generation),
+            timeout=_SAVE_TIMEOUT,
         )
 
     # -- envelope meta -----------------------------------------------------------
@@ -216,6 +335,7 @@ class ModelSession:
                 schema=self.schema,
                 dirty=self.dirty,
                 fingerprint=self.fingerprint,
+                source_sha256=self.source_sha256,
             )
             if self.tainted:
                 meta["warning"] = (
@@ -225,3 +345,27 @@ class ModelSession:
         else:
             meta["model"] = None
         return meta
+
+    @staticmethod
+    def _hash_file(path: Path) -> tuple[str, int]:
+        digest = hashlib.sha256()
+        size_bytes = 0
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1 << 20), b""):
+                digest.update(chunk)
+                size_bytes += len(chunk)
+        return digest.hexdigest(), size_bytes
+
+    @staticmethod
+    def _fsync_directory(path: Path) -> None:
+        flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+        try:
+            fd = os.open(path, flags)
+        except OSError:
+            return
+        try:
+            os.fsync(fd)
+        except OSError:
+            pass
+        finally:
+            os.close(fd)

@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>IFC review desk</title>
+  <link rel="stylesheet" href="/sdk-chat/static/app.css">
+  <link rel="icon" href="data:,">
+</head>
+<body>
+  <main class="desk">
+    <header class="project-bar">
+      <div class="identity">
+        <span class="mark" aria-hidden="true">IFC</span>
+        <div>
+          <p class="eyebrow">Agent SDK reference</p>
+          <h1>Model review desk</h1>
+        </div>
+      </div>
+      <div class="project-facts" aria-live="polite">
+        <span><b>File</b><i data-status="file">Connecting…</i></span>
+        <span><b>Mode</b><i data-status="mode">—</i></span>
+        <span><b>Tools</b><i data-status="tools">—</i></span>
+      </div>
+      <div class="bar-actions">
+        <a class="button quiet" data-action="viewer" href="#" hidden>Open 3D view</a>
+        <button class="button quiet" data-action="new">New thread</button>
+      </div>
+    </header>
+
+    <section class="workspace">
+      <section class="conversation" aria-label="Conversation">
+        <div class="conversation-head">
+          <div>
+            <p class="eyebrow">Coordination channel</p>
+            <h2 data-status="agent">IFC submission reviewer</h2>
+          </div>
+          <div class="model-route">
+            <span class="pulse" aria-hidden="true"></span>
+            <span data-status="model">Waiting for model</span>
+          </div>
+        </div>
+
+        <div class="messages" data-role="messages" role="log" aria-live="polite">
+          <div class="welcome" data-role="welcome">
+            <p class="coordinate">PROJECT / ACTIVE MODEL / REVISION</p>
+            <h3>Start with the model, not a blank chat.</h3>
+            <p>Ask for quantities, missing properties, schema issues, clashes, or a submission review. Each operation will appear in the run ledger.</p>
+            <div class="starters">
+              <button data-prompt="Orient me to this model and its spatial structure.">Orient me to this model</button>
+              <button data-prompt="Which walls are missing a fire rating? Include GlobalIds.">Find missing fire ratings</button>
+              <button data-prompt="Validate the model and prioritize the most important issues.">Run a validation review</button>
+            </div>
+          </div>
+        </div>
+
+        <form class="composer" data-role="composer">
+          <label for="prompt">Question or task</label>
+          <div class="prompt-row">
+            <textarea id="prompt" data-role="prompt" rows="2" placeholder="Ask about the active IFC model…" required></textarea>
+            <button class="send" type="submit">Run</button>
+          </div>
+          <div class="composer-foot">
+            <span data-role="run-status">Ready</span>
+            <span>Enter to run · Shift+Enter for a new line</span>
+          </div>
+        </form>
+      </section>
+
+      <aside class="ledger" aria-label="Run ledger">
+        <header>
+          <div>
+            <p class="eyebrow">Evidence trail</p>
+            <h2>Run ledger</h2>
+          </div>
+          <span class="ledger-count" data-role="ledger-count">0 calls</span>
+        </header>
+        <div class="ledger-rule" aria-hidden="true">
+          <span>SEQ</span><span>OPERATION</span><span>STATE</span>
+        </div>
+        <div class="ledger-items" data-role="ledger">
+          <div class="ledger-empty">
+            Tool calls, approvals, and results will be recorded here as the answer is built.
+          </div>
+        </div>
+        <footer class="ledger-foot">
+          <span data-role="usage">No token usage yet</span>
+          <span class="safety"><i></i> Host-controlled approvals</span>
+        </footer>
+      </aside>
+    </section>
+  </main>
+  <script type="module" src="/sdk-chat/static/app.js"></script>
+</body>
+</html>

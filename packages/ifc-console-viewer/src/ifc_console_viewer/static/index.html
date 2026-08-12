@@ -1,0 +1,325 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>ifc-console viewer</title>
+  <link rel="stylesheet" href="/viewer/static/app.css">
+  <link rel="stylesheet" href="/viewer/static/chat.css">
+  <link rel="icon" href="data:,">
+</head>
+<body>
+  <header id="topbar">
+    <span id="brand" aria-label="ifc-console viewer">
+      <!-- the >_ prompt mark, same squared monoline system as the logo kit -->
+      <svg class="brand-mark" width="15" height="15" viewBox="0 0 16 16" fill="none"
+           aria-hidden="true" stroke="currentColor" stroke-width="1.5"
+           stroke-linecap="square" stroke-linejoin="miter">
+        <path d="M3.4 3.6L7.9 8L3.4 12.4"/>
+        <path d="M9.9 12.4H13.1"/>
+      </svg>
+      <span class="brand-name">ifc-console</span>
+    </span>
+    <span id="model-name" aria-label="Current model"></span>
+    <!-- Only shown once a second model is attached in the console. -->
+    <select id="model-select" aria-label="Model to view" hidden></select>
+    <span id="schema" class="meta" hidden></span>
+    <span id="mode" class="meta mode">...</span>
+    <span id="dirty" class="meta warn" hidden>Unsaved</span>
+    <span id="live" class="connection off" role="status" aria-live="polite"
+          aria-label="Server disconnected" title="Server connection">
+      <span class="connection-mark" aria-hidden="true"></span>
+      <span class="connection-label">Offline</span>
+    </span>
+    <span class="spacer"></span>
+    <button id="btn-clear-hl" class="text-action" hidden
+            title="Clear highlights placed by the assistant">
+      <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
+        <path d="m4 4 8 8m0-8-8 8" stroke="currentColor" stroke-width="1.4"
+              stroke-linecap="square"/>
+      </svg>
+      Clear highlights
+    </button>
+    <span class="toolbar-sep"></span>
+    <span class="seg" role="group" aria-label="Panels">
+      <button id="btn-panel-tree" class="seg-btn" aria-pressed="true"
+              aria-controls="tree-panel" aria-label="Toggle model tree"
+              title="Toggle the spatial tree panel">
+        <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
+          <rect x="2" y="3" width="12" height="10" rx=".75" stroke="currentColor" stroke-width="1.4"/>
+          <path d="M6 3.5V12.5" stroke="currentColor" stroke-width="1.4"/>
+        </svg>
+      </button>
+      <button id="btn-panel-props" class="seg-btn" aria-pressed="false"
+              aria-controls="props-panel" aria-label="Toggle properties"
+              title="Toggle the properties panel">
+        <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
+          <rect x="2" y="3" width="12" height="10" rx=".75" stroke="currentColor" stroke-width="1.4"/>
+          <path d="M10 3.5V12.5" stroke="currentColor" stroke-width="1.4"/>
+        </svg>
+      </button>
+    </span>
+    <button id="btn-chat" class="icon-btn" aria-pressed="false"
+            aria-controls="chat-dock" aria-label="Toggle the chat panel"
+            title="Chat about this model (C)">
+      <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
+        <path d="M2.4 3.2h11.2v7.2H6.8L3.6 13v-2.6H2.4z" stroke="currentColor"
+              stroke-width="1.4" stroke-linejoin="miter"/>
+        <path d="M5 6.2h6M5 8.2h3.6" stroke="currentColor" stroke-width="1.2"
+              stroke-linecap="square"/>
+      </svg>
+    </button>
+    <button id="btn-settings" class="icon-btn" aria-expanded="false"
+            aria-controls="settings-panel" aria-label="Viewer settings"
+            title="Viewer settings">
+      <!-- a cog, not the sliders mark: that one reads as a theme switch -->
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"
+           stroke-linecap="square" aria-hidden="true">
+        <circle cx="8" cy="8" r="4.6"/>
+        <circle cx="8" cy="8" r="1.7"/>
+        <path d="M8 1.6v1.8M8 12.6v1.8M14.4 8h-1.8M3.4 8H1.6M12.53 3.47 11.25 4.75M4.75 11.25l-1.28 1.28M12.53 12.53 11.25 11.25M4.75 4.75 3.47 3.47"/>
+      </svg>
+    </button>
+  </header>
+
+  <main id="layout">
+    <aside id="tree-panel" aria-labelledby="tree-panel-title">
+      <div id="tree-panel-title" class="panel-title">Model tree</div>
+      <div class="panel-search">
+        <input id="search-input" type="search" autocomplete="off" spellcheck="false"
+               placeholder="Search name or IfcWall"
+               title="Type a name, or an IFC class / selector such as IfcWall or Name=/W.*/"
+               aria-label="Search elements" aria-describedby="search-help">
+        <span id="search-help" class="sr-only">Enter searches. Escape clears the search.</span>
+        <button id="search-clear" class="icon-btn" hidden
+                aria-label="Clear search" title="Clear search (Esc)">
+          <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
+            <path d="M4.5 4.5 11.5 11.5M11.5 4.5 4.5 11.5" stroke="currentColor"
+                  stroke-width="1.4" stroke-linecap="round"/>
+          </svg>
+        </button>
+      </div>
+      <div class="panel-body">
+        <div id="search-results" role="region" aria-label="Search results"
+             aria-live="polite" hidden></div>
+        <nav id="tree" aria-label="Model hierarchy"></nav>
+      </div>
+    </aside>
+    <div id="split-tree" class="splitter" role="separator" aria-orientation="vertical"
+         aria-label="Resize model tree" aria-controls="tree-panel" tabindex="0"
+         title="Drag or use arrow keys to resize; Home resets"></div>
+
+    <section id="canvas-wrap" aria-label="Model viewport">
+      <p id="viewport-help" class="sr-only">Arrow keys pan the model. F fits the model. M measures distance. G toggles the grid. Question mark opens all controls.</p>
+      <canvas id="canvas" tabindex="0" aria-label="Interactive 3D model viewport"
+              aria-describedby="viewport-help"></canvas>
+      <div id="overlay" class="overlay" data-state="loading"
+           role="status" aria-live="polite" aria-atomic="true" aria-busy="true">
+        <div class="overlay-card loading-card">
+          <span class="loading-label">Loading model</span>
+          <div class="progress-track"><div class="loading-bar indeterminate"></div></div>
+        </div>
+      </div>
+
+      <button id="btn-tools" class="icon-btn" aria-expanded="false"
+              aria-controls="tools-panel" aria-label="View tools"
+              title="View tools">
+        <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
+          <path d="M8 2.2 13.8 5.4 8 8.6 2.2 5.4Z" stroke="currentColor" stroke-width="1.3"
+                stroke-linejoin="round"/>
+          <path d="M2.2 8.4 8 11.6 13.8 8.4M2.2 11 8 14.2 13.8 11" stroke="currentColor"
+                stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </button>
+
+      <div id="tools-panel" class="popover" role="dialog" aria-label="View tools" hidden>
+        <div class="popover-title">Visibility</div>
+        <div class="tool-list">
+          <button id="tool-isolate" class="tool-btn"
+                  title="Show only the selected elements">Isolate selection</button>
+          <button id="tool-hide" class="tool-btn"
+                  title="Hide the selected elements">Hide selection</button>
+          <button id="tool-show-all" class="tool-btn"
+                  title="Reset isolation and hidden elements">Show all</button>
+        </div>
+        <div class="popover-title">Camera</div>
+        <div class="tool-list">
+          <button id="tool-fit-sel" class="tool-btn"
+                  title="Frame the selected elements">Zoom to selection</button>
+          <button id="tool-fit-all" class="tool-btn"
+                  title="Frame the whole model">Fit model <kbd>F</kbd></button>
+        </div>
+        <div class="popover-title">Views</div>
+        <div class="tool-views">
+          <button data-view="top">Top</button>
+          <button data-view="front">Front</button>
+          <button data-view="back">Back</button>
+          <button data-view="left">Left</button>
+          <button data-view="right">Right</button>
+          <button data-view="iso">Iso</button>
+        </div>
+        <div class="popover-title">Saved views</div>
+        <div id="saved-views" class="saved-views"></div>
+        <div class="save-view-row">
+          <input id="view-name" type="text" autocomplete="off" spellcheck="false"
+                 placeholder="Name this view" aria-label="Saved view name">
+          <button id="tool-save-view" class="tool-btn"
+                  title="Store the current camera position">Save</button>
+        </div>
+        <div class="popover-title">Section</div>
+        <div id="section-rows" class="section-rows">
+          <!-- one row per axis; the slider only appears once the axis is cut -->
+          <div class="section-row" data-axis="x">
+            <label class="section-head">
+              <input type="checkbox" class="switch section-on" data-axis="x">
+              <span class="section-label">X</span>
+            </label>
+            <input type="range" class="section-at" data-axis="x"
+                   min="0" max="1" step="0.001" value="1" aria-label="X section position" hidden>
+            <button class="section-flip" data-axis="x" title="Flip the cut side" hidden>⇄</button>
+          </div>
+          <div class="section-row" data-axis="z">
+            <label class="section-head">
+              <input type="checkbox" class="switch section-on" data-axis="z">
+              <span class="section-label">Y</span>
+            </label>
+            <input type="range" class="section-at" data-axis="z"
+                   min="0" max="1" step="0.001" value="1" aria-label="Y section position" hidden>
+            <button class="section-flip" data-axis="z" title="Flip the cut side" hidden>⇄</button>
+          </div>
+          <div class="section-row" data-axis="y">
+            <label class="section-head">
+              <input type="checkbox" class="switch section-on" data-axis="y">
+              <span class="section-label">Z</span>
+            </label>
+            <input type="range" class="section-at" data-axis="y"
+                   min="0" max="1" step="0.001" value="1" aria-label="Z section position" hidden>
+            <button class="section-flip" data-axis="y" title="Flip the cut side" hidden>⇄</button>
+          </div>
+        </div>
+        <div class="tool-list">
+          <button id="tool-section-clear" class="tool-btn" hidden
+                  title="Turn every section plane off">Clear sections</button>
+        </div>
+        <div class="popover-title">Measure</div>
+        <div class="tool-list">
+          <button id="tool-measure" class="tool-btn" aria-pressed="false"
+                  title="Measure between two points on the model">
+            Measure distance <kbd>M</kbd></button>
+        </div>
+        <div id="tool-hidden-info" class="tool-note"></div>
+      </div>
+
+      <div id="measure-card" hidden>
+        <div id="measure-head">
+          <span>Measurements</span>
+          <button id="measure-clear" class="icon-btn" title="Clear measurements"
+                  aria-label="Clear measurements">
+            <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
+              <path d="m4 4 8 8m0-8-8 8" stroke="currentColor" stroke-width="1.4"
+                    stroke-linecap="square"/>
+            </svg>
+          </button>
+        </div>
+        <p id="measure-hint" class="tool-note" hidden></p>
+        <ul id="measure-list"></ul>
+      </div>
+
+      <div id="legend" hidden>
+        <div id="legend-head">
+          <span id="legend-title">Color theme</span>
+          <button id="legend-clear" class="icon-btn" title="Clear the color theme"
+                  aria-label="Clear the color theme">
+            <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
+              <path d="m4 4 8 8m0-8-8 8" stroke="currentColor" stroke-width="1.4"
+                    stroke-linecap="square"/>
+            </svg>
+          </button>
+        </div>
+        <ul id="legend-items"></ul>
+      </div>
+
+      <div id="settings-panel" class="popover" role="dialog"
+           aria-label="Viewer settings" hidden>
+        <div class="popover-title">Display</div>
+        <label class="switch-row">
+          <span class="switch-text">
+            <span class="switch-label">Ground grid <kbd>G</kbd></span>
+            <small>Drawn at the foot of the model.</small>
+          </span>
+          <input type="checkbox" id="set-grid" class="switch">
+        </label>
+        <label class="switch-row">
+          <span class="switch-text">
+            <span class="switch-label">Origin axes</span>
+            <small>X, Y and Z at the project origin.</small>
+          </span>
+          <input type="checkbox" id="set-axes" class="switch">
+        </label>
+        <div class="popover-title">Workspace</div>
+        <div class="tool-list">
+          <button id="set-reset-layout" class="tool-btn"
+                  title="Reopen both side panels and forget their widths">
+            Reset panel layout</button>
+        </div>
+        <p class="tool-note">The theme follows the console: <kbd>/theme</kbd></p>
+      </div>
+
+      <div id="help-panel" class="popover" role="dialog"
+           aria-label="Viewer controls" hidden>
+        <div class="popover-title">Navigation</div>
+        <table>
+          <tr><td>drag</td><td>orbit</td></tr>
+          <tr><td>right-drag</td><td>pan</td></tr>
+          <tr><td>scroll</td><td>zoom</td></tr>
+          <tr><td>click</td><td>select</td></tr>
+          <tr><td>ctrl+click</td><td>add to selection</td></tr>
+          <tr><td><kbd>F</kbd></td><td>fit the whole model</td></tr>
+          <tr><td><kbd>G</kbd></td><td>toggle the ground grid</td></tr>
+          <tr><td><kbd>M</kbd></td><td>measure between two points</td></tr>
+          <tr><td>arrow keys</td><td>pan when the viewport is focused</td></tr>
+          <tr><td><kbd>?</kbd></td><td>open or close this controls guide</td></tr>
+          <tr><td><kbd>Esc</kbd></td><td>leave the active tool</td></tr>
+          <tr><td>tree click</td><td>select an element or branch</td></tr>
+          <tr><td>tree checkbox</td><td>hide or show a branch</td></tr>
+          <tr><td>view tools</td><td>isolate, hide, section, measure, views</td></tr>
+        </table>
+      </div>
+      <button id="panel-scrim" class="panel-scrim" tabindex="-1" hidden
+              aria-label="Close side panel"></button>
+    </section>
+
+    <div id="split-props" class="splitter" role="separator" aria-orientation="vertical"
+         aria-label="Resize properties" aria-controls="props-panel" tabindex="0"
+         title="Drag or use arrow keys to resize; Home resets"></div>
+    <aside id="props-panel" aria-labelledby="props-panel-title">
+      <div id="props-panel-title" class="panel-title">Properties</div>
+      <div class="panel-body">
+        <div id="props"><p class="hint">Select an element to inspect its IFC data.</p></div>
+      </div>
+    </aside>
+    <div id="chat-dock-resize" role="separator" aria-orientation="vertical"
+         aria-label="Resize the chat panel" title="Drag to resize" hidden></div>
+    <aside id="chat-dock" hidden></aside>
+  </main>
+
+  <footer id="statusbar">
+    <span id="sel-info" role="status" aria-live="polite" aria-atomic="true">No selection</span>
+    <span id="hl-info" role="status" aria-live="polite" aria-atomic="true"></span>
+    <span class="spacer"></span>
+    <span id="stats"></span>
+    <button id="btn-help" class="icon-btn" aria-expanded="false"
+            aria-controls="help-panel" aria-label="Viewer controls"
+            title="Viewer controls">
+      <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
+        <circle cx="8" cy="8" r="5.75" stroke="currentColor" stroke-width="1.25"/>
+        <path d="M8 7.2v3.5M8 5.1v.1" stroke="currentColor" stroke-width="1.5"
+              stroke-linecap="square"/>
+      </svg>
+    </button>
+  </footer>
+
+  <script type="module" src="/viewer/static/app.js"></script>
+</body>
+</html>

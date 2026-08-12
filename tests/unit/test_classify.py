@@ -17,10 +17,10 @@ CASES = [
     ("import json\nprint(json.dumps({'n': 1}))", Q),
     ("import math\nmath.sqrt(2)", Q),
     ("total = 0\nfor w in ifc.by_type('IfcWall'):\n    total += 1\ntotal", Q),
-    ("d = {}\nd['k'] = 1\nd", Q),               # local dict subscript is not a mutation
+    ("d = {}\nd['k'] = 1\nd", Q),  # local dict subscript is not a mutation
     ("nums = [1, 2, 3]\nnums[0] = 9\nnums", Q),  # local list subscript
     ("element_util.get_psets(ifc.by_type('IfcWall')[0])", Q),
-    ("open('data.txt').read()", Q),             # read-mode open → QUERY (guard path-checks)
+    ("open('data.txt').read()", Q),  # read-mode open → QUERY (guard path-checks)
     ("x = ifc.by_type('IfcWall')[0]\nx.Name", Q),  # reading an attribute
     # -- EDIT -------------------------------------------------------------------
     ("ifc_api.run('root.create_entity', ifc, ifc_class='IfcWall')", E),
@@ -32,11 +32,11 @@ CASES = [
     ("setattr(ifc.by_type('IfcWall')[0], 'Name', 'x')", E),
     ("delattr(wall, 'Name')", E),
     ("del wall.Name", E),
-    ("f = get_ifc_file()\nf.create_entity('IfcWall')", E),   # alias via get_ifc_file()
-    ("m = ifc\nm.create_entity('IfcWall')", E),              # alias via assignment
+    ("f = get_ifc_file()\nf.create_entity('IfcWall')", E),  # alias via get_ifc_file()
+    ("m = ifc\nm.create_entity('IfcWall')", E),  # alias via assignment
     ("ifc.write('out.ifc')", E),
     ("ifc_api.pset.edit_pset(ifc, pset=p, properties={})", E),
-    ("e = ifc.by_type('IfcWall')[0]\ne.file.remove(e)", E),   # .file escape hatch
+    ("e = ifc.by_type('IfcWall')[0]\ne.file.remove(e)", E),  # .file escape hatch
     ("query('IfcWall')[0].file.create_entity('IfcWall')", E),
     # -- SYSTEM -----------------------------------------------------------------
     ("import os\nos.listdir('.')", S),
@@ -45,13 +45,18 @@ CASES = [
     ("import socket", S),
     ("open('out.txt', 'w')", S),
     ("open('out.txt', 'a')", S),
-    ("open(path, mode)", S),                     # dynamic mode → SYSTEM
+    ("open(path, mode)", S),  # dynamic mode → SYSTEM
     ("__import__('os')", S),
     ("().__class__.__bases__[0].__subclasses__()", S),
     ("eval('1 + 1')", S),
     ("exec('x = 1')", S),
     ("compile('1', '<s>', 'eval')", S),
     ("getattr(x, '__globals__')", S),
+    ("exc.__traceback__.tb_frame.f_globals", S),
+    ("getattr(frame, 'f_locals')", S),
+    ("import _thread", S),
+    ("import sqlite3", S),
+    ("import _xxsubinterpreters", S),
     ("import shutil\nshutil.rmtree('/')", S),
     # SYSTEM beats EDIT when both present
     ("import os\nifc.create_entity('IfcWall')", S),
@@ -70,6 +75,14 @@ def test_edit_reasons_are_reported() -> None:
     result = classify("w.Name = 'x'")
     assert result.op_class is E
     assert result.reasons and "assign" in result.reasons[0].lower()
+
+
+def test_model_serialization_is_identified_separately_from_memory_edits() -> None:
+    assert classify("ifc.write('out.ifc')").model_write is True
+    assert classify("m = ifc\nm.write('out.ifc')").model_write is True
+    assert classify("getattr(ifc, 'write')('out.ifc')").model_write is True
+    assert classify("w.Name = 'x'").model_write is False
+    assert classify("buf.write('memory only')").model_write is False
 
 
 def test_system_reasons_are_reported() -> None:

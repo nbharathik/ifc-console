@@ -1,54 +1,106 @@
 # Architecture
 
-One process, one loaded model, several faces over one core.
+Several interfaces share one operation core:
 
+```text
+ SDK       Agent       CLI/TUI       MCP client       Browser
+  |          |            |              |               |
+  +----------+------------+--------------+---------------+
+                              |
+             OperationService + OperationRegistry
+             schemas, capabilities, envelopes, audit IDs
+                              |
+                         AppCore
+          policy, models, settings, backups, viewer state
+                    |                         |
+          model worker threads         durable services
+                                      jobs, batches,
+                                   workflows, transactions
+                                                |
+                                      restricted workers
 ```
-            +---------------------------------------------------------+
- MCP client |  FastMCP tool layer (14 tools, JSON envelope)           |
- ---------->|  TokenAuthMiddleware (bearer token, loopback only)      |
-            |                                                         |
- browser    |  Viewer routes + WebSocket hub (selection, screenshots) |
- ---------->|                                                         |
-            |            AppCore (the only owner of state)            |
- you ------>|  Console TUI            PolicyEngine                    |
-            |  (Textual)              (ask/edit gate)                 |
-            |                                                         |
-            |  ModelSession: worker thread + lock around IfcOpenShell |
-            |  SettingsStore  RecentsStore  BackupStore  AuditLog     |
-            +---------------------------------------------------------+
+
+Built-in operations register once. The SDK and agents call them directly; MCP,
+the CLI, and browser tools are adapters over the same definitions and policy.
+
+## Main decisions
+
+### One operation contract
+
+Every operation declares its schema and required capabilities. `ask` and `edit`
+are permission profiles over those capabilities. Results use the same
+`{ok, data/error, meta}` envelope on every interface.
+
+One correlation ID follows a call into jobs, workers, artifacts, transactions,
+and audit events.
+
+### Serialized model access
+
+IfcOpenShell file objects are not thread-safe. Each resident model therefore
+has one worker thread, and every read or write is serialized through it.
+
+Exactly one model is active and writable. Attached models remain read-only and
+may be evicted when clean and over the workspace memory budget.
+
+### Separate workers for long or risky work
+
+```text
+live model thread        short reads and approved in-memory edits
+restricted process      read-only generated code, validation, queries
+transaction process     preview, commit, restore, and verification
 ```
 
-## Key decisions
+Restricted workers receive minimal environments and bounded filesystem,
+network, subprocess, time, and memory capabilities. Generated-code sandboxing
+uses a verified disk copy, so it is available only for clean read-only work.
 
-- **AppCore owns everything.** The MCP layer, console, CLI, and viewer are thin
-  faces over one object. Nothing reaches the model except through it.
-- **One worker thread for the model.** IfcOpenShell file objects are not
-  thread-safe, so every read and write is serialized through a single executor
-  thread with async timeouts. A timed-out job leaves the worker occupied
-  ("poisoned"); recovery swaps in a fresh worker and reloads from disk.
-- **One event loop for everything else.** uvicorn (MCP + viewer HTTP/WS) is
-  co-hosted on the Textual event loop, so there is no cross-thread UI traffic. A
-  small synchronous EventBus fans state changes out to the console and viewer
-  hub.
-- **Errors as data.** Tools never raise through the protocol. Every failure is
-  an `{ok:false, error:{code, message, hint}}` envelope so the LLM can read the
-  hint and self-correct.
-- **The revision counter.** Every load, mutation, and save bumps
-  `ModelSession.revision`. `fingerprint-revision` is the ETag for the live
-  model, which is how viewer tabs know when to refetch.
-- **Build-free viewer.** The SPA is plain ES modules plus vendored three.js and
-  web-ifc WASM, served from package data. No Node in the build, no CDN at
-  runtime.
-- **The viewer is a bolt-on, not a pillar.** Its code lives in one subpackage
-  (`viewer/`), its HTTP routes answer 404 while disabled, and its three MCP
-  tools form an optional category. Nothing in the core query/edit path imports
-  viewer code; delete the subpackage and the 11 core tools still work.
+### Durable automation
 
-## Threading model in one paragraph
+```text
+job -> batch -> workflow
+  \------ content-addressed artifacts ------/
+```
 
-The Textual app and uvicorn share the asyncio loop. MCP tool handlers are
-coroutines on that loop; any touch of the IFC model is `await session.run(fn)`,
-which hops to the single model-worker thread and back. The EventBus emits
-synchronously on the loop; subscribers that need the UI or the viewer hub
-schedule onto the same loop. The only true concurrency is the model worker, and
-it is fully serialized, so there are no locks anywhere else.
+- A **job** runs one validation or transaction.
+- A **batch** applies validation or a selector query to many captured inputs.
+- A **workflow** connects batches through a versioned dependency graph.
+
+Input hashes prevent resume from silently adopting changed files. Records are
+written before work starts, and successful outputs enter artifact storage only
+after checksum verification.
+
+### Previewed writes
+
+```text
+preview -> ChangeSet -> caller approval -> commit -> receipt
+                                           \-> backup
+```
+
+Structured changes run against an isolated copy first. Commit rechecks the
+model revision and source hash, validates a reopened candidate, creates a
+backup, and replaces the target under a cross-process lock. A durable journal
+supports recovery and checksum-guarded restore.
+
+Approval, commit, restore, and mode changes are not AI-callable operations.
+
+### Audit and artifact lifecycle
+
+Audit JSONL uses sequence numbers and a SHA-256 hash chain. Generated source,
+secrets, and sensitive values are redacted. Verification detects local edits,
+but an external append-only sink is still needed for enterprise retention.
+
+Artifacts record references to other artifacts. Recent outputs, retained jobs,
+explicit pins, and transaction history are protected from garbage collection.
+
+### Optional viewer
+
+The viewer is a separate package containing plain browser modules, Three.js,
+and web-ifc WASM. It has no CDN or Node runtime. Its HTTP routes and four MCP
+tools exist only while the viewer is enabled.
+
+## Runtime model
+
+Textual and uvicorn share one asyncio event loop. Operation handlers run on that
+loop and send IFC access to the owning model thread. Long validation, queries,
+generated code, and transactions use supervised subprocesses. State changes
+return to the loop and update the console and viewer.

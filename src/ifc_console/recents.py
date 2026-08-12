@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
+import secrets
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -46,9 +48,17 @@ class RecentsStore:
 
     def _write(self, entries: list[dict]) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self.path.with_suffix(".json.tmp")
-        tmp.write_text(
-            json.dumps({"version": 1, "entries": entries}, indent=2, ensure_ascii=False) + "\n",
-            encoding="utf-8",
-        )
-        os.replace(tmp, self.path)
+        # Per-write temp name: two consoles sharing one fixed name clobber each
+        # other's file and can leave the list empty. Recents are a convenience,
+        # so a failed write is never worth an exception.
+        tmp = self.path.with_name(f".{self.path.name}.{secrets.token_hex(4)}.tmp")
+        try:
+            tmp.write_text(
+                json.dumps({"version": 1, "entries": entries}, indent=2, ensure_ascii=False)
+                + "\n",
+                encoding="utf-8",
+            )
+            os.replace(tmp, self.path)
+        except OSError:
+            with contextlib.suppress(OSError):
+                tmp.unlink()

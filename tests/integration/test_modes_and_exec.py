@@ -79,6 +79,8 @@ async def test_edit_mode_runs_without_prompt(harness_factory, work_model) -> Non
     assert out["ok"] is True
     assert out["data"]["mutated"] is True
     assert out["meta"]["dirty"] is True
+    assert out["meta"]["ai_save_allowed"] is False
+    assert "only the user" in out["data"]["note"]
 
 
 async def test_mode_switch_applies_live(ask_harness) -> None:
@@ -96,7 +98,7 @@ async def test_mode_switch_applies_live(ask_harness) -> None:
 
 # -- save round-trip ------------------------------------------------------------
 async def test_save_roundtrip_and_backup(harness_factory, work_model, tmp_path) -> None:
-    h = await harness_factory(model=work_model, mode=Mode.EDIT)
+    h = await harness_factory(model=work_model, mode=Mode.EDIT, allow_ai_save=True)
     # rename a wall, then save in place
     listing = await h.call("query_elements", query="IfcWall", limit=1)
     gid = listing["data"]["rows"][0]["global_id"]
@@ -129,11 +131,97 @@ async def test_save_blocked_in_ask_mode(ask_harness, work_model) -> None:
     assert _digest(work_model) == before
 
 
-async def test_save_as_refuses_overwrite(harness_factory, work_model, tmp_path) -> None:
+async def test_ai_save_is_blocked_by_default_but_memory_edits_remain(
+    harness_factory, work_model
+) -> None:
+    before = _digest(work_model)
     h = await harness_factory(model=work_model, mode=Mode.EDIT)
+    changed = await h.call(
+        "execute_ifc_code",
+        code="ifc_api.run('root.create_entity', ifc, ifc_class='IfcWall')",
+    )
+    assert changed["ok"] is True
+    assert changed["meta"]["dirty"] is True
+
+    saved = await h.call("save_ifc_file")
+
+    assert saved["ok"] is False
+    assert saved["error"]["code"] == "AI_SAVE_DISABLED"
+    assert "/save" in saved["error"]["hint"]
+    assert _digest(work_model) == before
+    assert h.core.session.dirty is True
+
+
+async def test_generated_code_cannot_serialize_ifc_while_ai_save_is_off(
+    harness_factory, work_model, tmp_path
+) -> None:
+    h = await harness_factory(model=work_model, mode=Mode.EDIT)
+    output = tmp_path / "forbidden.ifc"
+
+    direct = await h.call("execute_ifc_code", code=f"ifc.write(r'{output}')")
+    assert direct["ok"] is False
+    assert direct["error"]["code"] == "AI_SAVE_DISABLED"
+    assert not output.exists()
+
+    dynamic = await h.call(
+        "execute_ifc_code",
+        code=f"getattr(ifc, 'write')(r'{output}')",
+    )
+    assert dynamic["ok"] is False
+    assert dynamic["error"]["code"] == "AI_SAVE_DISABLED"
+    assert not output.exists()
+
+
+async def test_system_code_stays_blocked_while_ai_save_is_off(
+    harness_factory, work_model, tmp_path
+) -> None:
+    h = await harness_factory(model=work_model, mode=Mode.EDIT)
+    h.core.policy.allow_system_access = True
+    output = tmp_path / "forbidden.ifc"
+
+    result = await h.call(
+        "execute_ifc_code",
+        code=f"open(r'{output}', 'w').write(ifc.to_string())",
+    )
+
+    assert result["ok"] is False
+    assert result["error"]["code"] == "AI_SAVE_DISABLED"
+    assert not output.exists()
+
+
+async def test_save_refuses_an_external_source_change(harness_factory, work_model) -> None:
+    h = await harness_factory(model=work_model, mode=Mode.EDIT, allow_ai_save=True)
+    work_model.write_bytes(work_model.read_bytes() + b"\n")
+    changed = _digest(work_model)
+
+    out = await h.call("save_ifc_file")
+
+    assert out["ok"] is False
+    assert out["error"]["code"] == "REVISION_CONFLICT"
+    assert _digest(work_model) == changed
+
+
+async def test_save_as_refuses_overwrite(harness_factory, work_model, tmp_path) -> None:
+    h = await harness_factory(model=work_model, mode=Mode.EDIT, allow_ai_save=True)
     existing = tmp_path / "exists.ifc"
     existing.write_text("do not clobber")
     out = await h.call("save_ifc_file", output_path=str(existing))
     assert out["ok"] is False
     assert out["error"]["code"] == "FILE_EXISTS"
     assert existing.read_text() == "do not clobber"
+
+
+async def test_save_as_cannot_overwrite_another_resident_model(
+    harness_factory, work_model, tmp_path
+) -> None:
+    import shutil
+
+    h = await harness_factory(model=work_model, mode=Mode.EDIT, allow_ai_save=True)
+    annex = tmp_path / "annex.ifc"
+    shutil.copy2(work_model, annex)
+    await h.core.open_model(annex, attach=True)
+
+    out = await h.call("save_ifc_file", output_path=str(annex), overwrite=True)
+    assert out["ok"] is False
+    assert out["error"]["code"] == "FILE_EXISTS"
+    assert "resident model" in out["error"]["message"]

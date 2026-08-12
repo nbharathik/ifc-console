@@ -1,0 +1,33 @@
+version: "1"
+name: submission-gate
+
+inputs:
+  - id: models
+    paths: [models/*.ifc]
+
+step_concurrency: 1
+failure_policy: continue
+
+steps:
+  - id: validate
+    output: validation-reports
+    input_ids: [models]
+    concurrency: 2
+    operation:
+      kind: validation
+      version: "1"
+      ids_paths: [requirements/submission.ids]
+      max_issues: 200
+
+  - id: external-walls
+    output: wall-schedule
+    input_ids: [models]
+    needs: [validate]
+    operation:
+      kind: query
+      version: "1"
+      query: IfcWall, Pset_WallCommon.IsExternal=TRUE
+      fields: [name, storey, type_name]
+      order_by: storey
+      output_format: csv
+      limit: 100000

@@ -5,36 +5,71 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
+env:
+  UV_LOCKED: "1"
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
+    name: Test (${{ matrix.os }}, Python ${{ matrix.python }})
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
-        python: ["3.10", "3.12"]
+        python: ["3.10", "3.11", "3.12", "3.13", "3.14"]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9 # v7
+        with:
+          version: "0.12.3"
           python-version: ${{ matrix.python }}
+      - name: Verify frozen dependencies and vendored assets
+        run: |
+          uv run python scripts/check_release.py
+          uv lock --check
+          uv run python scripts/check_vendor_assets.py
       - name: Sync dependencies
         run: uv sync --extra dev
       - name: Lint
-        run: uv run ruff check src tests
+        run: |
+          uv run ruff check src tests packages scripts
+          uv run python -m compileall -q src tests packages scripts
+          node --check packages/ifc-console-viewer/src/ifc_console_viewer/static/app.js
+          node --check packages/ifc-console-viewer/src/ifc_console_viewer/static/chat.js
+          node --check packages/ifc-console-viewer/src/ifc_console_viewer/static/chat-page.js
+          node --check packages/ifc-console-viewer/src/ifc_console_viewer/static/parser.js
+          node --check packages/ifc-console-viewer/src/ifc_console_viewer/static/worker.js
       - name: Tests
         run: uv run pytest
-      - name: Wheel builds and contains viewer assets
+      - name: Both wheels build and the viewer stays out of the base one
         run: |
           uv build
-          uv run python -c "import zipfile,glob; names=zipfile.ZipFile(glob.glob('dist/*.whl')[0]).namelist(); assert any('web-ifc.wasm' in n for n in names), 'viewer assets missing from wheel'"
+          uv build --package ifc-console-viewer
+          uv run python scripts/check_wheels.py
 
   docs:
+    name: Build documentation
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9 # v7
+        with:
+          version: "0.12.3"
       - name: Build docs
         run: |
+          uv lock --check
           uv sync --extra docs
           uv run mkdocs build --strict

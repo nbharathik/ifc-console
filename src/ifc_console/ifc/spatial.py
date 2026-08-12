@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from ifc_console.mcp.envelope import ToolError
+from ifc_console.core.results import ToolError
 
 
 def _node(obj: Any, include_counts: bool) -> dict[str, Any]:
