@@ -1,67 +1,31 @@
 # Connecting clients
 
-Every client talks to one shared console session, through a small stdio bridge
-the client starts for itself:
+Connect each AI client once. After that, every client uses the model currently
+open in the shared ifc-console session.
 
-```text
-Claude, Cursor, VS Code, or Codex
-                 |
-                 v      (stdio, started by the client)
-      ifc-console bridge
-                 |
-                 v      (loopback HTTP, token from ~/.ifc-console/token)
-one ifc-console console -> the model currently selected with /file
-```
+## Quick setup
 
-The bridge is why start order does not matter: it always starts, so the client
-always connects, and it reaches the console as soon as one is running. If you
-open your AI client first and ifc-console second, it still works, and the tool
-list refreshes by itself.
+1. Start `ifc-console`.
+2. Run `/connect <client>`, for example `/connect codex`.
+3. Paste the copied configuration into the location shown by the console.
+4. Restart or reload the client once.
 
-Before forwarding a request, the bridge sends a fresh random challenge to the
-configured loopback port. It sends the bearer token only after the listener
-returns a valid HMAC proof bound to that port and the identity route. This
-prevents an unrelated application that happens to own the port from collecting
-the token. It does not isolate applications running as the same OS user: those
-can usually read the persistent token file directly.
+The normal daily flow is then `ifc-console`, `/file`, and chat. Changing the
+model does not require another client setup.
 
-Configure each client once. With the default persistent-token setting, the
-config holds no IFC path and no token, only the command to launch the bridge.
-After that, start `ifc-console` and use `/file` to open or switch models. Every
-connected client uses the model owned by that console session.
-
-`/connect <client>` prints the setup for one client and copies the complete
-snippet to your clipboard. `/connect all` prints them all without changing the
-clipboard. Use `/copy <client>` whenever you want to copy one again. The same
-output is available without opening the console:
+You can generate the same configuration without opening the console:
 
 ```bash
-ifc-console mcp-config --client claude-code
-ifc-console mcp-config --client claude-desktop
-ifc-console mcp-config --client cursor
-ifc-console mcp-config --client vscode
 ifc-console mcp-config --client codex
 ```
 
-The default is the bridge for every client when persistent tokens are enabled.
-`--transport http` wires the client straight at the HTTP endpoint instead (no
-extra process, but the client must start after the console). `--transport
-stdio` is an opt-in for a separate client-owned server and becomes the safe
-default when persistent tokens are disabled; see [Standalone stdio](#standalone-stdio).
+Accepted names are `claude-code`, `claude-desktop`, `cursor`, `vscode`, and
+`codex`. Use `/connect all` to display every setup or `/copy <client>` to copy
+one again.
 
-## One-time setup
+## Client instructions
 
-1. Run `ifc-console` and type `/connect <client>`, such as `/connect codex`.
-2. Paste the automatically copied setup into the location shown by the TUI.
-3. Restart or reload that client so it discovers the MCP server.
-4. For future sessions, just run `ifc-console`, pick a model with `/file`, and
-   chat.
-
-The bearer token persists in `~/.ifc-console/token`, so restarting ifc-console or
-opening a different file needs no config change. Re-add the configs only after
-changing the port or running `ifc-console token rotate`.
-
-## Claude Code
+### Claude Code
 
 Run the command printed by `/connect claude-code`:
 
@@ -69,11 +33,11 @@ Run the command printed by `/connect claude-code`:
 claude mcp add --scope user ifc-console -- /path/to/ifc-console bridge
 ```
 
-`--scope user` makes the connection available in every project, not just the
-directory where you added it. The command carries the absolute path to the
-executable, because GUI-launched clients do not always inherit your shell PATH.
+`--scope user` makes the connection available in every project. The generated
+command uses the absolute executable path so it also works when Claude Code
+does not inherit your shell `PATH`.
 
-## Claude Desktop
+### Claude Desktop
 
 Open **Settings > Developer > Edit Config** and add the output from
 `/connect claude-desktop` to `claude_desktop_config.json`:
@@ -89,14 +53,11 @@ Open **Settings > Developer > Edit Config** and add the output from
 }
 ```
 
-Save and restart Claude Desktop. No Node.js, no npx, and no token in the file:
-the bridge reads this machine's token itself, and Claude Desktop can be started
-before or after ifc-console.
+Save the file and restart Claude Desktop.
 
-## Cursor
+### Cursor
 
-For a connection available in every project, open Cursor's global MCP config at
-`~/.cursor/mcp.json` and add:
+Open the global MCP configuration at `~/.cursor/mcp.json` and add:
 
 ```json
 {
@@ -109,12 +70,11 @@ For a connection available in every project, open Cursor's global MCP config at
 }
 ```
 
-Restart Cursor or reload its MCP servers after saving.
+Restart Cursor or reload its MCP servers.
 
-## VS Code
+### VS Code
 
-Run **MCP: Open User Configuration** from the Command Palette. User profile
-config keeps the connection available across workspaces. Add:
+Run **MCP: Open User Configuration** from the Command Palette and add:
 
 ```json
 {
@@ -128,9 +88,9 @@ config keeps the connection available across workspaces. Add:
 }
 ```
 
-Save, then start or restart the server from VS Code's MCP controls.
+Save the file, then start or restart the server from VS Code's MCP controls.
 
-## Codex
+### Codex
 
 Add the output from `/connect codex` to `~/.codex/config.toml`:
 
@@ -140,46 +100,59 @@ command = "/path/to/ifc-console"
 args = ["bridge"]
 ```
 
-Restart Codex after changing the config. Codex desktop, the CLI, and the IDE
-extension use this shared configuration.
+Restart Codex after changing the configuration. The desktop app, CLI, and IDE
+extension share this file.
 
-An older entry may use `bearer_token_env_var = "IFC_CONSOLE_MCP_TOKEN"`. That names
-an environment variable, not the token itself, and the variable must exist
-before Codex starts. Replacing the entry with `/connect codex` output is simpler
-and avoids a missing-variable 401.
+If an older entry contains `bearer_token_env_var`, replace it with the current
+bridge output. The bridge does not require a token in the client configuration.
 
-## Standalone stdio
+## How the default connection works
 
-Use stdio only when you want the client to start and own a separate ifc-console
-process instead of sharing the console:
+The client starts a small stdio bridge, which forwards requests to the console
+over localhost:
 
-```bash
-ifc-console mcp-config --client <client> --transport stdio
+```text
+AI client -> ifc-console bridge -> running console -> active model
 ```
 
-To set that server's startup model, add a path:
+This design has three useful properties:
+
+- the client and console can start in either order;
+- several clients can share one model and one terminal-owned mode switch;
+- the client configuration contains no IFC path or bearer token.
+
+The bearer token is stored in `~/.ifc-console/token` and normally persists on
+one machine. Rotate it with `ifc-console token rotate`. You only need to
+regenerate client setups after changing the port, rotating the token, or
+disabling persistent tokens.
+
+Before sending the token, the bridge verifies that the listener on the chosen
+port can prove it is the matching ifc-console process. This protects against an
+unrelated program that happens to occupy the port. Programs running as the same
+OS user can usually read the token file, so the bridge is not an isolation
+boundary between applications owned by that user.
+
+## Alternative transports
+
+The generated bridge setup is recommended for interactive use. Two alternatives
+are available:
+
+| transport | use it when | limitation |
+| --------- | ----------- | ---------- |
+| `bridge` | you want the shared console and flexible start order | starts one small proxy per client |
+| `http` | the console always starts first and you want no proxy | direct configs may contain a token |
+| `stdio` | one client should own a separate server process | it does not share `/file`, the console feed, or viewer |
+
+Generate a specific transport with:
 
 ```bash
-ifc-console mcp-config --client <client> --transport stdio \
-  --file C:/models/model.ifc
+ifc-console mcp-config --client <client> --transport http
+ifc-console mcp-config --client <client> --transport stdio --file model.ifc
 ```
 
-An stdio server does not join the console session, does not follow `/file`, and
-has no bearer token (its transport is a private process pipe).
+!!! warning "Keep HTTP tokens private"
+    A direct HTTP configuration may contain a bearer token. Do not commit it.
+    If it leaks, run `ifc-console token rotate` and regenerate the affected
+    configuration.
 
-## Which transport should I use?
-
-| you want | pick |
-| -------- | ---- |
-| to stop caring whether the console or the client started first | bridge (default) |
-| switch IFC files without editing client config | bridge or HTTP |
-| several clients using the same loaded model | bridge or HTTP |
-| the console mode switch, live feed, and 3D viewer | bridge or HTTP |
-| one less process, and you always start the console first | HTTP |
-| no separate terminal and one client-owned process | standalone stdio |
-
-!!! warning "Keep the local token private"
-    The HTTP snippets (`--transport http`) contain a bearer token. Do not commit
-    them to a public repository. If the token leaks, run `ifc-console token
-    rotate` and regenerate the client configs once. Bridge snippets carry no
-    token: the bridge reads `~/.ifc-console/token` at launch.
+For connection failures, see [Troubleshooting](troubleshooting.md).

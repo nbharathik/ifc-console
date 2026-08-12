@@ -77,6 +77,14 @@ def test_edit_reasons_are_reported() -> None:
     assert result.reasons and "assign" in result.reasons[0].lower()
 
 
+def test_model_serialization_is_identified_separately_from_memory_edits() -> None:
+    assert classify("ifc.write('out.ifc')").model_write is True
+    assert classify("m = ifc\nm.write('out.ifc')").model_write is True
+    assert classify("getattr(ifc, 'write')('out.ifc')").model_write is True
+    assert classify("w.Name = 'x'").model_write is False
+    assert classify("buf.write('memory only')").model_write is False
+
+
 def test_system_reasons_are_reported() -> None:
     result = classify("import os")
     assert result.op_class is S

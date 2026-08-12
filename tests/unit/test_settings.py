@@ -17,6 +17,7 @@ def test_defaults(tmp_path: Path) -> None:
     store = SettingsStore(home=tmp_path / "h", project_dir=tmp_path, env={})
     assert store.settings.mode.default == "ask"
     assert store.settings.server.port == 8383
+    assert store.settings.files.allow_ai_save is False
 
 
 def test_user_file_overrides_default(tmp_path: Path) -> None:
@@ -100,6 +101,14 @@ def test_project_file_may_not_enable_system_access(tmp_path: Path) -> None:
     _write(tmp_path / ".ifc-console" / "settings.json", {"exec": {"allow_system_access": True}})
     store = SettingsStore(home=tmp_path / "h", project_dir=tmp_path, env={})
     assert store.settings.exec.allow_system_access is False
+
+
+def test_project_file_may_not_enable_ai_saving(tmp_path: Path) -> None:
+    _write(tmp_path / ".ifc-console" / "settings.json", {"files": {"allow_ai_save": True}})
+    store = SettingsStore(home=tmp_path / "h", project_dir=tmp_path, env={})
+    assert store.settings.files.allow_ai_save is False
+    assert store.provenance["files.allow_ai_save"] == "default"
+    assert any("files.allow_ai_save" in warning for warning in store.warnings)
 
 
 def test_project_file_may_not_enable_edit_mode(tmp_path: Path) -> None:

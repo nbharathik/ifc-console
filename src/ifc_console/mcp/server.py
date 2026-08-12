@@ -35,7 +35,9 @@ Session modes (the USER controls them in their terminal; you cannot):
   write a file fails with ASK_MODE_BLOCKED. Writing and showing code is
   always fine; to actually make changes, ask the user to switch to edit
   mode (/mode edit in the ifc-console terminal), then retry.
-- edit: mutations and saves run; saving still makes automatic backups.
+- edit: in-memory mutations run and refresh the viewer. AI saving is separately
+  controlled by files.allow_ai_save and is off by default. When it is off,
+  only the user can persist changes with /save; /reload discards them.
 
 Workflow:
 1. orient to get status, project summary, and the spatial tree in one call
@@ -55,8 +57,10 @@ Workflow:
    as ifc_api.<module>.<function>(ifc, ...), e.g. ifc_api.pset.add_pset.
    For mutating runs, fill `description` with one line of intent; the user
    sees it in their terminal and audit log.
-5. After mutations the model is dirty (meta.dirty=true); finish the batch
-   with save_ifc_file. Don't save after every micro-edit.
+5. After mutations the model is dirty (meta.dirty=true). Check
+   meta.ai_save_allowed: when false, tell the user to review and run /save or
+   /reload; when true, finish the batch with save_ifc_file. Don't save after
+   every micro-edit.
 6. Errors come back as {ok:false, error:{code, message, hint}}; follow the
    hint instead of retrying blindly.
 
@@ -72,7 +76,8 @@ stays the norm):
   budget. Read tools take an optional `model` parameter naming a model_id;
   omit it for the active model.
 - Writes always target the active model: save_ifc_file and execute_ifc_code
-  take no `model` argument. set_active_model moves that focus.
+  take no `model` argument. set_active_model moves that focus. When AI saving
+  is disabled, execute_ifc_code may mutate memory but cannot serialize an IFC.
   Adding a folder to the allowed roots is the user's job (/workspace <dir>).
 
 Selector examples for query_elements: `IfcWall` or `IfcWall, IfcSlab` or
@@ -321,7 +326,12 @@ class TokenAuthMiddleware:
             return None
         if path == "/mcp" or path.startswith("/mcp/"):
             return self.MAX_MCP_BODY
-        if path == "/api/chat" or path.startswith("/api/chat/"):
+        if (
+            path == "/api/chat"
+            or path.startswith("/api/chat/")
+            or path == "/api/sdk"
+            or path.startswith("/api/sdk/")
+        ):
             return self.MAX_CHAT_BODY
         return None
 
@@ -418,7 +428,12 @@ class TokenAuthMiddleware:
         return len(values) == 1 and hmac.compare_digest(values[0], expected)
 
 
-def build_http_app(core: AppCore, mcp: MCPServer) -> Any:
+def build_http_app(
+    core: AppCore,
+    mcp: MCPServer,
+    *,
+    extra_routes: Iterable[Any] = (),
+) -> Any:
     """Starlette app: streamable HTTP MCP at /mcp, status + viewer routes,
     everything sensitive behind the token middleware."""
     from starlette.requests import Request
@@ -474,6 +489,7 @@ def build_http_app(core: AppCore, mcp: MCPServer) -> Any:
         )
 
     extra: list[Any] = [
+        *extra_routes,
         Route(IDENTITY_PATH, identify, methods=["GET"]),
         Route("/api/status", status, methods=["GET"]),
     ]

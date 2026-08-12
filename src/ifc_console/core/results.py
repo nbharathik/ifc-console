@@ -8,6 +8,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 ERROR_CODES = (
+    "AI_SAVE_DISABLED",
     "APPROVAL_MISMATCH",
     "APPROVAL_NOT_FOUND",
     "APPROVAL_REQUIRED",

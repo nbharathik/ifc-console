@@ -1,9 +1,10 @@
 """Session modes and the gate matrix.
 
 Two modes, owned by the human: ask (default) lets the AI query but blocks
-anything that would change the model; edit lets it mutate and save. Mode
-changes only via the TUI / launch flags. There is deliberately no MCP tool
-that can call set_mode. The two modes are compatibility profiles over typed
+anything that would change the model; edit lets it mutate in memory. Model
+persistence is a separate, default-off user setting. Mode and save authority
+change only via user-controlled configuration; there is deliberately no MCP
+tool that can change either. The modes are compatibility profiles over typed
 capabilities, so every adapter and future plugin can use the same vocabulary.
 """
 
@@ -46,6 +47,7 @@ class OpClass(str, enum.Enum):
 class Verdict(str, enum.Enum):
     ALLOW = "allow"
     DENY_ASK = "deny_ask"        # EDIT/SYSTEM code while the session is in ask mode
+    DENY_AI_SAVE = "deny_ai_save"  # persistence-capable AI code while saving is off
     DENY_SYSTEM = "deny_system"  # SYSTEM code while exec.allow_system_access is false
 
 
@@ -58,11 +60,13 @@ class PolicyEngine:
         mode: Mode,
         *,
         allow_system_access: bool,
+        allow_ai_save: bool = False,
         events: EventBus | None = None,
         audit: AuditLog | None = None,
     ) -> None:
         self.mode = mode
         self.allow_system_access = allow_system_access
+        self.allow_ai_save = allow_ai_save
         self._events = events
         self._audit = audit
 
@@ -72,15 +76,26 @@ class PolicyEngine:
             return Verdict.ALLOW
         if self.mode is Mode.ASK:
             return Verdict.DENY_ASK
+        # SYSTEM code can reach raw filesystem APIs. Keep it unavailable to AI
+        # tools while AI persistence is disabled, even if system access was
+        # enabled separately.
+        if op_class is OpClass.SYSTEM and not self.allow_ai_save:
+            return Verdict.DENY_AI_SAVE
         if op_class is OpClass.SYSTEM and not self.allow_system_access:
             return Verdict.DENY_SYSTEM
         return Verdict.ALLOW
 
     def granted_capabilities(self, *, authority: Authority = "tool") -> tuple[Capability, ...]:
         granted = set(ASK_CAPABILITIES if self.mode is Mode.ASK else EDIT_CAPABILITIES)
+        if authority == "tool" and not self.allow_ai_save:
+            granted.difference_update({Capability.MODEL_COMMIT, Capability.MODEL_RESTORE})
         if authority in ("caller", "worker"):
             granted.update(CALLER_ONLY_CAPABILITIES)
-        if self.allow_system_access and self.mode is Mode.EDIT:
+        if (
+            self.allow_system_access
+            and self.mode is Mode.EDIT
+            and (authority != "tool" or self.allow_ai_save)
+        ):
             granted.update(SYSTEM_CAPABILITIES)
         return normalize_capabilities(list(granted))
 
@@ -96,6 +111,12 @@ class PolicyEngine:
         profile = f"{self.mode.value}:{authority}"
         if not missing:
             rule = "compatibility profile grants every requested capability"
+        elif (
+            authority == "tool"
+            and not self.allow_ai_save
+            and any(item in (Capability.MODEL_COMMIT, Capability.MODEL_RESTORE) for item in missing)
+        ):
+            rule = "AI persistence is disabled by files.allow_ai_save"
         elif any(item in SYSTEM_CAPABILITIES for item in missing):
             rule = "system capabilities require edit mode and exec.allow_system_access"
         elif Capability.MODEL_APPROVE in missing:
@@ -135,6 +156,21 @@ class PolicyEngine:
                 "ASK_MODE_BLOCKED",
                 f"{action} is unavailable while the session is in ask mode.",
                 "The user must switch to edit mode explicitly, then retry.",
+                data={"missing_capabilities": [item.value for item in decision.missing]},
+            )
+        if (
+            authority == "tool"
+            and not self.allow_ai_save
+            and any(
+                item in (Capability.MODEL_COMMIT, Capability.MODEL_RESTORE)
+                for item in decision.missing
+            )
+        ):
+            raise ToolError(
+                "AI_SAVE_DISABLED",
+                "AI saving is disabled; changes remain in memory for the user to review.",
+                "Tell the user the model is dirty. They can run /save to keep the "
+                "changes or /reload to discard them.",
                 data={"missing_capabilities": [item.value for item in decision.missing]},
             )
         raise ToolError(

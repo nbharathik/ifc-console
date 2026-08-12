@@ -1,7 +1,9 @@
-"""Release guard: the distribution includes code, types, and viewer assets.
+"""Release guard: both distributions are complete and correctly split.
 
-The wheel and source archive must match the source version and carry the exact
-reviewed browser bundle. Run after `uv build`.
+The base wheel must stay small and free of the 3D viewer bundle; the viewer
+wheel must carry the whole bundle. Wheels and source archives must match the
+source version. Run after ``uv build`` and
+``uv build --package ifc-console-viewer``.
 """
 
 from __future__ import annotations
@@ -19,7 +21,7 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 
 ROOT = Path(__file__).resolve().parent.parent
 DIST = ROOT / "dist"
-WHEEL_LIMIT_MB = 10.0
+BASE_LIMIT_MB = 1.0
 REQUIRED_ASSETS = (
     "index.html",
     "app.css",
@@ -40,7 +42,9 @@ REQUIRED_ASSETS = (
     "vendor/LICENSE.three.txt",
     "vendor/LICENSE.web-ifc.md",
 )
-_VIEWER_STATIC_PREFIX = "ifc_console/viewer/static/"
+_VIEWER_STATIC_PREFIX = "ifc_console_viewer/static/"
+_SDK_CHAT_STATIC_PREFIX = "ifc_console/examples/agent_chat/static/"
+SDK_CHAT_ASSETS = frozenset({"index.html", "app.css", "app.js"})
 _EXCLUDED_SOURCE_PARTS = frozenset(
     {"dev", "dist", ".github", ".tmp", ".vscode", "packages", "site"}
 )
@@ -69,6 +73,18 @@ def _source_python_range() -> str:
     if match is None:
         raise CheckError("cannot read the source Python range")
     return match.group(1)
+
+
+def _source_viewer_range() -> str:
+    source = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    match = re.search(
+        r'^\s*"ifc-console-viewer([^"]+)"\s*,?\s*$',
+        source,
+        flags=re.MULTILINE,
+    )
+    if match is None:
+        raise CheckError("cannot read the source viewer dependency range")
+    return match.group(1).replace(" ", "")
 
 
 def _canonical_python_range(value: str) -> tuple[str, ...]:
@@ -114,6 +130,43 @@ def _check_metadata(
             f"{path.name} Python range is {built_python_range!r}, expected {python_range!r}"
         )
     return metadata
+
+
+def _check_viewer_extra(metadata: Message, expected_range: str, wheel_name: str) -> None:
+    extras = {value.casefold() for value in metadata.get_all("Provides-Extra", [])}
+    if "viewer" not in extras:
+        raise CheckError(f"{wheel_name} does not declare the viewer extra")
+    requirements: list[str] = []
+    for raw in metadata.get_all("Requires-Dist", []):
+        requirement, separator, marker = raw.partition(";")
+        normalized_marker = marker.replace(" ", "").replace('"', "'").casefold()
+        normalized_name = requirement.strip().replace("_", "-")
+        if separator and normalized_marker == "extra=='viewer'":
+            requirements.append(normalized_name)
+    viewer_requirements = [
+        requirement
+        for requirement in requirements
+        if requirement.casefold().startswith("ifc-console-viewer")
+    ]
+    if len(viewer_requirements) != 1:
+        raise CheckError(
+            f"{wheel_name} has {len(viewer_requirements)} viewer package requirements, "
+            "expected one"
+        )
+    match = re.fullmatch(
+        r"ifc-console-viewer(.+)", viewer_requirements[0], flags=re.IGNORECASE
+    )
+    if match is None or _canonical_python_range(match.group(1)) != _canonical_python_range(
+        expected_range
+    ):
+        raise CheckError(
+            f"{wheel_name} viewer requirement is {viewer_requirements[0]!r}, "
+            f"expected ifc-console-viewer{expected_range}"
+        )
+    if not any(
+        requirement.casefold().startswith("websockets") for requirement in requirements
+    ):
+        raise CheckError(f"{wheel_name} viewer extra does not declare websockets")
 
 
 def _zip_names(path: Path) -> list[str]:
@@ -184,6 +237,27 @@ def _unexpected_viewer_static(names: list[str]) -> list[str]:
     return sorted(unexpected)
 
 
+def _unexpected_base_browser_assets(names: list[str]) -> list[str]:
+    """Return viewer assets or unapproved public files found in the core wheel."""
+    unexpected: list[str] = []
+    for name in names:
+        normalized = name.replace("\\", "/")
+        if normalized.endswith("/"):
+            continue
+        if normalized.startswith(_SDK_CHAT_STATIC_PREFIX):
+            relative = normalized.removeprefix(_SDK_CHAT_STATIC_PREFIX)
+            if relative in SDK_CHAT_ASSETS:
+                continue
+        if (
+            "/static/" in normalized
+            or normalized.endswith(".wasm")
+            or normalized.startswith("ifc_console_viewer/")
+            or "/ifc_console_viewer/" in normalized
+        ):
+            unexpected.append(name)
+    return sorted(unexpected)
+
+
 def _source_entry_is_excluded(name: str) -> bool:
     for path in (PurePosixPath(name), PureWindowsPath(name)):
         parts = tuple(part.casefold() for part in path.parts[1:])
@@ -217,83 +291,108 @@ def main(argv: list[str] | None = None) -> int:
     try:
         version = _source_version()
         python_range = _source_python_range()
-        wheel = _one(dist, f"ifc_console-{version}-*.whl", "wheel")
-        sdist = _one(dist, f"ifc_console-{version}.tar.gz", "source archive")
-        metadata = _check_metadata(
-            wheel,
+        viewer_range = _source_viewer_range()
+        base = _one(dist, f"ifc_console-{version}-*.whl", "base wheel")
+        viewer = _one(dist, f"ifc_console_viewer-{version}-*.whl", "viewer wheel")
+        base_sdist = _one(dist, f"ifc_console-{version}.tar.gz", "base source archive")
+        viewer_sdist = _one(
+            dist,
+            f"ifc_console_viewer-{version}.tar.gz",
+            "viewer source archive",
+        )
+        base_metadata = _check_metadata(
+            base,
             name="ifc-console",
             version=version,
             python_range=python_range,
         )
-        extras = {value.casefold() for value in metadata.get_all("Provides-Extra", [])}
-        if "viewer" in extras:
-            raise CheckError(f"{wheel.name} still declares the removed viewer extra")
-        if any(
-            (raw.partition(";")[0].strip().replace("_", "-").casefold()).startswith(
-                "ifc-console-viewer"
-            )
-            for raw in metadata.get_all("Requires-Dist", [])
-        ):
-            raise CheckError(f"{wheel.name} still depends on ifc-console-viewer")
+        _check_viewer_extra(base_metadata, viewer_range, base.name)
+        _check_metadata(
+            viewer,
+            name="ifc-console-viewer",
+            version=version,
+            python_range=python_range,
+        )
 
-        wheel_names = _zip_names(wheel)
-        if not _has_suffix(wheel_names, "ifc_console/py.typed"):
-            raise CheckError(f"{wheel.name} is missing the PEP 561 py.typed marker")
-        if not _has_suffix(wheel_names, ".dist-info/licenses/LICENSE"):
-            raise CheckError(f"{wheel.name} is missing the Apache-2.0 license")
+        base_names = _zip_names(base)
+        stray = _unexpected_base_browser_assets(base_names)
+        if stray:
+            raise CheckError(f"viewer assets leaked into {base.name}: {stray[:5]}")
+        if not _has_suffix(base_names, "ifc_console/py.typed"):
+            raise CheckError(f"{base.name} is missing the PEP 561 py.typed marker")
+        if not _has_suffix(base_names, ".dist-info/licenses/LICENSE"):
+            raise CheckError(f"{base.name} is missing the Apache-2.0 license")
+        size_mb = base.stat().st_size / 1e6
+        if size_mb > BASE_LIMIT_MB:
+            raise CheckError(
+                f"{base.name} is {size_mb:.2f} MB, over the {BASE_LIMIT_MB} MB budget"
+            )
+
+        viewer_names = _zip_names(viewer)
         missing = [
             asset
             for asset in REQUIRED_ASSETS
-            if not _has_suffix(wheel_names, f"ifc_console/viewer/static/{asset}")
+            if not _has_suffix(viewer_names, f"static/{asset}")
         ]
         if missing:
-            raise CheckError(f"{wheel.name} is missing viewer assets: {missing}")
-        unexpected_static = _unexpected_viewer_static(wheel_names)
+            raise CheckError(f"{viewer.name} is missing viewer assets: {missing}")
+        unexpected_static = _unexpected_viewer_static(viewer_names)
         if unexpected_static:
             raise CheckError(
-                f"{wheel.name} contains unexpected public static files: {unexpected_static[:5]}"
+                f"{viewer.name} contains unexpected public static files: {unexpected_static[:5]}"
             )
-        size_mb = wheel.stat().st_size / 1e6
-        if size_mb > WHEEL_LIMIT_MB:
-            raise CheckError(
-                f"{wheel.name} is {size_mb:.2f} MB, over the {WHEEL_LIMIT_MB} MB budget"
-            )
+        if not _has_suffix(viewer_names, ".dist-info/licenses/LICENSE"):
+            raise CheckError(f"{viewer.name} is missing the Apache-2.0 license")
 
-        source_names = _tar_names(sdist)
+        source_names = _tar_names(base_sdist)
         required_source = ("CHANGELOG.md", "SECURITY.md", "src/ifc_console/py.typed")
         missing_source = [
             name for name in required_source if not _has_suffix(source_names, name)
         ]
         if missing_source:
-            raise CheckError(f"{sdist.name} is missing {missing_source}")
-        missing_source_assets = [
-            asset
-            for asset in REQUIRED_ASSETS
-            if not _has_suffix(source_names, f"src/ifc_console/viewer/static/{asset}")
-        ]
-        if missing_source_assets:
-            raise CheckError(f"{sdist.name} is missing viewer assets: {missing_source_assets}")
-        unexpected_source_static = _unexpected_viewer_static(source_names)
-        if unexpected_source_static:
-            raise CheckError(
-                f"{sdist.name} contains unexpected public static files: "
-                f"{unexpected_source_static[:5]}"
-            )
+            raise CheckError(f"{base_sdist.name} is missing {missing_source}")
         leaked_source = [name for name in source_names if _source_entry_is_excluded(name)]
         if leaked_source:
-            raise CheckError(f"excluded files leaked into {sdist.name}: {leaked_source[:5]}")
+            raise CheckError(
+                f"excluded files leaked into {base_sdist.name}: {leaked_source[:5]}"
+            )
+
+        viewer_source_names = _tar_names(viewer_sdist)
+        if not _has_suffix(viewer_source_names, "LICENSE"):
+            raise CheckError(f"{viewer_sdist.name} is missing the Apache-2.0 license")
+        missing_viewer_source = [
+            asset
+            for asset in REQUIRED_ASSETS
+            if not _has_suffix(viewer_source_names, f"static/{asset}")
+        ]
+        if missing_viewer_source:
+            raise CheckError(f"{viewer_sdist.name} is missing {missing_viewer_source}")
+        unexpected_viewer_source = _unexpected_viewer_static(viewer_source_names)
+        if unexpected_viewer_source:
+            raise CheckError(
+                f"{viewer_sdist.name} contains unexpected public static files: "
+                f"{unexpected_viewer_source[:5]}"
+            )
         if args.stage_dir is not None:
             stage = args.stage_dir.resolve()
             if stage.exists():
                 raise CheckError(f"publish staging directory already exists: {stage}")
-            stage.mkdir(parents=True)
-            for artifact in (wheel, sdist):
-                shutil.copy2(artifact, stage / artifact.name)
+            core_stage = stage / "core"
+            viewer_stage = stage / "viewer"
+            core_stage.mkdir(parents=True)
+            viewer_stage.mkdir(parents=True)
+            for artifact in (base, base_sdist):
+                shutil.copy2(artifact, core_stage / artifact.name)
+            for artifact in (viewer, viewer_sdist):
+                shutil.copy2(artifact, viewer_stage / artifact.name)
     except (CheckError, OSError, tarfile.TarError, zipfile.BadZipFile) as exc:
         print(f"FAIL: {exc}")
         return 1
 
-    print(f"ok: {wheel.name} {size_mb:.2f} MB includes the viewer; source archive is complete")
+    print(
+        f"ok: {base.name} {size_mb:.2f} MB is viewer-free; "
+        f"{viewer.name} carries the browser bundle; both source archives are complete"
+    )
     return 0
 
 

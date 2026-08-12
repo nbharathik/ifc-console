@@ -199,7 +199,7 @@ async def test_unexpected_chat_failure_does_not_echo_exception_text(chat_core, m
     assert "internal-secret-detail" not in response.text
 
 
-async def test_the_chat_page_and_assets_ship_with_the_main_package(chat_core):
+async def test_the_chat_page_and_assets_ship_with_the_viewer_extra(chat_core):
     from ifc_console.viewer import assets
 
     directory = assets.require_static_dir()

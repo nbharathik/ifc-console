@@ -1,20 +1,46 @@
-"""Locate the viewer and chat static bundle included with ifc-console."""
+"""Where the optional viewer and chat browser bundle lives.
+
+The three.js and web-ifc assets ship in ``ifc-console-viewer``, pulled in by
+the ``viewer`` extra. The base ``ifc-console`` wheel therefore contains none
+of those third-party browser files.
+"""
 
 from __future__ import annotations
 
 import functools
 from pathlib import Path
 
-INSTALL_HINT = "the bundled viewer assets are missing; reinstall `ifc-console`"
+INSTALL_HINT = (
+    "the viewer assets are not installed; add them with "
+    '`uv tool install "ifc-console[viewer]"` or `pip install "ifc-console[viewer]"`'
+)
 
-_STATIC = Path(__file__).resolve().parent / "static"
+# Source checkouts can resolve the workspace package before it is installed,
+# which keeps local tests and ``uv run`` convenient.
+_IN_TREE = (
+    Path(__file__).resolve().parents[3]
+    / "packages"
+    / "ifc-console-viewer"
+    / "src"
+    / "ifc_console_viewer"
+    / "static"
+)
 
 
 @functools.lru_cache(maxsize=1)
 def static_dir() -> Path | None:
-    """The bundled asset directory, or None for an incomplete installation."""
-    if (_STATIC / "index.html").is_file():
-        return _STATIC
+    """The bundle directory, or ``None`` when the viewer extra is absent."""
+    try:
+        import ifc_console_viewer
+
+        candidate = ifc_console_viewer.static_dir()
+        if (candidate / "index.html").is_file():
+            return candidate
+    except Exception:
+        # Missing or incomplete optional packages must not stop core startup.
+        pass
+    if (_IN_TREE / "index.html").is_file():
+        return _IN_TREE
     return None
 
 

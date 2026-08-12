@@ -19,7 +19,12 @@ from ifc_console.core.operations import OperationAnnotations as ToolAnnotations
 from ifc_console.core.operations import OperationRegistry
 from ifc_console.core.results import Envelope, ToolError, ok
 from ifc_console.policy.classify import classify
-from ifc_console.policy.guards import GuardError, build_namespace, entity_mutation_lock
+from ifc_console.policy.guards import (
+    GuardError,
+    build_namespace,
+    entity_mutation_lock,
+    model_write_lock,
+)
 from ifc_console.policy.modes import OpClass, Verdict
 from ifc_console.sandbox import (
     SandboxError,
@@ -45,8 +50,10 @@ _DESCRIPTION = (
     "rejected with an error; generate and show code to the user instead, or "
     "ask them to switch to edit mode. In edit mode mutations run. Include a "
     "one-line `description` of intent; the user sees it in their terminal and "
-    "audit log. After mutating, the model is dirty: finish batches with "
-    "save_ifc_file. Eligible read-only runs use an isolated sandbox with no "
+    "audit log. After mutating, the model is dirty. AI saving is disabled by "
+    "default, so the user reviews and runs /save or /reload; when explicitly "
+    "enabled, finish batches with save_ifc_file. Eligible read-only runs use "
+    "an isolated sandbox with no "
     "network and no file access outside the model directories. Auto mode can "
     "report and use guarded in-process fallback; strict mode refuses it. Do not "
     "import os/subprocess/network modules; that class of code is blocked. This "
@@ -103,6 +110,21 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
                 "Ask the user to run /mode edit in the ifc-console terminal if they "
                 "want this change made. Writing code and showing it to the user "
                 "is always fine.",
+            )
+        if cls.model_write and not core.policy.allow_ai_save:
+            raise ToolError(
+                "AI_SAVE_DISABLED",
+                "generated code cannot write an IFC file while files.allow_ai_save is false.",
+                "Keep the changes in memory, then tell the user to run /save or "
+                "/reload after reviewing them.",
+            )
+        if verdict is Verdict.DENY_AI_SAVE:
+            raise ToolError(
+                "AI_SAVE_DISABLED",
+                f"SYSTEM-class code ({reasons}) is disabled while AI saving is off; "
+                "unrestricted system access could write files.",
+                "Keep the operation in memory, then tell the user to run /save or "
+                "/reload after reviewing the result.",
             )
         if verdict is Verdict.DENY_SYSTEM:
             raise ToolError(
@@ -318,7 +340,10 @@ async def _run_in_process(
 
     def job() -> tuple[executor.ExecResult, int | None, int | None]:
         pre = session.max_id()
-        with entity_mutation_lock(enabled=not allow_mutation):
+        with (
+            entity_mutation_lock(enabled=not allow_mutation),
+            model_write_lock(enabled=not core.policy.allow_ai_save),
+        ):
             result = executor.run(compiled, namespace, output_limit=settings.exec.output_char_limit)
         post = session.max_id()
         return result, pre, post
@@ -331,13 +356,25 @@ async def _run_in_process(
     except ToolError:
         raise
     except GuardError as exc:
+        if allow_mutation:
+            # Code may have changed the model before reaching a blocked write.
+            # A false dirty flag costs a discard prompt; a false clean flag
+            # could silently lose an in-memory edit.
+            session.mark_dirty()
+            core.events.emit("model_mutated", tool="execute_ifc_code")
         core.audit.record("exec", ok=False, blocked=True, op_class=cls.op_class.value, code=code)
+        ai_save_blocked = not core.policy.allow_ai_save and "writing an IFC file" in str(exc)
         raise ToolError(
-            "EXEC_BLOCKED",
+            "AI_SAVE_DISABLED" if ai_save_blocked else "EXEC_BLOCKED",
             str(exc),
-            "The runtime guard blocked this operation. If the mutation is "
-            "intended, ask the user to run /mode edit in the ifc-console "
-            "terminal and resubmit.",
+            (
+                "Tell the user to run /save to keep the in-memory changes or "
+                "/reload to discard them."
+                if ai_save_blocked
+                else "The runtime guard blocked this operation. If the mutation is "
+                "intended, ask the user to run /mode edit in the ifc-console "
+                "terminal and resubmit."
+            ),
         ) from exc
     except Exception as exc:
         if allow_mutation:
@@ -387,7 +424,11 @@ async def _run_in_process(
         "duration_ms": duration_ms,
     }
     if mutated:
-        data["note"] = "model is dirty; call save_ifc_file when the batch is done"
+        data["note"] = (
+            "model is dirty; call save_ifc_file when the batch is done"
+            if core.policy.allow_ai_save
+            else "model is dirty; only the user can persist it with /save or discard it with /reload"
+        )
     elif fallback_reason:
         data["note"] = f"ran with in-process guards instead of the sandbox: {fallback_reason}"
     return ok(data, core.session_meta(), char_limit=settings.exec.output_char_limit)

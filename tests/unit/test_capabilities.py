@@ -8,7 +8,7 @@ from ifc_console.app import AppCore
 from ifc_console.application.operations import OperationService
 from ifc_console.core.capabilities import Capability
 from ifc_console.core.operations import OperationRegistry
-from ifc_console.core.results import Envelope
+from ifc_console.core.results import Envelope, ToolError
 from ifc_console.policy.modes import Mode, PolicyEngine
 from ifc_console.settings import SettingsStore
 
@@ -23,6 +23,10 @@ def test_ask_and_edit_are_explicit_compatibility_profiles() -> None:
     assert policy.evaluate([Capability.MODEL_APPROVE]).allowed is False
 
     policy.mode = Mode.EDIT
+    assert policy.evaluate([Capability.MODEL_MUTATE]).allowed is True
+    assert policy.evaluate([Capability.MODEL_COMMIT]).allowed is False
+    assert policy.evaluate([Capability.MODEL_COMMIT], authority="caller").allowed is True
+    policy.allow_ai_save = True
     assert policy.evaluate([Capability.MODEL_COMMIT]).allowed is True
     assert policy.evaluate([Capability.MODEL_APPROVE]).allowed is False
     assert policy.evaluate([Capability.MODEL_APPROVE], authority="caller").allowed is True
@@ -34,10 +38,26 @@ def test_system_capabilities_need_both_edit_mode_and_explicit_setting() -> None:
 
     policy.allow_system_access = True
     decision = policy.evaluate([Capability.NETWORK, Capability.PROCESS])
+    assert decision.allowed is False
+
+    policy.allow_ai_save = True
+    decision = policy.evaluate([Capability.NETWORK, Capability.PROCESS])
     assert decision.allowed is True
 
     policy.mode = Mode.ASK
     assert policy.evaluate([Capability.NETWORK]).allowed is False
+
+
+def test_ai_save_denial_has_a_specific_actionable_error() -> None:
+    policy = PolicyEngine(Mode.EDIT, allow_system_access=False)
+
+    try:
+        policy.require([Capability.MODEL_COMMIT], action="save_ifc_file")
+    except ToolError as exc:
+        assert exc.code == "AI_SAVE_DISABLED"
+        assert "/save" in exc.hint
+    else:
+        raise AssertionError("AI model commit should be denied by default")
 
 
 async def test_operation_service_enforces_declared_capabilities(tmp_path: Path) -> None:

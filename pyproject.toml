@@ -42,9 +42,6 @@ dependencies = [
     # imports are ours, so the dependency is ours.
     "numpy>=1.24",
     "rich>=13",
-    # The viewer's WebSocket endpoint needs a WS protocol implementation
-    # for uvicorn.
-    "websockets>=12",
 ]
 
 [project.optional-dependencies]
@@ -53,14 +50,23 @@ validation = [
     # and `ifc-console check --ids`.
     "ifctester>=0.8",
 ]
+viewer = [
+    # The browser bundle is a separate wheel so the base install contains no
+    # three.js, web-ifc JavaScript, or WASM. Its WebSocket transport is needed
+    # only when that viewer is used.
+    "ifc-console-viewer>=0.1,<0.2",
+    "websockets>=12",
+]
 dev = [
     "httpx>=0.27",
     # Starlette's current TestClient prefers its supported httpx2 transport.
     "httpx2>=2,<3",
+    "ifc-console-viewer>=0.1,<0.2",
     "ifctester>=0.8",
     "pytest>=8",
     "pytest-asyncio>=0.23",
     "ruff>=0.5",
+    "websockets>=12",
 ]
 docs = [
     "mkdocs>=1.6",
@@ -82,9 +88,15 @@ path = "src/ifc_console/__init__.py"
 [tool.hatch.build.targets.wheel]
 packages = ["src/ifc_console"]
 
+[tool.hatch.build.targets.wheel.force-include]
+# Ship the runnable SDK reference without making its browser UI part of the
+# core import path. Installed users can run `python -m ifc_console.examples.agent_chat`.
+"examples/sdk" = "ifc_console/examples"
+
 [tool.hatch.build.targets.sdist]
-# Tests stay in for downstream PEP 517 packagers. Checkout-only files and
-# generated artifacts stay out of the source archive.
+# Tests stay in for downstream PEP 517 packagers. The uv workspace source is
+# checkout-only, so an extracted base sdist should be installed with pip or
+# `uv pip`, not synchronized as the original two-package workspace.
 exclude = [
     "uv.lock",
     "docs/assets/brand/*.png",
@@ -96,6 +108,12 @@ exclude = [
     "packages",
     "site",
 ]
+
+[tool.uv.workspace]
+members = ["packages/*"]
+
+[tool.uv.sources]
+ifc-console-viewer = { workspace = true }
 
 [tool.ruff]
 line-length = 100

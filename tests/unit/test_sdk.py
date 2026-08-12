@@ -338,7 +338,7 @@ def test_ask_mode_blocks_mutating_code(wb: Workbench):
     assert excinfo.value.code == "ASK_MODE_BLOCKED"
 
 
-def test_edit_mode_runs_the_api_and_saves(wb: Workbench, tmp_path: Path):
+def test_edit_mode_runs_the_api_but_ai_save_is_off_by_default(wb: Workbench, tmp_path: Path):
     wb.set_mode("edit")
     result = wb.run_code(
         "ifc_api.root.create_entity(ifc, ifc_class='IfcWall', name='SDK'); len(by_class('IfcWall'))",
@@ -346,7 +346,22 @@ def test_edit_mode_runs_the_api_and_saves(wb: Workbench, tmp_path: Path):
     )
     assert result["result"] == "4"
     assert wb.model["dirty"] is True
-    saved = wb.save(tmp_path / "out.ifc")
+    with pytest.raises(IfcConsoleError) as excinfo:
+        wb.save(tmp_path / "out.ifc")
+    assert excinfo.value.code == "AI_SAVE_DISABLED"
+    assert not (tmp_path / "out.ifc").exists()
+
+
+def test_sdk_can_explicitly_opt_in_to_ai_save(tmp_path: Path, minimal_ifc4_path: Path):
+    output = tmp_path / "out.ifc"
+    with Workbench.open(
+        minimal_ifc4_path,
+        home=tmp_path / "home",
+        mode="edit",
+        allowed_dirs=(tmp_path,),
+        settings={"files.allow_ai_save": True},
+    ) as workbench:
+        saved = workbench.save(output)
     assert Path(saved["path"]).exists()
 
 

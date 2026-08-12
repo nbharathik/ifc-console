@@ -8,11 +8,8 @@ apply exactly as they do for an external client.
 
 from __future__ import annotations
 
-import asyncio
 import inspect
 import json
-import logging
-import threading
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any
 
@@ -21,6 +18,7 @@ from ifc_console.chat.providers import (
     PROVIDERS,
     Provider,
     ProviderError,
+    astream,
     resolve_key,
     stream,
     validate_base_url,
@@ -30,12 +28,9 @@ from ifc_console.core.operations import OperationImage
 if TYPE_CHECKING:
     from ifc_console.app import AppCore
 
-log = logging.getLogger("ifc-console.chat")
-
 # A tool result is context, not a report: enough to answer with, not enough to
 # fill the window. The model can always call again with a tighter query.
 TOOL_RESULT_LIMIT = 6000
-_QUEUE_DONE = object()
 
 
 async def tool_schemas(core: AppCore) -> list[dict[str, Any]]:
@@ -164,8 +159,9 @@ async def converse(
     for round_index in range(max(1, settings.max_tool_rounds)):
         calls: list[dict[str, Any]] = []
         text_parts: list[str] = []
-        round_stream = _stream_round(
+        round_stream = astream(
             provider,
+            stream_factory=stream,
             base_url=base,
             key=key,
             model=chosen,
@@ -216,54 +212,3 @@ async def converse(
                     "ask a narrower question or raise chat.max_tool_rounds"
                 ),
             }
-
-
-async def _stream_round(provider: Provider, **kwargs) -> AsyncIterator[dict[str, Any]]:
-    """Run one blocking provider stream on a thread, yield its events here.
-
-    The consumer can walk away at any moment: the browser's Stop button aborts
-    the fetch, which closes this generator. So the thread is never waited on and
-    never blocks on a full queue; it is told to stop through `cancel` and exits
-    on its own, closing the provider socket as it unwinds.
-    """
-    loop = asyncio.get_running_loop()
-    queue: asyncio.Queue = asyncio.Queue()
-    cancel = threading.Event()
-    slots = threading.Semaphore(64)
-
-    def emit(event: Any) -> bool:
-        while not cancel.is_set():
-            if slots.acquire(timeout=0.05):
-                try:
-                    loop.call_soon_threadsafe(queue.put_nowait, event)
-                except RuntimeError:  # loop closed under us
-                    slots.release()
-                    return False
-                return True
-        return False
-
-    def pump() -> None:
-        try:
-            for event in stream(provider, cancel=cancel, **kwargs):
-                if cancel.is_set():
-                    return
-                if not emit(event):
-                    return
-        except ProviderError as exc:
-            emit({"type": "error", "text": str(exc)})
-        except Exception as exc:  # never leave the panel hanging
-            log.error("chat provider failed with %s", type(exc).__name__)
-            emit({"type": "error", "text": "internal provider error"})
-        finally:
-            emit(_QUEUE_DONE)
-
-    threading.Thread(target=pump, name="ifc-console-chat", daemon=True).start()
-    try:
-        while True:
-            event = await queue.get()
-            slots.release()
-            if event is _QUEUE_DONE:
-                return
-            yield event
-    finally:
-        cancel.set()

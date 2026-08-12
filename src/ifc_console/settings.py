@@ -76,6 +76,9 @@ class SandboxSettings(BaseModel):
 
 class FilesSettings(BaseModel):
     allowed_dirs: list[str] = Field(default_factory=list)
+    # AI tools may edit the live model, but persistence stays a human decision
+    # unless the user explicitly opts in. Project settings cannot change this.
+    allow_ai_save: bool = False
     backup_retention: int = Field(default=20, ge=1)
     follow_symlinks: bool = False
     # Refuse to open files above this budget instead of risking an OOM crash;

@@ -1,124 +1,151 @@
 # Getting started
 
+This guide takes you from installation to your first model question. The 3D
+viewer, browser chat, editing, and automation are optional.
+
 ## Requirements
 
-- Python 3.10 to 3.14 (Windows, macOS, Linux).
-- A terminal. On Windows, use Windows Terminal for correct colors and keys.
-- An MCP client to chat from: Claude Code, Claude Desktop, Cursor, VS Code,
-  Codex, or anything that speaks MCP.
+- Python 3.10 to 3.14 on Windows, macOS, or Linux.
+- A terminal. Windows Terminal is recommended on Windows.
+- An MCP client such as Claude Code, Claude Desktop, Cursor, VS Code, or Codex.
+
+You can skip the MCP client if you plan to use only the Python SDK or the
+optional browser chat panel.
 
 ## Install
 
-Install from [PyPI](https://pypi.org/project/ifc-console/) with
-[uv](https://docs.astral.sh/uv/) or pip:
+Choose one package:
+
+| package | includes |
+| ------- | -------- |
+| `ifc-console` | terminal, MCP server, Python SDK, and core operations |
+| `ifc-console[viewer]` | everything above, plus the 3D viewer and browser chat |
+| `ifc-console[validation]` | core package plus IDS validation support |
+
+With [uv](https://docs.astral.sh/uv/):
 
 ```bash
 uv tool install ifc-console
-# or: pip install ifc-console
+# or, with the viewer:
+uv tool install "ifc-console[viewer]"
 ```
 
-This puts the `ifc-console` command on your PATH, including the 3D viewer and
-chat assets. To update later: `uv tool upgrade ifc-console` (pip:
-`pip install --upgrade ifc-console`). For a one-off run without installing
-anything, `uvx ifc-console` works too.
+With pip:
 
-!!! note "Working on ifc-console itself?"
-    Clone the repo, run `uv sync --extra dev`, and use `uv run ifc-console`
-    wherever these docs say `ifc-console`. See [Development](development.md).
+```bash
+pip install ifc-console
+# or, with the viewer:
+pip install "ifc-console[viewer]"
+```
 
-Check the environment:
+For a one-time core run, use `uvx ifc-console`. To update an installed uv tool,
+run `uv tool upgrade ifc-console`.
+
+!!! note "Working on the source code?"
+    Clone the repository, run `uv sync --extra dev`, and use
+    `uv run ifc-console`. See [Development](development.md).
+
+Check the installation:
 
 ```bash
 ifc-console doctor
 ```
 
-Every line should read `ok`.
+Essential checks should report `ok`. `viewer assets: optional` is expected
+when you installed only the core package.
 
-## First session
+## Open your first model
 
-Start ifc-console in the folder with your IFC files:
+Start in the folder that contains your IFC files:
 
 ```bash
 cd path/to/your/models
 ifc-console
 ```
 
-The console opens and the MCP server starts on
-`http://127.0.0.1:8383/mcp`. You do not need a file path on the command line.
-Type `/file` and pick a model from the list. It shows recent models from this
-folder first, followed by every IFC file in the current folder and one level
-down, filterable as you type. Recent models from other folders are omitted. A
-bare path typed into the prompt works too.
+The terminal opens and the MCP server starts on
+`http://127.0.0.1:8383/mcp`. In the terminal, type:
 
-Useful first commands:
-
-| command | effect |
-| ------- | ------ |
-| `/file` | pick and load an IFC model |
-| `/status` | model, mode, server, viewer summary |
-| `/connect <client>` | show and copy one client's complete bridge setup |
-| `/mode edit` | let the AI change the model (`ask`, the default, is query-only) |
-| `/viewer` | open the 3D viewer in your browser |
-| `/kb <query>` | search the offline IFC reference |
-| `/help [command]` | everything else, or one command explained |
-
-## Connect your LLM clients (once)
-
-This is a one-time step. The bearer token is persistent per machine, so client
-configs keep working across restarts and model changes. Type `/connect codex`,
-`/connect cursor`, or another client name in a running console. The complete
-setup is copied automatically, ready to paste into the location the TUI shows.
-Use `/connect all` for an overview and `/copy <client>` to copy one again. No
-client config contains an IFC path; `/file` selects the model for every client.
-
-You can also generate one client setup any time:
-
-```bash
-ifc-console mcp-config --client claude-code
+```text
+/file
 ```
 
-Then run the printed command:
+Choose a model from the picker. It shows recent files from the current folder,
+then IFC files in that folder and its immediate subfolders. You can also use
+`/file path/to/model.ifc`.
 
-```bash
-claude mcp add --scope user ifc-console -- /path/to/ifc-console bridge
+Useful commands for a first session:
+
+| command | purpose |
+| ------- | ------- |
+| `/file` | open or switch the active model |
+| `/status` | show the model, mode, server, and viewer state |
+| `/connect <client>` | copy setup for one AI client |
+| `/viewer` | open the optional 3D viewer |
+| `/mode edit` | allow in-memory model changes |
+| `/save` / `/reload` | keep or discard in-memory changes |
+| `/help` | show terminal help |
+
+## Connect an AI client once
+
+In the running console, use the name of your client:
+
+```text
+/connect codex
+/connect cursor
+/connect claude-desktop
 ```
 
-That entry starts a small stdio bridge, so it does not matter whether your AI
-client or ifc-console starts first: the client connects either way and picks up
-the console as soon as it is running.
+The command shows where the configuration belongs and copies the complete
+snippet. Paste it, then restart or reload the client once.
 
-From now on your daily flow is: `ifc-console`, `/file`, chat. Then ask your LLM
-something:
+The setup connects to the console, not to a particular IFC file. You do not
+need to edit it when you change models. The default bridge also allows the
+client and console to start in either order.
 
-> "Give me an overview of this model: schema, storeys, and element counts."
+Now ask your AI client:
 
-Watch the console: every tool call appears in the feed as it happens. See
-[Connecting clients](clients.md) for exact client locations and opt-in
-standalone stdio setups.
+> Summarize the project, its storeys, and the number of elements by type.
 
-## Your first edit, safely
+Every operation appears in the console feed. See [Connecting clients](clients.md)
+for client-specific locations and alternative transports.
 
-1. In `ask` mode (the default), ask your LLM: "Set FireRating F30 on every wall
-   that lacks it." The mutation is blocked with an error. The LLM shows you the
-   code and asks you to enable editing. Nothing touched your file.
-2. When you are happy, type `/mode edit` in the console (a y/n confirm protects
-   the switch) and tell the LLM to go ahead. Your AI client's own permission
-   prompts, if any, still apply on top.
-3. The model is now dirty. The LLM finishes with `save_ifc_file`, or you type
-   `/save`. A timestamped backup of the previous version is made automatically.
-   `/mode ask` locks the model again.
+## Make a first edit safely
 
-## Headless and scripted use
+The default `ask` mode is read-only. To see the safety flow:
 
-No terminal UI? Two options:
+1. Ask the AI to set `FireRating` to `F30` on walls that lack it. The edit is
+   blocked and the model remains unchanged.
+2. Review the proposed action, then run `/mode edit` and confirm the switch.
+3. Ask the AI to continue. The model changes in memory and becomes dirty.
+4. Review the result, then run `/save` to keep it or `/reload` to discard it.
+5. Run `/mode ask` when editing is finished.
+
+AI tools cannot save an IFC file by default. Automated saving requires the
+separate user setting `files.allow_ai_save=true`; every overwrite still creates
+a timestamped backup. Read [Safety](safety.md) before using editing with
+untrusted content.
+
+## Run without the terminal UI
+
+For an HTTP server without the console:
 
 ```bash
-# HTTP daemon: same server, no console
-ifc-console --no-tui --file model.ifc --viewer
+ifc-console --no-tui --file model.ifc
+```
 
-# stdio: the MCP client starts and owns the process
+For a client-owned stdio server:
+
+```bash
 ifc-console serve --stdio --file model.ifc --mode ask
 ```
 
-Both work the same way: `ask` keeps the model untouchable, `--mode edit` allows
-unattended edits (your AI client's own prompts are then the only gate).
+These are advanced deployment options. Most users should keep the interactive
+console because it exposes the mode switch, activity feed, and viewer controls.
+
+## Next steps
+
+- Learn the terminal controls in [The console](console.md).
+- Open the optional [3D viewer](viewer.md).
+- Use ifc-console from scripts with the [Python SDK](sdk.md).
+- If anything failed, start with [Troubleshooting](troubleshooting.md).

@@ -271,6 +271,33 @@ def entity_mutation_lock(enabled: bool = True) -> Iterator[None]:
         cls.file = orig_file
 
 
+@contextlib.contextmanager
+def model_write_lock(enabled: bool = True) -> Iterator[None]:
+    """Block raw ``ifcopenshell.file.write`` while AI persistence is off.
+
+    Edit-mode code still receives the real model so every in-memory mutation
+    API keeps working. Patching only ``write`` closes direct ``ifc.write`` and
+    entity ``.file.write`` routes without affecting viewer ``to_string``.
+    """
+    if not enabled:
+        yield
+        return
+    cls = ifcopenshell.file
+    original = cls.write
+
+    def blocked_write(_self: Any, *_args: Any, **_kwargs: Any) -> None:
+        raise GuardError(
+            "writing an IFC file is disabled by files.allow_ai_save; changes "
+            "remain in memory until the user runs /save"
+        )
+
+    cls.write = blocked_write
+    try:
+        yield
+    finally:
+        cls.write = original
+
+
 def _normalized(path: Path) -> str:
     try:
         resolved = os.path.realpath(os.fspath(path))

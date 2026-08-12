@@ -81,6 +81,7 @@ INTROSPECTION_ESCAPES = {
 class Classification:
     op_class: OpClass
     reasons: list[str]
+    model_write: bool = False
 
 
 def classify(
@@ -94,9 +95,13 @@ def classify(
     visitor = _Visitor(set(model_names), SYSTEM_MODULES | set(extra_system_modules))
     visitor.visit(tree)
     if visitor.system:
-        return Classification(OpClass.SYSTEM, _dedupe(visitor.system + visitor.edit))
+        return Classification(
+            OpClass.SYSTEM,
+            _dedupe(visitor.system + visitor.edit),
+            model_write=visitor.model_write,
+        )
     if visitor.edit:
-        return Classification(OpClass.EDIT, _dedupe(visitor.edit))
+        return Classification(OpClass.EDIT, _dedupe(visitor.edit), model_write=visitor.model_write)
     return Classification(OpClass.QUERY, [])
 
 
@@ -121,6 +126,7 @@ class _Visitor(ast.NodeVisitor):
         self.system_modules = system_modules
         self.edit: list[str] = []
         self.system: list[str] = []
+        self.model_write = False
 
     # -- helpers ------------------------------------------------------------
     def _attr_chain(self, node: ast.AST) -> tuple[str | None, list[str]]:
@@ -216,6 +222,14 @@ class _Visitor(ast.NodeVisitor):
                     )
                 ):
                     self.system.append(f"dunder getattr: {_snippet(node)}")
+                elif (
+                    len(node.args) >= 2
+                    and self._base_is_model(node.args[0])
+                    and isinstance(node.args[1], ast.Constant)
+                    and node.args[1].value == "write"
+                ):
+                    self.edit.append(f"gets model write method: {_snippet(node)}")
+                    self.model_write = True
             elif name == "open":
                 self._check_open(node)
         elif isinstance(func, ast.Attribute):
@@ -236,6 +250,10 @@ class _Visitor(ast.NodeVisitor):
                 self.edit.append(f"calls .file.{func.attr}(...)")
             if func.attr == "write":
                 self.edit.append(f"calls .write(): {_snippet(node)}")
+                if self._base_is_model(func.value) or (
+                    isinstance(func.value, ast.Attribute) and func.value.attr == "file"
+                ):
+                    self.model_write = True
         self.generic_visit(node)
 
     def _check_open(self, node: ast.Call) -> None:

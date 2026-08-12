@@ -46,6 +46,8 @@ from ifc_console.workspace.index import WorkspaceIndex, guess_discipline, slug
 from ifc_console.workspace.kinds import describe_file, detect_kind, kind
 from ifc_console.workspace.registry import Attachment, ModelRegistry
 
+log = logging.getLogger("ifc-console")
+
 
 @dataclass
 class ViewerState:
@@ -77,6 +79,7 @@ class AppCore:
         self.policy = PolicyEngine(
             mode or Mode(s.mode.default),
             allow_system_access=s.exec.allow_system_access,
+            allow_ai_save=s.files.allow_ai_save,
             events=self.events,
             audit=self.audit,
         )
@@ -154,6 +157,9 @@ class AppCore:
         )
         self._mcp = None  # set by attach_mcp once the tool server exists
         self._viewer_tools_registered = False
+        # Filled from public MCP listings by /tools so its synchronous
+        # completion menu can offer prompt and resource names too.
+        self.tool_catalog_names: dict[str, tuple[str, ...]] = {}
         self._read_cache: dict[tuple, Any] = {}
         self._model_lifecycle = asyncio.Lock()
         self.ui_theme = s.tui.theme
@@ -237,16 +243,23 @@ class AppCore:
                     self._mcp.remove_tool(name)
             self._viewer_tools_registered = False
 
-    def enable_viewer(self) -> None:
+    def enable_viewer(self) -> bool:
         """Turn the viewer surface on (idempotent): routes answer, viewer
-        tools join the MCP tool list."""
+        tools join the MCP tool list. Return false when its optional bundle is
+        not installed."""
         if self.viewer.enabled:
-            return
+            return True
+        from ifc_console.viewer import assets
+
+        if not assets.available():
+            log.warning(assets.INSTALL_HINT)
+            return False
         self.viewer.enabled = True
         self.viewer.url = self.viewer_url
         self._sync_viewer_tools()
         self.audit.record("viewer_enabled", url=self.viewer.url)
         self.events.emit("viewer_enabled", url=self.viewer.url)
+        return True
 
     # -- chat panel -----------------------------------------------------------
     @property
@@ -260,14 +273,20 @@ class AppCore:
         """The panel on its own page, for a session with no viewer."""
         return f"http://127.0.0.1:{self.port}/chat#t={self.token}"
 
-    def enable_chat(self) -> None:
-        """Turn the chat panel on (idempotent). No key is read or stored here."""
+    def enable_chat(self) -> bool:
+        """Turn the optional browser chat panel on (idempotent)."""
         if self.chat.enabled:
-            return
+            return True
+        from ifc_console.viewer import assets
+
+        if not assets.available():
+            log.warning(assets.INSTALL_HINT)
+            return False
         self.chat.enabled = True
         self.chat.url = self.chat_url
         self.audit.record("chat_enabled", provider=self.chat.provider, model=self.chat.model)
         self.events.emit("chat_enabled", url=self.chat.url)
+        return True
 
     def disable_chat(self) -> None:
         """Turn it off: routes 404 again and any session key is dropped."""
@@ -294,6 +313,7 @@ class AppCore:
         """The active model's meta, plus workspace keys only once more than one
         file is in play (model_id, models, attachments)."""
         meta = self.session.meta(self.policy.mode.value)
+        meta["ai_save_allowed"] = self.policy.allow_ai_save
         meta.update(self.models.meta_extras())
         return meta
 

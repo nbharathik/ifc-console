@@ -152,14 +152,15 @@ async def test_successful_responses_receive_browser_security_headers() -> None:
 
 
 @pytest.mark.asyncio
-async def test_chat_body_limit_checks_length_and_streamed_bytes() -> None:
+@pytest.mark.parametrize("path", ["/api/chat/stream", "/api/sdk/chat/stream"])
+async def test_chat_body_limit_checks_length_and_streamed_bytes(path: str) -> None:
     base_headers = [
         (b"host", b"127.0.0.1"),
         (b"authorization", b"Bearer test-token"),
     ]
     declared = await _invoke(
         [*base_headers, (b"content-length", b"9")],
-        path="/api/chat/stream",
+        path=path,
         method="POST",
         body_limit=8,
     )
@@ -167,7 +168,7 @@ async def test_chat_body_limit_checks_length_and_streamed_bytes() -> None:
 
     streamed = await _invoke(
         base_headers,
-        path="/api/chat/stream",
+        path=path,
         method="POST",
         body_limit=8,
         body_messages=[

@@ -89,7 +89,7 @@ def _resolve(name: str) -> commands.Command | None:
 
 # Commands that do something useful with no argument, so Enter runs them even
 # though Tab can still complete an argument. /file opens the file picker.
-_RUN_ON_ENTER = frozenset({"file"})
+_RUN_ON_ENTER = frozenset({"file", "tools"})
 
 
 # ------------------------------------------------------------- command names
@@ -130,7 +130,14 @@ def _mode_args(core: AppCore, rest: str, _files: FilesProvider | None) -> MenuSt
     current = core.policy.mode.value
     rows = [
         ("ask", "the AI can query; changing the model is blocked"),
-        ("edit", "the AI can change and save the model; backups are automatic"),
+        (
+            "edit",
+            (
+                "the AI can change and save; backups are automatic"
+                if core.policy.allow_ai_save
+                else "the AI can change memory; only you can save"
+            ),
+        ),
     ]
     rows = [(v, note + (" · current" if v == current else "")) for v, note in rows]
     return _choices("mode", rest, rows, context="mode")
@@ -301,6 +308,58 @@ def _settings_args(core: AppCore, rest: str, _files: FilesProvider | None) -> Me
     return MenuState(prefix=prefix, candidates=tuple(out), context="settings")
 
 
+def _tools_args(core: AppCore, rest: str, _files: FilesProvider | None) -> MenuState:
+    from ifc_console.tui.tool_catalog import SECTION_HELP, SECTIONS
+
+    section, separator, target = rest.lstrip().partition(" ")
+    if not separator:
+        token = section.lower()
+        candidates = tuple(
+            Candidate(
+                insert=name,
+                annotation=SECTION_HELP[name],
+                terminal=True,
+                advance=name not in {"all"},
+            )
+            for name in SECTIONS
+            if name.startswith(token)
+        )
+        return MenuState(prefix="/tools ", candidates=candidates, context="tools")
+
+    section = section.lower()
+    token = target.strip().lower()
+    rows: list[tuple[str, str]] = []
+    if section == "slash":
+        rows = [(item.name, item.help) for item in commands.REGISTRY.values()]
+    elif section == "ai":
+        rows = [(item.name, item.description) for item in core.operations.specs()]
+    elif section == "settings":
+        flat = core.store.flat()
+        rows = [(key, f"current: {json.dumps(flat[key], default=str)}") for key in flat]
+    elif section in {"prompts", "resources"}:
+        rows = [
+            (name, "registered in the live MCP catalog")
+            for name in core.tool_catalog_names.get(section, ())
+        ]
+    elif section == "search":
+        if token:
+            return _EMPTY
+        hint = Candidate(insert="", display="(type text to search the catalog)", disabled=True)
+        return MenuState(prefix="/tools search ", candidates=(hint,), context="tools-search")
+    else:
+        return _EMPTY
+    candidates = tuple(
+        Candidate(insert=name, annotation=note, terminal=True)
+        for name, note in sorted(rows)
+        if token in name.lower()
+    )
+    return MenuState(
+        prefix=f"/tools {section} ",
+        candidates=candidates,
+        context=f"tools-{section}",
+    )
+
+
 Provider = Callable[["AppCore", str, "FilesProvider | None"], MenuState]
 
 
@@ -327,6 +386,7 @@ def _use_args(core: AppCore, rest: str, files: FilesProvider | None) -> MenuStat
 
 
 _ARG_PROVIDERS: dict[str, Provider] = {
+    "tools": _tools_args,
     "mode": _mode_args,
     "detach": _loaded_args,
     "use": _use_args,

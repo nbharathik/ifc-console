@@ -11,9 +11,11 @@ Keys are never logged, never written to disk by us, and never put in a URL.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import ipaddress
 import json
+import logging
 import os
 import socket
 import threading
@@ -37,6 +39,8 @@ _MAX_SSE_LINE = 1024 * 1024
 _MAX_SSE_TOTAL = 64 * 1024 * 1024
 _MAX_MODELS = 10_000
 _MAX_MODEL_NAME = 500
+_QUEUE_DONE = object()
+log = logging.getLogger("ifc-console.chat.providers")
 
 
 @dataclass(frozen=True)
@@ -691,3 +695,53 @@ def stream(
             timeout,
             local_only,
         )
+
+
+async def astream(provider: Provider, *, stream_factory: Any = None, **kwargs: Any):
+    """Async bridge over the blocking provider stream.
+
+    Both the embedded chat panel and the public agent SDK use this one bridge,
+    so cancellation closes the provider socket and no provider-specific work
+    blocks the application event loop.
+    """
+
+    loop = asyncio.get_running_loop()
+    queue: asyncio.Queue[Any] = asyncio.Queue()
+    cancel = threading.Event()
+    slots = threading.Semaphore(64)
+
+    def emit(event: Any) -> bool:
+        while not cancel.is_set():
+            if slots.acquire(timeout=0.05):
+                try:
+                    loop.call_soon_threadsafe(queue.put_nowait, event)
+                except RuntimeError:
+                    slots.release()
+                    return False
+                return True
+        return False
+
+    def pump() -> None:
+        try:
+            factory = stream_factory or stream
+            for event in factory(provider, cancel=cancel, **kwargs):
+                if cancel.is_set() or not emit(event):
+                    return
+        except ProviderError as exc:
+            emit({"type": "error", "text": str(exc)})
+        except Exception as exc:
+            log.error("provider stream failed with %s", type(exc).__name__)
+            emit({"type": "error", "text": "internal provider error"})
+        finally:
+            emit(_QUEUE_DONE)
+
+    threading.Thread(target=pump, name="ifc-console-provider", daemon=True).start()
+    try:
+        while True:
+            event = await queue.get()
+            slots.release()
+            if event is _QUEUE_DONE:
+                return
+            yield event
+    finally:
+        cancel.set()

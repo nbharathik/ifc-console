@@ -12,6 +12,12 @@ resolution-markers = [
     "python_full_version < '3.11' and sys_platform != 'win32'",
 ]
 
+[manifest]
+members = [
+    "ifc-console",
+    "ifc-console-viewer",
+]
+
 [[package]]
 name = "annotated-types"
 version = "0.7.0"
@@ -518,17 +524,18 @@ dependencies = [
     { name = "starlette" },
     { name = "textual" },
     { name = "uvicorn" },
-    { name = "websockets" },
 ]
 
 [package.optional-dependencies]
 dev = [
     { name = "httpx" },
     { name = "httpx2" },
+    { name = "ifc-console-viewer" },
     { name = "ifctester" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "ruff" },
+    { name = "websockets" },
 ]
 docs = [
     { name = "mkdocs" },
@@ -537,11 +544,17 @@ docs = [
 validation = [
     { name = "ifctester" },
 ]
+viewer = [
+    { name = "ifc-console-viewer" },
+    { name = "websockets" },
+]
 
 [package.metadata]
 requires-dist = [
     { name = "httpx", marker = "extra == 'dev'", specifier = ">=0.27" },
     { name = "httpx2", marker = "extra == 'dev'", specifier = ">=2,<3" },
+    { name = "ifc-console-viewer", marker = "extra == 'dev'", editable = "packages/ifc-console-viewer" },
+    { name = "ifc-console-viewer", marker = "extra == 'viewer'", editable = "packages/ifc-console-viewer" },
     { name = "ifcopenshell", specifier = ">=0.8.1,<0.9" },
     { name = "ifctester", marker = "extra == 'dev'", specifier = ">=0.8" },
     { name = "ifctester", marker = "extra == 'validation'", specifier = ">=0.8" },
@@ -558,9 +571,15 @@ requires-dist = [
     { name = "starlette", specifier = ">=0.37" },
     { name = "textual", specifier = ">=1.0" },
     { name = "uvicorn", specifier = ">=0.30" },
-    { name = "websockets", specifier = ">=12" },
+    { name = "websockets", marker = "extra == 'dev'", specifier = ">=12" },
+    { name = "websockets", marker = "extra == 'viewer'", specifier = ">=12" },
 ]
-provides-extras = ["dev", "docs", "validation"]
+provides-extras = ["dev", "docs", "validation", "viewer"]
+
+[[package]]
+name = "ifc-console-viewer"
+version = "0.1.4"
+source = { editable = "packages/ifc-console-viewer" }
 
 [[package]]
 name = "ifcopenshell"

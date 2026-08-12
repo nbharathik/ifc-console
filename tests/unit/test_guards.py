@@ -14,7 +14,12 @@ from pathlib import Path
 import ifcopenshell
 import pytest
 
-from ifc_console.policy.guards import GuardError, build_namespace, entity_mutation_lock
+from ifc_console.policy.guards import (
+    GuardError,
+    build_namespace,
+    entity_mutation_lock,
+    model_write_lock,
+)
 from ifc_console.session import executor
 
 
@@ -169,6 +174,23 @@ def test_mutation_allowed_when_unlocked(work_model: Path) -> None:
         allow_mutation=True,
     )
     assert ifc.wrapped_data.getMaxId() > before
+
+
+def test_model_write_lock_allows_memory_edits_but_blocks_ifc_serialization(
+    work_model: Path, tmp_path: Path
+) -> None:
+    ifc = ifcopenshell.open(str(work_model))
+    output = tmp_path / "ai-output.ifc"
+
+    with model_write_lock():
+        ifc.create_entity("IfcWall")
+        with pytest.raises(GuardError, match="files.allow_ai_save"):
+            ifc.write(str(output))
+
+    assert not output.exists()
+    assert len(ifc.by_type("IfcWall")) == 4
+    ifc.write(str(output))
+    assert output.exists()
 
 
 def test_system_import_allowed_only_with_system_flag(ifc4) -> None:

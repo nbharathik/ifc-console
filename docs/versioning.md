@@ -14,7 +14,7 @@ minor and patch releases will not break you.
 3. **The error-code registry**: the `code` values listed in the
    [tools reference](tools.md#error-codes).
 4. **The CLI exit codes**: 0 ok, 1 runtime error, 2 environment problem,
-   3 bad usage, 4 file not found or unparseable, 5 check failed.
+   3 bad usage, 4 file not found or unparseable, 5 validation findings.
 5. **Resource URIs** (`ifc://...`) and prompt names.
 6. **The documented Python SDK**: names exported from `ifc_console`, documented
    `Workbench` and `AsyncWorkbench` methods, their call signatures, and the
@@ -57,12 +57,12 @@ signatures, typed model schemas, enums, and plugin API records. CI fails on any
 drift. An intended change requires deliberately regenerating both golden files
 with `python scripts/snapshot_api.py` and reviewing the SemVer impact. Separate
 tests cover lazy imports, plugin lifecycle behavior, and the installable
-example plugin. Release checks verify that the wheel and source archive carry
-the typed marker and complete viewer bundle.
+example plugin. Release checks verify that the base wheel is free of viewer
+assets and that the separate viewer wheel carries the complete reviewed bundle.
 
 ## Optional extras
 
-Capabilities that need an ecosystem package degrade, never break: calling
-`validate_ids` without `ifctester` installed returns `EXTRA_NOT_INSTALLED`
-with the install command in the hint. Extras are versioned independently of
-the core API.
+Capabilities that need an ecosystem package degrade, never break. Calling
+`validate_ids` without `ifctester` returns `EXTRA_NOT_INSTALLED`; `/viewer`
+without the viewer extra prints its install command. Extras are versioned
+independently of the core API.

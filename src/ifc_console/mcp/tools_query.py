@@ -163,6 +163,7 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
                 }
             )
         mode = core.policy.mode.value
+        ai_save = core.policy.allow_ai_save
         data = {
             "server": {"name": "ifc-console", "version": __version__},
             "mode": {
@@ -170,9 +171,16 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
                 "meaning": (
                     "queries only; mutations and saves are blocked"
                     if mode == "ask"
-                    else "mutations and saves run; saves make automatic backups"
+                    else (
+                        "mutations run; AI saves are enabled and make automatic backups"
+                        if ai_save
+                        else "mutations stay in memory; only the user can save or discard them"
+                    )
                 ),
-                "note": "only the user can change the mode (/mode in their terminal)",
+                "note": (
+                    "only the user can change the mode or AI-save setting in their terminal"
+                ),
+                "ai_save_allowed": ai_save,
                 "profile": f"{mode}:tool",
                 "granted_capabilities": [
                     item.value for item in core.policy.granted_capabilities()

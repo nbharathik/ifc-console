@@ -34,6 +34,7 @@ def test_command_flags_decide_enter_behavior(core) -> None:
     # no argument worth completing: Enter runs it
     assert by_insert["/help"].terminal and not by_insert["/help"].advance
     assert by_insert["/status"].terminal
+    assert by_insert["/tools"].terminal  # bare /tools opens its overview
     # argument values exist: Enter advances to them instead of running
     assert not by_insert["/mode"].terminal and by_insert["/mode"].advance
     assert not by_insert["/use"].terminal
@@ -54,6 +55,27 @@ def test_mode_values_in_escalation_order(core) -> None:
     assert inserts(state) == ["ask", "edit"]
     assert all(c.terminal for c in state.candidates)
     assert "current" in state.candidates[0].annotation  # default mode is ask
+
+
+def test_tools_offers_nested_catalog_sections(core) -> None:
+    state = completion.complete("/tools ", core)
+    assert inserts(state) == [
+        "slash",
+        "ai",
+        "prompts",
+        "resources",
+        "settings",
+        "search",
+        "all",
+    ]
+    assert state.candidates[0].terminal and state.candidates[0].advance
+    assert state.candidates[-1].terminal and not state.candidates[-1].advance
+
+    state = completion.complete("/tools slash mo", core)
+    assert set(inserts(state)) == {"mode", "models"}
+
+    state = completion.complete("/tools settings allow_ai", core)
+    assert inserts(state) == ["files.allow_ai_save"]
 
 
 def test_mode_prefix_narrows_and_applies(core) -> None:

@@ -161,7 +161,7 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
             "place). output_path = save-as (refuses to overwrite unless "
             "overwrite=true). A timestamped backup of any file being replaced is "
             "stored automatically. Clears the dirty flag. Unavailable in ask "
-            "mode."
+            "mode and while files.allow_ai_save is false (the default)."
         ),
     )
     @enveloped(core, "save_ifc_file")
@@ -178,6 +178,12 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
                 "ASK_MODE_BLOCKED",
                 "save_ifc_file is disabled in ask mode: the AI may query, never change, the model.",
                 "Ask the user to run /mode edit in the ifc-console terminal.",
+            )
+        if not core.policy.allow_ai_save:
+            raise ToolError(
+                "AI_SAVE_DISABLED",
+                "AI saving is disabled; the dirty model remains in memory for review.",
+                "Tell the user to run /save to keep the changes or /reload to discard them.",
             )
         if output_path is not None:
             target = core.require_path_allowed(Path(output_path))

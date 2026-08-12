@@ -8,7 +8,7 @@ import pytest
 
 from ifc_console.cli import build_config_snippet
 from ifc_console.policy.modes import Mode
-from ifc_console.tui import commands
+from ifc_console.tui import commands, completion
 
 pytestmark = pytest.mark.asyncio
 
@@ -114,6 +114,61 @@ async def test_help_lists_every_command(console: FakeConsole) -> None:
     await commands.dispatch(console, "/help")
     for name in commands.REGISTRY:
         assert f"/{name}" in console.text
+
+
+async def test_tools_overview_uses_the_live_registries(console: FakeConsole) -> None:
+    await commands.dispatch(console, "/tools")
+    assert "tools & capabilities" in console.text
+    assert "/tools slash" in console.text
+    assert "/tools ai" in console.text
+    assert "/tools prompts" in console.text
+    assert "/tools resources" in console.text
+    assert "AI saving=off; only you can save" in console.text
+
+
+async def test_tools_nested_catalog_and_details(console: FakeConsole) -> None:
+    await commands.dispatch(console, "/tools ai")
+    for tool in console.core.operations.specs():
+        assert tool.name in console.text
+    prompt_menu = completion.complete("/tools prompts model", console.core)
+    assert [candidate.insert for candidate in prompt_menu.candidates] == ["model_audit"]
+
+    console.clear_log()
+    await commands.dispatch(console, "/tools ai save_ifc_file")
+    assert "blocked" in console.text
+    assert "files.allow_ai_save" in console.text
+    assert "output_path" in console.text
+
+    console.clear_log()
+    await commands.dispatch(console, "/tools prompts model_audit")
+    assert "Audit the loaded model" in console.text
+
+    console.clear_log()
+    await commands.dispatch(console, "/tools resources element")
+    assert "resource template" in console.text
+    assert "ifc://element/{global_id}" in console.text
+
+    console.clear_log()
+    await commands.dispatch(console, "/tools settings files.allow_ai_save")
+    assert "current" in console.text and "false" in console.text
+
+
+async def test_tools_searches_across_categories(console: FakeConsole) -> None:
+    await commands.dispatch(console, "/tools search save")
+    assert "catalog search" in console.text
+    assert "save_ifc_file" in console.text
+    assert "files.allow_ai_save" in console.text
+
+    console.clear_log()
+    await commands.dispatch(console, "/tools query_elements")
+    assert "AI tool" in console.text
+    assert "arguments" in console.text
+
+
+async def test_tools_all_prints_every_category(console: FakeConsole) -> None:
+    await commands.dispatch(console, "/tools all")
+    for heading in ("slash commands", "AI tools", "prompts", "resources", "settings"):
+        assert heading in console.text
 
 
 async def test_mode_set_and_query(console: FakeConsole) -> None:
@@ -285,6 +340,11 @@ async def test_save_works_in_ask_mode(console: FakeConsole, work_model: Path) ->
     assert "saved" in console.text
 
 
+async def test_mode_status_explains_default_save_ownership(console: FakeConsole) -> None:
+    await commands.dispatch(console, "/mode")
+    assert "only you can save" in console.text
+
+
 async def test_save_writes_in_edit_mode(console: FakeConsole, work_model: Path) -> None:
     await commands.dispatch(console, f"/open {work_model}")
     await commands.dispatch(console, "/mode edit")
@@ -322,6 +382,24 @@ async def test_settings_list_and_set(console: FakeConsole) -> None:
     console.clear_log()
     await commands.dispatch(console, "/settings not.a.key 1")
     assert "unknown setting" in console.text
+
+
+async def test_enabling_ai_save_requires_confirmation_and_applies_live(
+    console: FakeConsole,
+) -> None:
+    assert console.core.policy.allow_ai_save is False
+    console.confirm_answer = False
+    await commands.dispatch(console, "/settings files.allow_ai_save true")
+    assert console.core.policy.allow_ai_save is False
+    assert console.core.settings.files.allow_ai_save is False
+
+    console.confirm_answer = True
+    await commands.dispatch(console, "/settings files.allow_ai_save true")
+    assert console.core.policy.allow_ai_save is True
+    assert console.core.settings.files.allow_ai_save is True
+
+    await commands.dispatch(console, "/settings files.allow_ai_save false")
+    assert console.core.policy.allow_ai_save is False
 
 
 async def test_viewer_url_requires_server(console: FakeConsole) -> None:

@@ -1,225 +1,116 @@
 # Troubleshooting
 
-First stop, always:
+Start with:
 
 ```bash
 ifc-console doctor --file your-model.ifc
 ```
 
-It checks the interpreter, core dependencies, bundled viewer asset status,
-settings readability, port availability, and (with `--file`) parses your model.
+It checks Python, dependencies, settings, the port, viewer assets, and model
+parsing. Add `--json` for machine-readable output.
 
-## Common issues
+## Client connections
 
-### The client gets 401 unauthorized
+### Client is disabled or not connected
 
-The token in your client config does not match the server's. Since the token is
-persistent per machine, this normally happens only after `ifc-console token
-rotate`, after deleting `~/.ifc-console`, or when a config was copied from another
-machine. Fix: `ifc-console mcp-config --client ...` (or `/connect all` in the
-console) and re-add the client once. stdio setups have no token.
-
-For Codex, `bearer_token_env_var = "IFC_CONSOLE_MCP_TOKEN"` stores the name of an
-environment variable, not its value. If that variable was missing when Codex
-started, its tools will not load. Replace the entry with the bridge snippet from
-`/connect codex` (it needs no token in the config at all), or define the
-variable before starting Codex and restart it.
-
-### The client says ifc-console is disabled, failed, or not connected
-
-Almost always the same cause: **the client started before ifc-console did**.
-MCP clients connect to their servers once, at startup, and a client that could
-not reach the console marks the entry dead until it is fully restarted. The old
-workaround was the dance you may know: start ifc-console, quit the client
-completely (Task Manager on Windows, tray icon on macOS), start it again.
-
-You should not have to do that any more. The default wiring launches a small
-**stdio bridge** that the client owns, exactly like a Blender-attached server:
-the bridge always starts, so the client always connects, and it forwards to the
-console as soon as the console is up. Start order stops mattering, and the tool
-list refreshes on its own within a few seconds of ifc-console appearing.
-
-Check which wiring you have. If the entry contains a `url` (or `npx`, or
-`mcp-remote`), it is the older HTTP wiring. Re-add the client once:
+Regenerate the current bridge setup and restart the client once:
 
 ```bash
-ifc-console mcp-config --client claude-desktop   # or /connect claude-desktop
+ifc-console mcp-config --client <client>
 ```
 
-The entry should now be a `command` ending in `bridge`. Restart the client one
-last time and the problem is gone for good.
+The entry should run `ifc-console ... bridge`. Replace older direct URL, `npx`,
+or `mcp-remote` setups. The bridge allows the client and console to start in
+either order.
 
-While the console is not running, the bridge answers tool calls with
-`CONSOLE_NOT_RUNNING` and a hint to start it: the AI reads that and tells you,
-instead of the whole server disappearing.
+Regenerate setup after changing `server.port`. If persistent tokens are
+disabled, use direct HTTP or standalone stdio instead.
 
-Two things the bridge does **not** paper over:
+### 401 unauthorized
 
-- `server.persistent_token: false`. The bridge reads this machine's stored
-  token, and with per-run tokens there is nothing on disk to read, so calls
-  come back as `CONSOLE_AUTH_FAILED`. Keep persistent tokens on (the default),
-  or use `--transport http` and re-add the client after every restart.
-- A console on a non-default port. `mcp-config`/`/connect` bake the current
-  port into the bridge command, so re-run them after `settings set
-  server.port`.
+The client has a stale token. Run `/connect <client>` again after token
+rotation, deleting `~/.ifc-console`, or moving a config between machines.
 
-### Claude Desktop times out on its first launch (HTTP wiring only)
+For Codex, `bearer_token_env_var` names an environment variable; it is not the
+token value. Replacing the old entry with the current bridge setup is simpler.
 
-This applies to the older `--transport http` wiring for Claude Desktop, which
-goes through `npx`. The default bridge wiring needs no Node.js at all.
+### Client uses an old model
 
+It is probably a standalone stdio server with `--file` in its configuration.
+Replace it with the default bridge setup. Then `/file` controls the shared
+model.
 
-Symptom: the new ifc-console entry shows as failed or disconnected, its MCP log
-has a single `initialize` line followed by roughly 60 seconds of silence and a
-disconnect, and on Windows the log may end with "The batch file cannot be
-found."
+## Server and terminal
 
-Claude Desktop launches the `mcp-remote` bridge through `npx` and allows a
-starting server 60 seconds to answer. On the very first launch npx still has to
-download `mcp-remote` from the npm registry, and when that download takes
-longer than the limit, Claude Desktop gives up while npx is still installing.
-Nothing is misconfigured.
+### Port 8383 is in use
 
-Fix: warm the npx cache once in any terminal, then fully quit Claude Desktop
-(also from the system tray on Windows) and reopen it while the ifc-console
-console is running:
+`ifc-console doctor` identifies the listener when possible.
+
+- Existing ifc-console: use it or start another session with `--port 8390`.
+- Other application: set another port, then regenerate client configs.
+- Different ifc-console token: check whether processes use different
+  `IFC_CONSOLE_HOME` directories.
+
+Use `/port 8390` to move a running session. Rotate the token if an old direct
+HTTP client may have sent it to an untrusted listener.
+
+### Console needs a terminal
+
+Use `--no-tui` for headless HTTP or `serve --stdio` for a client-owned process.
+On Windows, prefer Windows Terminal.
+
+### Windows firewall prompt
+
+Deny external access. Loopback on `127.0.0.1` continues to work.
+
+## Model and code
+
+| problem | fix |
+| ------- | --- |
+| mutations are blocked | review the change, run `/mode edit`, then `/save` or `/reload` |
+| `MODEL_BUSY` or paused session | an in-process call timed out; run `/reload` |
+| tainted session | guarded code changed memory unexpectedly; run `/reload` |
+| `sandboxed: false` | run `/sandbox` to see why |
+| first code run is slow | sandbox startup loads a second model copy; optionally enable `sandbox.warm_on_load` |
+
+Common sandbox fallbacks are unsaved changes, mutating code, a model over
+`sandbox.max_model_mb`, or worker startup failure. Save/reload, try
+`/sandbox restart`, or use `sandbox.mode=strict` to refuse fallback.
+
+## Viewer and chat
+
+### Assets are missing
 
 ```bash
-npx -y mcp-remote@0.1.38 --help
+uv tool install "ifc-console[viewer]" --force
+# or: pip install --force-reinstall "ifc-console[viewer]"
 ```
 
-Use the same pinned version as your config entry; npx caches each version spec
-separately. Every launch after a warm cache starts instantly.
+Restart ifc-console. `doctor` reports `optional` for an intentional core-only
+install and `ok` when assets are present.
 
-### Claude Desktop shows ifc-console as disconnected
+### Model is too large
 
-Two different cases:
+Raise `viewer.max_model_mb` only if the browser has enough memory:
 
-**You closed and reopened ifc-console while Claude Desktop was running.**
-Since 0.1.2 this heals on its own: the MCP endpoint is stateless across
-restarts, so the already-connected bridge keeps working as soon as ifc-console
-is back on its port. Retry the tool call; no Claude Desktop restart needed.
-
-**ifc-console was not running when Claude Desktop started.** This is the case
-the bridge fixes; see "The client says ifc-console is disabled" above. On the
-older HTTP wiring the only cure is to start ifc-console, fully quit Claude
-Desktop (tray icon, or the Claude processes in Task Manager), and reopen it.
-
-### The client keeps opening an old IFC file
-
-The client is probably a standalone stdio server with `--file` in its arguments.
-That is a separate process and does not follow the console. Replace it with the
-default bridge output from `/connect <client>`. The bridge setup has no model path;
-use `/file` in the console to switch the model for every connected client.
-
-### Port 8383 already in use
-
-ifc-console refuses to start on an occupied port and tells you **who owns it**.
-`ifc-console doctor` reports the same:
-
-- **"your running ifc-console session (same token)"**: you already have a session
-  up; your clients are talking to it. For a second parallel session use
-  `--port 8390`, and wire the second port up once too. Project settings cannot
-  change the server port; set a persistent user port with `ifc-console settings
-  set server.port 8390` only if it should apply to every launch.
-- **"an unverified ifc-console listener (different token)"**: probably a
-  different `IFC_CONSOLE_HOME`; check `ifc-console token show` on both sides.
-- **"an application that is not ifc-console"**: some other program owns your
-  configured port. The default stdio bridge verifies a nonce-bound HMAC proof
-  before sending its bearer token, so the foreign listener does not receive it.
-  Move permanently with `ifc-console settings set server.port 8390` and re-add
-  clients (`ifc-console mcp-config`). Rotate the token if any direct HTTP client
-  may already have sent it to the foreign listener.
-
-Inside a running console, `/port 8390` moves the live server.
-
-### The console does not start ("needs a terminal")
-
-You are piping output or running without a TTY. Use `--no-tui` for a headless
-daemon or `serve --stdio` for client-managed mode. On Windows, prefer Windows
-Terminal.
-
-### "session paused" / MODEL_BUSY after a long code run
-
-A run exceeded `exec.timeout_seconds`, and CPython cannot kill a C call
-mid-flight. The session protects itself; `/reload` swaps in a fresh worker and
-reloads the file from disk. Raise the timeout if your model genuinely needs
-longer runs.
-
-### "session tainted" in the status bar
-
-Guarded (mutation-locked) code managed to mutate the in-memory model. The
-classifier missed it and the canary caught it. Nothing on disk changed.
-`/reload` restores a pristine copy; the audit log records what ran.
-
-### The viewer or chat says its assets are missing
-
-The installation is incomplete or corrupted. Reinstall the package, then
-restart ifc-console:
-
-```bash
-uv tool install --reinstall ifc-console
-# or: pip install --force-reinstall ifc-console
+```text
+/settings viewer.max_model_mb 500
 ```
 
-`ifc-console doctor` reports the bundle on its `viewer assets` line.
+### Viewer says unauthorized
 
-### The viewer shows "model too large"
+Close the stale tab and run `/viewer` again.
 
-`viewer.max_model_mb` (default 200) refused the download.
-`/settings viewer.max_model_mb 500` if you want to try anyway. Parsing very
-large models in the browser takes memory and patience.
+### Chat cannot reach a provider
 
-### The viewer tab shows "unauthorized"
+Check the key, model ID, and base URL. Local servers need an OpenAI-compatible
+`/v1` URL. `chat.local_only=true` intentionally refuses remote URLs.
 
-Open it through `/viewer` (the URL carries the token). After token rotation, or
-when per-run tokens are enabled, a stale tab can hold the old token: close it
-and run `/viewer` again.
+## Logs and bug reports
 
-### Mutations are blocked and the LLM keeps apologizing
+- Live activity: console feed.
+- Application log: `~/.ifc-console/logs/ifc-console.log`.
+- Audit: `/audit` or `ifc-console sessions show <id>`.
 
-You are in `ask` mode, the default on purpose: the AI can query but never change
-the model. `/mode edit` (with a y/n confirm) lets it make changes; `/mode ask`
-locks the model again. For per-change prompts, use your AI client's own
-permission settings.
-
-### Code runs say `sandboxed: false`
-
-The sandbox reads the model from disk, so it steps aside whenever the copy on
-disk is not the model the console is holding. `/sandbox` tells you which reason
-applies. The usual ones:
-
-- **Unsaved changes.** Save the model and the sandbox comes back.
-- **Mutating code.** Edits always run in-process, by design; there is nothing to
-  fix.
-- **The model is over `sandbox.max_model_mb`** (512 MB by default). Raise it if
-  the extra memory is acceptable.
-- **The worker could not start.** `/sandbox` shows the last error. Run
-  `/sandbox restart` to try again.
-
-Set `sandbox.mode` to `strict` if you would rather a read-only run fail than
-quietly run with in-process guards only.
-
-### The first code run after opening a model is slow
-
-The sandbox worker starts on demand and reads its own copy of the model, so the
-first `execute_ifc_code` call pays for both. Set `sandbox.warm_on_load true` to
-move that cost to model-open time instead. It costs a second resident copy of
-the model for the whole session, which is why it is off by default.
-
-### Windows: firewall prompt on startup
-
-ifc-console binds to 127.0.0.1 only, which normally avoids firewall prompts. If one
-appears anyway, it is safe to deny external access; loopback keeps working.
-
-### Where are the logs?
-
-- Console feed: live view, `ctrl+l` clears.
-- File log: `~/.ifc-console/logs/ifc-console.log` (rotating).
-- Audit records: `/audit` in the console or `ifc-console sessions show <id>`.
-
-## Reporting bugs
-
-`ifc-console doctor --json` output plus the relevant audit-log lines make a good
-bug report skeleton. Please strip file paths you consider private before
-sharing.
+Include `ifc-console doctor --json` and relevant log lines in a bug report.
+Remove private paths and never upload a confidential model.

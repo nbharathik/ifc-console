@@ -3,88 +3,53 @@
   <img alt="ifc-console" width="360" src="assets/brand/horizontal-dark.svg#only-dark">
 </p>
 
-**A local automation interface for IFC models and LLM workflows.** `ifc-console`
-loads models with IfcOpenShell and exposes the same operations through MCP, a
-Python SDK, automation workflows, and an interactive console. You can inspect,
-validate, coordinate, and make approved structured changes without a host BIM
-application or cloud service.
+**A local bridge between IFC models and AI tools.** `ifc-console` loads a model
+with IfcOpenShell and exposes it through MCP, Python, an interactive terminal,
+and optional browser tools.
 
-No Blender. No host application. Works on Windows, macOS, and Linux.
-
-```
+```text
 +------------+   MCP (streamable HTTP / stdio)   +---------------------------+
 | LLM client | --------------------------------> | ifc-console (one process) |
 | Claude ... |                                   |  +- MCP tool layer        |
 +------------+                                   |  +- IfcOpenShell session  |
                                                  |  +- Policy engine (modes) |
         you, in a terminal --------------------> |  +- Interactive console   |
-        your browser (built-in 3D viewer) -----> |  +- Web viewer (localhost)|
+       your browser (optional 3D viewer) ------> |  +- Web viewer (localhost)|
                                                  +---------------------------+
 ```
 
-## Why ifc-console
+## Start here
 
-LLMs are good at BIM data work: finding elements, auditing properties, writing
-IfcOpenShell scripts, explaining schema quirks. ifc-console is the safe,
-zero-setup bridge between an LLM client and an IFC file.
-
-- **You stay in control.** One switch (`ask` or `edit`) gates everything the
-  LLM does. In `ask` it can only query. In `edit` it may change the model. Only
-  you flip the switch, in your terminal. Finer permission prompts stay in your
-  AI client.
-- **It runs anywhere.** A Python package that runs on Windows, macOS, and
-  Linux, with the local 3D viewer included.
-- **It is honest.** Errors are machine-readable with hints. Mutations are
-  audited to JSONL. Saves are atomic with automatic backups. The docs say
-  plainly what the sandbox does and does not guarantee.
-
-## Highlights
-
-- **36 core operations, plus 4 tools enabled with the viewer.** Structured queries,
-  validation, durable jobs, artifacts, approved change previews, file handling,
-  multi-model workspaces, offline IFC knowledge, and a gated Python
-  `execute_ifc_code` power tool all share one capability policy.
-- **SDK and deterministic automation.** Use synchronous or asynchronous Python
-  without starting a server, or run resumable validation and query workflows
-  across many models from JSON or YAML.
-- **Trusted operation plugins.** Disabled-by-default, user-allowlisted Python
-  packages can add typed operations to the SDK, MCP, and browser assistant
-  together.
-- **Interactive console** styled after coding-agent CLIs: slash commands
-  (`/file`, `/mode`, `/viewer`, `/connect`), a completion menu, command history,
-  and a live feed of every MCP call.
-- **Built-in 3D viewer** in your browser. Click an element so the LLM knows
-  what "this wall" means, and let it highlight or screenshot results. The
-  viewer stays local and token-protected.
-- **Works with any MCP client:** Claude Code, Claude Desktop, Cursor, VS Code,
-  Codex. Streamable HTTP or stdio.
-
-## Quick taste
-
-```console
-$ ifc-console
-IFC CONSOLE  v0.1.4
-a terminal interface to connect IFC files to LLMs
-  model  /file to pick
-  mode   ask  (AI is query-only; /mode edit lets it change the model)
-
-> /file          # pick Duplex_A.ifc from the list
-> /connect       # copy the claude mcp add command
-> /viewer        # open the 3D view in the browser
+```bash
+uv tool install ifc-console
+cd path/to/your/models
+ifc-console
 ```
 
-Then, in your LLM client:
+In the console, run `/file`, then `/connect <client>`. The setup is one-time;
+after that, choose a model and ask questions from your AI client.
 
-> "How many walls per storey, and which of them have no FireRating?"
+```text
+> /file
+> /connect codex
+> /viewer
+```
+
+[Follow the first-session guide](getting-started.md){ .md-button .md-button--primary }
 
 ## Where next
 
-- [Getting started](getting-started.md): install and first session.
-- [The console](console.md): every slash command.
-- [Connecting clients](clients.md): Claude Code, Claude Desktop, Cursor,
-  VS Code, Codex.
-- [Safety model](safety.md): what each mode guarantees.
-- [Code sandbox](sandbox.md): where AI-generated code runs, and what it cannot reach.
-- [MCP tools](tools.md): the full tool reference.
-- [Python SDK](sdk.md): embedded, typed access without a server.
-- [Automation workflows](workflows.md): durable jobs, batches, and workflow graphs.
+| goal | page |
+| ---- | ---- |
+| learn the terminal | [Console](console.md) |
+| connect Claude, Cursor, VS Code, or Codex | [Connecting clients](clients.md) |
+| understand editing and saving | [Safety](safety.md) |
+| use the browser tools | [3D viewer](viewer.md) and [Chat](chat.md) |
+| automate with Python | [Python SDK](sdk.md) |
+| build an agent | [Agent applications](agents.md) |
+| run repeatable checks | [Workflows](workflows.md) |
+| look up commands | [CLI](cli.md) and [MCP tools](tools.md) |
+| fix a problem | [Troubleshooting](troubleshooting.md) |
+
+The base install contains no browser assets. Add `ifc-console[viewer]` only
+when you need the local 3D viewer and chat panel.

@@ -326,6 +326,25 @@ async def _help(console: ConsoleScreen, args: str) -> None:
 
 
 @command(
+    "tools",
+    "/tools [all|slash|ai|prompts|resources|settings|search]",
+    "explore every TUI command, AI function, prompt, resource, and setting",
+    "console",
+    examples=(
+        "/tools",
+        "/tools ai",
+        "/tools ai query_elements",
+        "/tools prompts",
+        "/tools search save",
+    ),
+)
+async def _tools(console: ConsoleScreen, args: str) -> None:
+    from ifc_console.tui.tool_catalog import render_catalog
+
+    console.print(await render_catalog(console.core, REGISTRY, args))
+
+
+@command(
     "file",
     "/file [path|filter]",
     "open a model: no argument picks from this folder, a path opens it",
@@ -497,9 +516,10 @@ async def _mode(console: ConsoleScreen, args: str) -> None:
     core = console.core
     if not args:
         mode = core.policy.mode.value
+        saving = "AI saves enabled" if core.policy.allow_ai_save else "only you can save"
         console.print(
             f"mode: [{_mode_color(mode)}]{mode}[/{_mode_color(mode)}] "
-            "(ask = AI queries only; edit = AI may change the model; /mode edit to switch)"
+            f"(ask = AI queries only; edit = AI may change the model; {saving})"
         )
         return
     try:
@@ -511,7 +531,11 @@ async def _mode(console: ConsoleScreen, args: str) -> None:
         console.print(f"already in {new_mode.value} mode")
         return
     if core.policy.is_escalation(new_mode):
-        detail = "This lets the AI change and save the model through MCP tools."
+        detail = (
+            "This lets the AI change the in-memory model. Only you can save it."
+            if not core.policy.allow_ai_save
+            else "This lets the AI change and save the model through MCP tools."
+        )
         if not await console.confirm(f"Switch to {new_mode.value.upper()} mode?", detail):
             console.print("[dim]mode unchanged[/dim]")
             return
@@ -1045,6 +1069,18 @@ async def _settings(console: ConsoleScreen, args: str) -> None:
         except KeyError:
             console.print(f"[red]unknown setting {escape(key)!r}[/red]")
         return
+    enabling_ai_save = (
+        key == "files.allow_ai_save"
+        and value.strip().lower() in {"true", "1", "yes", "on"}
+        and not bool(store.settings.files.allow_ai_save)
+    )
+    if enabling_ai_save and not await console.confirm(
+        "Allow the AI to save IFC files?",
+        "This lets AI tools persist in-memory changes and replace IFC files. "
+        "Automatic backups still apply.",
+    ):
+        console.print("[dim]files.allow_ai_save remains false[/dim]")
+        return
     try:
         parsed: Any = store.set_user(key, value.strip())
     except KeyError:
@@ -1078,6 +1114,7 @@ _LIVE_SETTINGS: dict[str, Callable[[Any, Any], None]] = {
     "workspace.scan_cap": lambda core, v: setattr(core.workspace, "cap", v),
     "workspace.scan_depth": lambda core, v: setattr(core.workspace, "depth", v),
     "exec.allow_system_access": lambda core, v: setattr(core.policy, "allow_system_access", v),
+    "files.allow_ai_save": lambda core, v: setattr(core.policy, "allow_ai_save", v),
 }
 
 

@@ -60,7 +60,7 @@ def build_parser() -> argparse.ArgumentParser:
         description=(
             "A terminal interface to connect IFC files to LLMs: a standalone MCP server. "
             "With no subcommand, starts the interactive console (slash commands: "
-            "/file, /mode, /viewer, /connect, /help)."
+            "/file, /mode, /viewer, /connect, /tools, /help)."
         ),
     )
     # _version_line() reads package metadata; only --version should pay for it
@@ -506,7 +506,7 @@ def _add_run_flags(parser: argparse.ArgumentParser) -> None:
         action="append",
         default=None,
         metavar="PATH",
-        help="Extra directory the LLM may open/save models in (repeatable).",
+        help="Extra directory the LLM may open models in, and save in when AI saving is enabled.",
     )
     parser.add_argument("--log-level", choices=["debug", "info", "warning", "error"], default=None)
 
@@ -551,6 +551,12 @@ def _make_core(args: argparse.Namespace, store: SettingsStore, transport: str) -
     chat_flag = True if getattr(args, "chat", False) else None
     if transport == "stdio":
         chat_flag = False
+    browser_requested = viewer_flag is True or chat_flag is True
+    if browser_requested:
+        from ifc_console.viewer import assets
+
+        if not assets.available():
+            print(f"note: {assets.INSTALL_HINT}", file=sys.stderr)
     from ifc_console.app import AppCore
 
     return AppCore(
@@ -2153,10 +2159,13 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
     static_dir = viewer_assets.static_dir()
     wanted = ("index.html", "app.js", "vendor/web-ifc.wasm", "vendor/three.module.min.js")
     if static_dir is None:
-        check("viewer assets", "FAIL", viewer_assets.INSTALL_HINT)
-        rc = rc or 2
+        check("viewer assets", "optional", viewer_assets.INSTALL_HINT)
     elif missing := [n for n in wanted if not (static_dir / n).exists()]:
-        check("viewer assets", "FAIL", f"missing: {', '.join(missing)}; reinstall ifc-console")
+        check(
+            "viewer assets",
+            "FAIL",
+            f"missing: {', '.join(missing)}; reinstall the viewer extra",
+        )
         rc = rc or 2
     else:
         wasm_mb = (static_dir / "vendor/web-ifc.wasm").stat().st_size / 1_048_576

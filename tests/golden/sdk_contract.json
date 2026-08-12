@@ -1,5 +1,7 @@
 {
   "aliases": {
+    "AgentEventType": "Literal['run_started', 'text_delta', 'reasoning_delta', 'tool_call_started', 'approval_requested', 'approval_resolved', 'tool_call_finished', 'usage', 'run_completed', 'run_failed']",
+    "AgentRole": "Literal['user', 'assistant', 'tool']",
     "Authority": "Literal['tool', 'caller', 'worker']",
     "IfcScalar": "str | int | float | bool | None"
   },
@@ -143,8 +145,23 @@
     }
   },
   "exports": [
+    "Agent",
+    "AgentEvent",
+    "AgentEventType",
+    "AgentLimits",
+    "AgentMessage",
+    "AgentModel",
+    "AgentRole",
+    "AgentRunError",
+    "AgentRunResult",
+    "AgentToolCallRecord",
+    "AgentToolSource",
+    "AgentUsage",
     "Approval",
+    "ApprovalDecision",
+    "ApprovalHandler",
     "ApprovalRecord",
+    "ApprovalRequest",
     "ArtifactGCPlan",
     "ArtifactGCResult",
     "ArtifactRef",
@@ -155,6 +172,7 @@
     "BatchRecord",
     "BatchSpec",
     "BatchState",
+    "CallbackApprovalHandler",
     "Capability",
     "CapabilityDecision",
     "ChangeSet",
@@ -163,16 +181,26 @@
     "CommitJobSpec",
     "CommitRecord",
     "CommitResult",
+    "ConsoleRuntime",
+    "DenyAllApprovals",
     "Envelope",
     "ErrorInfo",
+    "FunctionToolSource",
     "IfcConsoleError",
+    "IfcRuntime",
     "IfcScalar",
+    "InMemoryThreadStore",
     "JobEvent",
     "JobFailure",
     "JobRecord",
     "JobState",
+    "JsonThreadStore",
+    "LocalOperationBackend",
+    "LocalRuntime",
+    "McpToolSource",
     "ModelContext",
     "OperationAnnotations",
+    "OperationBackend",
     "OperationContext",
     "OperationDefinition",
     "OperationPlugin",
@@ -181,6 +209,7 @@
     "PluginRecord",
     "PropertyCreateChange",
     "PropertyValueChange",
+    "ProviderModel",
     "QueryBatchOperation",
     "QueryElementsData",
     "QueryJobSpec",
@@ -189,6 +218,13 @@
     "RestoreResult",
     "RevisionRef",
     "SourceFileRef",
+    "ThreadStore",
+    "ThreadStoreError",
+    "ToolCall",
+    "ToolDefinition",
+    "ToolMiddleware",
+    "ToolSource",
+    "Toolset",
     "TransactionJournal",
     "TransactionKind",
     "TransactionPhase",
@@ -208,10 +244,91 @@
     "WorkflowStepSpec",
     "WorkflowStepState",
     "WorkflowValidationOperation",
+    "WorkspaceClient",
     "WorkspaceContext",
     "__version__"
   ],
   "methods": {
+    "Agent": {
+      "run": {
+        "async": true,
+        "parameters": [
+          {
+            "annotation": "str",
+            "kind": "POSITIONAL_OR_KEYWORD",
+            "name": "prompt",
+            "required": true
+          },
+          {
+            "annotation": "str | None",
+            "default": "None",
+            "kind": "KEYWORD_ONLY",
+            "name": "thread_id"
+          },
+          {
+            "annotation": "Mapping[str, Any] | None",
+            "default": "None",
+            "kind": "KEYWORD_ONLY",
+            "name": "options"
+          }
+        ],
+        "returns": "AgentRunResult"
+      },
+      "stream": {
+        "async": false,
+        "parameters": [
+          {
+            "annotation": "str",
+            "kind": "POSITIONAL_OR_KEYWORD",
+            "name": "prompt",
+            "required": true
+          },
+          {
+            "annotation": "str | None",
+            "default": "None",
+            "kind": "KEYWORD_ONLY",
+            "name": "thread_id"
+          },
+          {
+            "annotation": "Mapping[str, Any] | None",
+            "default": "None",
+            "kind": "KEYWORD_ONLY",
+            "name": "options"
+          }
+        ],
+        "returns": "AsyncIterator[AgentEvent]"
+      }
+    },
+    "AgentToolSource": {
+      "aclose": {
+        "async": true,
+        "parameters": [],
+        "returns": "None"
+      },
+      "call_tool": {
+        "async": true,
+        "parameters": [
+          {
+            "annotation": "str",
+            "kind": "POSITIONAL_OR_KEYWORD",
+            "name": "name",
+            "required": true
+          },
+          {
+            "annotation": "Mapping[str, Any]",
+            "kind": "POSITIONAL_OR_KEYWORD",
+            "name": "arguments",
+            "required": true
+          }
+        ],
+        "returns": "dict[str, Any]"
+      },
+      "list_tools": {
+        "async": true,
+        "parameters": [],
+        "returns": "Sequence[ToolDefinition]"
+      }
+    },
     "AsyncWorkbench": {
       "aclose": {
         "async": true,
@@ -1615,6 +1732,490 @@
         "returns": "list[WorkflowRecord]"
       }
     },
+    "ConsoleRuntime": {
+      "aclose": {
+        "async": true,
+        "parameters": [],
+        "returns": "None"
+      },
+      "call": {
+        "async": true,
+        "parameters": [
+          {
+            "annotation": "str",
+            "kind": "POSITIONAL_OR_KEYWORD",
+            "name": "name",
+            "required": true
+          },
+          {
+            "annotation": "Any",
+            "kind": "VAR_KEYWORD",
+            "name": "arguments",
+            "required": true
+          }
+        ],
+        "returns": "dict[str, Any]"
+      },
+      "connect_http": {
+        "async": true,
+        "parameters": [
+          {
+            "annotation": "str",
+            "kind": "POSITIONAL_OR_KEYWORD",
+            "name": "url",
+            "required": true
+          },
+          {
+            "annotation": "str | None",
+            "default": "None",
+            "kind": "KEYWORD_ONLY",
+            "name": "token"
+          },
+          {
+            "annotation": "Mapping[str, str] | None",
+            "default": "None",
+            "kind": "KEYWORD_ONLY",
+            "name": "headers"
+          }
+        ],
+        "returns": "ConsoleRuntime"
+      },
+      "connect_stdio": {
+        "async": true,
+        "parameters": [
+          {
+            "annotation": "str",
+            "kind": "POSITIONAL_OR_KEYWORD",
+            "name": "command",
+            "required": true
+          },
+          {
+            "annotation": "Sequence[str]",
+            "default": "()",
+            "kind": "POSITIONAL_OR_KEYWORD",
+            "name": "args"
+          },
+          {
+            "annotation": "Mapping[str, str] | None",
+            "default": "None",
+            "kind": "KEYWORD_ONLY",
+            "name": "env"
+          },
+          {
+            "annotation": "str | Path | None",
+            "default": "None",
+            "kind": "KEYWORD_ONLY",
+            "name": "cwd"
+          }
+        ],
+        "returns": "ConsoleRuntime"
+      },
+      "toolset": {
+        "async": true,
+        "parameters": [
+          {
+            "annotation": "ToolSource",
+            "kind": "VAR_POSITIONAL",
+            "name": "additional_sources",
+            "required": true
+          },
+          {
+            "annotation": "bool",
+            "default": "True",
+            "kind": "KEYWORD_ONLY",
+            "name": "permitted_only"
+          }
+        ],
+        "returns": "Toolset"
+      }
+    },
+    "FunctionToolSource": {
+      "aclose": {
+        "async": true,
+        "parameters": [],
+        "returns": "None"
+      },
+      "call_tool": {
+        "async": true,
+        "parameters": [
+          {
+            "annotation": "str",
+            "kind": "POSITIONAL_OR_KEYWORD",
+            "name": "name",
+            "required": true
+          },
+          {
+            "annotation": "Mapping[str, Any]",
+            "kind": "POSITIONAL_OR_KEYWORD",
+            "name": "arguments",
+            "required": true
+          }
+        ],
+        "returns": "Any"
+      },
+      "list_tools": {
+        "async": true,
+        "parameters": [],
+        "returns": "Sequence[ToolDefinition]"
+      },
+      "tool": {
+        "async": false,
+        "parameters": [
+          {
+            "annotation": "str | None",
+            "default": "None",
+            "kind": "POSITIONAL_OR_KEYWORD",
+            "name": "name"
+          },
+          {
+            "annotation": "str | None",
+            "default": "None",
+            "kind": "KEYWORD_ONLY",
+            "name": "description"
+          },
+          {
+            "annotation": "OperationAnnotations | None",
+            "default": "None",
+            "kind": "KEYWORD_ONLY",
+            "name": "annotations"
+          },
+          {
+            "annotation": "type[BaseModel] | None",
+            "default": "None",
+            "kind": "KEYWORD_ONLY",
+            "name": "data_model"
+          },
+          {
+            "annotation": "Iterable[Capability | str]",
+            "default": "()",
+            "kind": "KEYWORD_ONLY",
+            "name": "required_capabilities"
+          },
+          {
+            "annotation": "Iterable[str]",
+            "default": "()",
+            "kind": "KEYWORD_ONLY",
+            "name": "tags"
+          },
+          {
+            "annotation": "bool",
+            "default": "False",
+            "kind": "KEYWORD_ONLY",
+            "name": "requires_approval"
+          }
+        ],
+        "returns": "Callable[[Callable[..., Any]], Callable[..., Any]]"
+      }
+    },
+    "InMemoryThreadStore": {
+      "delete": {
+        "async": true,
+        "parameters": [
+          {
+            "annotation": "str",
+            "kind": "POSITIONAL_OR_KEYWORD",
+            "name": "thread_id",
+            "required": true
+          }
+        ],
+        "returns": "bool"
+      },
+      "list_threads": {
+        "async": true,
+        "parameters": [],
+        "returns": "tuple[str, ...]"
+      },
+      "load": {
+        "async": true,
+        "parameters": [
+          {
+            "annotation": "str",
+            "kind": "POSITIONAL_OR_KEYWORD",
+            "name": "thread_id",
+            "required": true
+          }
+        ],
+        "returns": "Sequence[AgentMessage]"
+      },
+      "save": {
+        "async": true,
+        "parameters": [
+          {
+            "annotation": "str",
+            "kind": "POSITIONAL_OR_KEYWORD",
+            "name": "thread_id",
+            "required": true
+          },
+          {
+            "annotation": "Sequence[AgentMessage]",
+            "kind": "POSITIONAL_OR_KEYWORD",
+            "name": "messages",
+            "required": true
+          }
+        ],
+        "returns": "None"
+      }
+    },
+    "JsonThreadStore": {
+      "delete": {
+        "async": true,
+        "parameters": [
+          {
+            "annotation": "str",
+            "kind": "POSITIONAL_OR_KEYWORD",
+            "name": "thread_id",
+            "required": true
+          }
+        ],
+        "returns": "bool"
+      },
+      "list_threads": {
+        "async": true,
+        "parameters": [],
+        "returns": "tuple[str, ...]"
+      },
+      "load": {
+        "async": true,
+        "parameters": [
+          {
+            "annotation": "str",
+            "kind": "POSITIONAL_OR_KEYWORD",
+            "name": "thread_id",
+            "required": true
+          }
+        ],
+        "returns": "Sequence[AgentMessage]"
+      },
+      "save": {
+        "async": true,
+        "parameters": [
+          {
+            "annotation": "str",
+            "kind": "POSITIONAL_OR_KEYWORD",
+            "name": "thread_id",
+            "required": true
+          },
+          {
+            "annotation": "Sequence[AgentMessage]",
+            "kind": "POSITIONAL_OR_KEYWORD",
+            "name": "messages",
+            "required": true
+          }
+        ],
+        "returns": "None"
+      }
+    },
+    "LocalRuntime": {
+      "aclose": {
+        "async": true,
+        "parameters": [],
+        "returns": "None"
+      },
+      "call": {
+        "async": true,
+        "parameters": [
+          {
+            "annotation": "str",
+            "kind": "POSITIONAL_OR_KEYWORD",
+            "name": "name",
+            "required": true
+          },
+          {
+            "annotation": "Any",
+            "kind": "VAR_KEYWORD",
+            "name": "arguments",
+            "required": true
+          }
+        ],
+        "returns": "dict[str, Any]"
+      },
+      "from_workbench": {
+        "async": false,
+        "parameters": [
+          {
+            "annotation": "AsyncWorkbench",
+            "kind": "POSITIONAL_OR_KEYWORD",
+            "name": "workbench",
+            "required": true
+          },
+          {
+            "annotation": "bool",
+            "default": "False",
+            "kind": "KEYWORD_ONLY",
+            "name": "owns_workbench"
+          }
+        ],
+        "returns": "LocalRuntime"
+      },
+      "open": {
+        "async": true,
+        "parameters": [
+          {
+            "annotation": "str | Path | None",
+            "default": "None",
+            "kind": "POSITIONAL_OR_KEYWORD",
+            "name": "path"
+          },
+          {
+            "annotation": "str",
+            "default": "'ask'",
+            "kind": "KEYWORD_ONLY",
+            "name": "mode"
+          },
+          {
+            "annotation": "str | Path | None",
+            "default": "None",
+            "kind": "KEYWORD_ONLY",
+            "name": "home"
+          },
+          {
+            "annotation": "tuple[str | Path, ...]",
+            "default": "()",
+            "kind": "KEYWORD_ONLY",
+            "name": "allowed_dirs"
+          },
+          {
+            "annotation": "dict[str, Any] | None",
+            "default": "None",
+            "kind": "KEYWORD_ONLY",
+            "name": "settings"
+          }
+        ],
+        "returns": "LocalRuntime"
+      },
+      "set_mode": {
+        "async": false,
+        "parameters": [
+          {
+            "annotation": "str",
+            "kind": "POSITIONAL_OR_KEYWORD",
+            "name": "mode",
+            "required": true
+          }
+        ],
+        "returns": "str"
+      },
+      "toolset": {
+        "async": true,
+        "parameters": [
+          {
+            "annotation": "ToolSource",
+            "kind": "VAR_POSITIONAL",
+            "name": "additional_sources",
+            "required": true
+          },
+          {
+            "annotation": "bool",
+            "default": "True",
+            "kind": "KEYWORD_ONLY",
+            "name": "permitted_only"
+          }
+        ],
+        "returns": "Toolset"
+      }
+    },
+    "McpToolSource": {
+      "aclose": {
+        "async": true,
+        "parameters": [],
+        "returns": "None"
+      },
+      "call_tool": {
+        "async": true,
+        "parameters": [
+          {
+            "annotation": "str",
+            "kind": "POSITIONAL_OR_KEYWORD",
+            "name": "name",
+            "required": true
+          },
+          {
+            "annotation": "Mapping[str, Any]",
+            "kind": "POSITIONAL_OR_KEYWORD",
+            "name": "arguments",
+            "required": true
+          }
+        ],
+        "returns": "dict[str, Any]"
+      },
+      "connect_http": {
+        "async": true,
+        "parameters": [
+          {
+            "annotation": "str",
+            "kind": "POSITIONAL_OR_KEYWORD",
+            "name": "url",
+            "required": true
+          },
+          {
+            "annotation": "Mapping[str, str] | None",
+            "default": "None",
+            "kind": "KEYWORD_ONLY",
+            "name": "headers"
+          },
+          {
+            "annotation": "str",
+            "default": "'mcp'",
+            "kind": "KEYWORD_ONLY",
+            "name": "namespace"
+          },
+          {
+            "annotation": "str | None",
+            "default": "None",
+            "kind": "KEYWORD_ONLY",
+            "name": "source_id"
+          }
+        ],
+        "returns": "McpToolSource"
+      },
+      "connect_stdio": {
+        "async": true,
+        "parameters": [
+          {
+            "annotation": "str",
+            "kind": "POSITIONAL_OR_KEYWORD",
+            "name": "command",
+            "required": true
+          },
+          {
+            "annotation": "Sequence[str]",
+            "default": "()",
+            "kind": "POSITIONAL_OR_KEYWORD",
+            "name": "args"
+          },
+          {
+            "annotation": "Mapping[str, str] | None",
+            "default": "None",
+            "kind": "KEYWORD_ONLY",
+            "name": "env"
+          },
+          {
+            "annotation": "str | Path | None",
+            "default": "None",
+            "kind": "KEYWORD_ONLY",
+            "name": "cwd"
+          },
+          {
+            "annotation": "str",
+            "default": "'mcp'",
+            "kind": "KEYWORD_ONLY",
+            "name": "namespace"
+          },
+          {
+            "annotation": "str | None",
+            "default": "None",
+            "kind": "KEYWORD_ONLY",
+            "name": "source_id"
+          }
+        ],
+        "returns": "McpToolSource"
+      },
+      "list_tools": {
+        "async": true,
+        "parameters": [],
+        "returns": "Sequence[ToolDefinition]"
+      }
+    },
     "OperationPlugin": {
       "register": {
         "async": false,
@@ -1677,6 +2278,146 @@
           }
         ],
         "returns": "Envelope"
+      }
+    },
+    "ProviderModel": {
+      "stream": {
+        "async": false,
+        "parameters": [
+          {
+            "annotation": "Sequence[AgentMessage]",
+            "kind": "KEYWORD_ONLY",
+            "name": "messages",
+            "required": true
+          },
+          {
+            "annotation": "Sequence[ToolDefinition]",
+            "kind": "KEYWORD_ONLY",
+            "name": "tools",
+            "required": true
+          },
+          {
+            "annotation": "str",
+            "kind": "KEYWORD_ONLY",
+            "name": "system",
+            "required": true
+          },
+          {
+            "annotation": "Mapping[str, Any]",
+            "kind": "KEYWORD_ONLY",
+            "name": "options",
+            "required": true
+          }
+        ],
+        "returns": "AsyncIterator[Mapping[str, Any]]"
+      }
+    },
+    "Toolset": {
+      "aclose": {
+        "async": true,
+        "parameters": [],
+        "returns": "None"
+      },
+      "build": {
+        "async": true,
+        "parameters": [
+          {
+            "annotation": "ToolSource",
+            "kind": "VAR_POSITIONAL",
+            "name": "sources",
+            "required": true
+          },
+          {
+            "annotation": "bool",
+            "default": "True",
+            "kind": "KEYWORD_ONLY",
+            "name": "permitted_only"
+          }
+        ],
+        "returns": "Toolset"
+      },
+      "call": {
+        "async": true,
+        "parameters": [
+          {
+            "annotation": "str",
+            "kind": "POSITIONAL_OR_KEYWORD",
+            "name": "name",
+            "required": true
+          },
+          {
+            "annotation": "Mapping[str, Any] | None",
+            "default": "None",
+            "kind": "POSITIONAL_OR_KEYWORD",
+            "name": "arguments"
+          }
+        ],
+        "returns": "dict[str, Any]"
+      },
+      "exclude": {
+        "async": false,
+        "parameters": [
+          {
+            "annotation": "str",
+            "kind": "VAR_POSITIONAL",
+            "name": "patterns",
+            "required": true
+          },
+          {
+            "annotation": "Iterable[str]",
+            "default": "()",
+            "kind": "KEYWORD_ONLY",
+            "name": "tags"
+          },
+          {
+            "annotation": "Iterable[str | Capability]",
+            "default": "()",
+            "kind": "KEYWORD_ONLY",
+            "name": "capabilities"
+          }
+        ],
+        "returns": "Toolset"
+      },
+      "include": {
+        "async": false,
+        "parameters": [
+          {
+            "annotation": "str",
+            "kind": "VAR_POSITIONAL",
+            "name": "patterns",
+            "required": true
+          },
+          {
+            "annotation": "Iterable[str]",
+            "default": "()",
+            "kind": "KEYWORD_ONLY",
+            "name": "tags"
+          },
+          {
+            "annotation": "Iterable[str | Capability]",
+            "default": "()",
+            "kind": "KEYWORD_ONLY",
+            "name": "capabilities"
+          }
+        ],
+        "returns": "Toolset"
+      },
+      "require": {
+        "async": false,
+        "parameters": [
+          {
+            "annotation": "str",
+            "kind": "POSITIONAL_OR_KEYWORD",
+            "name": "name",
+            "required": true
+          }
+        ],
+        "returns": "ToolDefinition"
+      },
+      "schemas": {
+        "async": false,
+        "parameters": [],
+        "returns": "list[dict[str, Any]]"
       }
     },
     "Workbench": {
@@ -3076,9 +3817,843 @@
         ],
         "returns": "list[WorkflowRecord]"
       }
+    },
+    "WorkspaceClient": {
+      "attach": {
+        "async": true,
+        "parameters": [
+          {
+            "annotation": "str | Path",
+            "kind": "POSITIONAL_OR_KEYWORD",
+            "name": "path",
+            "required": true
+          },
+          {
+            "annotation": "str | None",
+            "default": "None",
+            "kind": "KEYWORD_ONLY",
+            "name": "alias"
+          }
+        ],
+        "returns": "dict[str, Any]"
+      },
+      "detach": {
+        "async": true,
+        "parameters": [
+          {
+            "annotation": "str",
+            "kind": "POSITIONAL_OR_KEYWORD",
+            "name": "identifier",
+            "required": true
+          }
+        ],
+        "returns": "dict[str, Any]"
+      },
+      "info": {
+        "async": true,
+        "parameters": [
+          {
+            "annotation": "str | None",
+            "default": "None",
+            "kind": "KEYWORD_ONLY",
+            "name": "model"
+          }
+        ],
+        "returns": "dict[str, Any]"
+      },
+      "models": {
+        "async": true,
+        "parameters": [],
+        "returns": "dict[str, Any]"
+      },
+      "open": {
+        "async": true,
+        "parameters": [
+          {
+            "annotation": "str | Path",
+            "kind": "POSITIONAL_OR_KEYWORD",
+            "name": "path",
+            "required": true
+          }
+        ],
+        "returns": "dict[str, Any]"
+      },
+      "orient": {
+        "async": true,
+        "parameters": [],
+        "returns": "dict[str, Any]"
+      },
+      "status": {
+        "async": true,
+        "parameters": [],
+        "returns": "dict[str, Any]"
+      },
+      "use": {
+        "async": true,
+        "parameters": [
+          {
+            "annotation": "str",
+            "kind": "POSITIONAL_OR_KEYWORD",
+            "name": "model_id",
+            "required": true
+          }
+        ],
+        "returns": "dict[str, Any]"
+      }
     }
   },
   "models": {
+    "AgentEvent": {
+      "$defs": {
+        "AgentMessage": {
+          "description": "Provider-neutral conversation message, including tool round state.",
+          "properties": {
+            "name": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Name"
+            },
+            "role": {
+              "enum": [
+                "user",
+                "assistant",
+                "tool"
+              ],
+              "title": "Role",
+              "type": "string"
+            },
+            "text": {
+              "default": "",
+              "title": "Text",
+              "type": "string"
+            },
+            "tool_call_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Tool Call Id"
+            },
+            "tool_calls": {
+              "default": [],
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "title": "Tool Calls",
+              "type": "array"
+            }
+          },
+          "required": [
+            "role"
+          ],
+          "title": "AgentMessage",
+          "type": "object"
+        },
+        "AgentRunResult": {
+          "properties": {
+            "error": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Error"
+            },
+            "messages": {
+              "items": {
+                "$ref": "#/$defs/AgentMessage"
+              },
+              "title": "Messages",
+              "type": "array"
+            },
+            "run_id": {
+              "title": "Run Id",
+              "type": "string"
+            },
+            "text": {
+              "title": "Text",
+              "type": "string"
+            },
+            "thread_id": {
+              "title": "Thread Id",
+              "type": "string"
+            },
+            "tool_calls": {
+              "default": [],
+              "items": {
+                "$ref": "#/$defs/AgentToolCallRecord"
+              },
+              "title": "Tool Calls",
+              "type": "array"
+            },
+            "usage": {
+              "$ref": "#/$defs/AgentUsage"
+            }
+          },
+          "required": [
+            "run_id",
+            "thread_id",
+            "text",
+            "messages"
+          ],
+          "title": "AgentRunResult",
+          "type": "object"
+        },
+        "AgentToolCallRecord": {
+          "properties": {
+            "arguments": {
+              "additionalProperties": true,
+              "title": "Arguments",
+              "type": "object"
+            },
+            "id": {
+              "title": "Id",
+              "type": "string"
+            },
+            "name": {
+              "title": "Name",
+              "type": "string"
+            },
+            "ok": {
+              "title": "Ok",
+              "type": "boolean"
+            },
+            "result": {
+              "additionalProperties": true,
+              "title": "Result",
+              "type": "object"
+            },
+            "summary": {
+              "title": "Summary",
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "name",
+            "arguments",
+            "ok",
+            "summary",
+            "result"
+          ],
+          "title": "AgentToolCallRecord",
+          "type": "object"
+        },
+        "AgentUsage": {
+          "properties": {
+            "input_tokens": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Input Tokens"
+            },
+            "output_tokens": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Output Tokens"
+            }
+          },
+          "title": "AgentUsage",
+          "type": "object"
+        },
+        "ApprovalDecision": {
+          "properties": {
+            "approved": {
+              "title": "Approved",
+              "type": "boolean"
+            },
+            "decided_by": {
+              "default": "application",
+              "title": "Decided By",
+              "type": "string"
+            },
+            "reason": {
+              "default": "",
+              "title": "Reason",
+              "type": "string"
+            }
+          },
+          "required": [
+            "approved"
+          ],
+          "title": "ApprovalDecision",
+          "type": "object"
+        },
+        "ApprovalRequest": {
+          "description": "A caller-owned decision requested before a protected tool executes.",
+          "properties": {
+            "arguments": {
+              "additionalProperties": true,
+              "title": "Arguments",
+              "type": "object"
+            },
+            "created_at": {
+              "format": "date-time",
+              "title": "Created At",
+              "type": "string"
+            },
+            "request_id": {
+              "title": "Request Id",
+              "type": "string"
+            },
+            "required_capabilities": {
+              "default": [],
+              "items": {
+                "type": "string"
+              },
+              "title": "Required Capabilities",
+              "type": "array"
+            },
+            "run_id": {
+              "title": "Run Id",
+              "type": "string"
+            },
+            "thread_id": {
+              "title": "Thread Id",
+              "type": "string"
+            },
+            "tool_call_id": {
+              "title": "Tool Call Id",
+              "type": "string"
+            },
+            "tool_name": {
+              "title": "Tool Name",
+              "type": "string"
+            }
+          },
+          "required": [
+            "request_id",
+            "run_id",
+            "thread_id",
+            "tool_call_id",
+            "tool_name",
+            "arguments"
+          ],
+          "title": "ApprovalRequest",
+          "type": "object"
+        }
+      },
+      "description": "One discriminated streaming event emitted by an agent run.",
+      "properties": {
+        "approval": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ApprovalRequest"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "arguments": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Arguments"
+        },
+        "created_at": {
+          "format": "date-time",
+          "title": "Created At",
+          "type": "string"
+        },
+        "decision": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ApprovalDecision"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "result": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Result"
+        },
+        "run_id": {
+          "title": "Run Id",
+          "type": "string"
+        },
+        "run_result": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AgentRunResult"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "text": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Text"
+        },
+        "thread_id": {
+          "title": "Thread Id",
+          "type": "string"
+        },
+        "tool_call_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tool Call Id"
+        },
+        "tool_name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tool Name"
+        },
+        "type": {
+          "enum": [
+            "run_started",
+            "text_delta",
+            "reasoning_delta",
+            "tool_call_started",
+            "approval_requested",
+            "approval_resolved",
+            "tool_call_finished",
+            "usage",
+            "run_completed",
+            "run_failed"
+          ],
+          "title": "Type",
+          "type": "string"
+        },
+        "usage": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AgentUsage"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "type",
+        "run_id",
+        "thread_id"
+      ],
+      "title": "AgentEvent",
+      "type": "object"
+    },
+    "AgentLimits": {
+      "description": "Hard limits for one run.",
+      "properties": {
+        "max_tool_calls": {
+          "default": 32,
+          "maximum": 1000,
+          "minimum": 0,
+          "title": "Max Tool Calls",
+          "type": "integer"
+        },
+        "max_tool_result_chars": {
+          "default": 12000,
+          "maximum": 1000000,
+          "minimum": 512,
+          "title": "Max Tool Result Chars",
+          "type": "integer"
+        },
+        "max_tool_rounds": {
+          "default": 8,
+          "maximum": 100,
+          "minimum": 1,
+          "title": "Max Tool Rounds",
+          "type": "integer"
+        },
+        "timeout_s": {
+          "default": 600.0,
+          "exclusiveMinimum": 0,
+          "maximum": 86400,
+          "title": "Timeout S",
+          "type": "number"
+        }
+      },
+      "title": "AgentLimits",
+      "type": "object"
+    },
+    "AgentMessage": {
+      "description": "Provider-neutral conversation message, including tool round state.",
+      "properties": {
+        "name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Name"
+        },
+        "role": {
+          "enum": [
+            "user",
+            "assistant",
+            "tool"
+          ],
+          "title": "Role",
+          "type": "string"
+        },
+        "text": {
+          "default": "",
+          "title": "Text",
+          "type": "string"
+        },
+        "tool_call_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tool Call Id"
+        },
+        "tool_calls": {
+          "default": [],
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "Tool Calls",
+          "type": "array"
+        }
+      },
+      "required": [
+        "role"
+      ],
+      "title": "AgentMessage",
+      "type": "object"
+    },
+    "AgentRunResult": {
+      "$defs": {
+        "AgentMessage": {
+          "description": "Provider-neutral conversation message, including tool round state.",
+          "properties": {
+            "name": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Name"
+            },
+            "role": {
+              "enum": [
+                "user",
+                "assistant",
+                "tool"
+              ],
+              "title": "Role",
+              "type": "string"
+            },
+            "text": {
+              "default": "",
+              "title": "Text",
+              "type": "string"
+            },
+            "tool_call_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Tool Call Id"
+            },
+            "tool_calls": {
+              "default": [],
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "title": "Tool Calls",
+              "type": "array"
+            }
+          },
+          "required": [
+            "role"
+          ],
+          "title": "AgentMessage",
+          "type": "object"
+        },
+        "AgentToolCallRecord": {
+          "properties": {
+            "arguments": {
+              "additionalProperties": true,
+              "title": "Arguments",
+              "type": "object"
+            },
+            "id": {
+              "title": "Id",
+              "type": "string"
+            },
+            "name": {
+              "title": "Name",
+              "type": "string"
+            },
+            "ok": {
+              "title": "Ok",
+              "type": "boolean"
+            },
+            "result": {
+              "additionalProperties": true,
+              "title": "Result",
+              "type": "object"
+            },
+            "summary": {
+              "title": "Summary",
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "name",
+            "arguments",
+            "ok",
+            "summary",
+            "result"
+          ],
+          "title": "AgentToolCallRecord",
+          "type": "object"
+        },
+        "AgentUsage": {
+          "properties": {
+            "input_tokens": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Input Tokens"
+            },
+            "output_tokens": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Output Tokens"
+            }
+          },
+          "title": "AgentUsage",
+          "type": "object"
+        }
+      },
+      "properties": {
+        "error": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Error"
+        },
+        "messages": {
+          "items": {
+            "$ref": "#/$defs/AgentMessage"
+          },
+          "title": "Messages",
+          "type": "array"
+        },
+        "run_id": {
+          "title": "Run Id",
+          "type": "string"
+        },
+        "text": {
+          "title": "Text",
+          "type": "string"
+        },
+        "thread_id": {
+          "title": "Thread Id",
+          "type": "string"
+        },
+        "tool_calls": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/AgentToolCallRecord"
+          },
+          "title": "Tool Calls",
+          "type": "array"
+        },
+        "usage": {
+          "$ref": "#/$defs/AgentUsage"
+        }
+      },
+      "required": [
+        "run_id",
+        "thread_id",
+        "text",
+        "messages"
+      ],
+      "title": "AgentRunResult",
+      "type": "object"
+    },
+    "AgentToolCallRecord": {
+      "properties": {
+        "arguments": {
+          "additionalProperties": true,
+          "title": "Arguments",
+          "type": "object"
+        },
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "ok": {
+          "title": "Ok",
+          "type": "boolean"
+        },
+        "result": {
+          "additionalProperties": true,
+          "title": "Result",
+          "type": "object"
+        },
+        "summary": {
+          "title": "Summary",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "arguments",
+        "ok",
+        "summary",
+        "result"
+      ],
+      "title": "AgentToolCallRecord",
+      "type": "object"
+    },
+    "AgentUsage": {
+      "properties": {
+        "input_tokens": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Input Tokens"
+        },
+        "output_tokens": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Output Tokens"
+        }
+      },
+      "title": "AgentUsage",
+      "type": "object"
+    },
     "Approval": {
       "$defs": {
         "OperationContext": {
@@ -3286,6 +4861,29 @@
         "approved_at"
       ],
       "title": "Approval",
+      "type": "object"
+    },
+    "ApprovalDecision": {
+      "properties": {
+        "approved": {
+          "title": "Approved",
+          "type": "boolean"
+        },
+        "decided_by": {
+          "default": "application",
+          "title": "Decided By",
+          "type": "string"
+        },
+        "reason": {
+          "default": "",
+          "title": "Reason",
+          "type": "string"
+        }
+      },
+      "required": [
+        "approved"
+      ],
+      "title": "ApprovalDecision",
       "type": "object"
     },
     "ApprovalRecord": {
@@ -3603,6 +5201,59 @@
         "artifact"
       ],
       "title": "ApprovalRecord",
+      "type": "object"
+    },
+    "ApprovalRequest": {
+      "description": "A caller-owned decision requested before a protected tool executes.",
+      "properties": {
+        "arguments": {
+          "additionalProperties": true,
+          "title": "Arguments",
+          "type": "object"
+        },
+        "created_at": {
+          "format": "date-time",
+          "title": "Created At",
+          "type": "string"
+        },
+        "request_id": {
+          "title": "Request Id",
+          "type": "string"
+        },
+        "required_capabilities": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Required Capabilities",
+          "type": "array"
+        },
+        "run_id": {
+          "title": "Run Id",
+          "type": "string"
+        },
+        "thread_id": {
+          "title": "Thread Id",
+          "type": "string"
+        },
+        "tool_call_id": {
+          "title": "Tool Call Id",
+          "type": "string"
+        },
+        "tool_name": {
+          "title": "Tool Name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "request_id",
+        "run_id",
+        "thread_id",
+        "tool_call_id",
+        "tool_name",
+        "arguments"
+      ],
+      "title": "ApprovalRequest",
       "type": "object"
     },
     "ArtifactGCPlan": {
@@ -10486,6 +12137,132 @@
         "sha256"
       ],
       "title": "SourceFileRef",
+      "type": "object"
+    },
+    "ToolCall": {
+      "description": "One validated request from an agent to a selected toolset.",
+      "properties": {
+        "arguments": {
+          "additionalProperties": true,
+          "default": {},
+          "title": "Arguments",
+          "type": "object"
+        },
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "name"
+      ],
+      "title": "ToolCall",
+      "type": "object"
+    },
+    "ToolDefinition": {
+      "description": "A normalized tool contract understood by every agent model adapter.",
+      "properties": {
+        "annotations": {
+          "additionalProperties": true,
+          "default": {},
+          "title": "Annotations",
+          "type": "object"
+        },
+        "data_schema": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Data Schema"
+        },
+        "description": {
+          "title": "Description",
+          "type": "string"
+        },
+        "input_schema": {
+          "additionalProperties": true,
+          "title": "Input Schema",
+          "type": "object"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "native_name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Native Name"
+        },
+        "output_schema": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Output Schema"
+        },
+        "permitted": {
+          "default": true,
+          "title": "Permitted",
+          "type": "boolean"
+        },
+        "required_capabilities": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Required Capabilities",
+          "type": "array"
+        },
+        "requires_approval": {
+          "default": false,
+          "title": "Requires Approval",
+          "type": "boolean"
+        },
+        "source": {
+          "default": "",
+          "title": "Source",
+          "type": "string"
+        },
+        "tags": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Tags",
+          "type": "array",
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "name",
+        "description",
+        "input_schema"
+      ],
+      "title": "ToolDefinition",
       "type": "object"
     },
     "TransactionJournal": {

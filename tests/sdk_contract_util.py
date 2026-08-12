@@ -94,6 +94,17 @@ def build_sdk_contract() -> dict[str, Any]:
         ifc_console.AsyncWorkbench,
         ifc_console.PluginAPI,
         ifc_console.OperationPlugin,
+        ifc_console.LocalRuntime,
+        ifc_console.ConsoleRuntime,
+        ifc_console.WorkspaceClient,
+        ifc_console.Toolset,
+        ifc_console.FunctionToolSource,
+        ifc_console.McpToolSource,
+        ifc_console.Agent,
+        ifc_console.AgentToolSource,
+        ifc_console.ProviderModel,
+        ifc_console.InMemoryThreadStore,
+        ifc_console.JsonThreadStore,
     )
     return {
         "version": ifc_console.__version__,
