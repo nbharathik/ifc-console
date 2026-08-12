@@ -116,7 +116,7 @@ with Workbench.open("tower.ifc") as wb:
 - [MCP tools](https://nbharathik.github.io/ifc-console/tools/) and [CLI](https://nbharathik.github.io/ifc-console/cli/)
 - [Troubleshooting](https://nbharathik.github.io/ifc-console/troubleshooting/)
 
-For development setup and tests, see [CONTRIBUTING.md](CONTRIBUTING.md).
+For development setup and tests, see the [contributing guide](docs/contributing.md).
 
 ## License
 
