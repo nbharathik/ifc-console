@@ -73,9 +73,10 @@ Deny external access. Loopback on `127.0.0.1` continues to work.
 | `sandboxed: false` | run `/sandbox` to see why |
 | first code run is slow | sandbox startup loads a second model copy; optionally enable `sandbox.warm_on_load` |
 
-Common sandbox fallbacks are unsaved changes, mutating code, a model over
-`sandbox.max_model_mb`, or worker startup failure. Save/reload, try
-`/sandbox restart`, or use `sandbox.mode=strict` to refuse fallback.
+Common sandbox fallbacks are Python 3.10 or 3.11, unsaved changes, mutating
+code, a model over `sandbox.max_model_mb`, or worker startup failure.
+Save/reload, upgrade Python where applicable, try `/sandbox restart`, or use
+`sandbox.mode=strict` to refuse fallback.
 
 ## Viewer and chat
 

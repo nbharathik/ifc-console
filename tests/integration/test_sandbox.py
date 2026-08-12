@@ -15,6 +15,7 @@ import pytest
 
 from ifc_console.sandbox.client import SandboxProcess, SandboxTimeout
 from ifc_console.sandbox.policy import SandboxPolicy
+from ifc_console.sandbox.runner import secure_isolation_supported
 
 # Reaches the real builtins through the object graph. tests/unit/test_guards.py
 # documents the same walk as a known in-process bypass; here it must not help.
@@ -148,7 +149,17 @@ def test_escaped_code_cannot_reach_the_outside_world(sandbox, label, code) -> No
     ("label", "code"),
     [
         ("ctypes memory", "b['__import__']('ctypes').string_at(b'abc', 1)"),
-        ("raw thread", "b['__import__']('_thread').start_new_thread(lambda: None, ())"),
+        pytest.param(
+            "raw thread",
+            "b['__import__']('_thread').start_new_thread(lambda: None, ())",
+            marks=pytest.mark.skipif(
+                not secure_isolation_supported(),
+                reason=(
+                    "the product disables secure isolation when raw thread creation "
+                    "is not audited"
+                ),
+            ),
+        ),
         ("raw descriptor", "b['open'](2, closefd=False)"),
     ],
 )
@@ -332,11 +343,35 @@ def test_the_scratch_directory_stays_writable(sandbox) -> None:
 
 
 # -- routing: which runs actually get sandboxed --------------------------------------
+@pytest.mark.skipif(
+    not secure_isolation_supported(),
+    reason="secure sandbox isolation requires CPython 3.12 or newer",
+)
 async def test_ask_mode_queries_are_sandboxed(ask_harness) -> None:
     out = await ask_harness.call("execute_ifc_code", code="len(ifc.by_type('IfcWall'))")
     assert out["ok"] is True
     assert out["data"]["sandboxed"] is True
     assert out["data"]["result"] == "3"
+
+
+async def test_runtime_without_thread_audit_falls_back_or_refuses(
+    harness_factory, work_model, monkeypatch
+) -> None:
+    from ifc_console.sandbox import runner as sandbox_runner
+
+    monkeypatch.setattr(sandbox_runner, "secure_isolation_supported", lambda: False)
+    h = await harness_factory(model=work_model)
+
+    fallback = await h.call("execute_ifc_code", code="len(ifc.by_type('IfcWall'))")
+    assert fallback["ok"] is True
+    assert fallback["data"]["sandboxed"] is False
+    assert "CPython 3.12 or newer" in fallback["data"]["note"]
+
+    h.core.settings.sandbox.mode = "strict"
+    refused = await h.call("execute_ifc_code", code="len(ifc.by_type('IfcWall'))")
+    assert refused["ok"] is False
+    assert refused["error"]["code"] == "SANDBOX_UNAVAILABLE"
+    assert "CPython 3.12 or newer" in refused["error"]["message"]
 
 
 async def test_sandbox_blocks_project_credentials_but_allows_the_ifc(

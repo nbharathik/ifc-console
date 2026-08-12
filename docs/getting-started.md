@@ -5,7 +5,9 @@ viewer, browser chat, editing, and automation are optional.
 
 ## Requirements
 
-- Python 3.10 to 3.14 on Windows, macOS, or Linux.
+- Python 3.10 to 3.14 on Windows, macOS, or Linux. The restricted generated-code
+  sandbox requires CPython 3.12 or newer; older versions use the documented
+  `auto` fallback or `strict` refusal behavior.
 - A terminal. Windows Terminal is recommended on Windows.
 - An MCP client such as Claude Code, Claude Desktop, Cursor, VS Code, or Codex.
 

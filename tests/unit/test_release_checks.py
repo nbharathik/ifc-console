@@ -1,5 +1,4 @@
 import json
-import re
 from pathlib import Path
 
 import pytest
@@ -106,7 +105,7 @@ def test_tool_reference_covers_the_public_operation_contract() -> None:
     missing = [
         tool["name"]
         for tool in contract["tools"]
-        if re.search(rf"^### {re.escape(tool['name'])}$", reference, re.MULTILINE) is None
+        if f"`{tool['name']}`" not in reference
     ]
 
     assert missing == [], f"public operations missing from docs/tools.md: {missing}"

@@ -86,10 +86,13 @@ Use `/mode edit` only when you want changes. Review them, then `/save` to keep
 them or `/reload` to discard them. The AI cannot change the mode, and AI tools
 cannot save unless you explicitly enable `files.allow_ai_save`.
 
-Read-only generated code normally runs in a restricted process without network
-or subprocess access. Mutating code runs in the main process because it must
-reach the live model. Read [Safety](https://nbharathik.github.io/ifc-console/safety/)
-before editing untrusted files or prompts.
+On CPython 3.12+, eligible read-only generated code normally runs in a
+restricted process without network or subprocess access. Python 3.10 and 3.11
+remain supported, but cannot provide that complete audit-hook boundary; `auto`
+reports a guarded fallback and `strict` refuses it. Mutating code runs in the
+main process because it must reach the live model. Read
+[Safety](https://nbharathik.github.io/ifc-console/safety/) before editing
+untrusted files or prompts.
 
 ## What it includes
 

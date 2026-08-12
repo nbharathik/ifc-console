@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import shutil
+import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -36,6 +37,15 @@ if TYPE_CHECKING:
     from ifc_console.session.model import ModelSession
 
 _MB = 1_048_576
+_ISOLATION_REQUIREMENT = (
+    "secure sandbox isolation requires CPython 3.12 or newer because older "
+    "runtimes cannot audit raw thread creation"
+)
+
+
+def secure_isolation_supported() -> bool:
+    """Whether this runtime exposes every audit event the boundary requires."""
+    return sys.implementation.name == "cpython" and sys.version_info >= (3, 12)
 
 
 @dataclass
@@ -110,6 +120,8 @@ class SandboxRunner:
             return Decision(False, "sandbox.mode is off")
         if mutating:
             return Decision(False, "mutating code must run against the live model, not a copy")
+        if not secure_isolation_supported():
+            return Decision(False, _ISOLATION_REQUIREMENT)
         if not session.loaded or session.path is None:
             return Decision(False, "no model is loaded")
         if session.dirty:

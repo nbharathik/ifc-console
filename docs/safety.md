@@ -36,12 +36,14 @@ parse and classify -> capability check -> sandbox when eligible
 
 1. Ambiguous code is treated as mutating.
 2. The current mode and capabilities decide whether it may run.
-3. Eligible read-only code uses a restricted process.
+3. On CPython 3.12+, eligible read-only code uses a restricted process.
 4. Import, file, and model guards apply at runtime.
 5. Unexpected mutation is detected after guarded execution.
 
 In `sandbox.mode=auto`, unavailable isolation falls back to guarded in-process
 execution and reports `sandboxed: false`. `strict` refuses that fallback.
+Python 3.10 and 3.11 do not expose the raw-thread audit event required by the
+complete boundary, so isolation is treated as unavailable on those versions.
 
 Mutating code always runs in the main process because it must reach the live
 model. See [Code sandbox](sandbox.md).

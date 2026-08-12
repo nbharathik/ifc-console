@@ -25,15 +25,17 @@ the repository's Security tab). Please do not open a public issue.
 
 ### Threat model, honestly
 
-Eligible read-only generated Python uses a separate restricted process with no
-network or subprocess access, no inherited credential environment, blocks for
-common credential stores, and a read allowlist for model directories. An
-arbitrarily named secret inside an allowed root remains readable. The default
-auto mode reports and uses guarded in-process fallback when isolation is not
-available; strict mode refuses it. Mutating code always runs in-process after
-the user explicitly selects edit mode, where namespace guards reduce accidents
-but are not a secure boundary against adversarial Python. One documented xfail
-records that in-process limitation.
+On CPython 3.12+, eligible read-only generated Python uses a separate restricted
+process with no network or subprocess access, no inherited credential
+environment, blocks for common credential stores, and a read allowlist for
+model directories. An arbitrarily named secret inside an allowed root remains
+readable. Python 3.10 and 3.11 cannot provide the raw-thread audit event needed
+by the complete boundary. The default auto mode reports and uses guarded
+in-process fallback when isolation is not available; strict mode refuses it.
+Mutating code always runs in-process after the user explicitly selects edit
+mode, where namespace guards reduce accidents but are not a secure boundary
+against adversarial Python. One documented xfail records that in-process
+limitation.
 
 An escape from the restricted read-only process is a security issue. A bypass
 of only the edit-mode in-process namespace guards is an acknowledged limitation
