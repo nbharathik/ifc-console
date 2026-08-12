@@ -40,6 +40,7 @@ jobs:
       - run: uv lock --check
       - run: uv sync --extra dev
       - run: uv run python scripts/check_release.py --tag "$RELEASE_TAG"
+        shell: bash
         env:
           RELEASE_TAG: ${{ github.ref_name }}
       - run: uv run python -m compileall -q src tests packages scripts
