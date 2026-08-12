@@ -1,6 +1,6 @@
 # Changelog
 
-## [0.1.4] - Unreleased
+## [0.1.4] - 2026-08-12
 
 - Make the Three.js/web-ifc viewer and browser chat bundle an optional
   `ifc-console[viewer]` installation, with a viewer-free core wheel.
