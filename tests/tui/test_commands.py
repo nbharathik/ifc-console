@@ -296,13 +296,23 @@ async def test_status_names_where_the_next_code_run_goes(
     assert "sandbox" in console.text
 
 
-async def test_sandbox_reports_state_without_a_model(console: FakeConsole) -> None:
+async def test_sandbox_reports_state_without_a_model(
+    console: FakeConsole, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "ifc_console.sandbox.runner.secure_isolation_supported", lambda: True
+    )
     await commands.dispatch(console, "/sandbox")
     assert "auto" in console.text
     assert "no model is loaded" in console.text
 
 
-async def test_sandbox_explains_the_next_run(console: FakeConsole, work_model: Path) -> None:
+async def test_sandbox_explains_the_next_run(
+    console: FakeConsole, work_model: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "ifc_console.sandbox.runner.secure_isolation_supported", lambda: True
+    )
     await commands.dispatch(console, f"/open {work_model}")
     console.clear_log()
     await commands.dispatch(console, "/sandbox")

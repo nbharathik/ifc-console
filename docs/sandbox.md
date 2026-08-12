@@ -6,11 +6,9 @@ The mode switch and sandbox solve different problems:
 - **Sandbox** limits what eligible read-only code can do to the rest of the
   machine.
 
-The restricted process requires CPython 3.12 or newer because its boundary
-depends on the audit event for raw thread creation. Python 3.10 and 3.11 remain
-supported for the rest of ifc-console: `auto` reports and uses guarded
-in-process fallback, while `strict` refuses read-only generated code that
-cannot be isolated.
+> **Python compatibility:** Secure sandboxing requires CPython 3.12+. On Python
+> 3.10 and 3.11, `auto` uses a reported guarded fallback and `strict` refuses
+> the run.
 
 ## Which mode should I use?
 

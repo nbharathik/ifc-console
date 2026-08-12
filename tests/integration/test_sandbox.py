@@ -421,9 +421,14 @@ async def test_mutations_run_in_process_so_the_edit_lands(harness_factory, work_
     assert out["data"]["mutated"] is True
 
 
-async def test_unsaved_changes_fall_back_with_a_stated_reason(harness_factory, work_model) -> None:
+async def test_unsaved_changes_fall_back_with_a_stated_reason(
+    harness_factory, work_model, monkeypatch
+) -> None:
     from ifc_console.policy.modes import Mode
 
+    monkeypatch.setattr(
+        "ifc_console.sandbox.runner.secure_isolation_supported", lambda: True
+    )
     h = await harness_factory(model=work_model, mode=Mode.EDIT)
     await h.call(
         "execute_ifc_code",
