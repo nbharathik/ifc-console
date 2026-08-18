@@ -64,6 +64,39 @@ def test_audit_redacts_secrets_source_and_property_values(tmp_path: Path) -> Non
     assert "sk-meta-secret-value" not in meta
 
 
+def test_audit_redacts_viewer_fragment_tokens(tmp_path: Path) -> None:
+    audit = AuditLog(tmp_path)
+    audit.start({"interface": "test"})
+    token = "0123456789abcdef0123456789abcdef"
+
+    event = audit.record(
+        "viewer_link",
+        url=f"http://127.0.0.1:8765/viewer#t={token}",
+    )
+
+    assert event is not None
+    assert event["url"] == "http://127.0.0.1:8765/viewer#t=[REDACTED]"
+    assert token not in json.dumps(event)
+
+
+def test_viewer_enabled_payloads_never_expose_the_token(core, monkeypatch) -> None:
+    monkeypatch.setattr("ifc_console.viewer.assets.available", lambda: True)
+    core.start_audit()
+    seen: list[dict] = []
+    core.events.subscribe(seen.append)
+
+    assert core.enable_viewer() is True
+
+    enabled = next(event for event in seen if event["type"] == "viewer_enabled")
+    assert enabled["url"] == core.viewer_public_url
+    assert core.token not in json.dumps(enabled)
+    audit_text = json.dumps(core.audit.tail(10))
+    assert core.token not in audit_text
+    assert "#t=" not in audit_text
+    assert core.viewer.url == core.viewer_url
+    assert f"#t={core.token}" in core.viewer.url
+
+
 def test_audit_chain_detects_tampering(tmp_path: Path) -> None:
     audit = AuditLog(tmp_path)
     session_id = audit.start({"interface": "test"})

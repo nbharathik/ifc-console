@@ -93,7 +93,7 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
             "viewer": {
                 "enabled": core.viewer.enabled,
                 "connected": core.viewer.connected,
-                "url": core.viewer.url,
+                "url": core.viewer_public_url if core.viewer.enabled else None,
             },
         }
         return ok(data, core.session_meta(), char_limit=limit_)
@@ -107,6 +107,7 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
         ),
     )
     @enveloped(core, "orient")
+    @core.model_lifecycle_operation
     async def orient() -> Envelope:
         s = core.session
         status: dict[str, Any] = {
@@ -221,6 +222,7 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
         ),
     )
     @enveloped(core, "get_ifc_project_info")
+    @core.model_lifecycle_operation
     async def get_ifc_project_info(
         model: Annotated[str | None, Field(description=MODEL_ARG)] = None,
     ) -> Envelope:
@@ -241,6 +243,7 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
         ),
     )
     @enveloped(core, "get_spatial_structure")
+    @core.model_lifecycle_operation
     async def get_spatial_structure(
         root_global_id: Annotated[
             str | None, Field(description="Start node GlobalId; omit for IfcProject.")
@@ -276,6 +279,7 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
         ),
     )
     @enveloped(core, "search_elements")
+    @core.model_lifecycle_operation
     async def search_elements(
         term: Annotated[str, Field(min_length=1, max_length=500)],
         limit: Annotated[int, Field(ge=1, le=500)] = 50,
@@ -312,6 +316,7 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
         ),
     )
     @enveloped(core, "query_elements")
+    @core.model_lifecycle_operation
     async def query_elements(
         query: Annotated[str, Field(description="IfcOpenShell selector expression.")],
         limit: Annotated[int, Field(ge=1, le=500)] = 50,
@@ -371,6 +376,7 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
         ),
     )
     @enveloped(core, "get_element")
+    @core.model_lifecycle_operation
     async def get_element(
         global_ids: Annotated[list[str], Field(min_length=1, max_length=50)],
         include: Annotated[
@@ -417,6 +423,7 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
         ),
     )
     @enveloped(core, "get_psets")
+    @core.model_lifecycle_operation
     async def get_psets(
         global_ids: Annotated[list[str], Field(min_length=1, max_length=100)],
         psets_only: bool = False,

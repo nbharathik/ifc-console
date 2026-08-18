@@ -476,6 +476,7 @@ def build_http_app(
                 "models": core.viewer_hub.model_rows(),
                 "schema": s.schema,
                 "mode": core.policy.mode.value,
+                "theme": "light" if core.ui_theme == "light" else "dark",
                 "dirty": s.dirty,
                 "fingerprint": s.fingerprint,
                 "etag": core.viewer_hub.model_etag(),

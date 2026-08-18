@@ -20,6 +20,9 @@ from __future__ import annotations
 import asyncio
 import threading
 from collections.abc import AsyncIterator, Callable, Coroutine, Iterable, Iterator, Mapping
+from concurrent.futures import CancelledError as FutureCancelledError
+from concurrent.futures import TimeoutError as FutureTimeoutError
+from contextlib import suppress
 from pathlib import Path
 from types import TracebackType
 from typing import Any
@@ -168,6 +171,7 @@ __all__ = [
 ]
 
 _DEFAULT_TIMEOUT = 600.0
+_DEFAULT_TIMEOUT_SENTINEL = object()
 _LIFECYCLE_SETTINGS = frozenset(
     {
         "chat.enabled_default",
@@ -314,14 +318,19 @@ class AsyncWorkbench:
                 "Use 'ask' for read-only work or 'edit' for mutations.",
             ) from None
         core = AppCore(store, mode=selected_mode, transport="sdk")
-        core.start_audit()
-        for directory in allowed_dirs:
-            core.add_allowed_dir(Path(directory))
-        workbench = cls(core)
-        build_operations(core)
-        if path is not None:
-            await workbench.open_model(path)
-        return workbench
+        try:
+            core.start_audit()
+            for directory in allowed_dirs:
+                core.add_allowed_dir(Path(directory))
+            workbench = cls(core)
+            build_operations(core)
+            if path is not None:
+                await workbench.open_model(path)
+            return workbench
+        except BaseException:
+            with suppress(Exception):
+                await core.ashutdown()
+            raise
 
     async def __aenter__(self) -> AsyncWorkbench:
         return self
@@ -1121,8 +1130,31 @@ class _Loop:
         asyncio.set_event_loop(self.loop)
         self.loop.run_forever()
 
+    @staticmethod
+    async def _cancel_and_drain(coro: Coroutine) -> None:
+        current = asyncio.current_task()
+        tasks = [
+            task
+            for task in asyncio.all_tasks()
+            if task is not current and task.get_coro() is coro
+        ]
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+
     def run(self, coro: Coroutine, timeout: float | None = _DEFAULT_TIMEOUT) -> Any:
-        return asyncio.run_coroutine_threadsafe(coro, self.loop).result(timeout)
+        future = asyncio.run_coroutine_threadsafe(coro, self.loop)
+        try:
+            return future.result(timeout)
+        except FutureTimeoutError:
+            future.cancel()
+            drain = asyncio.run_coroutine_threadsafe(self._cancel_and_drain(coro), self.loop)
+            with suppress(FutureCancelledError, FutureTimeoutError):
+                drain.result(timeout=10.0)
+            with suppress(FutureCancelledError, FutureTimeoutError):
+                future.result(timeout=1.0)
+            raise
 
     def close(self) -> None:
         if self.closed:
@@ -1183,10 +1215,15 @@ class Workbench:
         finally:
             self._loop.close()
 
-    def _run(self, factory: Callable[[], Coroutine], timeout: float | None = None) -> Any:
+    def _run(
+        self,
+        factory: Callable[[], Coroutine],
+        timeout: float | None | object = _DEFAULT_TIMEOUT_SENTINEL,
+    ) -> Any:
         if self._loop.closed:
             raise RuntimeError("this Workbench is closed; open a new one")
-        return self._loop.run(factory(), timeout or _DEFAULT_TIMEOUT)
+        selected_timeout = _DEFAULT_TIMEOUT if timeout is _DEFAULT_TIMEOUT_SENTINEL else timeout
+        return self._loop.run(factory(), selected_timeout)
 
     # -- session --------------------------------------------------------------
     @property
@@ -1321,7 +1358,7 @@ class Workbench:
         return self._wb.jobs(limit=limit)
 
     def wait_job(self, job_id: str, *, timeout: float | None = None) -> JobRecord:
-        return self._run(lambda: self._wb.wait_job(job_id, timeout=timeout))
+        return self._run(lambda: self._wb.wait_job(job_id, timeout=timeout), timeout=None)
 
     def watch_job(self, job_id: str, *, poll_interval: float = 0.1) -> Iterator[JobRecord]:
         last_update = None
@@ -1390,7 +1427,7 @@ class Workbench:
         return self._wb.batches(limit=limit)
 
     def wait_batch(self, batch_id: str, *, timeout: float | None = None) -> BatchRecord:
-        return self._run(lambda: self._wb.wait_batch(batch_id, timeout=timeout))
+        return self._run(lambda: self._wb.wait_batch(batch_id, timeout=timeout), timeout=None)
 
     def watch_batch(self, batch_id: str, *, poll_interval: float = 0.1) -> Iterator[BatchRecord]:
         last_update = None
@@ -1434,7 +1471,7 @@ class Workbench:
         return self._wb.workflows(limit=limit)
 
     def wait_workflow(self, workflow_id: str, *, timeout: float | None = None) -> WorkflowRecord:
-        return self._run(lambda: self._wb.wait_workflow(workflow_id, timeout=timeout))
+        return self._run(lambda: self._wb.wait_workflow(workflow_id, timeout=timeout), timeout=None)
 
     def watch_workflow(
         self, workflow_id: str, *, poll_interval: float = 0.1

@@ -47,6 +47,34 @@ async def test_the_api_needs_the_token_but_the_shell_does_not(chat_core):
     assert client.get("/chat").status_code == 200
 
 
+async def test_status_adds_the_resolved_console_theme_for_standalone_chat(chat_core):
+    client = _client(chat_core)
+    expected = {
+        "server",
+        "meta",
+        "model",
+        "models",
+        "schema",
+        "mode",
+        "dirty",
+        "fingerprint",
+        "etag",
+        "selection",
+        "viewer",
+        "chat",
+        "theme",
+    }
+
+    chat_core.set_ui_theme("light")
+    light = client.get("/api/status", headers=_auth(chat_core)).json()
+    assert expected <= light.keys()
+    assert light["theme"] == "light"
+
+    chat_core.set_ui_theme("auto")
+    auto = client.get("/api/status", headers=_auth(chat_core)).json()
+    assert auto["theme"] == "dark"
+
+
 async def test_a_cross_site_origin_is_refused_even_with_the_token(chat_core):
     client = _client(chat_core)
     headers = {**_auth(chat_core), "Origin": "https://evil.example"}

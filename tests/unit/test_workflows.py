@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import shutil
+import threading
 from pathlib import Path
 
 import pytest
@@ -242,6 +243,74 @@ async def test_cancel_then_resume_reuses_completed_workflow_steps(
         assert completed.steps[0].batch_id == first_batch_id
         assert completed.steps[1].attempts == 2
     finally:
+        await core.ashutdown()
+
+
+async def test_concurrent_resume_schedules_one_workflow_supervisor(
+    tmp_path: Path,
+    minimal_ifc4_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _model(tmp_path, minimal_ifc4_path)
+    manifest = tmp_path / "workflow.json"
+    manifest.write_text(json.dumps(_manifest()), encoding="utf-8")
+    core = _core(tmp_path)
+    monkeypatch.setattr(core.workflows, "_schedule", lambda _workflow_id: None)
+    release = threading.Event()
+    started = threading.Event()
+
+    def delayed_match(_source) -> bool:
+        started.set()
+        if not release.wait(5):
+            raise RuntimeError("timed out waiting to release source verification")
+        return True
+
+    try:
+        submitted = await core.workflows.submit_manifest(manifest)
+        core.workflows._replace(
+            submitted.workflow_id,
+            state=WorkflowState.CANCELLED,
+            message="workflow cancelled for resume race test",
+        )
+        scheduled: list[str] = []
+
+        def schedule(workflow_id: str) -> None:
+            scheduled.append(workflow_id)
+            core.workflows._replace(
+                workflow_id,
+                state=WorkflowState.FAILED,
+                message="workflow supervisor failed immediately",
+            )
+
+        monkeypatch.setattr(core.workflows, "_schedule", schedule)
+        monkeypatch.setattr(
+            "ifc_console.application.workflows.source_matches", delayed_match
+        )
+
+        first = asyncio.create_task(core.workflows.resume(submitted.workflow_id))
+        for _ in range(500):
+            if started.is_set():
+                break
+            await asyncio.sleep(0.01)
+        else:
+            release.set()
+            await asyncio.gather(first, return_exceptions=True)
+            pytest.fail("first resume did not start source verification")
+        second = asyncio.create_task(core.workflows.resume(submitted.workflow_id))
+        await asyncio.sleep(0)
+        release.set()
+        outcomes = await asyncio.gather(first, second, return_exceptions=True)
+
+        errors = [outcome for outcome in outcomes if isinstance(outcome, ToolError)]
+        assert len(errors) == 1
+        assert errors[0].code == "WORKFLOW_NOT_RESUMABLE"
+        assert sum(not isinstance(outcome, BaseException) for outcome in outcomes) == 1
+        assert scheduled == [submitted.workflow_id]
+        assert core.workflows.get(submitted.workflow_id).run_count == 2
+        assert not core.workflows._resume_locks
+        assert not core.workflows._resume_lock_users
+    finally:
+        release.set()
         await core.ashutdown()
 
 

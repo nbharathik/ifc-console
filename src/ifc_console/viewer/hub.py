@@ -58,6 +58,7 @@ class ViewerClient:
         self.last_active = next(self._activity)
         self.selection: list[str] = []
         self.selection_model_id: str | None = None
+        self.view_model_id: str | None = None
         self.selected_at: str | None = None
         self.selection_order = 0
 
@@ -79,7 +80,7 @@ class ViewerHub:
         self._selection_updates = itertools.count(1)
         self.last_highlight: dict | None = None
         self.last_color_theme: dict | None = None
-        self._shots: dict[str, asyncio.Future] = {}
+        self._shots: dict[str, tuple[ViewerClient, str | None, asyncio.Future]] = {}
         self._shot_ids = itertools.count(1)
         self._ping_task: asyncio.Task | None = None
         # Model bytes cached per ETag so several tabs (or a reconnect) do not
@@ -268,6 +269,7 @@ class ViewerHub:
                 model_id = None
             client.selection = guids
             client.selection_model_id = model_id
+            client.view_model_id = model_id
             client.selected_at = _utcnow()
             client.selection_order = next(self._selection_updates)
             self._adopt_selection(client)
@@ -275,9 +277,15 @@ class ViewerHub:
                 "viewer_selection", guids=guids, count=len(guids), model_id=model_id
             )
         elif ftype == "screenshot_response":
-            fut = self._shots.get(str(frame.get("id")))
-            if fut is not None and not fut.done():
-                fut.set_result(frame)
+            pending = self._shots.get(str(frame.get("id")))
+            if pending is not None:
+                target, model_id, fut = pending
+                if (
+                    client is target
+                    and frame.get("model_id") == model_id
+                    and not fut.done()
+                ):
+                    fut.set_result(frame)
         elif ftype == "pong":
             pass
         elif ftype == "hello":
@@ -321,9 +329,16 @@ class ViewerHub:
         await self.broadcast(frame)
 
     # -- screenshots -----------------------------------------------------------------
-    def _target_client(self) -> ViewerClient:
+    def _target_client(self, model_id: str | None) -> ViewerClient:
         self.require_connected()
-        return max(self.clients, key=lambda c: c.last_active)
+        candidates = [client for client in self.clients if client.view_model_id == model_id]
+        if not candidates:
+            raise ToolError(
+                "VIEWER_NOT_CONNECTED",
+                "no connected viewer tab is showing the active model.",
+                "Ask the user to open or switch a viewer tab to the active model, then retry.",
+            )
+        return max(candidates, key=lambda c: c.last_active)
 
     async def request_screenshot(
         self,
@@ -339,16 +354,18 @@ class ViewerHub:
         Returns (image bytes, width, height). Raises VIEWER_TIMEOUT if no tab
         answers in time and VIEWER_ERROR / RESULT_TOO_LARGE on bad replies.
         """
-        client = self._target_client()
+        model_id = self.core.models.active_id
+        client = self._target_client(model_id)
         shot_id = str(next(self._shot_ids))
         loop = asyncio.get_running_loop()
         fut: asyncio.Future = loop.create_future()
-        self._shots[shot_id] = fut
+        self._shots[shot_id] = (client, model_id, fut)
         try:
             await client.send(
                 {
                     "type": "screenshot_request",
                     "id": shot_id,
+                    "model_id": model_id,
                     "view": view,
                     "fit": fit,
                     "max_size": max_size,

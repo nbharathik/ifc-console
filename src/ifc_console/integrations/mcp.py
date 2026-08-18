@@ -12,6 +12,9 @@ from ifc_console.toolsets import ToolDefinition
 if TYPE_CHECKING:
     from mcp import ClientSession
 
+_MAX_TOOL_PAGES = 100
+_MAX_TOOLS = 10_000
+
 
 def _json_value(value: Any) -> Any:
     if hasattr(value, "model_dump"):
@@ -115,12 +118,23 @@ class McpToolSource:
     async def list_tools(self) -> Sequence[ToolDefinition]:
         rows: list[Any] = []
         cursor: str | None = None
+        seen_cursors: set[str] = set()
+        pages = 0
         while True:
+            if pages >= _MAX_TOOL_PAGES:
+                raise RuntimeError(f"MCP tool listing exceeded {_MAX_TOOL_PAGES} pages")
             result = await self.session.list_tools(cursor=cursor)
+            pages += 1
+            if len(rows) + len(result.tools) > _MAX_TOOLS:
+                raise RuntimeError(f"MCP tool listing exceeded {_MAX_TOOLS} tools")
             rows.extend(result.tools)
-            cursor = getattr(result, "nextCursor", None)
-            if not cursor:
+            next_cursor = getattr(result, "nextCursor", None)
+            if not next_cursor:
                 break
+            if next_cursor in seen_cursors:
+                raise RuntimeError("MCP tool listing repeated a pagination cursor")
+            seen_cursors.add(next_cursor)
+            cursor = next_cursor
 
         definitions: list[ToolDefinition] = []
         for tool in rows:
@@ -139,7 +153,10 @@ class McpToolSource:
                     output_schema=dict(tool.outputSchema) if tool.outputSchema else None,
                     annotations=dict(annotations or {}),
                     tags=frozenset(tags),
-                    requires_approval=bool((annotations or {}).get("destructiveHint")),
+                    requires_approval=not (
+                        (annotations or {}).get("readOnlyHint") is True
+                        and (annotations or {}).get("destructiveHint") is not True
+                    ),
                     source=self.source_id,
                 )
             )

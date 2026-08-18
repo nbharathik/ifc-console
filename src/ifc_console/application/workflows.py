@@ -79,6 +79,8 @@ class WorkflowService:
         self._records: dict[str, WorkflowRecord] = {}
         self._owners: dict[str, tuple[int, str]] = {}
         self._tasks: dict[str, asyncio.Task[None]] = {}
+        self._resume_locks: dict[str, asyncio.Lock] = {}
+        self._resume_lock_users: dict[str, int] = {}
         self._lock = RLock()
         self._closing = False
         self._load_records()
@@ -404,7 +406,41 @@ class WorkflowService:
         self.core.policy.require(
             [Capability.JOB_SUBMIT], authority=context.authority, action="resume workflow"
         )
+        observed = self.get(workflow_id)
+        lock = self._resume_locks.setdefault(workflow_id, asyncio.Lock())
+        self._resume_lock_users[workflow_id] = (
+            self._resume_lock_users.get(workflow_id, 0) + 1
+        )
+        try:
+            async with lock:
+                return await self._resume_locked(
+                    workflow_id,
+                    context=context,
+                    expected_run_count=observed.run_count,
+                )
+        finally:
+            users = self._resume_lock_users[workflow_id] - 1
+            if users:
+                self._resume_lock_users[workflow_id] = users
+            else:
+                self._resume_lock_users.pop(workflow_id, None)
+                if self._resume_locks.get(workflow_id) is lock:
+                    self._resume_locks.pop(workflow_id, None)
+
+    async def _resume_locked(
+        self,
+        workflow_id: str,
+        *,
+        context: OperationContext,
+        expected_run_count: int,
+    ) -> WorkflowRecord:
         record = self.get(workflow_id)
+        if record.run_count != expected_run_count:
+            raise ToolError(
+                "WORKFLOW_NOT_RESUMABLE",
+                f"{workflow_id} changed while the resume request was waiting.",
+                "Inspect the latest workflow state before retrying.",
+            )
         if record.state not in {
             WorkflowState.PARTIAL,
             WorkflowState.FAILED,

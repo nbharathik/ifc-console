@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import ifc_console.integrations.mcp as mcp_integration
 from ifc_console.integrations.mcp import McpToolSource
 from ifc_console.toolsets import FunctionToolSource, Toolset
 
@@ -81,8 +82,87 @@ async def test_mcp_tools_compose_with_a_namespace():
 
     assert tools.names == ("erp__lookup",)
     assert "erp" in tools.require("erp__lookup").tags
+    assert tools.require("erp__lookup").requires_approval is False
     result = await tools.call("erp__lookup", {"id": "A-42"})
     assert result["data"] == {"record": "A-42"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "annotations",
+    [
+        None,
+        {"readOnlyHint": False, "destructiveHint": False},
+        {"readOnlyHint": True, "destructiveHint": True},
+    ],
+)
+async def test_mcp_tools_require_approval_unless_explicitly_read_only(annotations):
+    class Session:
+        async def list_tools(self, cursor=None):
+            assert cursor is None
+            raw_annotations = (
+                None
+                if annotations is None
+                else SimpleNamespace(model_dump=lambda **_kwargs: annotations)
+            )
+            tool = SimpleNamespace(
+                name="publish",
+                title="Publish",
+                description="Publish a record.",
+                inputSchema={"type": "object"},
+                outputSchema=None,
+                annotations=raw_annotations,
+                meta=None,
+            )
+            return SimpleNamespace(tools=[tool], nextCursor=None)
+
+    tools = await Toolset.build(McpToolSource(Session(), namespace="erp"))
+
+    assert tools.require("erp__publish").requires_approval is True
+
+
+@pytest.mark.asyncio
+async def test_mcp_tool_listing_rejects_a_repeated_cursor():
+    cursors: list[str | None] = []
+
+    class Session:
+        async def list_tools(self, cursor=None):
+            cursors.append(cursor)
+            return SimpleNamespace(tools=[], nextCursor="again")
+
+    with pytest.raises(RuntimeError, match="repeated a pagination cursor"):
+        await McpToolSource(Session()).list_tools()
+
+    assert cursors == [None, "again"]
+
+
+@pytest.mark.asyncio
+async def test_mcp_tool_listing_has_a_page_cap(monkeypatch):
+    monkeypatch.setattr(mcp_integration, "_MAX_TOOL_PAGES", 2)
+    cursors: list[str | None] = []
+
+    class Session:
+        async def list_tools(self, cursor=None):
+            cursors.append(cursor)
+            return SimpleNamespace(tools=[], nextCursor=f"page-{len(cursors)}")
+
+    with pytest.raises(RuntimeError, match="exceeded 2 pages"):
+        await McpToolSource(Session()).list_tools()
+
+    assert cursors == [None, "page-1"]
+
+
+@pytest.mark.asyncio
+async def test_mcp_tool_listing_has_a_tool_cap(monkeypatch):
+    monkeypatch.setattr(mcp_integration, "_MAX_TOOLS", 2)
+
+    class Session:
+        async def list_tools(self, cursor=None):
+            assert cursor is None
+            return SimpleNamespace(tools=[object(), object(), object()], nextCursor=None)
+
+    with pytest.raises(RuntimeError, match="exceeded 2 tools"):
+        await McpToolSource(Session()).list_tools()
 
 
 @pytest.mark.asyncio

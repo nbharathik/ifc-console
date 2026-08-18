@@ -46,7 +46,12 @@ async function postJSON(path, body, signal) {
 // answers we render are technical, so tables and code matter more than the
 // long tail of markdown.
 const esc = (s) =>
-  String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  String(s ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 
 function mdInline(h) {
   h = h.replace(/`([^`\n]+)`/g, "<code>$1</code>");
@@ -425,6 +430,7 @@ export function mountChat(root, options = {}) {
       if (!response.ok) return;
       sessionStatus = await response.json();
       renderContext();
+      if (typeof options.onStatus === "function") options.onStatus(sessionStatus);
     } catch {
       /* the panel still works without the badge */
     }
@@ -460,7 +466,6 @@ export function mountChat(root, options = {}) {
     el("key").value = "";
     setModelOptions([], mine.model || payload.selected.model || provider()?.suggested_model || "");
     render();
-    refreshContext();
     if (hasKey(provider())) loadModels({ quiet: true });
     // no model yet is not an error worth a modal on open: the empty state
     // offers the button, and the dialog would cover the panel every time.
@@ -807,11 +812,18 @@ export function mountChat(root, options = {}) {
     }
 
     clearTimeout(repaint);
+    const stopped = aborter.signal.aborted;
     draw(false);
     addCodeCopies(view.answer);
     for (const chip of pending.values()) chip.className = "chat-tool bad";
     const text = answer.trim();
-    if (text) turns.push({ role: "assistant", text });
+    const stoppedMessage = stopped && !text ? "Response stopped before content." : "";
+    if (stoppedMessage) {
+      view.answer.textContent = stoppedMessage;
+      view.answer.classList.add("stopped");
+    }
+    const transcriptText = text || stoppedMessage;
+    if (transcriptText) turns.push({ role: "assistant", text: transcriptText });
     saveHistory();
 
     const bits = [];
@@ -821,7 +833,6 @@ export function mountChat(root, options = {}) {
       const seconds = Math.max((performance.now() - firstToken) / 1000, 0.01);
       bits.push(`${(usage.out / seconds).toFixed(0)} tok/s`);
     }
-    const stopped = aborter.signal.aborted;
     if (stopped) bits.push("stopped");
     if (capped) bits.push("hit the token cap");
     view.stats.textContent = bits.join(" · ");
@@ -951,6 +962,7 @@ export function mountChat(root, options = {}) {
   }
 
   if (!restoreHistory()) empty();
+  refreshContext();
   loadProviders();
   return {
     focus: () => input.focus(),

@@ -455,6 +455,67 @@ async def test_the_provider_is_told_when_the_listener_leaves(chat_core, monkeypa
     assert isinstance(script.seen[0]["cancel"], threading.Event)
 
 
+async def test_astream_cancellation_closes_a_blocked_response(monkeypatch):
+    class BlockingResponse:
+        def __init__(self) -> None:
+            self.closed = threading.Event()
+            self.reading = threading.Event()
+            self.reader_exited = threading.Event()
+            self.reader: threading.Thread | None = None
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args) -> None:
+            self.close()
+
+        def readline(self, _limit: int) -> bytes:
+            self.reader = threading.current_thread()
+            self.reading.set()
+            if not self.closed.wait(5):
+                raise RuntimeError("response was not closed")
+            self.reader_exited.set()
+            return b""
+
+        def close(self) -> None:
+            self.closed.set()
+
+    response = BlockingResponse()
+    monkeypatch.setattr(providers, "_open_stream", lambda *_args, **_kwargs: response)
+    events = providers.astream(
+        PROVIDERS["openai"],
+        base_url="https://api.openai.com/v1",
+        key="sk-test",
+        model="test-model",
+        system="",
+        turns=[{"role": "user", "text": "hi"}],
+        tools=None,
+        options={},
+    )
+    pending = asyncio.create_task(events.__anext__())
+    try:
+        for _ in range(500):
+            if response.reading.is_set():
+                break
+            await asyncio.sleep(0.01)
+        else:
+            pytest.fail("provider worker never entered the blocking read")
+
+        pending.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(pending, timeout=2)
+
+        assert response.closed.is_set()
+        assert response.reader_exited.is_set()
+        assert response.reader is not None
+        assert not response.reader.is_alive()
+    finally:
+        response.close()
+        pending.cancel()
+        await asyncio.gather(pending, return_exceptions=True)
+        await events.aclose()
+
+
 async def test_two_calls_to_one_tool_get_separate_ids(chat_core, monkeypatch):
     """Chips are paired to calls by id; by name, a repeated tool lost one."""
     calls = [

@@ -32,6 +32,11 @@ def styles() -> str:
     return (STATIC / "app.css").read_text(encoding="utf-8")
 
 
+@pytest.fixture(scope="module")
+def worker_js() -> str:
+    return (STATIC / "worker.js").read_text(encoding="utf-8")
+
+
 def test_every_element_the_script_looks_up_exists(html: str, script: str) -> None:
     ids = set(re.findall(r'id="([^"]+)"', html))
     looked_up = set(re.findall(r'\$\("([^"]+)"\)', script))
@@ -69,11 +74,36 @@ def test_search_and_saved_view_controls_are_present(html: str) -> None:
 
 def test_viewport_and_splitters_are_keyboard_operable(html: str, script: str) -> None:
     assert re.search(r'<canvas id="canvas"[^>]*tabindex="0"', html)
-    for name in ("split-tree", "split-props"):
+    for name in ("split-tree", "split-props", "chat-dock-resize"):
         assert re.search(rf'id="{name}"[^>]*role="separator"[^>]*tabindex="0"', html)
     assert "controls.listenToKeyEvents(canvas)" in script
     assert 'event.key !== "ArrowLeft"' in script
     assert 'event.key !== "ArrowRight"' in script
+    assert 'aria-controls="chat-dock"' in html
+
+
+def test_chat_splitter_updates_aria_and_restores_close_focus(
+    script: str, chat_css: str
+) -> None:
+    handler = script.split('chatResize.addEventListener("keydown"', 1)[1].split(
+        "\n});", 1
+    )[0]
+    for key in ("Home", "ArrowLeft", "ArrowRight"):
+        assert f'event.key === "{key}"' in handler or f'event.key !== "{key}"' in handler
+    aria = script.split("function syncChatResizeAria", 1)[1].split(
+        "function setChatWidth", 1
+    )[0]
+    for attribute in (
+        "aria-valuemin",
+        "aria-valuemax",
+        "aria-valuenow",
+        "aria-valuetext",
+    ):
+        assert f'"{attribute}"' in aria
+    close = script.split("chatPanel ||= mountChat", 1)[1].split("return chatPanel", 1)[0]
+    assert "setChat(false)" in close
+    assert "chatBtn.focus({ preventScroll: true })" in close
+    assert "#chat-dock-resize:focus-visible" in chat_css
 
 
 def test_dynamic_model_navigation_uses_native_controls(script: str) -> None:
@@ -98,6 +128,123 @@ def test_chat_loading_is_single_flight_and_honors_the_latest_panel_state(
     assert "const requestVersion = ++chatRequestVersion" in script
     assert 'chatLoadPromise ||= import("/viewer/static/chat.js")' in script
     assert "requestVersion !== chatRequestVersion || !chatDesiredOpen" in script
+
+
+def test_model_rebuild_clears_and_refetches_properties(script: str) -> None:
+    dispose = script.split("function disposeModel()", 1)[1].split(
+        "function updateStats()", 1
+    )[0]
+    assert "clearProperties();" in dispose
+
+    rebuild = script.split("async function buildScene(buffer)", 1)[1].split(
+        "// ---------------------------------------------------------------- spatial tree", 1
+    )[0]
+    assert "const keepPropertyGuid" in rebuild
+    assert "showProperties(keepPropertyGuid)" in rebuild
+
+    switch = script.split('$("model-select").addEventListener("change"', 1)[1].split(
+        "\n});", 1
+    )[0]
+    assert switch.index("clearProperties();") < switch.index("loadModel();")
+
+
+def test_instanced_culling_covers_asymmetric_geometry(script: str) -> None:
+    constructor = script.split("class InstEntry", 1)[1].split("this.capacity", 1)[0]
+    assert "this.geomRadius = Math.hypot(" in constructor
+    for low, high in ((0, 3), (1, 4), (2, 5)):
+        assert (
+            f"Math.max(Math.abs(geom.box[{low}]), Math.abs(geom.box[{high}]))"
+            in constructor
+        )
+
+
+def test_camera_fit_accounts_for_fov_and_aspect(script: str) -> None:
+    frame = script.split("function frameBox(box, direction)", 1)[1].split(
+        "function fitTo(ids)", 1
+    )[0]
+    assert "THREE.MathUtils.degToRad(camera.fov)" in frame
+    assert "camera.aspect" in frame
+    assert "Math.min(verticalFov, horizontalFov)" in frame
+    assert "/ Math.sin(halfFov)" in frame
+
+
+def test_spatial_branch_actions_include_the_branch_geometry(script: str) -> None:
+    traversal = script.split("function branchElements(node)", 1)[1].split(
+        "function renderTree", 1
+    )[0]
+    assert "if (elements.has(branch.expressID)) ids.add(branch.expressID);" in traversal
+    assert "for (const child of branch.children || []) visit(child);" in traversal
+
+    tree_item = script.split("function buildTreeItem(node, depth)", 1)[1].split(
+        "function markTreeSelection", 1
+    )[0]
+    assert tree_item.count("branchElements(node)") == 2
+
+
+def test_measurement_depth_is_computed_from_interpolated_view_position(
+    script: str,
+) -> None:
+    shader = script.split("const depthMaterial", 1)[1].split("makeStateTextures()", 1)[0]
+    assert shader.count("varying vec3 vMeasureViewPosition;") == 2
+    assert "vMeasureViewPosition = mvPosition.xyz;" in shader
+    assert "length(vMeasureViewPosition) / uFar" in shader
+    assert "varying float vDist" not in shader
+
+
+def test_search_cancels_stale_work_and_resets_short_queries(script: str) -> None:
+    search = script.split("// ---------------------------------------------------------------- search", 1)[1].split(
+        "// ---------------------------------------------------------------- saved views", 1
+    )[0]
+    assert "let searchAbort = null;" in search
+    assert "searchAbort.abort();" in search
+    assert "{ signal: controller.signal }" in search
+    assert "if (searchAbort === controller) searchAbort = null;" in search
+    assert "searchTimer = setTimeout(() => {\n    searchTimer = null;" in search
+
+    reset = search.split("function resetSearchResults()", 1)[1].split(
+        "function clearSearch", 1
+    )[0]
+    assert 'box.textContent = "";' in reset
+    assert 'box.setAttribute("aria-busy", "false")' in reset
+    assert '$("tree").hidden = false;' in reset
+
+    input_handler = search.split('$("search-input").addEventListener("input"', 1)[
+        1
+    ].split('$("search-input").addEventListener("keydown"', 1)[0]
+    assert "cancelPendingSearch();" in input_handler
+    assert "if (term.length < 2)" in input_handler
+    assert "resetSearchResults();" in input_handler
+
+    enter = search.split('} else if (e.key === "Enter")', 1)[1].split("\n  }", 1)[0]
+    assert "clearTimeout(searchTimer)" in enter
+    assert "searchTimer = null;" in enter
+
+
+def test_parser_worker_init_can_retry_and_fall_back(worker_js: str, script: str) -> None:
+    ensure_api = worker_js.split("function ensureApi()", 1)[1].split("// Fetch", 1)[0]
+    assert "apiPromise = null;" in ensure_api
+    assert ".catch((error)" in ensure_api
+    assert "init_failed: true" in worker_js
+
+    route = script.split("function routeParserMessage(msg)", 1)[1].split(
+        "function spawnWorker()", 1
+    )[0]
+    assert "msg.init_failed" in route
+    assert "worker.terminate()" in route
+    assert "h.onWorkerLost()" in route
+
+
+def test_screenshots_are_scoped_to_the_viewed_model(script: str) -> None:
+    handler = script.split("function handleScreenshot(frame)", 1)[1].split(
+        "// ---------------------------------------------------------------- status bar", 1
+    )[0]
+    assert "const modelId = currentModelRow()?.id ?? null;" in handler
+    assert "if (frame.model_id !== modelId)" in handler
+    assert handler.count("model_id: modelId") == 2
+
+
+def test_dead_product_count_state_is_removed(script: str) -> None:
+    assert "productCount" not in script
 
 
 def test_compact_layout_reconciles_open_panels_after_resize(script: str) -> None:
@@ -189,6 +336,11 @@ def chat_css() -> str:
     return (STATIC / "chat.css").read_text(encoding="utf-8")
 
 
+@pytest.fixture(scope="module")
+def chat_page_js() -> str:
+    return (STATIC / "chat-page.js").read_text(encoding="utf-8")
+
+
 def test_the_chat_page_runs_no_inline_script():
     """The page's CSP is script-src 'self'; an inline module would be blocked."""
     html = (STATIC / "chat.html").read_text(encoding="utf-8")
@@ -222,6 +374,45 @@ def test_the_dock_takes_its_colours_from_the_viewer(chat_css: str):
             assert "var(--" in line, f"hardcoded colour in the dock: {line.strip()}"
 
 
+def _contrast(foreground: str, background: str) -> float:
+    def luminance(value: str) -> float:
+        channels = [int(value[index : index + 2], 16) / 255 for index in (1, 3, 5)]
+        linear = [
+            channel / 12.92
+            if channel <= 0.04045
+            else ((channel + 0.055) / 1.055) ** 2.4
+            for channel in channels
+        ]
+        return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2]
+
+    light, dark = sorted((luminance(foreground), luminance(background)), reverse=True)
+    return (light + 0.05) / (dark + 0.05)
+
+
+def test_quiet_text_tokens_meet_wcag_aa(styles: str, chat_css: str) -> None:
+    for source in (styles, chat_css):
+        assert "--text-quiet: #83909c;" in source
+        assert "--text-quiet: #596875;" in source
+    for foreground, background in (
+        ("#83909c", "#171e27"),
+        ("#83909c", "#101720"),
+        ("#596875", "#f5f8fb"),
+        ("#596875", "#e7edf3"),
+    ):
+        assert _contrast(foreground, background) >= 4.5
+
+
+def test_docked_transcript_text_is_selectable(chat_css: str) -> None:
+    log = chat_css.split(".chat-log {", 1)[1].split("}", 1)[0]
+    assert "user-select: text;" in log
+
+
+def test_markdown_escapes_attribute_delimiters(chat_js: str) -> None:
+    escaping = chat_js.split("const esc =", 1)[1].split("function mdInline", 1)[0]
+    assert '.replace(/"/g, "&quot;")' in escaping
+    assert ".replace(/'/g, \"&#39;\")" in escaping
+
+
 def test_settings_are_a_dialog_not_an_inline_panel(chat_js: str, chat_css: str):
     """An inline settings panel squeezed the conversation; it is a modal now."""
     assert 'class="chat-modal"' in chat_js and 'class="chat-dialog"' in chat_js
@@ -246,6 +437,32 @@ def test_chat_status_and_send_state_are_accessible(chat_js: str):
 def test_escape_closes_the_dialog_before_stopping_the_stream(chat_js: str):
     handler = chat_js.split('root.addEventListener("keydown"', 1)[1].split("});", 1)[0]
     assert handler.index("closeSettings()") < handler.index("aborter?.abort()")
+
+
+def test_stopping_before_content_keeps_an_alternating_visible_transcript(
+    chat_js: str, chat_css: str
+) -> None:
+    run = chat_js.split("async function run()", 1)[1].split(
+        "async function submit()", 1
+    )[0]
+    assert 'const stoppedMessage = stopped && !text ? "Response stopped before content."' in run
+    assert "view.answer.textContent = stoppedMessage;" in run
+    assert 'turns.push({ role: "assistant", text: transcriptText })' in run
+    assert ".chat-answer.stopped" in chat_css
+
+
+def test_standalone_chat_uses_status_theme_after_os_default(
+    chat_js: str, chat_css: str, chat_page_js: str
+) -> None:
+    assert 'typeof options.onStatus === "function"' in chat_js
+    startup = chat_js.split("if (!restoreHistory()) empty();", 1)[1].split(
+        "return {", 1
+    )[0]
+    assert startup.index("refreshContext();") < startup.index("loadProviders();")
+    assert "onStatus: (status) =>" in chat_page_js
+    assert "document.documentElement.dataset.consoleTheme = status.theme" in chat_page_js
+    assert "html:not([data-console-theme]) body.chat-page" in chat_css
+    assert 'html[data-console-theme="light"] body.chat-page' in chat_css
 
 
 def test_a_stale_model_list_cannot_win(chat_js: str):

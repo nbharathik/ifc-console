@@ -189,9 +189,15 @@ class ArtifactRetentionService:
             for path in (root / "records").glob(pattern):
                 try:
                     payload = json.loads(path.read_text(encoding="utf-8"))
-                except (OSError, json.JSONDecodeError):
-                    continue
-                self._find_artifact_ids(payload, result)
+                    if not isinstance(payload, dict):
+                        raise ValueError("record root is not an object")
+                    self._find_artifact_ids(payload, result)
+                except (OSError, UnicodeError, ValueError, RecursionError) as exc:
+                    raise ToolError(
+                        "ARTIFACT_STORE_CORRUPT",
+                        f"durable automation record {path.name!r} is unreadable: {exc}",
+                        "Repair or remove the corrupt record before collecting artifacts.",
+                    ) from exc
         return result
 
     @classmethod

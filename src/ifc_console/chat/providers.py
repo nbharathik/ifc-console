@@ -39,6 +39,7 @@ _MAX_SSE_LINE = 1024 * 1024
 _MAX_SSE_TOTAL = 64 * 1024 * 1024
 _MAX_MODELS = 10_000
 _MAX_MODEL_NAME = 500
+_STREAM_WORKER_JOIN_TIMEOUT = 1.0
 _QUEUE_DONE = object()
 log = logging.getLogger("ifc-console.chat.providers")
 
@@ -128,6 +129,55 @@ def _headers(provider: Provider, key: str) -> dict[str, str]:
 
 class ProviderError(RuntimeError):
     """A provider refused the call. The message is safe to show the user."""
+
+
+def _close_stream_response(response: Any) -> None:
+    pending = [response]
+    seen: set[int] = set()
+    while pending and len(seen) < 12:
+        current = pending.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        if isinstance(current, socket.socket):
+            with contextlib.suppress(OSError):
+                current.shutdown(socket.SHUT_RDWR)
+            break
+        for attribute in ("fp", "raw", "_sock", "sock"):
+            with contextlib.suppress(Exception):
+                nested = getattr(current, attribute, None)
+                if nested is not None:
+                    pending.append(nested)
+    with contextlib.suppress(Exception):
+        response.close()
+
+
+class _StreamCancellation(threading.Event):
+    def __init__(self) -> None:
+        super().__init__()
+        self._response: Any = None
+        self._response_lock = threading.Lock()
+
+    def attach_response(self, response: Any) -> None:
+        with self._response_lock:
+            close_now = self.is_set()
+            if not close_now:
+                self._response = response
+        if close_now:
+            _close_stream_response(response)
+
+    def detach_response(self, response: Any) -> None:
+        with self._response_lock:
+            if self._response is response:
+                self._response = None
+
+    def set(self) -> None:
+        super().set()
+        with self._response_lock:
+            response = self._response
+            self._response = None
+        if response is not None:
+            _close_stream_response(response)
 
 
 def redact(text: str, secrets: tuple[str, ...] = ()) -> str:
@@ -358,33 +408,42 @@ def _sse_lines(response, cancel: threading.Event | None = None) -> Iterator[tupl
     have to leave this loop, or the socket stays open and the provider keeps
     billing for tokens nobody will read.
     """
-    event = ""
-    total = 0
-    while True:
-        if hasattr(response, "readline"):
-            raw = response.readline(_MAX_SSE_LINE + 1)
-        else:
-            try:
-                raw = next(response)
-            except StopIteration:
+    tracked = isinstance(cancel, _StreamCancellation)
+    if tracked:
+        cancel.attach_response(response)
+    try:
+        event = ""
+        total = 0
+        while True:
+            if cancel is not None and cancel.is_set():
                 return
-        if not raw:
-            return
-        if len(raw) > _MAX_SSE_LINE:
-            raise ProviderError("provider sent an oversized streaming line")
-        total += len(raw)
-        if total > _MAX_SSE_TOTAL:
-            raise ProviderError("provider stream exceeded the response-size limit")
-        if cancel is not None and cancel.is_set():
-            return
-        line = raw.decode("utf-8", "replace").rstrip("\r\n")
-        if not line:
-            event = ""
-            continue
-        if line.startswith("event:"):
-            event = line[6:].strip()
-        elif line.startswith("data:"):
-            yield event, line[5:].strip()
+            if hasattr(response, "readline"):
+                raw = response.readline(_MAX_SSE_LINE + 1)
+            else:
+                try:
+                    raw = next(response)
+                except StopIteration:
+                    return
+            if not raw:
+                return
+            if len(raw) > _MAX_SSE_LINE:
+                raise ProviderError("provider sent an oversized streaming line")
+            total += len(raw)
+            if total > _MAX_SSE_TOTAL:
+                raise ProviderError("provider stream exceeded the response-size limit")
+            if cancel is not None and cancel.is_set():
+                return
+            line = raw.decode("utf-8", "replace").rstrip("\r\n")
+            if not line:
+                event = ""
+                continue
+            if line.startswith("event:"):
+                event = line[6:].strip()
+            elif line.startswith("data:"):
+                yield event, line[5:].strip()
+    finally:
+        if tracked:
+            cancel.detach_response(response)
 
 
 # --------------------------------------------------------------- openai shape
@@ -707,7 +766,7 @@ async def astream(provider: Provider, *, stream_factory: Any = None, **kwargs: A
 
     loop = asyncio.get_running_loop()
     queue: asyncio.Queue[Any] = asyncio.Queue()
-    cancel = threading.Event()
+    cancel = _StreamCancellation()
     slots = threading.Semaphore(64)
 
     def emit(event: Any) -> bool:
@@ -728,14 +787,17 @@ async def astream(provider: Provider, *, stream_factory: Any = None, **kwargs: A
                 if cancel.is_set() or not emit(event):
                     return
         except ProviderError as exc:
-            emit({"type": "error", "text": str(exc)})
+            if not cancel.is_set():
+                emit({"type": "error", "text": str(exc)})
         except Exception as exc:
-            log.error("provider stream failed with %s", type(exc).__name__)
-            emit({"type": "error", "text": "internal provider error"})
+            if not cancel.is_set():
+                log.error("provider stream failed with %s", type(exc).__name__)
+                emit({"type": "error", "text": "internal provider error"})
         finally:
             emit(_QUEUE_DONE)
 
-    threading.Thread(target=pump, name="ifc-console-provider", daemon=True).start()
+    worker = threading.Thread(target=pump, name="ifc-console-provider", daemon=True)
+    worker.start()
     try:
         while True:
             event = await queue.get()
@@ -745,3 +807,11 @@ async def astream(provider: Provider, *, stream_factory: Any = None, **kwargs: A
             yield event
     finally:
         cancel.set()
+        if worker.is_alive():
+            with contextlib.suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(
+                    asyncio.to_thread(worker.join, _STREAM_WORKER_JOIN_TIMEOUT),
+                    timeout=_STREAM_WORKER_JOIN_TIMEOUT + 0.1,
+                )
+        if worker.is_alive():
+            log.warning("provider worker did not stop after stream cancellation")

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import shutil
+import threading
 from pathlib import Path
 
 import pytest
@@ -179,6 +180,71 @@ async def test_cancel_then_resume_reuses_verified_successes(
         assert completed.children[2].attempts == 1
         assert completed.summary["reused"] == 1
     finally:
+        await core.ashutdown()
+
+
+async def test_concurrent_resume_schedules_one_batch_supervisor(
+    tmp_path: Path,
+    minimal_ifc4_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    core, models = await _core(tmp_path, minimal_ifc4_path, count=1)
+    monkeypatch.setattr(core.batches, "_schedule", lambda _batch_id: None)
+    release = threading.Event()
+    started = threading.Event()
+
+    def delayed_match(_source) -> bool:
+        started.set()
+        if not release.wait(5):
+            raise RuntimeError("timed out waiting to release source verification")
+        return True
+
+    try:
+        submitted = await core.batches.submit_validation(models)
+        core.batches._replace(
+            submitted.batch_id,
+            state=BatchState.CANCELLED,
+            message="batch cancelled for resume race test",
+        )
+        scheduled: list[str] = []
+
+        def schedule(batch_id: str) -> None:
+            scheduled.append(batch_id)
+            core.batches._replace(
+                batch_id,
+                state=BatchState.FAILED,
+                message="batch supervisor failed immediately",
+            )
+
+        monkeypatch.setattr(core.batches, "_schedule", schedule)
+        monkeypatch.setattr(
+            "ifc_console.application.batches.source_matches", delayed_match
+        )
+
+        first = asyncio.create_task(core.batches.resume(submitted.batch_id))
+        for _ in range(500):
+            if started.is_set():
+                break
+            await asyncio.sleep(0.01)
+        else:
+            release.set()
+            await asyncio.gather(first, return_exceptions=True)
+            pytest.fail("first resume did not start source verification")
+        second = asyncio.create_task(core.batches.resume(submitted.batch_id))
+        await asyncio.sleep(0)
+        release.set()
+        outcomes = await asyncio.gather(first, second, return_exceptions=True)
+
+        errors = [outcome for outcome in outcomes if isinstance(outcome, ToolError)]
+        assert len(errors) == 1
+        assert errors[0].code == "BATCH_NOT_RESUMABLE"
+        assert sum(not isinstance(outcome, BaseException) for outcome in outcomes) == 1
+        assert scheduled == [submitted.batch_id]
+        assert core.batches.get(submitted.batch_id).run_count == 2
+        assert not core.batches._resume_locks
+        assert not core.batches._resume_lock_users
+    finally:
+        release.set()
         await core.ashutdown()
 
 

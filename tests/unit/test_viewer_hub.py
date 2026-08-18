@@ -31,7 +31,12 @@ class FakeWS:
         frame = json.loads(text)
         self.sent.append(frame)
         if frame.get("type") == "screenshot_request" and self.respond_shots is not None:
-            reply = {"type": "screenshot_response", "id": frame["id"], **self.respond_shots}
+            reply = {
+                "type": "screenshot_response",
+                "id": frame["id"],
+                "model_id": frame.get("model_id"),
+                **self.respond_shots,
+            }
             asyncio.get_running_loop().create_task(self.hub.handle_frame(self.client, reply))
 
     def frames(self, ftype: str) -> list[dict]:
@@ -157,6 +162,53 @@ async def test_screenshot_goes_to_most_recent_tab(hub):
     await hub.request_screenshot(view="top", fit=None, max_size=64, format="png", quality=1)
     assert not ws1.frames("screenshot_request")
     assert ws2.frames("screenshot_request")
+
+
+async def test_screenshot_targets_a_tab_showing_the_active_model(core, hub, work_model: Path):
+    await core.open_model(work_model)
+    payload = {"data_b64": base64.b64encode(TINY_PNG).decode(), "width": 1, "height": 1}
+    active = _attach(hub, respond_shots=payload)
+    pinned = _attach(hub, respond_shots=payload)
+    await hub.handle_frame(
+        active.client,
+        {"type": "selection", "guids": [], "model_id": core.models.active_id},
+    )
+    pinned.client.view_model_id = "attached-model"
+    pinned.client.touch()
+
+    await hub.request_screenshot(view="top", fit=None, max_size=64, format="png", quality=1)
+
+    assert active.frames("screenshot_request")
+    assert not pinned.frames("screenshot_request")
+    assert active.frames("screenshot_request")[0]["model_id"] == core.models.active_id
+
+
+async def test_screenshot_ignores_a_response_from_another_tab(hub, monkeypatch):
+    monkeypatch.setattr("ifc_console.viewer.hub._SCREENSHOT_TIMEOUT", 0.05)
+    target = _attach(hub)
+    other = _attach(hub)
+    target.client.touch()
+
+    request = asyncio.create_task(
+        hub.request_screenshot(view="top", fit=None, max_size=64, format="png", quality=1)
+    )
+    await asyncio.sleep(0)
+    frame = target.frames("screenshot_request")[0]
+    await hub.handle_frame(
+        other.client,
+        {
+            "type": "screenshot_response",
+            "id": frame["id"],
+            "model_id": frame.get("model_id"),
+            "data_b64": base64.b64encode(TINY_PNG).decode(),
+            "width": 1,
+            "height": 1,
+        },
+    )
+
+    with pytest.raises(ToolError) as err:
+        await request
+    assert err.value.code == "VIEWER_TIMEOUT"
 
 
 async def test_screenshot_client_error_becomes_viewer_error(hub):

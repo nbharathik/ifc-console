@@ -37,6 +37,7 @@ def _auth(core) -> dict:
 def _attach_fake_tab(core, **kwargs) -> FakeWS:
     ws = FakeWS(hub=core.viewer_hub, **kwargs)
     ws.client = core.viewer_hub.register(ws)
+    ws.client.view_model_id = core.models.active_id
     return ws
 
 
@@ -193,6 +194,25 @@ async def test_model_ifc_size_guard_413(viewer_core, monkeypatch):
     response = client.get("/api/model.ifc", headers=_auth(viewer_core))
     assert response.status_code == 413
     assert response.json()["error"] == "MODEL_TOO_LARGE"
+
+
+async def test_model_ifc_serialized_size_guard_413(viewer_core, monkeypatch):
+    monkeypatch.setattr(viewer_core.settings.viewer, "max_model_mb", 1)
+    monkeypatch.setattr(viewer_core.session, "matches_disk", lambda: False)
+
+    async def oversized(_job, timeout=None):
+        return b"x" * (1_048_576 + 1)
+
+    monkeypatch.setattr(viewer_core.session, "run", oversized)
+    client = _http_client(viewer_core)
+
+    response = client.get("/api/model.ifc", headers=_auth(viewer_core))
+
+    assert response.status_code == 413
+    assert response.json()["error"] == "MODEL_TOO_LARGE"
+    etag = viewer_core.viewer_hub.model_etag()
+    assert etag is not None
+    assert viewer_core.viewer_hub.cached_model_bytes(etag) is None
 
 
 async def test_element_endpoint(viewer_core):

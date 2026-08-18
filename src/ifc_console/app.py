@@ -206,7 +206,12 @@ class AppCore:
         The token rides the fragment: it never reaches the server, its logs,
         or a referrer, and the SPA scrubs it from the address bar on load.
         """
-        return f"http://127.0.0.1:{self.port}/viewer#t={self.token}"
+        return f"{self.viewer_public_url}#t={self.token}"
+
+    @property
+    def viewer_public_url(self) -> str:
+        """Untokenized viewer URL safe for status, audit, and event payloads."""
+        return f"http://127.0.0.1:{self.port}/viewer"
 
     # -- viewer lifecycle -------------------------------------------------------
     def attach_mcp(self, mcp) -> None:
@@ -257,8 +262,8 @@ class AppCore:
         self.viewer.enabled = True
         self.viewer.url = self.viewer_url
         self._sync_viewer_tools()
-        self.audit.record("viewer_enabled", url=self.viewer.url)
-        self.events.emit("viewer_enabled", url=self.viewer.url)
+        self.audit.record("viewer_enabled", url=self.viewer_public_url)
+        self.events.emit("viewer_enabled", url=self.viewer_public_url)
         return True
 
     # -- chat panel -----------------------------------------------------------

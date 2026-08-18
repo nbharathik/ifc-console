@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
+
 import pytest
 
 pytestmark = pytest.mark.asyncio
@@ -15,6 +18,22 @@ async def test_session_status(ask_harness) -> None:
     assert out["meta"]["fingerprint"]
 
 
+async def test_session_status_does_not_serialize_the_viewer_token(ask_harness) -> None:
+    assert ask_harness.core.enable_viewer() is True
+
+    result = await ask_harness.session.call_tool("get_session_status", {})
+    out = result.structuredContent
+
+    assert out is not None
+    assert out["data"]["viewer"]["url"] == ask_harness.core.viewer_public_url
+    serialized = json.dumps(out) + "".join(
+        block.text for block in result.content if getattr(block, "type", None) == "text"
+    )
+    assert ask_harness.core.token not in serialized
+    assert "#t=" not in out["data"]["viewer"]["url"]
+    assert f"#t={ask_harness.core.token}" in ask_harness.core.viewer.url
+
+
 async def test_project_info(ask_harness) -> None:
     out = await ask_harness.call("get_ifc_project_info")
     assert out["ok"] is True
@@ -22,6 +41,36 @@ async def test_project_info(ask_harness) -> None:
     assert data["schema"] == "IFC4"
     assert data["entity_counts"]["IfcWall"] == 3
     assert data["spatial"]["storeys"] == 2
+
+
+async def test_model_read_pins_its_session_during_lifecycle_changes(
+    ask_harness, monkeypatch
+) -> None:
+    core = ask_harness.core
+    session = core.session
+    model_id = core.models.active_id
+    original_run = session.run
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def blocked_run(job, timeout=None):
+        entered.set()
+        await release.wait()
+        return await original_run(job, timeout=timeout)
+
+    monkeypatch.setattr(session, "run", blocked_run)
+    read = asyncio.create_task(ask_harness.call("search_elements", term="Wall"))
+    await asyncio.wait_for(entered.wait(), timeout=1)
+    assert model_id is not None
+    detach = asyncio.create_task(core.detach_model(model_id))
+    await asyncio.sleep(0)
+
+    assert not detach.done()
+    release.set()
+    result = await read
+    await detach
+
+    assert result["ok"] is True
 
 
 async def test_spatial_structure(ask_harness) -> None:

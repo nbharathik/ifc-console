@@ -12,7 +12,12 @@ function ensureApi() {
   if (!apiPromise) {
     const api = new IfcAPI();
     api.SetWasmPath("/viewer/static/vendor/", true);
-    apiPromise = api.Init().then(() => api);
+    apiPromise = api.Init()
+      .then(() => api)
+      .catch((error) => {
+        apiPromise = null;
+        throw error;
+      });
   }
   return apiPromise;
 }
@@ -28,8 +33,19 @@ self.onmessage = (event) => {
   // Serialize loads: a reload arriving mid-parse waits its turn instead of
   // interleaving two models inside one wasm heap.
   queue = queue.then(async () => {
+    let api;
     try {
-      const api = await ensureApi();
+      api = await ensureApi();
+    } catch (err) {
+      self.postMessage({
+        seq,
+        type: "error",
+        message: String(err && err.message || err),
+        init_failed: true,
+      });
+      return;
+    }
+    try {
       await parseModel(api, new Uint8Array(buffer), (message, transfers) => {
         self.postMessage({ seq, ...message }, transfers || []);
       });

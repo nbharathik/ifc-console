@@ -108,6 +108,50 @@ def test_gc_plan_retains_workflow_and_referenced_batch_artifacts(tmp_path: Path)
     assert plan.retained_count == 2
 
 
+@pytest.mark.parametrize(
+    ("record_kind", "record_name"),
+    [
+        ("job", "job-0123456789abcdef.json"),
+        ("batch", "batch-0123456789abcdef.json"),
+        ("workflow", "workflow-0123456789abcdef.json"),
+    ],
+)
+def test_gc_aborts_when_a_durable_record_is_corrupt(
+    tmp_path: Path, record_kind: str, record_name: str
+) -> None:
+    artifacts = ArtifactService(tmp_path / "artifacts")
+    jobs_root = tmp_path / "jobs"
+    batches_root = tmp_path / "batches"
+    workflows_root = tmp_path / "workflows"
+    retention = ArtifactRetentionService(
+        artifacts,
+        jobs_root,
+        batches_root=batches_root,
+        workflows_root=workflows_root,
+    )
+    candidate = _put(artifacts, "candidate")
+    _old(artifacts, candidate.artifact_id)
+    safe_plan = retention.plan(older_than_days=30)
+    record_root = {
+        "job": jobs_root,
+        "batch": batches_root,
+        "workflow": workflows_root,
+    }[record_kind]
+    records = record_root / "records"
+    records.mkdir(parents=True)
+    (records / record_name).write_text("{broken", encoding="utf-8")
+
+    with pytest.raises(ToolError) as planning:
+        retention.plan(older_than_days=30)
+    assert planning.value.code == "ARTIFACT_STORE_CORRUPT"
+    assert record_name in str(planning.value)
+
+    with pytest.raises(ToolError) as collecting:
+        retention.collect(safe_plan, confirm=True)
+    assert collecting.value.code == "ARTIFACT_STORE_CORRUPT"
+    assert artifacts.get(candidate.artifact_id).artifact_id == candidate.artifact_id
+
+
 def test_gc_requires_confirmation_and_exact_unchanged_plan(tmp_path: Path) -> None:
     artifacts = ArtifactService(tmp_path / "artifacts")
     retention = ArtifactRetentionService(artifacts, tmp_path / "jobs")

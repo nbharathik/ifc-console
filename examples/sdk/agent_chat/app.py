@@ -6,6 +6,7 @@ import argparse
 import asyncio
 import json
 import re
+from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
@@ -73,13 +74,16 @@ async def _json(request, *, max_bytes: int = 64 * 1024) -> dict[str, Any] | None
     content_length = request.headers.get("content-length")
     if content_length:
         try:
-            if int(content_length) > max_bytes:
+            declared = int(content_length)
+            if declared < 0 or declared > max_bytes:
                 return None
         except ValueError:
             return None
-    raw = await request.body()
-    if len(raw) > max_bytes:
-        return None
+    raw = bytearray()
+    async for chunk in request.stream():
+        if len(raw) + len(chunk) > max_bytes:
+            return None
+        raw.extend(chunk)
     try:
         value = json.loads(raw or b"{}")
     except (json.JSONDecodeError, UnicodeDecodeError):
@@ -257,7 +261,8 @@ def main() -> int:
     parser.add_argument("--viewer", action="store_true")
     parser.add_argument("--local-only", action="store_true")
     args = parser.parse_args()
-    asyncio.run(serve(args))
+    with suppress(KeyboardInterrupt):
+        asyncio.run(serve(args))
     return 0
 
 

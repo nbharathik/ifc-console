@@ -1,11 +1,7 @@
 const state = {
   token: "",
   threadId: sessionStorage.getItem("ifc-sdk-thread") || crypto.randomUUID(),
-  running: false,
-  callCount: 0,
-  assistant: null,
-  controller: null,
-  ledger: new Map(),
+  activeRun: null,
 };
 sessionStorage.setItem("ifc-sdk-thread", state.threadId);
 
@@ -54,30 +50,56 @@ function addMessage(role, text = "") {
 }
 
 function setRunning(value) {
-  state.running = value;
   prompt.disabled = value;
   send.textContent = value ? "Stop" : "Run";
   send.classList.toggle("stop", value);
   runStatus.textContent = value ? "Building an evidence-backed answer…" : "Ready";
 }
 
-function resetLedger() {
-  state.callCount = 0;
-  state.ledger.clear();
-  ledger.innerHTML = '<div class="ledger-empty">The run is active. Operations will appear here as the model requests them.</div>';
+function ownsRun(runState) {
+  return state.activeRun === runState;
+}
+
+function finishRun(runState, status = "Ready") {
+  if (!ownsRun(runState)) return false;
+  state.activeRun = null;
+  setRunning(false);
+  runStatus.textContent = status;
+  return true;
+}
+
+function stopActiveRun() {
+  const runState = state.activeRun;
+  if (!runState) return false;
+  state.activeRun = null;
+  runState.controller.abort();
+  setRunning(false);
+  runStatus.textContent = "Run stopped";
+  return true;
+}
+
+function resetLedger(runState = null) {
+  if (runState) {
+    runState.callCount = 0;
+    runState.ledger.clear();
+  }
+  const empty = runState
+    ? "The run is active. Operations will appear here as the model requests them."
+    : "Tool calls, approvals, and results will be recorded here as the answer is built.";
+  ledger.innerHTML = `<div class="ledger-empty">${empty}</div>`;
   $('[data-role="ledger-count"]').textContent = "0 calls";
   $('[data-role="usage"]').textContent = "No token usage yet";
 }
 
-function ledgerItem(event) {
-  if (!state.callCount) ledger.innerHTML = "";
-  state.callCount += 1;
+function ledgerItem(event, runState) {
+  if (!runState.callCount) ledger.innerHTML = "";
+  runState.callCount += 1;
   const item = document.createElement("article");
   item.className = "ledger-item running";
   item.dataset.callId = event.tool_call_id;
   const seq = document.createElement("span");
   seq.className = "ledger-seq";
-  seq.textContent = String(state.callCount).padStart(2, "0");
+  seq.textContent = String(runState.callCount).padStart(2, "0");
   const name = document.createElement("span");
   name.className = "ledger-name";
   name.textContent = event.tool_name;
@@ -90,25 +112,40 @@ function ledgerItem(event) {
   args.textContent = encoded.length > 280 ? `${encoded.slice(0, 277)}…` : encoded;
   item.append(seq, name, status, args);
   ledger.append(item);
-  state.ledger.set(event.tool_call_id, item);
-  $('[data-role="ledger-count"]').textContent = `${state.callCount} call${state.callCount === 1 ? "" : "s"}`;
+  runState.ledger.set(event.tool_call_id, item);
+  $('[data-role="ledger-count"]').textContent = `${runState.callCount} call${runState.callCount === 1 ? "" : "s"}`;
   ledger.scrollTop = ledger.scrollHeight;
 }
 
-async function resolveApproval(requestId, approved, buttons) {
+async function resolveApproval(runState, requestId, approved, buttons) {
   buttons.forEach((button) => { button.disabled = true; });
-  const response = await api(`/api/sdk/approvals/${encodeURIComponent(requestId)}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ approved, reason: approved ? "Approved in the reference chat" : "Denied in the reference chat" }),
-  });
-  if (!response.ok) {
-    runStatus.textContent = "The approval expired before the decision arrived.";
+  try {
+    const reason = approved
+      ? "Approved in the reference chat" : "Denied in the reference chat";
+    const response = await api(`/api/sdk/approvals/${encodeURIComponent(requestId)}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ approved, reason }),
+      signal: runState.controller.signal,
+    });
+    if (!response.ok) {
+      const detail = await response.json().catch(() => ({}));
+      throw new Error(detail.error || `server returned HTTP ${response.status}`);
+    }
+    if (ownsRun(runState)) {
+      runStatus.textContent = "Decision sent. Waiting for the run to continue…";
+    }
+  } catch (error) {
+    if (!ownsRun(runState)) return;
+    buttons.forEach((button) => { button.disabled = false; });
+    const detail = error instanceof Error && error.message
+      ? error.message : "the network request failed";
+    runStatus.textContent = `Could not send the approval: ${detail}. Retry the decision or stop the run.`;
   }
 }
 
-function showApproval(event) {
-  const item = state.ledger.get(event.tool_call_id);
+function showApproval(event, runState) {
+  const item = runState.ledger.get(event.tool_call_id);
   if (!item || !event.approval) return;
   item.classList.add("approval");
   item.querySelector(".ledger-state").textContent = "approval";
@@ -121,47 +158,69 @@ function showApproval(event) {
   deny.textContent = "Deny";
   actions.append(approve, deny);
   item.append(actions);
-  approve.addEventListener("click", () => resolveApproval(event.approval.request_id, true, [approve, deny]));
-  deny.addEventListener("click", () => resolveApproval(event.approval.request_id, false, [approve, deny]));
+  approve.addEventListener("click", () => {
+    resolveApproval(runState, event.approval.request_id, true, [approve, deny]);
+  });
+  deny.addEventListener("click", () => {
+    resolveApproval(runState, event.approval.request_id, false, [approve, deny]);
+  });
 }
 
-function handleEvent(event) {
+function handleEvent(event, runState) {
+  if (!ownsRun(runState)) return;
   switch (event.type) {
     case "run_started":
-      resetLedger();
-      state.assistant = addMessage("assistant", "");
+      resetLedger(runState);
+      runState.assistant = addMessage("assistant", "");
       break;
     case "text_delta":
-      if (!state.assistant) state.assistant = addMessage("assistant", "");
-      state.assistant.textContent += event.text || "";
+      if (!runState.assistant) runState.assistant = addMessage("assistant", "");
+      runState.assistant.textContent += event.text || "";
       messages.scrollTop = messages.scrollHeight;
       break;
     case "tool_call_started":
-      ledgerItem(event);
+      ledgerItem(event, runState);
       break;
     case "approval_requested":
-      showApproval(event);
+      showApproval(event, runState);
       break;
-    case "approval_resolved": { const item = state.ledger.get(event.tool_call_id); if (item) item.querySelector(".ledger-state").textContent = event.decision?.approved ? "approved" : "denied"; break; }
-    case "tool_call_finished": { const item = state.ledger.get(event.tool_call_id); if (item) { const ok = Boolean(event.result?.ok); item.classList.remove("running", "approval"); item.classList.add(ok ? "ok" : "failed"); item.querySelector(".ledger-state").textContent = ok ? "ok" : (event.result?.error?.code || "failed").toLowerCase(); item.querySelector(".approval-actions")?.remove(); } break; }
+    case "approval_resolved": {
+      const item = runState.ledger.get(event.tool_call_id);
+      if (item) {
+        item.querySelector(".ledger-state").textContent = event.decision?.approved
+          ? "approved" : "denied";
+      }
+      break;
+    }
+    case "tool_call_finished": {
+      const item = runState.ledger.get(event.tool_call_id);
+      if (item) {
+        const ok = Boolean(event.result?.ok);
+        item.classList.remove("running", "approval");
+        item.classList.add(ok ? "ok" : "failed");
+        item.querySelector(".ledger-state").textContent = ok
+          ? "ok" : (event.result?.error?.code || "failed").toLowerCase();
+        item.querySelector(".approval-actions")?.remove();
+      }
+      break;
+    }
     case "usage":
       $('[data-role="usage"]').textContent = `${event.usage?.input_tokens ?? "—"} in / ${event.usage?.output_tokens ?? "—"} out`;
       break;
     case "run_failed":
-      if (state.assistant && !state.assistant.textContent) state.assistant.closest(".message")?.remove();
+      if (runState.assistant && !runState.assistant.textContent) runState.assistant.closest(".message")?.remove();
       addMessage("error", event.text || "The run failed.");
-      setRunning(false);
+      finishRun(runState, "Run failed. Review the message and try again.");
       break;
     case "run_completed":
-      setRunning(false);
-      runStatus.textContent = "Run complete";
+      finishRun(runState, "Run complete");
       break;
     default:
       break;
   }
 }
 
-async function readSse(response) {
+async function readSse(response, runState) {
   if (!response.ok || !response.body) {
     const detail = await response.json().catch(() => ({}));
     throw new Error(detail.error || `Request failed (${response.status})`);
@@ -176,45 +235,54 @@ async function readSse(response) {
     buffer = blocks.pop() || "";
     for (const block of blocks) {
       const data = block.split("\n").filter((line) => line.startsWith("data:")).map((line) => line.slice(5)).join("\n");
-      if (data) handleEvent(JSON.parse(data));
+      if (data) handleEvent(JSON.parse(data), runState);
     }
     if (done) break;
   }
 }
 
 async function run(message) {
-  if (!message.trim()) return;
-  addMessage("user", message.trim());
+  const clean = message.trim();
+  if (!clean || state.activeRun) return;
+  const runState = {
+    assistant: null,
+    callCount: 0,
+    controller: new AbortController(),
+    ledger: new Map(),
+    threadId: state.threadId,
+  };
+  state.activeRun = runState;
+  addMessage("user", clean);
   prompt.value = "";
   setRunning(true);
-  state.assistant = null;
-  state.controller = new AbortController();
   try {
     const response = await api("/api/sdk/chat/stream", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message: message.trim(), thread_id: state.threadId }),
-      signal: state.controller.signal,
+      body: JSON.stringify({ message: clean, thread_id: runState.threadId }),
+      signal: runState.controller.signal,
     });
-    await readSse(response);
+    await readSse(response, runState);
   } catch (error) {
+    if (!ownsRun(runState)) return;
     if (error.name === "AbortError") {
-      if (state.assistant && !state.assistant.textContent) state.assistant.closest(".message")?.remove();
-      runStatus.textContent = "Run stopped";
+      if (runState.assistant && !runState.assistant.textContent) {
+        runState.assistant.closest(".message")?.remove();
+      }
+      finishRun(runState, "Run stopped");
     } else {
       addMessage("error", error.message || "The run could not start.");
+      finishRun(runState, "Run failed. Check the connection and try again.");
     }
-    setRunning(false);
   } finally {
-    state.controller = null;
-    if (state.running) setRunning(false);
+    finishRun(runState, "The run ended before completion. Try again.");
   }
 }
 
 composer.addEventListener("submit", (event) => {
   event.preventDefault();
-  if (state.running) {
-    state.controller?.abort();
+  if (state.activeRun) {
+    stopActiveRun();
     return;
   }
   run(prompt.value);
@@ -225,13 +293,16 @@ prompt.addEventListener("keydown", (event) => {
     composer.requestSubmit();
   }
 });
-document.querySelectorAll("[data-prompt]").forEach((button) => button.addEventListener("click", () => run(button.dataset.prompt)));
+document.querySelectorAll("[data-prompt]").forEach((button) => {
+  button.addEventListener("click", () => run(button.dataset.prompt));
+});
 $('[data-action="new"]').addEventListener("click", () => {
-  state.controller?.abort();
+  stopActiveRun();
   state.threadId = crypto.randomUUID();
   sessionStorage.setItem("ifc-sdk-thread", state.threadId);
   messages.innerHTML = '<div class="welcome" data-role="welcome"><p class="coordinate">NEW THREAD / ACTIVE MODEL</p><h3>Ready for another review.</h3><p>The model stays open; only the conversation context was cleared.</p></div>';
   resetLedger();
+  runStatus.textContent = "Ready";
   prompt.focus();
 });
 

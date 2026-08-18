@@ -96,6 +96,19 @@ def build_viewer_routes(core: AppCore) -> list[Any]:
             return core.session
         return core.models.get(model_id)
 
+    def _model_too_large(size_bytes: int, max_mb: int, *, serialized: bool = False) -> JSONResponse:
+        label = "serialized model" if serialized else "model"
+        return JSONResponse(
+            {
+                "error": "MODEL_TOO_LARGE",
+                "message": f"{label} is {size_bytes / 1_048_576:.0f} MB, "
+                f"viewer limit is {max_mb} MB",
+                "hint": "raise viewer.max_model_mb in settings if you really want to try",
+            },
+            status_code=413,
+        )
+
+    @core.model_lifecycle_operation
     async def model_ifc(request) -> Response:
         if not core.viewer.enabled:
             return _disabled_response()
@@ -115,15 +128,7 @@ def build_viewer_routes(core: AppCore) -> list[Any]:
             )
         max_mb = core.settings.viewer.max_model_mb
         if session.size_bytes > max_mb * 1_048_576:
-            return JSONResponse(
-                {
-                    "error": "MODEL_TOO_LARGE",
-                    "message": f"model is {session.size_bytes / 1_048_576:.0f} MB, "
-                    f"viewer limit is {max_mb} MB",
-                    "hint": "raise viewer.max_model_mb in settings if you really want to try",
-                },
-                status_code=413,
-            )
+            return _model_too_large(session.size_bytes, max_mb)
         etag = core.viewer_hub.model_etag(session) or ""
         if request.headers.get("if-none-match") == etag:
             return Response(status_code=304, headers={"ETag": etag})
@@ -132,7 +137,9 @@ def build_viewer_routes(core: AppCore) -> list[Any]:
         # the viewer wants, and sendfile beats re-serializing by ~100x on a
         # large model. Anything else (dirty, saved elsewhere, .ifczip/.ifcxml)
         # falls through to the serializer.
-        if session.path.suffix.lower() == ".ifc" and session.matches_disk():
+        if session.path.suffix.lower() == ".ifc" and await asyncio.to_thread(
+            session.matches_disk
+        ):
             return FileResponse(session.path, media_type="application/x-step", headers=headers)
         data = core.viewer_hub.cached_model_bytes(etag)
         if data is None:
@@ -146,9 +153,14 @@ def build_viewer_routes(core: AppCore) -> list[Any]:
                     data = await session.run(
                         lambda: session.ifc.to_string().encode("utf-8"), timeout=600
                     )
+                    if len(data) > max_mb * 1_048_576:
+                        return _model_too_large(len(data), max_mb, serialized=True)
                     core.viewer_hub.cache_model_bytes(etag, data)
+        if len(data) > max_mb * 1_048_576:
+            return _model_too_large(len(data), max_mb, serialized=True)
         return Response(data, media_type="application/x-step", headers=headers)
 
+    @core.model_lifecycle_operation
     async def element(request) -> Response:
         if not core.viewer.enabled:
             return _disabled_response()
@@ -187,6 +199,7 @@ def build_viewer_routes(core: AppCore) -> list[Any]:
             return JSONResponse({"error": "ELEMENT_NOT_FOUND", "guid": guid}, status_code=404)
         return JSONResponse(detail)
 
+    @core.model_lifecycle_operation
     async def search(request) -> Response:
         if not core.viewer.enabled:
             return _disabled_response()

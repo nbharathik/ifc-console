@@ -23,6 +23,9 @@ from ifc_console.tui.modals import QuitModal
 
 log = logging.getLogger("ifc-console.tui")
 
+_SERVER_START_TIMEOUT_S = 5.0
+_SERVER_POLL_S = 0.02
+
 # Brand themes built from the grayscale kit; status hues match the viewer and
 # keep the ask/edit convention legible on both backgrounds.
 THEMES = {
@@ -143,23 +146,23 @@ class IfcConsoleApp(App):
             self.core.viewer.url = self.core.viewer_url
         mcp = build_mcp(self.core)
         app = build_http_app(self.core, mcp)
-        self._server = make_uvicorn_server(app, port)
-        self._server_task = asyncio.create_task(self._serve())
-        # ~5 s budget. The first ticks are short because a loopback server is
-        # usually up in about 10 ms, and create_task means the first check runs
-        # before _serve has executed a single line.
-        for attempt in range(280):
-            await asyncio.sleep(0.002 if attempt < 50 else 0.02)
-            if getattr(self._server, "started", False):
+        server = make_uvicorn_server(app, port)
+        self._server = server
+        task = asyncio.create_task(self._serve(server))
+        self._server_task = task
+        deadline = asyncio.get_running_loop().time() + _SERVER_START_TIMEOUT_S
+        while asyncio.get_running_loop().time() < deadline:
+            await asyncio.sleep(_SERVER_POLL_S)
+            if task.done():
+                break
+            if getattr(server, "started", False):
                 self.core.server_running = True
                 self.core.server_error = None
                 self.core.events.emit("server_started", url=self.core.mcp_url, port=port)
                 return True
-            if self._server_task.done():
-                break
-        exc = self._server_task.exception() if self._server_task.done() else None
-        if exc is not None:
-            reason = str(exc)
+        task_reason = task.result() if task.done() and not task.cancelled() else None
+        if task_reason:
+            reason = task_reason
         else:
             # identify the occupant so the console error says who owns the port
             from ifc_console.portcheck import FREE, conflict_hint, port_status
@@ -169,29 +172,56 @@ class IfcConsoleApp(App):
                 reason = f"port {port} did not come up"
             else:
                 reason = f"port {port} is in use by {detail}; {conflict_hint(kind, port)}"
+        server.should_exit = True
+        if not task.done():
+            task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
         self._server = None
         self._server_task = None
+        self.core.server_running = False
         self.core.server_error = reason
         self.core.events.emit("server_failed", reason=reason, port=port)
         return False
 
-    async def _serve(self) -> None:
+    async def _serve(self, server) -> str | None:
+        reason = None
         try:
-            await self._server.serve()
+            await server.serve()
+        except asyncio.CancelledError:
+            raise
         except SystemExit as exc:
             # uvicorn aborts a failed startup (e.g. bind error) this way; it
             # must not propagate, or it kills the whole event loop.
             log.error("server startup aborted (exit code %s)", exc.code)
-        except Exception:
+        except Exception as exc:
             log.exception("uvicorn server crashed")
+            reason = str(exc) or type(exc).__name__
+        finally:
+            if (
+                self._server is server
+                and self.core.server_running
+                and not server.should_exit
+            ):
+                reason = reason or f"server on port {self.core.port} stopped unexpectedly"
+                self.core.server_running = False
+                self.core.server_error = reason
+                self.core.events.emit("server_failed", reason=reason, port=self.core.port)
+        return reason
 
     async def stop_server(self) -> None:
         if self._server is None:
             return
-        self._server.should_exit = True
-        if self._server_task is not None:
-            with contextlib.suppress(Exception):
-                await asyncio.wait_for(self._server_task, timeout=5)
+        server = self._server
+        task = self._server_task
+        server.should_exit = True
+        if task is not None:
+            try:
+                await asyncio.wait_for(task, timeout=5)
+            except TimeoutError:
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
         self._server = None
         self._server_task = None
         self.core.server_running = False
@@ -238,7 +268,7 @@ class IfcConsoleApp(App):
         await self.stop_server()
         if self._unsubscribe:
             self._unsubscribe()
-        self.core.shutdown()
+        await self.core.ashutdown()
 
 
 def run_tui(core: AppCore, initial_file: Path | None = None) -> int:

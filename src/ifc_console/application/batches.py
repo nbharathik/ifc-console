@@ -71,6 +71,8 @@ class BatchService:
         self._records: dict[str, BatchRecord] = {}
         self._owners: dict[str, tuple[int, str]] = {}
         self._tasks: dict[str, asyncio.Task[None]] = {}
+        self._resume_locks: dict[str, asyncio.Lock] = {}
+        self._resume_lock_users: dict[str, int] = {}
         self._lock = RLock()
         self._closing = False
         self._load_records()
@@ -347,7 +349,33 @@ class BatchService:
         self.core.policy.require(
             [Capability.JOB_SUBMIT], authority=context.authority, action="resume batch"
         )
+        observed = self.get(batch_id)
+        lock = self._resume_locks.setdefault(batch_id, asyncio.Lock())
+        self._resume_lock_users[batch_id] = self._resume_lock_users.get(batch_id, 0) + 1
+        try:
+            async with lock:
+                return await self._resume_locked(
+                    batch_id, expected_run_count=observed.run_count
+                )
+        finally:
+            users = self._resume_lock_users[batch_id] - 1
+            if users:
+                self._resume_lock_users[batch_id] = users
+            else:
+                self._resume_lock_users.pop(batch_id, None)
+                if self._resume_locks.get(batch_id) is lock:
+                    self._resume_locks.pop(batch_id, None)
+
+    async def _resume_locked(
+        self, batch_id: str, *, expected_run_count: int
+    ) -> BatchRecord:
         record = self.get(batch_id)
+        if record.run_count != expected_run_count:
+            raise ToolError(
+                "BATCH_NOT_RESUMABLE",
+                f"{batch_id} changed while the resume request was waiting.",
+                "Inspect the latest batch state before retrying.",
+            )
         if record.state not in {
             BatchState.PARTIAL,
             BatchState.FAILED,

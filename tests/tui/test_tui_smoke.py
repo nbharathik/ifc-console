@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -11,6 +12,7 @@ from textual.widgets import Static
 from ifc_console.app import AppCore
 from ifc_console.policy.modes import Mode
 from ifc_console.settings import SettingsStore
+from ifc_console.tui import app as app_module
 from ifc_console.tui.app import IfcConsoleApp
 from ifc_console.tui.console import CommandInput, ConsoleScreen
 from ifc_console.tui.launcher import FilePickerModal
@@ -43,6 +45,92 @@ async def test_console_mounts_with_prompt_focused(tmp_path: Path) -> None:
         prompt = app.screen.query_one("#prompt", CommandInput)
         assert app.focused is prompt
         await app._teardown()
+
+
+async def test_teardown_awaits_the_async_core_shutdown(tmp_path: Path, monkeypatch) -> None:
+    app = _app(tmp_path)
+    shutdowns: list[bool] = []
+
+    async def ashutdown() -> None:
+        await asyncio.sleep(0)
+        shutdowns.append(True)
+
+    def reject_sync_shutdown() -> None:
+        raise AssertionError("synchronous shutdown used")
+
+    monkeypatch.setattr(app.core, "ashutdown", ashutdown)
+    monkeypatch.setattr(app.core, "shutdown", reject_sync_shutdown)
+
+    await app._teardown()
+
+    assert shutdowns == [True]
+
+
+async def test_server_start_timeout_cancels_the_pending_server(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from ifc_console import portcheck, preload
+    from ifc_console.mcp import server as mcp_server
+    from ifc_console.portcheck import FREE
+
+    class StalledServer:
+        started = False
+        should_exit = False
+
+        def __init__(self) -> None:
+            self.stopped = asyncio.Event()
+
+        async def serve(self) -> None:
+            try:
+                await asyncio.Future()
+            finally:
+                self.stopped.set()
+
+    server = StalledServer()
+    core = _core(tmp_path)
+    app = IfcConsoleApp(core, autostart=False)
+    monkeypatch.setattr(preload, "wait", lambda: None)
+    monkeypatch.setattr(mcp_server, "build_mcp", lambda _core: object())
+    monkeypatch.setattr(mcp_server, "build_http_app", lambda _core, _mcp: object())
+    monkeypatch.setattr(mcp_server, "make_uvicorn_server", lambda _app, _port: server)
+    monkeypatch.setattr(portcheck, "port_status", lambda _port, _token: (FREE, "free"))
+    monkeypatch.setattr(app_module, "_SERVER_START_TIMEOUT_S", 0.01)
+    monkeypatch.setattr(app_module, "_SERVER_POLL_S", 0.001)
+
+    assert await app.ensure_server(12345) is False
+    assert server.should_exit is True
+    assert server.stopped.is_set()
+    assert app._server is None
+    assert app._server_task is None
+    assert core.server_running is False
+    await app._teardown()
+
+
+async def test_server_crash_clears_running_state_and_reports_failure(
+    tmp_path: Path,
+) -> None:
+    class CrashingServer:
+        should_exit = False
+
+        async def serve(self) -> None:
+            raise RuntimeError("socket failed")
+
+    server = CrashingServer()
+    core = _core(tmp_path)
+    app = IfcConsoleApp(core, autostart=False)
+    failures: list[dict] = []
+    core.events.subscribe(
+        lambda event: failures.append(event) if event["type"] == "server_failed" else None
+    )
+    app._server = server
+    core.server_running = True
+
+    assert await app._serve(server) == "socket failed"
+    assert core.server_running is False
+    assert core.server_error == "socket failed"
+    assert failures[-1]["reason"] == "socket failed"
+    app._server = None
+    await app._teardown()
 
 
 async def test_the_log_opens_empty_and_server_start_only_refreshes_status(
@@ -190,7 +278,6 @@ async def test_prompt_history_recall(tmp_path: Path) -> None:
 
 async def test_console_autostart_serves_http(tmp_path: Path, work_model: Path) -> None:
     """The console boots the real MCP server without a model preselected."""
-    import asyncio
     import socket
 
     import httpx

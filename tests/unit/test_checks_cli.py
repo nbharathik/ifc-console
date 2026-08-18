@@ -6,7 +6,11 @@ import json
 import shutil
 import xml.etree.ElementTree as ET
 from pathlib import Path
+from types import SimpleNamespace
 
+import pytest
+
+import ifc_console.cli as cli_module
 from ifc_console.cli import build_parser, main
 
 FIXTURES = Path(__file__).parent.parent / "fixtures"
@@ -30,6 +34,68 @@ def test_transaction_job_and_journal_commands_are_registered() -> None:
 
     assert commit.func.__name__ == "_cmd_jobs_commit"
     assert journal.func.__name__ == "_cmd_transactions_show"
+
+
+def test_serve_run_flags_work_before_or_after_the_subcommand() -> None:
+    parser = build_parser()
+    flags = [
+        "--file",
+        "model.ifc",
+        "--mode",
+        "edit",
+        "--port",
+        "9000",
+        "--viewer",
+        "--chat",
+        "--allow-dir",
+        "models",
+        "--log-level",
+        "debug",
+    ]
+
+    before = parser.parse_args([*flags, "serve", "--stdio"])
+    after = parser.parse_args(["serve", "--stdio", *flags])
+
+    for name in ("file", "mode", "port", "viewer", "chat", "allow_dir", "log_level"):
+        assert getattr(before, name) == getattr(after, name)
+
+
+@pytest.mark.parametrize(
+    ("argv", "runner_name", "transport"),
+    [
+        (["--file", "broken.ifc", "--no-tui"], "_run_headless_http", "http"),
+        (["serve", "--stdio", "--file", "broken.ifc"], "_cmd_serve", "stdio"),
+    ],
+)
+def test_server_startup_model_failure_closes_core(
+    argv, runner_name, transport, monkeypatch
+) -> None:
+    from ifc_console import preload
+
+    events: list[str] = []
+    transports: list[str] = []
+    core = SimpleNamespace(
+        start_audit=lambda: events.append("audit"),
+        start_knowledge=lambda: events.append("knowledge"),
+        shutdown=lambda: events.append("shutdown"),
+    )
+    store = SimpleNamespace(settings=SimpleNamespace(logging=SimpleNamespace(level="info")))
+
+    def make_core(_args, _store, *, transport: str):
+        transports.append(transport)
+        return core
+
+    monkeypatch.setattr(preload, "start", lambda: None)
+    monkeypatch.setattr(preload, "release", lambda: None)
+    monkeypatch.setattr(cli_module, "_make_store", lambda _args: store)
+    monkeypatch.setattr(cli_module, "_setup_logging", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(cli_module, "_make_core", make_core)
+    monkeypatch.setattr(cli_module, "_load_model_blocking", lambda _core, _path: 4)
+
+    args = build_parser().parse_args(argv)
+    assert getattr(cli_module, runner_name)(args) == 4
+    assert transports == [transport]
+    assert events == ["audit", "knowledge", "shutdown"]
 
 
 def test_batch_commands_are_registered() -> None:

@@ -39,6 +39,7 @@ _SECRET_PATTERNS = (
     re.compile(r"\b(?:AKIA|ASIA)[A-Z0-9]{16}\b"),
     re.compile(r"\bgh[pousr]_[A-Za-z0-9]{20,}\b"),
 )
+_URL_FRAGMENT_TOKEN = re.compile(r"(?i)(#t=)[^&\s\"'<>]+")
 _SESSION_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}\Z")
 _MAX_AUDIT_BYTES = 64 * 1024 * 1024
 _MAX_AUDIT_LINE_BYTES = 8 * 1024 * 1024
@@ -305,7 +306,9 @@ def _redact(value: Any, *, key: str = "") -> Any:
     if isinstance(value, (list, tuple, set, frozenset)):
         return [_redact(item, key=key) for item in value]
     if isinstance(value, str):
-        redacted = value
+        redacted = _URL_FRAGMENT_TOKEN.sub(
+            lambda match: f"{match.group(1)}{_REDACTED}", value
+        )
         for pattern in _SECRET_PATTERNS:
             redacted = pattern.sub(_REDACTED, redacted)
         return redacted

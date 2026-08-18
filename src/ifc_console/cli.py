@@ -13,6 +13,7 @@ import platform
 import shlex
 import sys
 import time
+from contextlib import suppress
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -76,7 +77,7 @@ def build_parser() -> argparse.ArgumentParser:
     group = serve.add_mutually_exclusive_group(required=True)
     group.add_argument("--stdio", action="store_true", help="stdio transport (client-managed).")
     group.add_argument("--http", action="store_true", help="HTTP daemon (same as --no-tui).")
-    _add_run_flags(serve)
+    _add_run_flags(serve, suppress_defaults=True)
     serve.set_defaults(func=_cmd_serve)
 
     bridge = sub.add_parser(
@@ -487,28 +488,38 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _add_run_flags(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--file", default=None, help="IFC file to load at startup.")
-    parser.add_argument("--mode", choices=_MODES, default=None, help="Session mode.")
-    parser.add_argument("--port", type=_port, default=None, help="MCP HTTP port (default 8383).")
+def _add_run_flags(
+    parser: argparse.ArgumentParser, *, suppress_defaults: bool = False
+) -> None:
+    default = argparse.SUPPRESS if suppress_defaults else None
+    flag_default = argparse.SUPPRESS if suppress_defaults else False
+    parser.add_argument("--file", default=default, help="IFC file to load at startup.")
+    parser.add_argument("--mode", choices=_MODES, default=default, help="Session mode.")
+    parser.add_argument("--port", type=_port, default=default, help="MCP HTTP port (default 8383).")
     parser.add_argument(
         "--viewer",
         action="store_true",
+        default=flag_default,
         help="Enable the local 3D web viewer (needs the HTTP server: TUI or --http).",
     )
     parser.add_argument(
         "--chat",
         action="store_true",
+        default=flag_default,
         help="Enable the browser chat panel (talks to the LLM provider you configure).",
     )
     parser.add_argument(
         "--allow-dir",
         action="append",
-        default=None,
+        default=default,
         metavar="PATH",
         help="Extra directory the LLM may open models in, and save in when AI saving is enabled.",
     )
-    parser.add_argument("--log-level", choices=["debug", "info", "warning", "error"], default=None)
+    parser.add_argument(
+        "--log-level",
+        choices=["debug", "info", "warning", "error"],
+        default=default,
+    )
 
 
 def _version_line() -> str:
@@ -665,55 +676,55 @@ def _run_headless_http(args: argparse.Namespace) -> int:
     store = _make_store(args)
     _setup_logging(store, level=store.settings.logging.level)
     core = _make_core(args, store, transport="http")
-    preload.release()
-    core.start_audit()
-    core.start_knowledge()
-    if args.file:
-        rc = _load_model_blocking(core, args.file)
-        if rc:
-            return rc
-    from ifc_console.portcheck import FREE, conflict_hint, port_status
-
-    kind, detail = port_status(core.port, core.token)
-    if kind != FREE:
-        print(f"error: port {core.port} is already in use by {detail}.", file=sys.stderr)
-        print(f"hint: {conflict_hint(kind, core.port)}", file=sys.stderr)
-        core.shutdown()
-        return 2
-
-    from ifc_console.mcp.server import build_http_app, build_mcp, make_uvicorn_server
-
-    mcp = build_mcp(core)
-    app = build_http_app(core, mcp)
-    server = make_uvicorn_server(app, core.port)
-    banner = [
-        f"ifc-console {__version__} (headless HTTP)",
-        f"  MCP endpoint : {core.mcp_url}",
-        f"  bearer token : {core.token}",
-        f"  mode         : {core.policy.mode.value}",
-        f"  model        : {core.session.name or '(none loaded)'}",
-    ]
-    if core.viewer.enabled:
-        banner.append(f"  3D viewer    : {core.viewer.url}")
-    banner.append("  connect      : " + _claude_code_http_cmd(core.port, core.token))
-    banner.append("Ctrl+C to stop.")
-    # flush: piped/redirected stdout must show the token before the loop blocks
-    print("\n".join(banner), flush=True)
     try:
-        import asyncio
+        preload.release()
+        core.start_audit()
+        core.start_knowledge()
+        if args.file:
+            rc = _load_model_blocking(core, args.file)
+            if rc:
+                return rc
+        from ifc_console.portcheck import FREE, conflict_hint, port_status
 
-        asyncio.run(server.serve())
-    except KeyboardInterrupt:
-        pass
-    except SystemExit:
-        pass  # uvicorn aborts failed startups this way; reported just below
+        kind, detail = port_status(core.port, core.token)
+        if kind != FREE:
+            print(f"error: port {core.port} is already in use by {detail}.", file=sys.stderr)
+            print(f"hint: {conflict_hint(kind, core.port)}", file=sys.stderr)
+            return 2
+
+        from ifc_console.mcp.server import build_http_app, build_mcp, make_uvicorn_server
+
+        mcp = build_mcp(core)
+        app = build_http_app(core, mcp)
+        server = make_uvicorn_server(app, core.port)
+        banner = [
+            f"ifc-console {__version__} (headless HTTP)",
+            f"  MCP endpoint : {core.mcp_url}",
+            f"  bearer token : {core.token}",
+            f"  mode         : {core.policy.mode.value}",
+            f"  model        : {core.session.name or '(none loaded)'}",
+        ]
+        if core.viewer.enabled:
+            banner.append(f"  3D viewer    : {core.viewer.url}")
+        banner.append("  connect      : " + _claude_code_http_cmd(core.port, core.token))
+        banner.append("Ctrl+C to stop.")
+        # flush: piped/redirected stdout must show the token before the loop blocks
+        print("\n".join(banner), flush=True)
+        try:
+            import asyncio
+
+            asyncio.run(server.serve())
+        except KeyboardInterrupt:
+            pass
+        except SystemExit:
+            pass  # uvicorn aborts failed startups this way; reported just below
+        if not getattr(server, "started", False):
+            # bind lost a race after the pre-check; uvicorn already logged why
+            print(f"error: the server never came up on port {core.port}.", file=sys.stderr)
+            return 1
+        return 0
     finally:
         core.shutdown()
-    if not getattr(server, "started", False):
-        # bind lost a race after the pre-check; uvicorn already logged why
-        print(f"error: the server never came up on port {core.port}.", file=sys.stderr)
-        return 1
-    return 0
 
 
 def _cmd_serve(args: argparse.Namespace) -> int:
@@ -726,29 +737,28 @@ def _cmd_serve(args: argparse.Namespace) -> int:
     store = _make_store(args)
     _setup_logging(store, level=store.settings.logging.level)
     core = _make_core(args, store, transport="stdio")
-    preload.release()
-    core.start_audit()
-    core.start_knowledge()
-    if args.file:
-        rc = _load_model_blocking(core, args.file)
-        if rc:
-            return rc
-    from ifc_console.mcp.server import build_mcp
-
-    mcp = build_mcp(core)
-    log.info(
-        "ifc-console %s stdio server starting (mode=%s, model=%s)",
-        __version__,
-        core.policy.mode.value,
-        core.session.name or "none",
-    )
     try:
-        mcp.run(transport="stdio")
-    except KeyboardInterrupt:
-        pass
+        preload.release()
+        core.start_audit()
+        core.start_knowledge()
+        if args.file:
+            rc = _load_model_blocking(core, args.file)
+            if rc:
+                return rc
+        from ifc_console.mcp.server import build_mcp
+
+        mcp = build_mcp(core)
+        log.info(
+            "ifc-console %s stdio server starting (mode=%s, model=%s)",
+            __version__,
+            core.policy.mode.value,
+            core.session.name or "none",
+        )
+        with suppress(KeyboardInterrupt):
+            mcp.run(transport="stdio")
+        return 0
     finally:
         core.shutdown()
-    return 0
 
 
 def _cmd_bridge(args: argparse.Namespace) -> int:

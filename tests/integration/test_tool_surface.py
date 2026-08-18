@@ -3,6 +3,8 @@ that appears and disappears with the viewer."""
 
 from __future__ import annotations
 
+import threading
+
 import pytest
 
 from ifc_console.mcp.tools_viewer import TOOL_NAMES as VIEWER_TOOLS
@@ -121,6 +123,22 @@ async def test_list_ifc_files_finds_model(ask_harness, work_model) -> None:
     assert out["ok"] is True
     names = [f["path"] for f in out["data"]["files"]]
     assert any(work_model.name in n for n in names)
+
+
+async def test_list_ifc_files_scans_off_the_event_loop(ask_harness, monkeypatch) -> None:
+    event_loop_thread = threading.get_ident()
+    scanned_on: list[int] = []
+
+    def scan(_roots, _recursive, _recent_paths):
+        scanned_on.append(threading.get_ident())
+        return []
+
+    monkeypatch.setattr("ifc_console.mcp.tools_files._scan_ifc_files", scan)
+
+    out = await ask_harness.call("list_ifc_files")
+
+    assert out["ok"] is True
+    assert scanned_on and scanned_on[0] != event_loop_thread
 
 
 async def test_open_ifc_file_works_in_ask_mode(

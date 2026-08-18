@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import re
 from datetime import datetime, timezone
 from pathlib import Path
@@ -27,11 +28,52 @@ _SCAN_CAP = 10_000
 
 def _peek_schema(path: Path) -> str | None:
     try:
-        head = path.read_bytes()[:4096].decode("ascii", errors="ignore")
+        with path.open("rb") as handle:
+            head = handle.read(4096).decode("ascii", errors="ignore")
     except OSError:
         return None
     match = _SCHEMA_RE.search(head)
     return match.group(1) if match else None
+
+
+def _scan_ifc_files(
+    roots: list[Path], recursive: bool, recent_paths: set[str]
+) -> list[dict[str, Any]]:
+    seen: set[str] = set()
+    rows: list[dict[str, Any]] = []
+    for root in roots:
+        pattern = "**/*" if recursive else "*"
+        scanned = 0
+        try:
+            for path in root.glob(pattern):
+                scanned += 1
+                if scanned > _SCAN_CAP:
+                    break
+                if path.suffix.lower() not in _IFC_SUFFIXES or not path.is_file():
+                    continue
+                key = str(path.resolve())
+                if key in seen:
+                    continue
+                seen.add(key)
+                try:
+                    stat = path.stat()
+                    rows.append(
+                        {
+                            "path": key,
+                            "size_bytes": stat.st_size,
+                            "mtime": datetime.fromtimestamp(
+                                stat.st_mtime, tz=timezone.utc
+                            ).isoformat(),
+                            "schema": _peek_schema(path),
+                            "recent": key in recent_paths,
+                        }
+                    )
+                except OSError:
+                    continue
+        except OSError:
+            continue
+    rows.sort(key=lambda row: row["mtime"], reverse=True)
+    return rows
 
 
 def register(mcp: OperationRegistry, core: AppCore) -> None:
@@ -65,41 +107,7 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
             roots = list(core.allowed_dirs)
 
         recent_paths = {e["path"] for e in core.recents.entries()}
-        seen: set[str] = set()
-        rows: list[dict[str, Any]] = []
-        for root in roots:
-            pattern = "**/*" if recursive else "*"
-            scanned = 0
-            try:
-                for p in root.glob(pattern):
-                    scanned += 1
-                    if scanned > _SCAN_CAP:
-                        break
-                    if p.suffix.lower() not in _IFC_SUFFIXES or not p.is_file():
-                        continue
-                    key = str(p.resolve())
-                    if key in seen:
-                        continue
-                    seen.add(key)
-                    try:
-                        stat = p.stat()
-                        row = {
-                            "path": key,
-                            "size_bytes": stat.st_size,
-                            "mtime": datetime.fromtimestamp(
-                                stat.st_mtime, tz=timezone.utc
-                            ).isoformat(),
-                            "schema": _peek_schema(p),
-                            "recent": key in recent_paths,
-                        }
-                    except OSError:
-                        # one unreadable file (broken symlink, permissions)
-                        # must not hide the rest of the root
-                        continue
-                    rows.append(row)
-            except OSError:
-                continue
-        rows.sort(key=lambda r: r["mtime"], reverse=True)
+        rows = await asyncio.to_thread(_scan_ifc_files, roots, recursive, recent_paths)
         total = len(rows)
         rows = rows[:limit]
         return ok(

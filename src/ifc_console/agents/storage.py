@@ -13,6 +13,8 @@ from typing import Any
 
 from ifc_console.agents.models import AgentMessage
 
+_RECORD_VERSION = "1"
+
 
 class InMemoryThreadStore:
     """Process-local threads for examples, tests, and short-lived services."""
@@ -72,16 +74,22 @@ class JsonThreadStore:
         digest = hashlib.sha256(thread_id.encode("utf-8")).hexdigest()
         return self.directory / f"{digest}.json"
 
-    @staticmethod
-    def _decode(raw: bytes, thread_id: str) -> tuple[AgentMessage, ...]:
+    def _decode(self, raw: bytes, thread_id: str) -> tuple[AgentMessage, ...]:
         try:
             payload = json.loads(raw.decode("utf-8"))
-            if payload.get("version") != "1" or payload.get("thread_id") != thread_id:
+            if (
+                payload.get("version") != _RECORD_VERSION
+                or payload.get("thread_id") != thread_id
+            ):
                 raise ValueError("record identity does not match")
             messages = payload.get("messages")
             if not isinstance(messages, list):
                 raise ValueError("messages is not a list")
+            if len(messages) > self.max_messages:
+                raise ThreadStoreError("thread record exceeds the configured message limit")
             return tuple(AgentMessage.model_validate(message) for message in messages)
+        except ThreadStoreError:
+            raise
         except Exception as exc:
             raise ThreadStoreError(f"thread record is corrupt ({type(exc).__name__})") from None
 
@@ -105,7 +113,7 @@ class JsonThreadStore:
             raise ThreadStoreError("thread exceeds the configured message limit")
         path = self._path(thread_id)
         payload: dict[str, Any] = {
-            "version": "1",
+            "version": _RECORD_VERSION,
             "thread_id": thread_id,
             "messages": [message.model_dump(mode="json") for message in messages],
         }
@@ -155,9 +163,17 @@ class JsonThreadStore:
                         if path.stat().st_size > self.max_bytes:
                             continue
                         payload = json.loads(path.read_text(encoding="utf-8"))
+                        if payload.get("version") != _RECORD_VERSION:
+                            continue
                         thread_id = payload.get("thread_id")
-                        if isinstance(thread_id, str):
-                            thread_ids.append(thread_id)
+                        if not isinstance(thread_id, str):
+                            continue
+                        if path.name != self._path(thread_id).name:
+                            continue
+                        messages = payload.get("messages")
+                        if not isinstance(messages, list) or len(messages) > self.max_messages:
+                            continue
+                        thread_ids.append(thread_id)
                     except Exception:
                         continue
                 return tuple(sorted(set(thread_ids)))

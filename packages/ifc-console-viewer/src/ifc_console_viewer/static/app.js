@@ -595,7 +595,7 @@ const depthMaterial = new THREE.ShaderMaterial({
   vertexShader: `
     attribute float aElementIndex;
     varying float vIfcIndex;
-    varying float vDist;
+    varying vec3 vMeasureViewPosition;
     #include <clipping_planes_pars_vertex>
     void main() {
       vIfcIndex = aElementIndex;
@@ -604,13 +604,13 @@ const depthMaterial = new THREE.ShaderMaterial({
         p = instanceMatrix * p;
       #endif
       vec4 mvPosition = modelViewMatrix * p;
-      vDist = length(mvPosition.xyz);
+      vMeasureViewPosition = mvPosition.xyz;
       #include <clipping_planes_vertex>
       gl_Position = projectionMatrix * mvPosition;
     }`,
   fragmentShader: `
     varying float vIfcIndex;
-    varying float vDist;
+    varying vec3 vMeasureViewPosition;
     uniform sampler2D uStateTex;
     uniform vec2 uStateSize;
     uniform float uFar;
@@ -621,7 +621,7 @@ const depthMaterial = new THREE.ShaderMaterial({
       vec2 uv = vec2((mod(id, uStateSize.x) + 0.5) / uStateSize.x,
                      (floor(id / uStateSize.x) + 0.5) / uStateSize.y);
       if (texture2D(uStateTex, uv).r < 0.5) discard;
-      float d = clamp(vDist / uFar, 0.0, 1.0);
+      float d = clamp(length(vMeasureViewPosition) / uFar, 0.0, 1.0);
       vec3 enc = fract(vec3(1.0, 255.0, 65025.0) * d);
       enc -= enc.yzz * vec3(1.0 / 255.0, 1.0 / 255.0, 0.0);
       gl_FragColor = vec4(enc, 1.0);
@@ -652,7 +652,6 @@ let modelBox = null;              // [minx,miny,minz,maxx,maxy,maxz] world f64
 let origin = [0, 0, 0];
 let drawCount = 0;
 let triangleCount = 0;
-let productCount = 0;
 
 class GrowArray {
   constructor(Type) {
@@ -845,9 +844,10 @@ function bakeMerged(rec, geom, matrix, color, transparent, spread) {
 class InstEntry {
   constructor(gid, geom, alpha) {
     this.gid = gid;
-    this.geomRadius = Math.max(
-      Math.hypot(geom.box[0], geom.box[1], geom.box[2]),
-      Math.hypot(geom.box[3], geom.box[4], geom.box[5]));
+    this.geomRadius = Math.hypot(
+      Math.max(Math.abs(geom.box[0]), Math.abs(geom.box[3])),
+      Math.max(Math.abs(geom.box[1]), Math.abs(geom.box[4])),
+      Math.max(Math.abs(geom.box[2]), Math.abs(geom.box[5])));
     this.capacity = 0;
     this.count = 0;
     this.tMin = [Infinity, Infinity, Infinity];
@@ -1035,7 +1035,6 @@ function disposeModel() {
   origin = [0, 0, 0];
   drawCount = 0;
   triangleCount = 0;
-  productCount = 0;
   resetStateTextures();
   commitStyles();
   guidOf.clear();
@@ -1048,6 +1047,7 @@ function disposeModel() {
   hiddenManual.clear();
   updateSelectionInfo();
   updateHighlightInfo();
+  clearProperties();
 }
 
 function updateStats() {
@@ -1094,6 +1094,12 @@ function routeParserMessage(msg) {
   else if (msg.type === "maps") h.onMaps(msg);
   else if (msg.type === "tree") h.onTree(msg);
   else if (msg.type === "done") h.onDone(msg);
+  else if (msg.type === "error" && msg.init_failed) {
+    if (worker) worker.terminate();
+    worker = null;
+    workerBusy = false;
+    h.onWorkerLost();
+  }
   else if (msg.type === "error") h.onError(new Error(msg.message));
 }
 
@@ -1157,10 +1163,10 @@ function parseBuffer(buffer) {
       },
       onMaps: (msg) => { maps = msg; },
       onTree: (msg) => { tree = msg.tree; },
-      onDone: (msg) => {
+      onDone: () => {
         finished = true;
         workerBusy = false;
-        resolve({ products: msg.products, chunks, maps, tree });
+        resolve({ chunks, maps, tree });
       },
       onError: (err) => {
         finished = true;
@@ -1321,6 +1327,7 @@ async function buildScene(buffer) {
   // Live edits trigger rebuilds; carry selection and highlights across so a
   // refresh does not silently drop what the user (or the LLM) marked.
   const keepSelection = [...selection].map((id) => guidOf.get(id)).filter(Boolean);
+  const keepPropertyGuid = keepSelection.at(-1) || null;
   const keepHighlight = [...highlightSet].map((id) => guidOf.get(id)).filter(Boolean);
   const keepIsolate = isolateSet !== null;
   disposeModel();
@@ -1345,7 +1352,6 @@ async function buildScene(buffer) {
     }
   }
   finalizeAllAccumulators();
-  productCount = parsed.products;
   if (parsed.maps) {
     for (let i = 0; i < parsed.maps.guidIds.length; i++) {
       const id = parsed.maps.guidIds[i];
@@ -1374,6 +1380,9 @@ async function buildScene(buffer) {
   markTreeSelection();
   updateSelectionInfo();
   updateHighlightInfo();
+  if (keepPropertyGuid && expressOf.has(keepPropertyGuid)) {
+    showProperties(keepPropertyGuid);
+  }
   // Express ids are not stable across rebuilds, so any open result list is
   // stale; re-running it keeps the panel honest after an edit.
   refreshSearch();
@@ -1393,12 +1402,14 @@ function isSpatial(node) {
   return SPATIAL_TYPES.has(String(node.type || "").toUpperCase());
 }
 
-function descendantElements(node, acc = []) {
-  for (const child of node.children || []) {
-    if (!isSpatial(child) && elements.has(child.expressID)) acc.push(child.expressID);
-    descendantElements(child, acc);
-  }
-  return acc;
+function branchElements(node) {
+  const ids = new Set();
+  const visit = (branch) => {
+    if (elements.has(branch.expressID)) ids.add(branch.expressID);
+    for (const child of branch.children || []) visit(child);
+  };
+  visit(node);
+  return [...ids];
 }
 
 function renderTree(rootNode) {
@@ -1441,7 +1452,7 @@ function buildTreeItem(node, depth) {
       `Show ${node._name || String(node.type || "model branch")}`,
     );
     checkbox.addEventListener("change", () => {
-      for (const id of descendantElements(node)) {
+      for (const id of branchElements(node)) {
         if (checkbox.checked) hiddenByTree.delete(id);
         else hiddenByTree.add(id);
       }
@@ -1507,7 +1518,7 @@ function buildTreeItem(node, depth) {
     const additive = event.ctrlKey || event.metaKey;
     if (spatial) {
       setOpen(true); // the label is a much bigger target than the arrow
-      setSelection(descendantElements(node), additive);
+      setSelection(branchElements(node), additive);
     } else if (elements.has(node.expressID)) {
       setSelection([node.expressID], additive);
     }
@@ -1777,7 +1788,10 @@ function boundsOf(ids) {
 function frameBox(box, direction) {
   const center = box.getCenter(new THREE.Vector3());
   const sphere = box.getBoundingSphere(new THREE.Sphere());
-  const distance = Math.max(sphere.radius, 1) * 2.2;
+  const verticalFov = THREE.MathUtils.degToRad(camera.fov);
+  const horizontalFov = 2 * Math.atan(Math.tan(verticalFov / 2) * camera.aspect);
+  const halfFov = Math.max(0.01, Math.min(verticalFov, horizontalFov) / 2);
+  const distance = Math.max(sphere.radius, 1) / Math.sin(halfFov) * 1.1;
   const dir = direction
     || camera.position.clone().sub(controls.target).normalize();
   camera.position.copy(center.clone().add(dir.multiplyScalar(distance)));
@@ -2351,7 +2365,11 @@ function renderLegend() {
 
 // ---------------------------------------------------------------- screenshots
 function handleScreenshot(frame) {
+  const modelId = currentModelRow()?.id ?? null;
   try {
+    if (frame.model_id !== modelId) {
+      throw new Error("Screenshot request does not match the currently viewed model");
+    }
     if (frame.view && frame.view !== "current") {
       setView(frame.view, fitTargetIds(frame.fit));
     } else if (frame.fit) {
@@ -2379,13 +2397,19 @@ function handleScreenshot(frame) {
     wsSend({
       type: "screenshot_response",
       id: frame.id,
+      model_id: modelId,
       data_b64: dataUrl.slice(dataUrl.indexOf(",") + 1),
       width: w,
       height: h,
     });
   } catch (err) {
     console.error("[ifc-console] screenshot failed", err);
-    wsSend({ type: "screenshot_response", id: frame.id, error: String(err) });
+    wsSend({
+      type: "screenshot_response",
+      id: frame.id,
+      model_id: modelId,
+      error: String(err),
+    });
   }
 }
 
@@ -2486,6 +2510,7 @@ $("model-select").addEventListener("change", (e) => {
   const active = (modelRows.find((m) => m.active) || {}).id;
   viewModelId = picked === active ? null : picked;
   currentEtag = null;  // a different model, not a newer revision of this one
+  clearProperties();
   loadModel();
 });
 
@@ -2616,23 +2641,35 @@ updateVisibilityInfo();
 const SEARCH_DEBOUNCE = 250;
 let searchTimer = null;
 let searchRequest = 0;
+let searchAbort = null;
 let searchHits = [];  // expressIDs of the current result set, in row order
 
 function searchIds() {
   return searchHits.filter((id) => elements.has(id));
 }
 
-function clearSearch(refocus) {
+function cancelPendingSearch() {
   searchRequest++;
-  if (searchTimer) clearTimeout(searchTimer);
+  if (searchTimer !== null) clearTimeout(searchTimer);
   searchTimer = null;
+  if (searchAbort) searchAbort.abort();
+  searchAbort = null;
+}
+
+function resetSearchResults() {
   searchHits = [];
+  const box = $("search-results");
+  box.hidden = true;
+  box.textContent = "";
+  box.setAttribute("aria-busy", "false");
+  $("tree").hidden = false;
+}
+
+function clearSearch(refocus) {
+  cancelPendingSearch();
   $("search-input").value = "";
   $("search-clear").hidden = true;
-  $("search-results").hidden = true;
-  $("search-results").textContent = "";
-  $("search-results").setAttribute("aria-busy", "false");
-  $("tree").hidden = false;
+  resetSearchResults();
   if (refocus) $("search-input").focus();
 }
 
@@ -2712,7 +2749,10 @@ function markSearchSelection() {
 }
 
 async function runSearch(term) {
+  if (searchAbort) searchAbort.abort();
   const request = ++searchRequest;
+  const controller = new AbortController();
+  searchAbort = controller;
   const box = $("search-results");
   box.textContent = "";
   box.setAttribute("aria-busy", "true");
@@ -2721,15 +2761,20 @@ async function runSearch(term) {
   $("tree").hidden = true;
   let payload;
   try {
-    const res = await api(`/api/search?q=${encodeURIComponent(term)}${modelQuery().replace("?", "&")}`);
+    const res = await api(
+      `/api/search?q=${encodeURIComponent(term)}${modelQuery().replace("?", "&")}`,
+      { signal: controller.signal },
+    );
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     payload = await res.json();
   } catch (err) {
-    if (request !== searchRequest) return;
+    if (request !== searchRequest || err.name === "AbortError") return;
     box.textContent = "";
     box.setAttribute("aria-busy", "false");
     box.appendChild(el("p", "hint", `Search failed (${err.message}). Press Enter to try again.`));
     return;
+  } finally {
+    if (searchAbort === controller) searchAbort = null;
   }
   if (request !== searchRequest) return;
   renderSearch(payload);
@@ -2738,15 +2783,15 @@ async function runSearch(term) {
 $("search-input").addEventListener("input", () => {
   const term = $("search-input").value.trim();
   $("search-clear").hidden = !term;
-  if (searchTimer) clearTimeout(searchTimer);
+  cancelPendingSearch();
   if (term.length < 2) {
-    searchRequest++;
-    searchHits = [];
-    $("search-results").hidden = true;
-    $("tree").hidden = false;
+    resetSearchResults();
     return;
   }
-  searchTimer = setTimeout(() => runSearch(term), SEARCH_DEBOUNCE);
+  searchTimer = setTimeout(() => {
+    searchTimer = null;
+    runSearch(term);
+  }, SEARCH_DEBOUNCE);
 });
 
 $("search-input").addEventListener("keydown", (e) => {
@@ -2754,18 +2799,22 @@ $("search-input").addEventListener("keydown", (e) => {
     e.stopPropagation();
     clearSearch(true);
   } else if (e.key === "Enter") {
-    if (searchTimer) clearTimeout(searchTimer);
+    if (searchTimer !== null) clearTimeout(searchTimer);
+    searchTimer = null;
     const term = $("search-input").value.trim();
+    cancelPendingSearch();
     if (term.length >= 2) runSearch(term);
+    else resetSearchResults();
   }
 });
 
 $("search-clear").addEventListener("click", () => clearSearch(true));
 
 function refreshSearch() {
-  searchHits = [];
+  cancelPendingSearch();
   const term = $("search-input").value.trim();
   if (term.length >= 2) runSearch(term);
+  else resetSearchResults();
 }
 
 // ---------------------------------------------------------------- saved views
@@ -3087,6 +3136,7 @@ $("set-reset-layout").addEventListener("click", () => {
   applyTreePanel();
   applyPropsPanel();
   chatDock.style.width = "";
+  syncChatResizeAria();
   resize();
 });
 applySceneSettings();
@@ -3098,15 +3148,55 @@ renderSavedViews();
 const chatDock = $("chat-dock");
 const chatResize = $("chat-dock-resize");
 const chatBtn = $("btn-chat");
+const CHAT_DOCK_MIN_WIDTH = 300;
+const CHAT_DOCK_DEFAULT_WIDTH = 400;
 let chatPanel = null;
 let chatLoadPromise = null;
 let chatDesiredOpen = false;
 let chatRequestVersion = 0;
 
+function chatDockMaxWidth() {
+  return Math.max(CHAT_DOCK_MIN_WIDTH, Math.round(window.innerWidth * 0.6));
+}
+
+function currentChatWidth() {
+  return uiState.chatWidth
+    || chatDock.getBoundingClientRect().width
+    || CHAT_DOCK_DEFAULT_WIDTH;
+}
+
+function syncChatResizeAria(width = currentChatWidth()) {
+  const max = chatDockMaxWidth();
+  const value = Math.min(Math.max(Math.round(width), CHAT_DOCK_MIN_WIDTH), max);
+  chatResize.setAttribute("aria-valuemin", String(CHAT_DOCK_MIN_WIDTH));
+  chatResize.setAttribute("aria-valuemax", String(max));
+  chatResize.setAttribute("aria-valuenow", String(value));
+  chatResize.setAttribute("aria-valuetext", `${value} pixels`);
+  return value;
+}
+
+function setChatWidth(width) {
+  const value = syncChatResizeAria(width);
+  chatDock.style.width = `${value}px`;
+  uiState.chatWidth = value;
+}
+
+function applyChatWidthForViewport() {
+  if (window.innerWidth <= 900) {
+    chatDock.style.width = "";
+    syncChatResizeAria();
+  } else if (uiState.chatWidth) {
+    setChatWidth(uiState.chatWidth);
+  } else {
+    syncChatResizeAria();
+  }
+}
+
 function applyChatChrome(open) {
   chatDock.hidden = !open;
   chatResize.hidden = !open;
   chatBtn.setAttribute("aria-pressed", String(open));
+  applyChatWidthForViewport();
 }
 
 function closePanelsForChat() {
@@ -3135,9 +3225,6 @@ async function setChat(open) {
   // the model.
   if (chatDesiredOpen) closePanelsForChat();
   saveUi();
-  if (chatDesiredOpen && uiState.chatWidth) {
-    chatDock.style.width = uiState.chatWidth + "px";
-  }
   resize();
   if (!chatDesiredOpen) return;
 
@@ -3145,7 +3232,12 @@ async function setChat(open) {
     if (!chatPanel) {
       chatLoadPromise ||= import("/viewer/static/chat.js")
         .then(({ mountChat }) => {
-          chatPanel ||= mountChat(chatDock, { onClose: () => setChat(false) });
+          chatPanel ||= mountChat(chatDock, {
+            onClose: () => {
+              setChat(false);
+              chatBtn.focus({ preventScroll: true });
+            },
+          });
           return chatPanel;
         })
         .finally(() => { chatLoadPromise = null; });
@@ -3173,6 +3265,7 @@ async function setChat(open) {
 }
 
 function reconcileCompactLayout() {
+  applyChatWidthForViewport();
   if (window.innerWidth > 620) {
     syncPanelScrim();
     return;
@@ -3216,9 +3309,7 @@ chatResize.addEventListener("pointerdown", (e) => {
   const startX = e.clientX;
   const startWidth = chatDock.getBoundingClientRect().width;
   const move = (ev) => {
-    const width = Math.max(280, Math.min(window.innerWidth * 0.6, startWidth - (ev.clientX - startX)));
-    chatDock.style.width = width + "px";
-    uiState.chatWidth = Math.round(width);
+    setChatWidth(startWidth - (ev.clientX - startX));
     resize();
   };
   const up = () => {
@@ -3228,6 +3319,24 @@ chatResize.addEventListener("pointerdown", (e) => {
   };
   chatResize.addEventListener("pointermove", move);
   chatResize.addEventListener("pointerup", up);
+});
+
+chatResize.addEventListener("keydown", (event) => {
+  if (event.key === "Home") {
+    event.preventDefault();
+    delete uiState.chatWidth;
+    chatDock.style.width = "";
+    syncChatResizeAria(CHAT_DOCK_DEFAULT_WIDTH);
+    saveUi();
+    resize();
+    return;
+  }
+  if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+  event.preventDefault();
+  const movement = event.key === "ArrowLeft" ? 16 : -16;
+  setChatWidth(currentChatWidth() + movement);
+  saveUi();
+  resize();
 });
 
 if (uiState.chatOpen || queryParams.get("chat") === "1") setChat(true);

@@ -7,7 +7,7 @@ import contextlib
 import json
 import time
 import uuid
-from collections.abc import AsyncIterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from typing import Any
 
 from ifc_console.agents.approvals import DenyAllApprovals
@@ -52,6 +52,42 @@ def _tool_text(result: Mapping[str, Any], limit: int) -> str:
     return text[: max(0, limit - len(suffix))] + suffix
 
 
+async def _before_deadline(
+    deadline: float, operation: Callable[[], Awaitable[Any]]
+) -> Any:
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise TimeoutError("agent run exceeded its timeout")
+    try:
+        return await asyncio.wait_for(operation(), timeout=remaining)
+    except asyncio.TimeoutError:
+        raise TimeoutError("agent run exceeded its timeout") from None
+
+
+def _timeout_tool_result() -> dict[str, Any]:
+    return {
+        "ok": False,
+        "error": {
+            "code": "TIMEOUT",
+            "message": "the agent run exceeded its timeout",
+            "hint": "Retry with a longer timeout or a smaller task.",
+        },
+        "meta": {},
+    }
+
+
+def _add_usage(total: AgentUsage, current: AgentUsage) -> AgentUsage:
+    def add(left: int | None, right: int | None) -> int | None:
+        if left is None and right is None:
+            return None
+        return (left or 0) + (right or 0)
+
+    return AgentUsage(
+        input_tokens=add(total.input_tokens, current.input_tokens),
+        output_tokens=add(total.output_tokens, current.output_tokens),
+    )
+
+
 class Agent:
     """A provider-neutral agent with scoped tools and host-owned approvals."""
 
@@ -80,6 +116,7 @@ class Agent:
         self.middleware = tuple(middleware)
         self.model_options = dict(model_options or {})
         self._thread_locks: dict[str, asyncio.Lock] = {}
+        self._thread_lock_users: dict[str, int] = {}
 
     async def run(
         self,
@@ -110,13 +147,25 @@ class Agent:
             raise ValueError("prompt must not be empty")
         selected_thread = thread_id or _id("thread")
         lock = self._thread_locks.setdefault(selected_thread, asyncio.Lock())
-        async with lock:
-            async for event in self._stream_locked(
-                prompt.strip(),
-                thread_id=selected_thread,
-                options=dict(options or {}),
-            ):
-                yield event
+        self._thread_lock_users[selected_thread] = (
+            self._thread_lock_users.get(selected_thread, 0) + 1
+        )
+        try:
+            async with lock:
+                async for event in self._stream_locked(
+                    prompt.strip(),
+                    thread_id=selected_thread,
+                    options=dict(options or {}),
+                ):
+                    yield event
+        finally:
+            users = self._thread_lock_users[selected_thread] - 1
+            if users:
+                self._thread_lock_users[selected_thread] = users
+            else:
+                self._thread_lock_users.pop(selected_thread, None)
+                if self._thread_locks.get(selected_thread) is lock:
+                    self._thread_locks.pop(selected_thread, None)
 
     async def _stream_locked(
         self,
@@ -139,6 +188,7 @@ class Agent:
             for round_index in range(self.limits.max_tool_rounds):
                 round_text: list[str] = []
                 calls: list[dict[str, Any]] = []
+                round_usage = AgentUsage()
                 stream = self.model.stream(
                     messages=history,
                     tools=self.tools.definitions,
@@ -147,11 +197,8 @@ class Agent:
                 )
                 try:
                     while True:
-                        remaining = deadline - time.monotonic()
-                        if remaining <= 0:
-                            raise TimeoutError("agent run exceeded its timeout")
                         try:
-                            event = await asyncio.wait_for(stream.__anext__(), timeout=remaining)
+                            event = await _before_deadline(deadline, stream.__anext__)
                         except StopAsyncIteration:
                             break
                         kind = event.get("type")
@@ -179,7 +226,7 @@ class Agent:
                                     dict(call) for call in raw_calls if isinstance(call, Mapping)
                                 ]
                         elif kind == "usage":
-                            usage = AgentUsage(
+                            round_usage = AgentUsage(
                                 input_tokens=event.get("in"),
                                 output_tokens=event.get("out"),
                             )
@@ -187,14 +234,15 @@ class Agent:
                                 type="usage",
                                 run_id=run_id,
                                 thread_id=thread_id,
-                                usage=usage,
+                                usage=round_usage,
                             )
                         elif kind == "error":
                             raise AgentRunError(str(event.get("text") or "model provider failed"))
                 finally:
                     close_stream = getattr(stream, "aclose", None)
                     if close_stream is not None:
-                        await close_stream()
+                        await _before_deadline(deadline, close_stream)
+                usage = _add_usage(usage, round_usage)
 
                 if not calls:
                     history.append(AgentMessage(role="assistant", text="".join(round_text)))
@@ -223,6 +271,7 @@ class Agent:
                     )
                 )
                 budget_exhausted = False
+                deadline_exhausted = False
                 for index, raw_call in enumerate(calls):
                     call_id = str(raw_call.get("id") or f"call-{round_index}-{index}")
                     name = str(raw_call.get("name") or "")
@@ -249,7 +298,10 @@ class Agent:
                     )
                     # Every requested call gets a tool message, even past the
                     # budget, so saved threads never carry a dangling tool call.
-                    if len(records) >= self.limits.max_tool_calls:
+                    if deadline_exhausted or time.monotonic() >= deadline:
+                        deadline_exhausted = True
+                        tool_result = _timeout_tool_result()
+                    elif len(records) >= self.limits.max_tool_calls:
                         budget_exhausted = True
                         tool_result = {
                             "ok": False,
@@ -303,21 +355,30 @@ class Agent:
                                     arguments=arguments,
                                     approval=request,
                                 )
-                                decision = await decision_task
+                                try:
+                                    decision = await _before_deadline(
+                                        deadline, lambda task=decision_task: task
+                                    )
+                                except TimeoutError:
+                                    decision = None
+                                    deadline_exhausted = True
                             finally:
                                 if not decision_task.done():
                                     decision_task.cancel()
                                     with contextlib.suppress(asyncio.CancelledError):
                                         await decision_task
-                            yield AgentEvent(
-                                type="approval_resolved",
-                                run_id=run_id,
-                                thread_id=thread_id,
-                                tool_call_id=call_id,
-                                tool_name=name,
-                                decision=decision,
-                            )
-                            if not decision.approved:
+                            if decision is None:
+                                tool_result = _timeout_tool_result()
+                            else:
+                                yield AgentEvent(
+                                    type="approval_resolved",
+                                    run_id=run_id,
+                                    thread_id=thread_id,
+                                    tool_call_id=call_id,
+                                    tool_name=name,
+                                    decision=decision,
+                                )
+                            if decision is not None and not decision.approved:
                                 tool_result = {
                                     "ok": False,
                                     "error": {
@@ -328,10 +389,24 @@ class Agent:
                                     },
                                     "meta": {},
                                 }
-                            else:
-                                tool_result = await self._execute_tool(tool_call)
+                            elif decision is not None:
+                                try:
+                                    tool_result = await _before_deadline(
+                                        deadline,
+                                        lambda call=tool_call: self._execute_tool(call),
+                                    )
+                                except TimeoutError:
+                                    deadline_exhausted = True
+                                    tool_result = _timeout_tool_result()
                         else:
-                            tool_result = await self._execute_tool(tool_call)
+                            try:
+                                tool_result = await _before_deadline(
+                                    deadline,
+                                    lambda call=tool_call: self._execute_tool(call),
+                                )
+                            except TimeoutError:
+                                deadline_exhausted = True
+                                tool_result = _timeout_tool_result()
 
                     record = AgentToolCallRecord(
                         id=call_id,
@@ -360,6 +435,8 @@ class Agent:
                         )
                     )
                 await self.thread_store.save(thread_id, history)
+                if deadline_exhausted:
+                    raise TimeoutError("agent run exceeded its timeout")
                 if budget_exhausted:
                     raise AgentRunError(f"stopped after {self.limits.max_tool_calls} tool calls")
             raise AgentRunError(f"stopped after {self.limits.max_tool_rounds} tool rounds")

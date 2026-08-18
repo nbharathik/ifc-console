@@ -2,18 +2,21 @@
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import os
 import shutil
 import subprocess
 import sys
 import textwrap
+import threading
+import time
 from importlib import resources
 from pathlib import Path
 
 import pytest
 
-from ifc_console.sdk import AsyncWorkbench, IfcConsoleError, Workbench
+from ifc_console.sdk import AsyncWorkbench, IfcConsoleError, Workbench, _Loop
 
 
 @pytest.fixture
@@ -495,6 +498,60 @@ def test_close_is_idempotent(tmp_path: Path):
         wb.status()
 
 
+def test_sync_loop_timeout_cancels_background_work():
+    loop = _Loop()
+    cancelled = threading.Event()
+    completed = threading.Event()
+
+    async def delayed() -> None:
+        try:
+            await asyncio.sleep(0.2)
+            completed.set()
+        finally:
+            cancelled.set()
+
+    try:
+        with pytest.raises(TimeoutError):
+            loop.run(delayed(), timeout=0.01)
+        assert cancelled.is_set()
+        time.sleep(0.25)
+        assert not completed.is_set()
+    finally:
+        loop.close()
+
+
+@pytest.mark.parametrize("method_name", ["wait_job", "wait_batch", "wait_workflow"])
+def test_sync_waits_rely_on_the_requested_service_timeout(method_name: str):
+    outer_timeouts: list[float | None] = []
+    service_timeouts: list[float | None] = []
+
+    class FakeLoop:
+        closed = False
+
+        def run(self, coro, timeout):
+            outer_timeouts.append(timeout)
+            return asyncio.run(coro)
+
+    class FakeAsyncWorkbench:
+        async def wait_job(self, _record_id, *, timeout=None):
+            service_timeouts.append(timeout)
+            return "record"
+
+        async def wait_batch(self, _record_id, *, timeout=None):
+            service_timeouts.append(timeout)
+            return "record"
+
+        async def wait_workflow(self, _record_id, *, timeout=None):
+            service_timeouts.append(timeout)
+            return "record"
+
+    workbench = Workbench(FakeAsyncWorkbench(), FakeLoop())
+
+    assert getattr(workbench, method_name)("record-id", timeout=900.0) == "record"
+    assert service_timeouts == [900.0]
+    assert outer_timeouts == [None]
+
+
 def test_explicit_close_inside_context_is_safe(tmp_path: Path):
     with Workbench.open(home=tmp_path / "home") as wb:
         wb.close()
@@ -519,6 +576,42 @@ def test_sdk_lifecycle_errors_use_the_public_exception(tmp_path: Path):
     with pytest.raises(IfcConsoleError) as invalid_mode:
         Workbench.open(home=tmp_path / "other-home", mode="unsafe")
     assert invalid_mode.value.code == "INVALID_INPUT"
+
+
+@pytest.mark.asyncio
+async def test_async_create_closes_the_core_when_initial_model_loading_fails(
+    tmp_path: Path, monkeypatch
+):
+    import ifc_console.app as app_module
+    import ifc_console.application.operations as operations_module
+
+    events: list[str] = []
+
+    class FakeCore:
+        def __init__(self, *_args, **_kwargs) -> None:
+            events.append("created")
+
+        def start_audit(self) -> None:
+            events.append("started")
+
+        def add_allowed_dir(self, _path: Path) -> None:
+            pass
+
+        async def ashutdown(self) -> None:
+            events.append("closed")
+
+    async def fail_open(_self, _path) -> None:
+        raise IfcConsoleError("FILE_NOT_FOUND", "model is missing")
+
+    monkeypatch.setattr(app_module, "AppCore", FakeCore)
+    monkeypatch.setattr(operations_module, "build_operations", lambda _core: None)
+    monkeypatch.setattr(AsyncWorkbench, "open_model", fail_open)
+
+    with pytest.raises(IfcConsoleError) as failure:
+        await AsyncWorkbench.create(tmp_path / "missing.ifc", home=tmp_path / "home")
+
+    assert failure.value.code == "FILE_NOT_FOUND"
+    assert events == ["created", "started", "closed"]
 
 
 # ---------------------------------------------------------------- wb.ask(...)
