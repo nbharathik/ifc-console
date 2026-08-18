@@ -83,3 +83,23 @@ async def test_mcp_tools_compose_with_a_namespace():
     assert "erp" in tools.require("erp__lookup").tags
     result = await tools.call("erp__lookup", {"id": "A-42"})
     assert result["data"] == {"record": "A-42"}
+
+
+@pytest.mark.asyncio
+async def test_langchain_adapter_keeps_schema_metadata_and_structured_result():
+    pytest.importorskip("langchain_core")
+    source = FunctionToolSource(namespace="company", source_id="company-tools")
+
+    @source.tool(tags={"property"})
+    async def inspect_name(name: str) -> dict:
+        return {"name": name}
+
+    toolset = await Toolset.build(source)
+    tool = toolset.as_langchain_tools()[0]
+
+    assert tool.name == "company__inspect_name"
+    assert "name" in tool.args_schema["properties"]
+    assert tool.metadata["source"] == "company-tools"
+    content, artifact = await tool.coroutine(name="Wall-1")
+    assert '"Wall-1"' in content
+    assert artifact["data"] == {"name": "Wall-1"}

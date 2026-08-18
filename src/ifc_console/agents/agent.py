@@ -222,14 +222,12 @@ class Agent:
                         tool_calls=tuple(calls),
                     )
                 )
+                budget_exhausted = False
                 for index, raw_call in enumerate(calls):
-                    if len(records) >= self.limits.max_tool_calls:
-                        raise AgentRunError(
-                            f"stopped after {self.limits.max_tool_calls} tool calls"
-                        )
                     call_id = str(raw_call.get("id") or f"call-{round_index}-{index}")
                     name = str(raw_call.get("name") or "")
                     raw_arguments = raw_call.get("arguments") or "{}"
+                    parse_error: str | None = None
                     try:
                         arguments = (
                             json.loads(raw_arguments)
@@ -240,24 +238,42 @@ class Agent:
                             raise ValueError("arguments must be an object")
                     except (TypeError, ValueError, json.JSONDecodeError) as exc:
                         arguments = {}
+                        parse_error = str(exc)
+                    yield AgentEvent(
+                        type="tool_call_started",
+                        run_id=run_id,
+                        thread_id=thread_id,
+                        tool_call_id=call_id,
+                        tool_name=name,
+                        arguments=arguments,
+                    )
+                    # Every requested call gets a tool message, even past the
+                    # budget, so saved threads never carry a dangling tool call.
+                    if len(records) >= self.limits.max_tool_calls:
+                        budget_exhausted = True
+                        tool_result = {
+                            "ok": False,
+                            "error": {
+                                "code": "LIMIT_REACHED",
+                                "message": (
+                                    f"the run's {self.limits.max_tool_calls} tool-call "
+                                    "budget is spent"
+                                ),
+                                "hint": "Answer with what you already have.",
+                            },
+                            "meta": {},
+                        }
+                    elif parse_error is not None:
                         tool_result = {
                             "ok": False,
                             "error": {
                                 "code": "INVALID_INPUT",
-                                "message": f"invalid tool arguments: {exc}",
+                                "message": f"invalid tool arguments: {parse_error}",
                                 "hint": "Call the tool again with one JSON object.",
                             },
                             "meta": {},
                         }
                     else:
-                        yield AgentEvent(
-                            type="tool_call_started",
-                            run_id=run_id,
-                            thread_id=thread_id,
-                            tool_call_id=call_id,
-                            tool_name=name,
-                            arguments=arguments,
-                        )
                         tool_call = ToolCall(id=call_id, name=name, arguments=arguments)
                         try:
                             definition = self.tools.require(name)
@@ -344,6 +360,8 @@ class Agent:
                         )
                     )
                 await self.thread_store.save(thread_id, history)
+                if budget_exhausted:
+                    raise AgentRunError(f"stopped after {self.limits.max_tool_calls} tool calls")
             raise AgentRunError(f"stopped after {self.limits.max_tool_rounds} tool rounds")
         except (AgentRunError, TimeoutError) as exc:
             await self.thread_store.save(thread_id, history)

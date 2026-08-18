@@ -9,7 +9,11 @@ from pydantic import Field
 
 from ifc_console import __version__
 from ifc_console.application.operations import enveloped
-from ifc_console.core.operation_data import QueryElementsData, SessionStatusData
+from ifc_console.core.operation_data import (
+    QueryElementsData,
+    SearchElementsData,
+    SessionStatusData,
+)
 from ifc_console.core.operations import OperationAnnotations as ToolAnnotations
 from ifc_console.core.operations import OperationRegistry
 from ifc_console.core.results import Envelope, ToolError, ok
@@ -18,8 +22,12 @@ from ifc_console.ifc.info import build_project_info
 from ifc_console.ifc.query import (
     ALLOWED_FIELDS,
     DEFAULT_FIELDS,
+    element_row,
     run_query,
     unknown_classes,
+)
+from ifc_console.ifc.query import (
+    search_elements as search_model_elements,
 )
 from ifc_console.ifc.schema_docs import build_pset_docs, build_schema_docs, find_property
 from ifc_console.ifc.spatial import build_spatial_tree
@@ -253,6 +261,40 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
             core.session_meta(),
             char_limit=limit_,
             cached=cached,
+            **read_meta(core, s),
+        )
+
+    @mcp.tool(
+        annotations=QUERY_ANN,
+        data_model=SearchElementsData,
+        description=(
+            "[QUERY] Resolve a human reference to IFC elements without making the "
+            "model write selector syntax. A name, partial name, class, type name, or "
+            "GlobalId is accepted. Bare IFC classes and expressions containing '=' "
+            "use IfcOpenShell selector syntax; other input is a case-insensitive text "
+            "search. Use get_viewer_selection instead when the human points at the 3D view."
+        ),
+    )
+    @enveloped(core, "search_elements")
+    async def search_elements(
+        term: Annotated[str, Field(min_length=1, max_length=500)],
+        limit: Annotated[int, Field(ge=1, le=500)] = 50,
+        model: Annotated[str | None, Field(description=MODEL_ARG)] = None,
+    ) -> Envelope:
+        s = core.resolve_session(model)
+
+        def job() -> tuple[list[dict[str, Any]], str, int]:
+            matches, mode = search_model_elements(s.ifc, term)
+            rows = [element_row(item, DEFAULT_FIELDS) for item in matches[:limit]]
+            return rows, mode, len(matches)
+
+        rows, mode, total = await s.run(job, timeout=120)
+        return ok(
+            {"query": term, "mode": mode, "results": rows},
+            core.session_meta(),
+            char_limit=limit_,
+            total=total,
+            returned=len(rows),
             **read_meta(core, s),
         )
 

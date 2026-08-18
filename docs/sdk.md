@@ -1,19 +1,162 @@
 # Python SDK
 
-Use the SDK for scripts, notebooks, CI, and applications that should work with
-IFC models without MCP or a running console.
+Use the SDK to put IFC Console inside your own LLM agent, chat panel, product
+feature, script, notebook, or CI job. IFC Console supplies model sessions,
+settings, ask/edit policy, tools, transactions, MCP, and the optional viewer.
+Your application chooses the LLM framework and orchestration.
+
+Install the framework-neutral SDK by itself. Add the viewer only to applications
+that display it:
+
+```bash
+pip install ifc-console
+pip install "ifc-console[viewer]"
+```
+
+LangChain is deliberately not an IFC Console dependency or extra.
 
 | interface | use it for |
 | --------- | ---------- |
-| `Workbench` | synchronous scripts and CI |
-| `AsyncWorkbench` | the same API inside async applications |
 | `LocalRuntime` | embedded agent tools over a local model |
 | `ConsoleRuntime` | agent tools connected to a running console |
 | `Agent` | a bounded provider-neutral tool loop |
+| `Toolset` | scoped IFC, Python, and MCP tools |
+| `FunctionToolSource` | trusted application functions exposed as tools |
+| `RuntimeSettings` | validated, session-only operational settings |
+| `Workbench` | synchronous scripts and CI |
+| `AsyncWorkbench` | the same API inside async applications |
 
-Start with `Workbench` unless you need an agent runtime.
+For an agent, start with `LocalRuntime`. For deterministic scripting, start
+with `Workbench`. The runnable
+[quickstart agent](https://github.com/nbharathik/ifc-console/blob/main/examples/sdk/quickstart_agent.py)
+shows the whole agent path in one short file.
 
-## Quick start
+## The modular agent workflow
+
+Keep construction as a visible sequence. This example opens an IFC, sets the
+host-owned policy, changes operational settings, selects individual tools, and
+then hands that `Toolset` to the bundled provider-neutral agent:
+
+```python
+from ifc_console import Agent, FunctionToolSource, LocalRuntime, ProviderModel
+
+company = FunctionToolSource(namespace="company")
+
+@company.tool()
+async def property_rule() -> dict:
+    return {"pset": "Company_ElementData", "property": "Thickness"}
+
+async with await LocalRuntime.open() as runtime:
+    await runtime.open_model("tower.ifc")
+    runtime.set_mode("ask")
+    runtime.settings.update({
+        "exec.output_char_limit": 20_000,
+        "files.allow_ai_save": False,
+    })
+
+    tools = await runtime.tools(
+        "get_ifc_project_info",
+        "search_elements",
+        "get_element",
+        "get_psets",
+        "company__property_rule",
+        sources=(company,),
+    )
+
+    agent = Agent(
+        name="model-reviewer",
+        model=ProviderModel(provider="local", model="company-model"),
+        tools=tools,
+        instructions="Use IFC tools for every factual model claim.",
+    )
+    result = await agent.run("Find walls without a fire rating")
+    print(result.text)
+```
+
+`runtime.tools()` accepts exact names or globs. `runtime.toolset()` remains
+available for profile-, tag-, or capability-based selection. Mode changes,
+settings, credentials, ChangeSet approval, and commit belong in host code and
+must not be exposed to the model as tools.
+
+`RuntimeSettings` changes the current embedded session without editing the user
+settings file. Operational settings are read by later tool calls. Lifecycle
+settings such as `server.port` must be passed to `LocalRuntime.open(settings=...)`
+because they are needed while the web surface is created.
+
+`ConsoleRuntime` provides the same tool-facing interface over MCP when the model
+must remain in a user's running IFC Console. The remote console owner retains
+its mode and settings controls.
+
+## LangChain and LangGraph
+
+An application that already uses LangChain can install it in its own project.
+The lazy adapter keeps IFC execution and policy in IFC Console while LangChain
+owns the model, graph, memory, middleware, and streaming:
+
+```python
+from langchain.agents import create_agent
+from ifc_console import LocalRuntime
+
+async with await LocalRuntime.open("tower.ifc") as runtime:
+    toolset = await runtime.tools(
+        "get_ifc_project_info",
+        "search_elements",
+        "get_element",
+        "get_psets",
+    )
+    agent = create_agent(
+        model="openai:YOUR_MODEL_ID",
+        tools=toolset.as_langchain_tools(),
+        system_prompt="Use IFC tools before making model claims.",
+    )
+    result = await agent.ainvoke({
+        "messages": [{"role": "user", "content": "Inspect Wall-1"}]
+    })
+```
+
+Put `langchain` and the integration for your model provider in the agent
+application's `pyproject.toml`; do not add them to IFC Console. Use LangChain's
+async `ainvoke`/`astream` APIs so the model session and tools stay on one event
+loop. Structured IFC envelopes are retained as tool-message artifacts.
+
+## A focused property agent
+
+The standalone [`property_agent` example](https://github.com/nbharathik/ifc-console/tree/main/examples/sdk/property_agent)
+has its own `pyproject.toml` and virtual environment. It shows the intended
+company-feature pattern:
+
+1. `search_elements` resolves a name, partial name, GlobalId, or simple selector.
+2. `get_viewer_selection` resolves what a user clicked in the 3D viewer.
+3. Read tools inspect the targets and the model length unit.
+4. A company Python tool fixes the allowed property set, property name, IFC value
+   type, and missing-property policy in host code.
+5. The LLM creates only a revision-bound preview.
+6. Host code displays the diff and owns the durable transaction commit.
+
+This is safer and easier to optimize than giving every specialist agent the
+full IFC tool catalog or free-form code execution.
+
+## Embed the viewer, MCP, and a custom panel
+
+`LocalRuntime.build_web_app()` returns the authenticated ASGI surface used by
+IFC Console. Add your own Starlette routes and serve it with Uvicorn:
+
+```python
+runtime.enable_viewer()  # do this before building tools that need selection
+agent = await runtime.create_agent(...)
+surface = runtime.build_web_app(extra_routes=my_chat_routes(agent))
+
+print(surface.viewer_url)
+print(surface.browser_url("/my-chat"))
+server = uvicorn.Server(uvicorn.Config(surface.app, host="127.0.0.1", port=8765))
+await server.serve()
+```
+
+The surface contains the same MCP endpoint, viewer routes, selection bridge,
+and token gate as the console. Your application owns the server lifecycle,
+identity, LLM credentials, and custom UI.
+
+## Script quick start
 
 ```python
 from ifc_console import Workbench
@@ -34,6 +177,7 @@ The context manager closes model and worker resources automatically.
 | `orient()` | status, project summary, and shallow spatial tree |
 | `info()` | schema, units, counts, and materials |
 | `tree(depth=10)` | spatial containment tree |
+| `search(term, limit=50)` | name, GlobalId, text, or simple-selector matches |
 | `query(selector, limit=50)` | selector result rows |
 | `element(global_ids)` | attributes, properties, type, and container |
 | `psets(global_ids)` | property and quantity sets |
@@ -188,8 +332,9 @@ the model closes.
 ## Agent applications
 
 Use `LocalRuntime` or `ConsoleRuntime` when a model should choose tools. They
-provide scoped toolsets, custom Python and MCP sources, limits, middleware,
-threads, and host-owned approvals. See [Building agent applications](agents.md).
+provide exact or profile-based selection, custom Python and MCP sources, lazy
+framework projections, limits, middleware, threads, host-owned approvals, and
+the embeddable viewer/web surface. See [Building agent applications](agents.md).
 
 ## Options
 
@@ -204,3 +349,5 @@ Workbench.open(
 ```
 
 Settings passed here apply only to this workbench and do not edit the user file.
+They can also be changed later with `wb.configure({...})`. In an async agent
+application, use `runtime.settings.get()`, `.set()`, or `.update()`.

@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import threading
-from collections.abc import AsyncIterator, Callable, Coroutine, Iterator
+from collections.abc import AsyncIterator, Callable, Coroutine, Iterable, Iterator, Mapping
 from pathlib import Path
 from types import TracebackType
 from typing import Any
@@ -63,7 +63,12 @@ from ifc_console.core.jobs import (
     SourceFileRef,
     ValidationJobSpec,
 )
-from ifc_console.core.operation_data import QueryElementsData, ValidationData, ValidationIssue
+from ifc_console.core.operation_data import (
+    QueryElementsData,
+    SearchElementsData,
+    ValidationData,
+    ValidationIssue,
+)
 from ifc_console.core.operations import OperationAnnotations, OperationDefinition
 from ifc_console.core.results import Envelope, ErrorInfo, ToolError
 from ifc_console.core.revisions import RevisionRef
@@ -138,6 +143,7 @@ __all__ = [
     "RestoreRecord",
     "RestoreResult",
     "RevisionRef",
+    "SearchElementsData",
     "SourceFileRef",
     "TransactionJournal",
     "TransactionKind",
@@ -162,6 +168,19 @@ __all__ = [
 ]
 
 _DEFAULT_TIMEOUT = 600.0
+_LIFECYCLE_SETTINGS = frozenset(
+    {
+        "chat.enabled_default",
+        "files.allowed_dirs",
+        "knowledge.schemas",
+        "logging.file_enabled",
+        "logging.level",
+        "mode.default",
+        "server.persistent_token",
+        "server.port",
+        "viewer.enabled_default",
+    }
+)
 
 
 class IfcConsoleError(RuntimeError):
@@ -178,7 +197,7 @@ def _sdk_error(exc: ToolError) -> IfcConsoleError:
     return IfcConsoleError(exc.code, exc.message, exc.hint)
 
 
-def _apply_settings(store: Any, overrides: dict[str, Any]) -> None:
+def _apply_settings(store: Any, overrides: dict[str, Any]) -> dict[str, Any]:
     """In-memory settings for this workbench only; the user's file is untouched."""
     payload = store.settings.model_dump()
     for dotted, value in overrides.items():
@@ -212,6 +231,41 @@ def _apply_settings(store: Any, overrides: dict[str, Any]) -> None:
             f"invalid setting overrides: {issues}",
             "See docs/settings.md for accepted values and limits.",
         ) from None
+    return {key: store.get(key) for key in overrides}
+
+
+def _refresh_live_settings(core: Any, keys: Iterable[str]) -> None:
+    """Refresh constructor-captured policy values after session overrides."""
+
+    apply = {
+        "workspace.max_resident": lambda value: setattr(core.models, "max_resident", max(1, value)),
+        "workspace.max_total_mb": lambda value: setattr(core.models, "max_total_mb", max(0, value)),
+        "workspace.scan_cap": lambda value: setattr(core.workspace, "cap", value),
+        "workspace.scan_depth": lambda value: setattr(core.workspace, "depth", value),
+        "exec.allow_system_access": lambda value: setattr(
+            core.policy, "allow_system_access", value
+        ),
+        "files.allow_ai_save": lambda value: setattr(core.policy, "allow_ai_save", value),
+        "files.backup_retention": lambda value: setattr(core.backups, "retention", value),
+        "recents.max": lambda value: setattr(core.recents, "max_entries", value),
+        "sessions.retention": lambda value: setattr(core.audit, "retention", value),
+        "automation.artifact_retention_days": lambda value: setattr(
+            core.artifact_retention, "default_retention_days", value
+        ),
+        "automation.jobs_retention": lambda value: (
+            setattr(core.jobs, "retention", value),
+            setattr(core.batches, "retention", value),
+            setattr(core.workflows, "retention", value),
+        ),
+        "chat.provider": lambda value: setattr(core.chat, "provider", value),
+        "chat.model": lambda value: setattr(core.chat, "model", value),
+        "chat.base_url": lambda value: setattr(core.chat, "base_url", value),
+        "tui.theme": lambda value: setattr(core, "ui_theme", value),
+    }
+    for key in keys:
+        refresh = apply.get(key)
+        if refresh is not None:
+            refresh(core.store.get(key))
 
 
 def _unwrap(envelope: Any) -> dict[str, Any]:
@@ -311,6 +365,41 @@ class AsyncWorkbench:
             ) from None
         self._core.set_mode(selected_mode, by="sdk")
         return self.mode
+
+    @property
+    def settings(self) -> dict[str, Any]:
+        """A flat snapshot of this workbench's effective settings."""
+
+        return self._core.store.flat()
+
+    def get_setting(self, key: str) -> Any:
+        """Read one effective setting by dotted name."""
+
+        try:
+            return self._core.store.get(key)
+        except KeyError:
+            raise IfcConsoleError(
+                "INVALID_INPUT", f"unknown setting {key!r}", "See docs/settings.md."
+            ) from None
+
+    def configure(self, overrides: Mapping[str, Any]) -> dict[str, Any]:
+        """Validate and apply in-memory settings without editing user files.
+
+        Operational settings are read on each tool call. Lifecycle settings,
+        including the server port and persistent token policy, belong in
+        ``create(settings=...)`` so they are available while the core starts.
+        """
+
+        deferred = sorted(_LIFECYCLE_SETTINGS.intersection(overrides))
+        if deferred:
+            raise IfcConsoleError(
+                "INVALID_INPUT",
+                f"lifecycle settings cannot change after startup: {', '.join(deferred)}",
+                "Pass them to Workbench.open() or LocalRuntime.open() in settings=.",
+            )
+        values = _apply_settings(self._core.store, dict(overrides))
+        _refresh_live_settings(self._core, values)
+        return values
 
     async def open_model(self, path: str | Path, **kwargs: Any) -> dict[str, Any]:
         target = Path(path).expanduser().resolve()
@@ -436,6 +525,16 @@ class AsyncWorkbench:
     async def query(self, selector: str, **kwargs: Any) -> list[dict[str, Any]]:
         data = await self._data("query_elements", query=selector, **kwargs)
         return data.get("rows", [])
+
+    async def search(self, term: str, **kwargs: Any) -> list[dict[str, Any]]:
+        """Resolve a name, partial name, GlobalId, or simple selector."""
+
+        data = await self._data("search_elements", term=term, **kwargs)
+        return data.get("results", [])
+
+    async def search_result(self, term: str, **kwargs: Any) -> SearchElementsData:
+        result = await self.call_result("search_elements", term=term, **kwargs)
+        return SearchElementsData.model_validate(_unwrap(result))
 
     async def query_result(self, selector: str, **kwargs: Any) -> QueryElementsData:
         """Query elements and validate the operation-specific data contract."""
@@ -1106,6 +1205,16 @@ class Workbench:
         return self._wb.set_mode(mode)
 
     @property
+    def settings(self) -> dict[str, Any]:
+        return self._wb.settings
+
+    def get_setting(self, key: str) -> Any:
+        return self._wb.get_setting(key)
+
+    def configure(self, overrides: Mapping[str, Any]) -> dict[str, Any]:
+        return self._wb.configure(overrides)
+
+    @property
     def model(self) -> dict[str, Any]:
         return self._wb.model
 
@@ -1154,6 +1263,12 @@ class Workbench:
 
     def query(self, selector: str, **kwargs: Any) -> list[dict[str, Any]]:
         return self._run(lambda: self._wb.query(selector, **kwargs))
+
+    def search(self, term: str, **kwargs: Any) -> list[dict[str, Any]]:
+        return self._run(lambda: self._wb.search(term, **kwargs))
+
+    def search_result(self, term: str, **kwargs: Any) -> SearchElementsData:
+        return self._run(lambda: self._wb.search_result(term, **kwargs))
 
     def query_result(self, selector: str, **kwargs: Any) -> QueryElementsData:
         return self._run(lambda: self._wb.query_result(selector, **kwargs))

@@ -17,6 +17,12 @@ from scripts.check_wheels import (
 ROOT = Path(__file__).resolve().parents[2]
 
 
+def test_main_package_does_not_install_an_agent_framework() -> None:
+    metadata = (ROOT / "pyproject.toml").read_text(encoding="utf-8").casefold()
+
+    assert "langchain" not in metadata
+
+
 def _project(
     root: Path,
     *,
@@ -102,11 +108,7 @@ def test_tool_reference_covers_the_public_operation_contract() -> None:
     )
     reference = (ROOT / "docs" / "tools.md").read_text(encoding="utf-8")
 
-    missing = [
-        tool["name"]
-        for tool in contract["tools"]
-        if f"`{tool['name']}`" not in reference
-    ]
+    missing = [tool["name"] for tool in contract["tools"] if f"`{tool['name']}`" not in reference]
 
     assert missing == [], f"public operations missing from docs/tools.md: {missing}"
 
@@ -164,9 +166,7 @@ def test_viewer_static_allowlist_rejects_unexpected_public_files() -> None:
 
 
 def test_core_wheel_allows_only_the_small_sdk_chat_assets() -> None:
-    expected = [
-        f"ifc_console/examples/agent_chat/static/{asset}" for asset in SDK_CHAT_ASSETS
-    ]
+    expected = [f"ifc_console/examples/agent_chat/static/{asset}" for asset in SDK_CHAT_ASSETS]
 
     assert _unexpected_base_browser_assets(expected) == []
     assert _unexpected_base_browser_assets(

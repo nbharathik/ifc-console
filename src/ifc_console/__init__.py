@@ -45,10 +45,12 @@ __all__ = [
     "ConsoleRuntime",
     "CallbackApprovalHandler",
     "DenyAllApprovals",
+    "EmbeddedWebApp",
     "Envelope",
     "ErrorInfo",
     "IfcConsoleError",
     "IfcRuntime",
+    "IfcToolProfile",
     "IfcScalar",
     "JobEvent",
     "JobFailure",
@@ -79,6 +81,8 @@ __all__ = [
     "RestoreRecord",
     "RestoreResult",
     "RevisionRef",
+    "RuntimeSettings",
+    "SearchElementsData",
     "SourceFileRef",
     "TransactionJournal",
     "TransactionKind",
@@ -139,10 +143,12 @@ if TYPE_CHECKING:
     from ifc_console.integrations import McpToolSource
     from ifc_console.runtime import (
         ConsoleRuntime,
+        EmbeddedWebApp,
         IfcRuntime,
         LocalOperationBackend,
         LocalRuntime,
         OperationBackend,
+        RuntimeSettings,
         WorkspaceClient,
     )
     from ifc_console.sdk import (
@@ -191,6 +197,7 @@ if TYPE_CHECKING:
         RestoreRecord,
         RestoreResult,
         RevisionRef,
+        SearchElementsData,
         SourceFileRef,
         TransactionJournal,
         TransactionKind,
@@ -215,6 +222,7 @@ if TYPE_CHECKING:
     )
     from ifc_console.toolsets import (
         FunctionToolSource,
+        IfcToolProfile,
         ToolCall,
         ToolDefinition,
         ToolMiddleware,
@@ -249,14 +257,17 @@ _AGENT_EXPORTS = {
 }
 _RUNTIME_EXPORTS = {
     "ConsoleRuntime",
+    "EmbeddedWebApp",
     "IfcRuntime",
     "LocalOperationBackend",
     "LocalRuntime",
     "OperationBackend",
+    "RuntimeSettings",
     "WorkspaceClient",
 }
 _TOOLSET_EXPORTS = {
     "FunctionToolSource",
+    "IfcToolProfile",
     "ToolCall",
     "ToolDefinition",
     "ToolMiddleware",

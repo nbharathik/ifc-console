@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- Add a framework-neutral agent SDK with exact tool selection, live session
+  settings, optional LangChain/LangGraph projection, embedded viewer/MCP web
+  surfaces, and runtime agent construction.
+- Add human-friendly element search by name or GlobalId and a focused property
+  agent example with host-owned ChangeSet approval and durable commit.
+- Keep agent threads provider-replayable when a run exhausts its tool-call
+  budget, and always pair tool_call_started with tool_call_finished events.
+- Add a minimal terminal quickstart agent example.
+
 ## [0.1.4] - 2026-08-12
 
 - Make the Three.js/web-ifc viewer and browser chat bundle an optional

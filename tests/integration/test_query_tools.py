@@ -42,6 +42,17 @@ async def test_query_elements_and_pagination(ask_harness) -> None:
     assert len(page["data"]["rows"]) == 1
 
 
+async def test_search_elements_resolves_name_and_global_id(ask_harness) -> None:
+    named = await ask_harness.call("search_elements", term="Wall-1")
+    assert named["ok"] is True
+    assert named["data"]["mode"] == "text"
+    assert len(named["data"]["results"]) == 1
+
+    global_id = named["data"]["results"][0]["global_id"]
+    by_id = await ask_harness.call("search_elements", term=global_id)
+    assert [row["global_id"] for row in by_id["data"]["results"]] == [global_id]
+
+
 async def test_query_property_facet(ask_harness) -> None:
     out = await ask_harness.call(
         "query_elements", query="IfcWall, Pset_WallCommon.FireRating=F30"

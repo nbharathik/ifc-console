@@ -79,10 +79,42 @@ def test_open_loads_the_model(wb: Workbench):
     assert wb.context.active_model.content_sha256 == wb.model["content_sha256"]
 
 
+def test_session_settings_are_validated_and_do_not_persist(wb: Workbench):
+    changed = wb.configure(
+        {
+            "exec.output_char_limit": 12_000,
+            "files.allow_ai_save": True,
+        }
+    )
+
+    assert changed["exec.output_char_limit"] == 12_000
+    assert wb.get_setting("exec.output_char_limit") == 12_000
+    assert wb.settings["files.allow_ai_save"] is True
+    assert wb.core.policy.allow_ai_save is True
+
+    with pytest.raises(IfcConsoleError, match="unknown setting"):
+        wb.configure({"not.a.setting": True})
+    with pytest.raises(IfcConsoleError, match="lifecycle settings"):
+        wb.configure({"server.port": 8765})
+
+
 def test_query_returns_rows(wb: Workbench):
     walls = wb.query("IfcWall")
     assert len(walls) == 3
     assert {"global_id", "class", "name"} <= set(walls[0])
+
+
+def test_search_resolves_names_global_ids_and_simple_selectors(wb: Workbench):
+    named = wb.search("Wall-1")
+    assert len(named) == 1
+    assert named[0]["name"] == "Wall-1"
+
+    by_id = wb.search(named[0]["global_id"])
+    assert [row["global_id"] for row in by_id] == [named[0]["global_id"]]
+
+    selected = wb.search_result("IfcWall")
+    assert selected.mode == "selector"
+    assert len(selected.results) == 3
 
 
 def test_project_info_and_tree(wb: Workbench):

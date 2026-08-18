@@ -52,6 +52,12 @@ class QueryElementsData(OperationData):
     note: str | None = None
 
 
+class SearchElementsData(OperationData):
+    query: str
+    mode: str
+    results: list[dict[str, Any]] = Field(default_factory=list)
+
+
 class ValidationIssue(OperationData):
     severity: str
     message: str

@@ -33,12 +33,16 @@ the normal structured envelope.
 | `describe_capabilities` | none | live tools, permissions, and examples |
 | `get_ifc_project_info` | optional `model` | schema, units, project counts, materials, classifications, and header data |
 | `get_spatial_structure` | root, depth, counts | Project to Site to Building to Storey to Space tree |
+| `search_elements` | name, GlobalId, text, or simple selector | human-friendly element matches |
 | `query_elements` | selector, limit, offset, fields, order | paged element summaries |
 | `get_element` | up to 50 GlobalIds | attributes, properties, quantities, materials, type, and container |
 | `get_psets` | up to 100 GlobalIds | property and quantity sets only |
 | `get_schema_docs` | entity, pset, or property | schema definitions; works without an open model |
 
-`query_elements` uses IfcOpenShell selector syntax:
+Use `search_elements` when the user says a name such as `Wall-1` or supplies a
+GlobalId. It performs case-insensitive text matching; a bare IFC class or input
+containing `=` is treated as a selector. Use `query_elements` when the agent
+already has deliberate IfcOpenShell selector syntax:
 
 ```text
 IfcWall

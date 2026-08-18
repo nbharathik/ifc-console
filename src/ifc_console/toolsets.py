@@ -12,6 +12,7 @@ import inspect
 import re
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
+from enum import Enum
 from typing import Any, Protocol, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, ValidationError
@@ -34,6 +35,48 @@ _APPROVAL_CAPABILITIES = frozenset(
         Capability.PROCESS.value,
     }
 )
+
+
+class IfcToolProfile(str, Enum):
+    """Small, task-oriented IFC tool surfaces for agents."""
+
+    INSPECT = "inspect"
+    PROPERTY_EDIT = "property-edit"
+    FULL = "full"
+
+
+_INSPECT_TOOLS = frozenset(
+    {
+        "apply_color_theme",
+        "compute_quantities",
+        "describe_capabilities",
+        "detect_clashes",
+        "get_api_docs",
+        "get_element",
+        "get_georeferencing",
+        "get_ifc_project_info",
+        "get_knowledge_record",
+        "get_psets",
+        "get_schema_docs",
+        "get_session_status",
+        "get_spatial_structure",
+        "get_viewer_screenshot",
+        "get_viewer_selection",
+        "highlight_elements",
+        "list_models",
+        "orient",
+        "query_elements",
+        "search_elements",
+        "search_ifc_knowledge",
+        "validate_ids",
+        "validate_model",
+    }
+)
+_PROFILE_TOOLS = {
+    IfcToolProfile.INSPECT: _INSPECT_TOOLS,
+    IfcToolProfile.PROPERTY_EDIT: _INSPECT_TOOLS
+    | frozenset({"get_change_set", "preview_property_change"}),
+}
 
 
 class ToolDefinition(BaseModel):
@@ -239,6 +282,37 @@ class Toolset:
     def schemas(self) -> list[dict[str, Any]]:
         return [definition.provider_schema() for definition in self.definitions]
 
+    def as_langchain_tools(self, *, structured_artifacts: bool = True) -> list[Any]:
+        """Project this toolset directly into LangChain without an MCP server."""
+
+        from ifc_console.integrations.langchain import to_langchain_tools
+
+        return to_langchain_tools(self, structured_artifacts=structured_artifacts)
+
+    def for_profile(self, profile: IfcToolProfile | str) -> Toolset:
+        """Scope IFC Console tools while retaining application and MCP additions.
+
+        Profiles are convenience allowlists, not a security boundary. Capability
+        policy, approvals, path checks, and revision checks still apply at call time.
+        """
+
+        try:
+            selected_profile = IfcToolProfile(profile)
+        except ValueError:
+            choices = ", ".join(item.value for item in IfcToolProfile)
+            raise ValueError(
+                f"unknown IFC tool profile {profile!r}; use one of {choices}"
+            ) from None
+        if selected_profile is IfcToolProfile.FULL:
+            return self
+        allowed = _PROFILE_TOOLS[selected_profile]
+        return Toolset(
+            binding
+            for binding in self._bindings.values()
+            if not binding.definition.source.startswith("ifc-console:")
+            or binding.native_name in allowed
+        )
+
     def include(
         self,
         *patterns: str,
@@ -421,6 +495,7 @@ class ToolMiddleware(Protocol):
 
 __all__ = [
     "FunctionToolSource",
+    "IfcToolProfile",
     "ToolCall",
     "ToolCallNext",
     "ToolDefinition",

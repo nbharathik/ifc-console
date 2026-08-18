@@ -105,6 +105,7 @@ def build_sdk_contract() -> dict[str, Any]:
         ifc_console.ProviderModel,
         ifc_console.InMemoryThreadStore,
         ifc_console.JsonThreadStore,
+        ifc_console.EmbeddedWebApp,
     )
     return {
         "version": ifc_console.__version__,

@@ -156,6 +156,81 @@ async def test_agent_requests_host_approval_for_protected_tools():
 
 
 @pytest.mark.asyncio
+async def test_agent_tool_budget_leaves_no_dangling_tool_calls():
+    source = FunctionToolSource(namespace="company")
+
+    @source.tool()
+    async def add(left: int, right: int) -> dict:
+        return {"total": left + right}
+
+    tools = await Toolset.build(source)
+    calls = [
+        {"id": f"sum-{index}", "name": "company__add", "arguments": '{"left": 1, "right": 1}'}
+        for index in range(3)
+    ]
+    model = ScriptedModel([[{"type": "tool_calls", "calls": calls}]])
+    store = InMemoryThreadStore()
+    agent = Agent(
+        name="bounded",
+        model=model,
+        tools=tools,
+        instructions="Use tools for arithmetic.",
+        thread_store=store,
+        limits=AgentLimits(max_tool_calls=1),
+    )
+
+    events = [event async for event in agent.stream("Add", thread_id="thread-2")]
+
+    assert events[-1].type == "run_failed"
+    assert "1 tool calls" in (events[-1].text or "")
+    finished = [event for event in events if event.type == "tool_call_finished"]
+    assert [event.result["error"]["code"] for event in finished[1:]] == [
+        "LIMIT_REACHED",
+        "LIMIT_REACHED",
+    ]
+    saved = await store.load("thread-2")
+    assistant = next(message for message in saved if message.role == "assistant")
+    tool_ids = [message.tool_call_id for message in saved if message.role == "tool"]
+    assert tool_ids == [call["id"] for call in assistant.tool_calls]
+
+
+@pytest.mark.asyncio
+async def test_agent_pairs_started_and_finished_events_for_invalid_arguments():
+    source = FunctionToolSource(namespace="company")
+
+    @source.tool()
+    async def noop() -> dict:
+        return {}
+
+    tools = await Toolset.build(source)
+    model = ScriptedModel(
+        [
+            [
+                {
+                    "type": "tool_calls",
+                    "calls": [{"id": "bad-1", "name": "company__missing", "arguments": "{broken"}],
+                }
+            ],
+            [{"type": "content", "text": "Recovered."}],
+        ]
+    )
+    agent = Agent(
+        name="pairing",
+        model=model,
+        tools=tools,
+        instructions="Recover from bad calls.",
+    )
+
+    events = [event async for event in agent.stream("Try the tool")]
+
+    kinds = [event.type for event in events]
+    assert kinds.index("tool_call_started") < kinds.index("tool_call_finished")
+    finished = next(event for event in events if event.type == "tool_call_finished")
+    assert finished.result["error"]["code"] == "INVALID_INPUT"
+    assert events[-1].type == "run_completed"
+
+
+@pytest.mark.asyncio
 async def test_json_thread_store_persists_atomically_and_bounds_records(tmp_path):
     store = JsonThreadStore(tmp_path / "threads", max_messages=2)
     messages = [AgentMessage(role="user", text="review this model")]

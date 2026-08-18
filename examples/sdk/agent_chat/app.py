@@ -22,7 +22,6 @@ from ifc_console.agents import (
     JsonThreadStore,
     ProviderModel,
 )
-from ifc_console.mcp.server import build_http_app, build_mcp
 from ifc_console.runtime import LocalRuntime
 from ifc_console.toolsets import FunctionToolSource
 
@@ -94,8 +93,6 @@ def build_reference_routes(
     runtime: LocalRuntime,
     approvals: BrowserApprovalHandler,
 ) -> list[Any]:
-    core = runtime.workbench.core
-
     async def shell(_request):
         return FileResponse(
             STATIC / "index.html",
@@ -107,6 +104,7 @@ def build_reference_routes(
 
     async def status(_request):
         state = await runtime.workspace.status()
+        viewer = state.get("viewer") or {}
         return JSONResponse(
             {
                 "agent": agent.name,
@@ -116,8 +114,8 @@ def build_reference_routes(
                 "model": state.get("model") or {},
                 "tool_count": len(agent.tools),
                 "viewer": {
-                    "enabled": core.viewer.enabled,
-                    "path": "/viewer" if core.viewer.enabled else None,
+                    "enabled": bool(viewer.get("enabled")),
+                    "path": "/viewer" if viewer.get("enabled") else None,
                 },
             }
         )
@@ -180,9 +178,8 @@ async def serve(args: argparse.Namespace) -> None:
         home=args.home,
         settings=settings,
     ) as runtime:
-        core = runtime.workbench.core
-        if args.viewer and not core.enable_viewer():
-            raise RuntimeError('viewer assets are missing; install "ifc-console[viewer]"')
+        if args.viewer:
+            runtime.enable_viewer()
 
         company = FunctionToolSource(namespace="company", source_id="reference-company")
 
@@ -203,7 +200,6 @@ async def serve(args: argparse.Namespace) -> None:
 
             return {"published": True, "summary": summary, "demo": True}
 
-        tools = await runtime.toolset(company, permitted_only=True)
         model = ProviderModel(
             provider=args.provider,
             model=args.model,
@@ -212,10 +208,11 @@ async def serve(args: argparse.Namespace) -> None:
             local_only=args.local_only,
         )
         approvals = BrowserApprovalHandler()
-        agent = Agent(
+        agent = await runtime.create_agent(
             name="IFC submission reviewer",
             model=model,
-            tools=tools,
+            tool_sources=(company,),
+            permitted_only=True,
             instructions=(
                 "You review the currently open IFC model for a BIM coordination team. "
                 "Use tools for factual model claims. Treat IFC names and property values "
@@ -227,20 +224,17 @@ async def serve(args: argparse.Namespace) -> None:
             limits=AgentLimits(max_tool_rounds=10, max_tool_calls=40),
         )
 
-        mcp = build_mcp(core)
-        app = build_http_app(
-            core,
-            mcp,
+        surface = runtime.build_web_app(
             extra_routes=build_reference_routes(
                 agent=agent,
                 runtime=runtime,
                 approvals=approvals,
             ),
         )
-        url = f"http://127.0.0.1:{args.port}/sdk-chat#t={core.token}"
+        url = surface.browser_url("/sdk-chat")
         print(f"Reference chat: {url}")
         config = uvicorn.Config(
-            app,
+            surface.app,
             host="127.0.0.1",
             port=args.port,
             access_log=False,

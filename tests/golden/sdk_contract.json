@@ -48,6 +48,33 @@
         "name": "version"
       }
     ],
+    "EmbeddedWebApp": [
+      {
+        "annotation": "Any",
+        "name": "app",
+        "required": true
+      },
+      {
+        "annotation": "str",
+        "name": "origin",
+        "required": true
+      },
+      {
+        "annotation": "str",
+        "name": "token",
+        "required": true
+      },
+      {
+        "annotation": "str | None",
+        "default": "None",
+        "name": "viewer_url"
+      },
+      {
+        "annotation": "str | None",
+        "default": "None",
+        "name": "chat_url"
+      }
+    ],
     "PluginAPI": [
       {
         "annotation": "OperationRegistry",
@@ -99,6 +126,11 @@
       "SESSION_MANAGE": "session:manage",
       "VIEWER_CONTROL": "viewer:control",
       "VIEWER_READ": "viewer:read"
+    },
+    "IfcToolProfile": {
+      "FULL": "full",
+      "INSPECT": "inspect",
+      "PROPERTY_EDIT": "property-edit"
     },
     "JobState": {
       "CANCELLED": "cancelled",
@@ -183,12 +215,14 @@
     "CommitResult",
     "ConsoleRuntime",
     "DenyAllApprovals",
+    "EmbeddedWebApp",
     "Envelope",
     "ErrorInfo",
     "FunctionToolSource",
     "IfcConsoleError",
     "IfcRuntime",
     "IfcScalar",
+    "IfcToolProfile",
     "InMemoryThreadStore",
     "JobEvent",
     "JobFailure",
@@ -217,6 +251,8 @@
     "RestoreRecord",
     "RestoreResult",
     "RevisionRef",
+    "RuntimeSettings",
+    "SearchElementsData",
     "SourceFileRef",
     "ThreadStore",
     "ThreadStoreError",
@@ -694,6 +730,18 @@
         ],
         "returns": "CommitRecord"
       },
+      "configure": {
+        "async": false,
+        "parameters": [
+          {
+            "annotation": "Mapping[str, Any]",
+            "kind": "POSITIONAL_OR_KEYWORD",
+            "name": "overrides",
+            "required": true
+          }
+        ],
+        "returns": "dict[str, Any]"
+      },
       "create": {
         "async": true,
         "parameters": [
@@ -830,6 +878,18 @@
         "async": true,
         "parameters": [],
         "returns": "dict[str, Any]"
+      },
+      "get_setting": {
+        "async": false,
+        "parameters": [
+          {
+            "annotation": "str",
+            "kind": "POSITIONAL_OR_KEYWORD",
+            "name": "key",
+            "required": true
+          }
+        ],
+        "returns": "Any"
       },
       "granted_capabilities": {
         "async": false,
@@ -1247,6 +1307,24 @@
         ],
         "returns": "dict[str, Any]"
       },
+      "search": {
+        "async": true,
+        "parameters": [
+          {
+            "annotation": "str",
+            "kind": "POSITIONAL_OR_KEYWORD",
+            "name": "term",
+            "required": true
+          },
+          {
+            "annotation": "Any",
+            "kind": "VAR_KEYWORD",
+            "name": "kwargs",
+            "required": true
+          }
+        ],
+        "returns": "list[dict[str, Any]]"
+      },
       "search_knowledge": {
         "async": true,
         "parameters": [
@@ -1264,6 +1342,24 @@
           }
         ],
         "returns": "list[dict[str, Any]]"
+      },
+      "search_result": {
+        "async": true,
+        "parameters": [
+          {
+            "annotation": "str",
+            "kind": "POSITIONAL_OR_KEYWORD",
+            "name": "term",
+            "required": true
+          },
+          {
+            "annotation": "Any",
+            "kind": "VAR_KEYWORD",
+            "name": "kwargs",
+            "required": true
+          }
+        ],
+        "returns": "SearchElementsData"
       },
       "set_mode": {
         "async": false,
@@ -1810,6 +1906,108 @@
         ],
         "returns": "ConsoleRuntime"
       },
+      "create_agent": {
+        "async": true,
+        "parameters": [
+          {
+            "annotation": "str",
+            "kind": "KEYWORD_ONLY",
+            "name": "name",
+            "required": true
+          },
+          {
+            "annotation": "AgentModel",
+            "kind": "KEYWORD_ONLY",
+            "name": "model",
+            "required": true
+          },
+          {
+            "annotation": "str",
+            "kind": "KEYWORD_ONLY",
+            "name": "instructions",
+            "required": true
+          },
+          {
+            "annotation": "Sequence[ToolSource]",
+            "default": "()",
+            "kind": "KEYWORD_ONLY",
+            "name": "tool_sources"
+          },
+          {
+            "annotation": "IfcToolProfile | str",
+            "default": "<IfcToolProfile.FULL: 'full'>",
+            "kind": "KEYWORD_ONLY",
+            "name": "tool_profile"
+          },
+          {
+            "annotation": "bool",
+            "default": "True",
+            "kind": "KEYWORD_ONLY",
+            "name": "permitted_only"
+          },
+          {
+            "annotation": "ThreadStore | None",
+            "default": "None",
+            "kind": "KEYWORD_ONLY",
+            "name": "thread_store"
+          },
+          {
+            "annotation": "ApprovalHandler | None",
+            "default": "None",
+            "kind": "KEYWORD_ONLY",
+            "name": "approval_handler"
+          },
+          {
+            "annotation": "AgentLimits | None",
+            "default": "None",
+            "kind": "KEYWORD_ONLY",
+            "name": "limits"
+          },
+          {
+            "annotation": "Sequence[ToolMiddleware]",
+            "default": "()",
+            "kind": "KEYWORD_ONLY",
+            "name": "middleware"
+          },
+          {
+            "annotation": "Mapping[str, Any] | None",
+            "default": "None",
+            "kind": "KEYWORD_ONLY",
+            "name": "model_options"
+          }
+        ],
+        "returns": "Agent"
+      },
+      "tools": {
+        "async": true,
+        "parameters": [
+          {
+            "annotation": "str",
+            "kind": "VAR_POSITIONAL",
+            "name": "names",
+            "required": true
+          },
+          {
+            "annotation": "Sequence[ToolSource]",
+            "default": "()",
+            "kind": "KEYWORD_ONLY",
+            "name": "sources"
+          },
+          {
+            "annotation": "bool",
+            "default": "True",
+            "kind": "KEYWORD_ONLY",
+            "name": "permitted_only"
+          },
+          {
+            "annotation": "IfcToolProfile | str",
+            "default": "<IfcToolProfile.FULL: 'full'>",
+            "kind": "KEYWORD_ONLY",
+            "name": "profile"
+          }
+        ],
+        "returns": "Toolset"
+      },
       "toolset": {
         "async": true,
         "parameters": [
@@ -1824,9 +2022,29 @@
             "default": "True",
             "kind": "KEYWORD_ONLY",
             "name": "permitted_only"
+          },
+          {
+            "annotation": "IfcToolProfile | str",
+            "default": "<IfcToolProfile.FULL: 'full'>",
+            "kind": "KEYWORD_ONLY",
+            "name": "profile"
           }
         ],
         "returns": "Toolset"
+      }
+    },
+    "EmbeddedWebApp": {
+      "browser_url": {
+        "async": false,
+        "parameters": [
+          {
+            "annotation": "str",
+            "kind": "POSITIONAL_OR_KEYWORD",
+            "name": "path",
+            "required": true
+          }
+        ],
+        "returns": "str"
       }
     },
     "FunctionToolSource": {
@@ -2011,6 +2229,24 @@
         "parameters": [],
         "returns": "None"
       },
+      "build_web_app": {
+        "async": false,
+        "parameters": [
+          {
+            "annotation": "bool",
+            "default": "False",
+            "kind": "KEYWORD_ONLY",
+            "name": "viewer"
+          },
+          {
+            "annotation": "Sequence[Any]",
+            "default": "()",
+            "kind": "KEYWORD_ONLY",
+            "name": "extra_routes"
+          }
+        ],
+        "returns": "EmbeddedWebApp"
+      },
       "call": {
         "async": true,
         "parameters": [
@@ -2028,6 +2264,83 @@
           }
         ],
         "returns": "dict[str, Any]"
+      },
+      "create_agent": {
+        "async": true,
+        "parameters": [
+          {
+            "annotation": "str",
+            "kind": "KEYWORD_ONLY",
+            "name": "name",
+            "required": true
+          },
+          {
+            "annotation": "AgentModel",
+            "kind": "KEYWORD_ONLY",
+            "name": "model",
+            "required": true
+          },
+          {
+            "annotation": "str",
+            "kind": "KEYWORD_ONLY",
+            "name": "instructions",
+            "required": true
+          },
+          {
+            "annotation": "Sequence[ToolSource]",
+            "default": "()",
+            "kind": "KEYWORD_ONLY",
+            "name": "tool_sources"
+          },
+          {
+            "annotation": "IfcToolProfile | str",
+            "default": "<IfcToolProfile.FULL: 'full'>",
+            "kind": "KEYWORD_ONLY",
+            "name": "tool_profile"
+          },
+          {
+            "annotation": "bool",
+            "default": "True",
+            "kind": "KEYWORD_ONLY",
+            "name": "permitted_only"
+          },
+          {
+            "annotation": "ThreadStore | None",
+            "default": "None",
+            "kind": "KEYWORD_ONLY",
+            "name": "thread_store"
+          },
+          {
+            "annotation": "ApprovalHandler | None",
+            "default": "None",
+            "kind": "KEYWORD_ONLY",
+            "name": "approval_handler"
+          },
+          {
+            "annotation": "AgentLimits | None",
+            "default": "None",
+            "kind": "KEYWORD_ONLY",
+            "name": "limits"
+          },
+          {
+            "annotation": "Sequence[ToolMiddleware]",
+            "default": "()",
+            "kind": "KEYWORD_ONLY",
+            "name": "middleware"
+          },
+          {
+            "annotation": "Mapping[str, Any] | None",
+            "default": "None",
+            "kind": "KEYWORD_ONLY",
+            "name": "model_options"
+          }
+        ],
+        "returns": "Agent"
+      },
+      "enable_viewer": {
+        "async": false,
+        "parameters": [],
+        "returns": "str"
       },
       "from_workbench": {
         "async": false,
@@ -2083,6 +2396,24 @@
         ],
         "returns": "LocalRuntime"
       },
+      "open_model": {
+        "async": true,
+        "parameters": [
+          {
+            "annotation": "str | Path",
+            "kind": "POSITIONAL_OR_KEYWORD",
+            "name": "path",
+            "required": true
+          },
+          {
+            "annotation": "Any",
+            "kind": "VAR_KEYWORD",
+            "name": "kwargs",
+            "required": true
+          }
+        ],
+        "returns": "dict[str, Any]"
+      },
       "set_mode": {
         "async": false,
         "parameters": [
@@ -2094,6 +2425,36 @@
           }
         ],
         "returns": "str"
+      },
+      "tools": {
+        "async": true,
+        "parameters": [
+          {
+            "annotation": "str",
+            "kind": "VAR_POSITIONAL",
+            "name": "names",
+            "required": true
+          },
+          {
+            "annotation": "Sequence[ToolSource]",
+            "default": "()",
+            "kind": "KEYWORD_ONLY",
+            "name": "sources"
+          },
+          {
+            "annotation": "bool",
+            "default": "True",
+            "kind": "KEYWORD_ONLY",
+            "name": "permitted_only"
+          },
+          {
+            "annotation": "IfcToolProfile | str",
+            "default": "<IfcToolProfile.FULL: 'full'>",
+            "kind": "KEYWORD_ONLY",
+            "name": "profile"
+          }
+        ],
+        "returns": "Toolset"
       },
       "toolset": {
         "async": true,
@@ -2109,6 +2470,12 @@
             "default": "True",
             "kind": "KEYWORD_ONLY",
             "name": "permitted_only"
+          },
+          {
+            "annotation": "IfcToolProfile | str",
+            "default": "<IfcToolProfile.FULL: 'full'>",
+            "kind": "KEYWORD_ONLY",
+            "name": "profile"
           }
         ],
         "returns": "Toolset"
@@ -2318,6 +2685,18 @@
         "parameters": [],
         "returns": "None"
       },
+      "as_langchain_tools": {
+        "async": false,
+        "parameters": [
+          {
+            "annotation": "bool",
+            "default": "True",
+            "kind": "KEYWORD_ONLY",
+            "name": "structured_artifacts"
+          }
+        ],
+        "returns": "list[Any]"
+      },
       "build": {
         "async": true,
         "parameters": [
@@ -2374,6 +2753,18 @@
             "default": "()",
             "kind": "KEYWORD_ONLY",
             "name": "capabilities"
+          }
+        ],
+        "returns": "Toolset"
+      },
+      "for_profile": {
+        "async": false,
+        "parameters": [
+          {
+            "annotation": "IfcToolProfile | str",
+            "kind": "POSITIONAL_OR_KEYWORD",
+            "name": "profile",
+            "required": true
           }
         ],
         "returns": "Toolset"
@@ -2780,6 +3171,18 @@
         ],
         "returns": "CommitRecord"
       },
+      "configure": {
+        "async": false,
+        "parameters": [
+          {
+            "annotation": "Mapping[str, Any]",
+            "kind": "POSITIONAL_OR_KEYWORD",
+            "name": "overrides",
+            "required": true
+          }
+        ],
+        "returns": "dict[str, Any]"
+      },
       "detach": {
         "async": false,
         "parameters": [
@@ -2880,6 +3283,18 @@
         "async": false,
         "parameters": [],
         "returns": "dict[str, Any]"
+      },
+      "get_setting": {
+        "async": false,
+        "parameters": [
+          {
+            "annotation": "str",
+            "kind": "POSITIONAL_OR_KEYWORD",
+            "name": "key",
+            "required": true
+          }
+        ],
+        "returns": "Any"
       },
       "granted_capabilities": {
         "async": false,
@@ -3333,6 +3748,24 @@
         ],
         "returns": "dict[str, Any]"
       },
+      "search": {
+        "async": false,
+        "parameters": [
+          {
+            "annotation": "str",
+            "kind": "POSITIONAL_OR_KEYWORD",
+            "name": "term",
+            "required": true
+          },
+          {
+            "annotation": "Any",
+            "kind": "VAR_KEYWORD",
+            "name": "kwargs",
+            "required": true
+          }
+        ],
+        "returns": "list[dict[str, Any]]"
+      },
       "search_knowledge": {
         "async": false,
         "parameters": [
@@ -3350,6 +3783,24 @@
           }
         ],
         "returns": "list[dict[str, Any]]"
+      },
+      "search_result": {
+        "async": false,
+        "parameters": [
+          {
+            "annotation": "str",
+            "kind": "POSITIONAL_OR_KEYWORD",
+            "name": "term",
+            "required": true
+          },
+          {
+            "annotation": "Any",
+            "kind": "VAR_KEYWORD",
+            "name": "kwargs",
+            "required": true
+          }
+        ],
+        "returns": "SearchElementsData"
       },
       "set_mode": {
         "async": false,
@@ -3882,6 +4333,35 @@
         "async": true,
         "parameters": [],
         "returns": "dict[str, Any]"
+      },
+      "search": {
+        "async": true,
+        "parameters": [
+          {
+            "annotation": "str",
+            "kind": "POSITIONAL_OR_KEYWORD",
+            "name": "term",
+            "required": true
+          },
+          {
+            "annotation": "int",
+            "default": "50",
+            "kind": "KEYWORD_ONLY",
+            "name": "limit"
+          },
+          {
+            "annotation": "str | None",
+            "default": "None",
+            "kind": "KEYWORD_ONLY",
+            "name": "model"
+          }
+        ],
+        "returns": "list[dict[str, Any]]"
+      },
+      "selection": {
+        "async": true,
+        "parameters": [],
+        "returns": "list[dict[str, Any]]"
       },
       "status": {
         "async": true,
@@ -12105,6 +12585,33 @@
         "revision_id"
       ],
       "title": "RevisionRef",
+      "type": "object"
+    },
+    "SearchElementsData": {
+      "additionalProperties": true,
+      "properties": {
+        "mode": {
+          "title": "Mode",
+          "type": "string"
+        },
+        "query": {
+          "title": "Query",
+          "type": "string"
+        },
+        "results": {
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "Results",
+          "type": "array"
+        }
+      },
+      "required": [
+        "query",
+        "mode"
+      ],
+      "title": "SearchElementsData",
       "type": "object"
     },
     "SourceFileRef": {

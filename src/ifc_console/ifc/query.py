@@ -90,7 +90,11 @@ def search_elements(ifc: Any, term: str) -> tuple[list[Any], str]:
         if needle in entity.is_a().casefold():
             matches.append(entity)
             continue
-        for value in (getattr(entity, "Name", None), getattr(entity, "ObjectType", None)):
+        for value in (
+            getattr(entity, "GlobalId", None),
+            getattr(entity, "Name", None),
+            getattr(entity, "ObjectType", None),
+        ):
             if value and needle in str(value).casefold():
                 matches.append(entity)
                 break

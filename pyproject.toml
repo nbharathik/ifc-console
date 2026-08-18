@@ -89,9 +89,10 @@ path = "src/ifc_console/__init__.py"
 packages = ["src/ifc_console"]
 
 [tool.hatch.build.targets.wheel.force-include]
-# Ship the runnable SDK reference without making its browser UI part of the
-# core import path. Installed users can run `python -m ifc_console.examples.agent_chat`.
-"examples/sdk" = "ifc_console/examples"
+# Ship the generic chat reference without bundling framework-specific example
+# projects. Installed users can run `python -m ifc_console.examples.agent_chat`.
+"examples/sdk/__init__.py" = "ifc_console/examples/__init__.py"
+"examples/sdk/agent_chat" = "ifc_console/examples/agent_chat"
 
 [tool.hatch.build.targets.sdist]
 # Tests stay in for downstream PEP 517 packagers. The uv workspace source is
