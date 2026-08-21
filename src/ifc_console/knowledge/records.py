@@ -7,7 +7,8 @@ from dataclasses import dataclass, field
 from typing import Any
 
 # Every kind that may appear in the index. Tools filter on these.
-KINDS = ("entity", "pset", "property", "type", "api", "recipe")
+# "doc" records come from ingested project documents, not the built-in corpus.
+KINDS = ("entity", "pset", "property", "type", "api", "recipe", "doc")
 
 _CAMEL = re.compile(r"[A-Z]+(?![a-z])|[A-Z][a-z0-9]*|[a-z0-9]+")
 _PREFIXES = ("Ifc", "Pset_", "Qto_")

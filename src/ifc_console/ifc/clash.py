@@ -14,20 +14,14 @@ from typing import Any
 import numpy as np
 
 from ifc_console.core.results import ToolError
+from ifc_console.ifc.geometry import NON_PHYSICAL
+from ifc_console.ifc.geometry import element_meshes as _meshes
+from ifc_console.ifc.geometry import is_non_physical as _non_physical
+from ifc_console.ifc.geometry import mesh_boxes as _boxes
+from ifc_console.ifc.geometry import selected as _selected
 
 MODES = ("overlap", "clearance")
 PRECISIONS = ("sampled", "fast", "exact")
-
-# Voids, zones and drafting aids share space with real elements by design, so
-# they are dropped unless the caller asks for them.
-NON_PHYSICAL = (
-    "IfcOpeningElement",
-    "IfcSpace",
-    "IfcAnnotation",
-    "IfcGrid",
-    "IfcVirtualElement",
-    "IfcSpatialZone",
-)
 
 MAX_ELEMENTS = 5000
 MAX_RESULTS = 1000
@@ -35,77 +29,7 @@ MAX_RESULTS = 1000
 # Rows of the broad-phase pair matrix built at a time.
 _BROAD_PHASE_ROWS = 256
 
-
-def _non_physical(element, cache: dict[str, bool]) -> bool:
-    name = element.is_a()
-    hit = cache.get(name)
-    if hit is None:
-        hit = any(element.is_a(cls) for cls in NON_PHYSICAL)
-        cache[name] = hit
-    return hit
-
-
-# Triangles per element above this are dropped: an element that dense is a
-# rendering mesh, not something a coordinator clashes by hand.
-_MAX_TRIANGLES = 20_000
 _EPS = 1e-9
-
-
-def _selected(ifc: Any, selector: str) -> list[Any]:
-    import ifcopenshell.util.selector as selector_util
-
-    try:
-        return list(selector_util.filter_elements(ifc, selector))
-    except Exception as exc:
-        raise ToolError(
-            "INVALID_QUERY",
-            f"selector failed: {exc}",
-            "Use query_elements selector syntax, e.g. `IfcWall` or "
-            "`IfcDuctSegment, material=steel`.",
-        ) from exc
-
-
-def _meshes(ifc: Any, elements: list[Any]) -> dict[int, tuple[np.ndarray, np.ndarray]]:
-    """World-space (vertices, triangle indices) per element id, geometry only."""
-    import multiprocessing
-
-    import ifcopenshell.geom as geom
-
-    wanted = {e.id() for e in elements}
-    if not wanted:
-        return {}
-
-    settings = geom.settings()
-    settings.set("use-world-coords", True)
-    out: dict[int, tuple[np.ndarray, np.ndarray]] = {}
-    try:
-        cpus = max(1, min(multiprocessing.cpu_count() - 1, 8))
-    except NotImplementedError:
-        cpus = 1
-
-    iterator = geom.iterator(settings, ifc, cpus, include=elements)
-    if not iterator.initialize():
-        return out
-    while True:
-        shape = iterator.get()
-        if shape is not None and shape.id in wanted:
-            verts = np.asarray(shape.geometry.verts, dtype=np.float64).reshape(-1, 3)
-            faces = np.asarray(shape.geometry.faces, dtype=np.int64).reshape(-1, 3)
-            if len(verts) and len(faces) and len(faces) <= _MAX_TRIANGLES:
-                out[shape.id] = (verts, faces)
-        if not iterator.next():
-            break
-    return out
-
-
-def _boxes(meshes: dict[int, tuple[np.ndarray, np.ndarray]], ids: list[int]):
-    lows = np.zeros((len(ids), 3))
-    highs = np.zeros((len(ids), 3))
-    for i, eid in enumerate(ids):
-        verts = meshes[eid][0]
-        lows[i] = verts.min(axis=0)
-        highs[i] = verts.max(axis=0)
-    return lows, highs
 
 
 def _candidates(lo_a, hi_a, lo_b, hi_b, mode: str, tolerance: float):

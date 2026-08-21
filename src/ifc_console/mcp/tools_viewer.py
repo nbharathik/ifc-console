@@ -32,6 +32,7 @@ VIEW_ANN = ToolAnnotations(readOnlyHint=True, destructiveHint=False)
 # /viewer off. Keep in sync with the @mcp.tool functions below.
 TOOL_NAMES = (
     "get_viewer_selection",
+    "get_viewer_measurements",
     "highlight_elements",
     "apply_color_theme",
     "get_viewer_screenshot",
@@ -103,6 +104,35 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
             data["note"] = "nothing is selected; ask the user to click elements in the viewer"
         extra_meta = {} if session is core.session else {"read_from": session.model_id}
         return ok(data, core.session_meta(), char_limit=limit_, **extra_meta)
+
+    @mcp.tool(
+        annotations=VIEW_ANN,
+        description=(
+            "[QUERY] The distances the user measured in the web viewer with the "
+            "measure tool (M key): endpoints, straight-line distance, and "
+            "per-axis deltas, in metres, viewer axes (y up). The human's way of "
+            "showing you a dimension - check it when the user says 'the "
+            "distance I measured'. Empty until the user measures; requires the "
+            "viewer."
+        ),
+    )
+    @enveloped(core, "get_viewer_measurements")
+    async def get_viewer_measurements() -> Envelope:
+        hub = core.viewer_hub
+        hub.require_connected()
+        items, measured_at = hub.latest_measurements()
+        data: dict = {
+            "connected": hub.connected,
+            "measurements": items,
+            "measured_at": measured_at,
+            "units": "metres, viewer axes (y up)",
+        }
+        if not items:
+            data["note"] = (
+                "no measurements; ask the user to press M in the viewer and "
+                "click two points"
+            )
+        return ok(data, core.session_meta(), char_limit=limit_, returned=len(items))
 
     @mcp.tool(
         annotations=VIEW_ANN,

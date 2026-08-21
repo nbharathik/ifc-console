@@ -539,6 +539,20 @@ def _stream_openai(
         yield {"type": "tool_calls", "calls": [calls[i] for i in sorted(calls)]}
 
 
+def _turn_images(turn: dict) -> list[dict]:
+    """Valid {media_type, data} image parts a normalized turn carries."""
+    images = turn.get("images")
+    if not isinstance(images, list):
+        return []
+    return [
+        item
+        for item in images
+        if isinstance(item, dict)
+        and str(item.get("media_type", "")).startswith("image/")
+        and isinstance(item.get("data"), str)
+    ]
+
+
 def to_openai_messages(system: str, turns: list[dict]) -> list[dict]:
     """Normalized transcript to the OpenAI chat shape."""
     out: list[dict] = []
@@ -570,7 +584,19 @@ def to_openai_messages(system: str, turns: list[dict]) -> list[dict]:
                 }
             )
         else:
-            out.append({"role": role, "content": turn.get("text") or ""})
+            images = _turn_images(turn) if role == "user" else []
+            if images:
+                content: list[dict] = [{"type": "text", "text": turn.get("text") or ""}]
+                content.extend(
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:{img['media_type']};base64,{img['data']}"},
+                    }
+                    for img in images
+                )
+                out.append({"role": role, "content": content})
+            else:
+                out.append({"role": role, "content": turn.get("text") or ""})
     return out
 
 
@@ -704,7 +730,28 @@ def to_anthropic_messages(turns: list[dict]) -> list[dict]:
                 )
             out.append({"role": "assistant", "content": content})
         else:
-            out.append({"role": role, "content": turn.get("text") or ""})
+            images = _turn_images(turn) if role == "user" else []
+            if images:
+                blocks: list[dict] = [
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": img["media_type"],
+                            "data": img["data"],
+                        },
+                    }
+                    for img in images
+                ]
+                if turn.get("text"):
+                    blocks.append({"type": "text", "text": turn["text"]})
+                # user roles must alternate; fold into an open user turn
+                if out and out[-1]["role"] == "user" and isinstance(out[-1]["content"], list):
+                    out[-1]["content"].extend(blocks)
+                else:
+                    out.append({"role": "user", "content": blocks})
+            else:
+                out.append({"role": role, "content": turn.get("text") or ""})
     return out
 
 

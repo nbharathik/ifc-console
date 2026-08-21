@@ -1971,6 +1971,20 @@ function formatLength(metres) {
   return `${(metres * 1000).toFixed(0)} mm`;
 }
 
+// The MCP side reads these back (get_viewer_measurements), so the server
+// hears about every commit and clear.
+function sendMeasurements() {
+  wsSend({
+    type: "measurements",
+    items: measurements.map((m) => ({
+      from: [m.from.x, m.from.y, m.from.z],
+      to: [m.to.x, m.to.y, m.to.z],
+      distance: m.distance,
+      delta: m.delta,
+    })),
+  });
+}
+
 function commitMeasurement(from, to) {
   const geometry = new THREE.BufferGeometry().setFromPoints([from, to]);
   const line = new THREE.Line(
@@ -1986,6 +2000,7 @@ function commitMeasurement(from, to) {
     ],
   });
   renderMeasurements();
+  sendMeasurements();
 }
 
 function clearMeasurements() {
@@ -1997,6 +2012,7 @@ function clearMeasurements() {
   measurements.length = 0;
   pendingPoint = null;
   renderMeasurements();
+  sendMeasurements();
   invalidate();
 }
 

@@ -1,7 +1,8 @@
 """Quantity takeoff from stored Qto_* sets, plus georeferencing facts.
 
-Stored quantities only: trustworthy numbers straight from the authoring tool.
-A geometry fallback for missing values is planned as a separate opt-in step.
+Stored quantities are the default: trustworthy numbers straight from the
+authoring tool. source="derived" adds a mesh-based fallback for elements that
+carry no stored values, marked as such in the result.
 """
 
 from __future__ import annotations
@@ -13,6 +14,17 @@ from ifc_console.core.results import ToolError
 from ifc_console.ifc.info import _units
 
 AGGREGATE_BY = ("class", "type", "storey", "material", "none")
+SOURCES = ("stored", "derived")
+
+# Derived quantity names mirror the Qto_*BaseQuantities vocabulary, with the
+# power of the length unit each one carries.
+_DERIVED_QUANTITIES = {
+    "Length": 1,
+    "Width": 1,
+    "Height": 1,
+    "GrossFootprintArea": 2,
+    "GrossVolume": 3,
+}
 
 _MAX_ELEMENTS = 10_000
 
@@ -93,6 +105,23 @@ def _group_key(element: Any, aggregate_by: str) -> str:
     return "all"
 
 
+def _derived_values(probe: dict[str, Any], factor: float) -> dict[str, float]:
+    """Mesh-derived quantities converted from SI metres to file units."""
+    extents = probe["local_extents"]
+    si_values = {
+        "Length": extents["x"],
+        "Width": extents["y"],
+        "Height": extents["z"],
+        "GrossFootprintArea": probe["footprint_area"],
+        "GrossVolume": probe["volume"],
+    }
+    scale = factor if factor > 0 else 1.0
+    return {
+        name: float(value) / (scale ** _DERIVED_QUANTITIES[name])
+        for name, value in si_values.items()
+    }
+
+
 def compute_quantities(
     ifc: Any,
     selector: str,
@@ -100,10 +129,18 @@ def compute_quantities(
     aggregate_by: str = "class",
     quantities: tuple[str, ...] | None = None,
     max_elements: int = _MAX_ELEMENTS,
+    source: str = "stored",
 ) -> dict[str, Any]:
     """Sum stored quantity-set values for a selector-defined element set."""
     import ifcopenshell.util.element as element_util
     import ifcopenshell.util.selector as selector_util
+
+    if source not in SOURCES:
+        raise ToolError(
+            "INVALID_INPUT",
+            f"source must be one of {', '.join(SOURCES)}",
+            "Use source='derived' to fill missing stored values from geometry.",
+        )
 
     try:
         elements = list(selector_util.filter_elements(ifc, selector))
@@ -125,6 +162,7 @@ def compute_quantities(
     counts: dict[str, int] = defaultdict(int)
     without_quantities = 0
     totals: dict[str, float] = defaultdict(float)
+    fallback: list[Any] = []
 
     for element in elements:
         key = _group_key(element, aggregate_by)
@@ -147,6 +185,32 @@ def compute_quantities(
                 found_any = True
         if not found_any:
             without_quantities += 1
+            fallback.append(element)
+
+    derived_elements = 0
+    derived_without_geometry = 0
+    if source == "derived" and fallback:
+        from ifc_console.ifc import geometry
+        from ifc_console.ifc.units import unit_info
+
+        factor = unit_info(ifc)["to_si_factor"]
+        verdict: dict[str, bool] = {}
+        candidates = [e for e in fallback if not geometry.is_non_physical(e, verdict)]
+        meshes = geometry.element_meshes(ifc, candidates)
+        for element in candidates:
+            mesh = meshes.get(element.id())
+            if mesh is None:
+                derived_without_geometry += 1
+                continue
+            probe = geometry.probe_element(element, mesh)
+            key = _group_key(element, aggregate_by)
+            derived_elements += 1
+            for name, value in _derived_values(probe, factor).items():
+                if quantities and name not in quantities:
+                    continue
+                groups[key][name] += value
+                totals[name] += value
+        derived_without_geometry += len(fallback) - len(candidates)
 
     group_rows = [
         {
@@ -165,7 +229,7 @@ def compute_quantities(
     result: dict[str, Any] = {
         "selector": selector,
         "aggregate_by": aggregate_by,
-        "source": "stored",
+        "source": "stored+derived" if derived_elements else "stored",
         "units": _units(ifc),
         "matched": matched,
         "aggregated": len(elements),
@@ -173,13 +237,22 @@ def compute_quantities(
         "groups": group_rows,
         "totals": {n: round(v, 6) for n, v in sorted(totals.items())},
     }
+    if source == "derived":
+        result["derived_elements"] = derived_elements
+        result["derived_without_geometry"] = derived_without_geometry
+        if derived_elements:
+            result["note"] = (
+                "elements without stored values received mesh-derived "
+                "Length/Width/Height/GrossFootprintArea/GrossVolume; "
+                "get_element_geometry shows the per-element confidence"
+            )
     if skipped:
         result["skipped"] = skipped
         result["note"] = f"only the first {max_elements} matches were aggregated"
-    elif without_quantities:
+    elif without_quantities and source == "stored":
         result["note"] = (
             "elements without stored quantity sets contribute nothing; "
-            "a geometry fallback is not implemented yet"
+            "pass source='derived' for a mesh-based fallback"
         )
     return result
 

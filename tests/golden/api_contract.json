@@ -558,6 +558,15 @@
             "description": "IfcOpenShell selector, e.g. `IfcWall` or `IfcSlab`.",
             "title": "Selector",
             "type": "string"
+          },
+          "source": {
+            "default": "stored",
+            "enum": [
+              "stored",
+              "derived"
+            ],
+            "title": "Source",
+            "type": "string"
           }
         },
         "required": [
@@ -1241,7 +1250,7 @@
               }
             ],
             "default": null,
-            "description": "Restrict to these kinds. Allowed: ['ifc', 'ids', 'bcf', 'csv', 'ifcjson'].",
+            "description": "Restrict to these kinds. Allowed: ['ifc', 'ids', 'bcf', 'csv', 'ifcjson', 'pdf', 'md', 'txt', 'image'].",
             "title": "Kinds"
           },
           "limit": {
@@ -1761,6 +1770,143 @@
       "destructive": false,
       "input_schema": {
         "properties": {
+          "global_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 500,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Explicit GlobalIds to probe.",
+            "title": "Global Ids"
+          },
+          "max_elements": {
+            "default": 500,
+            "maximum": 2000,
+            "minimum": 1,
+            "title": "Max Elements",
+            "type": "integer"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "model_id of an attached model (see list_models); omit for the active model.",
+            "title": "Model"
+          },
+          "physical_only": {
+            "default": true,
+            "title": "Physical Only",
+            "type": "boolean"
+          },
+          "selector": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "IfcOpenShell selector; or pass global_ids.",
+            "title": "Selector"
+          }
+        },
+        "title": "get_element_geometryArguments",
+        "type": "object"
+      },
+      "name": "get_element_geometry",
+      "output_schema": {
+        "$defs": {
+          "ErrorInfo": {
+            "properties": {
+              "code": {
+                "description": "Stable machine-readable code; see ERROR_CODES.",
+                "title": "Code",
+                "type": "string"
+              },
+              "hint": {
+                "description": "What to do next; follow it instead of retrying blindly.",
+                "title": "Hint",
+                "type": "string"
+              },
+              "message": {
+                "description": "What went wrong, in one sentence.",
+                "title": "Message",
+                "type": "string"
+              }
+            },
+            "required": [
+              "code",
+              "message",
+              "hint"
+            ],
+            "title": "ErrorInfo",
+            "type": "object"
+          }
+        },
+        "description": "The public tool-result contract.",
+        "properties": {
+          "data": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Data"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ErrorInfo"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "meta": {
+            "additionalProperties": true,
+            "title": "Meta",
+            "type": "object"
+          },
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok"
+        ],
+        "title": "Envelope",
+        "type": "object"
+      },
+      "read_only": true
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
           "model": {
             "anyOf": [
               {
@@ -2060,6 +2206,115 @@
         "type": "object"
       },
       "name": "get_knowledge_record",
+      "output_schema": {
+        "$defs": {
+          "ErrorInfo": {
+            "properties": {
+              "code": {
+                "description": "Stable machine-readable code; see ERROR_CODES.",
+                "title": "Code",
+                "type": "string"
+              },
+              "hint": {
+                "description": "What to do next; follow it instead of retrying blindly.",
+                "title": "Hint",
+                "type": "string"
+              },
+              "message": {
+                "description": "What went wrong, in one sentence.",
+                "title": "Message",
+                "type": "string"
+              }
+            },
+            "required": [
+              "code",
+              "message",
+              "hint"
+            ],
+            "title": "ErrorInfo",
+            "type": "object"
+          }
+        },
+        "description": "The public tool-result contract.",
+        "properties": {
+          "data": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Data"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ErrorInfo"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "meta": {
+            "additionalProperties": true,
+            "title": "Meta",
+            "type": "object"
+          },
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok"
+        ],
+        "title": "Envelope",
+        "type": "object"
+      },
+      "read_only": true
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
+          "ifc_class": {
+            "description": "Element class, e.g. IfcWall.",
+            "title": "Ifc Class",
+            "type": "string"
+          },
+          "property_name": {
+            "description": "The measured property, e.g. 'thickness'.",
+            "title": "Property Name",
+            "type": "string"
+          },
+          "type_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "The element's type name, from get_element or query_elements.",
+            "title": "Type Name"
+          }
+        },
+        "required": [
+          "ifc_class",
+          "property_name"
+        ],
+        "title": "get_measurement_recipeArguments",
+        "type": "object"
+      },
+      "name": "get_measurement_recipe",
       "output_schema": {
         "$defs": {
           "ErrorInfo": {
@@ -2525,6 +2780,87 @@
         "type": "object"
       },
       "name": "get_spatial_structure",
+      "output_schema": {
+        "$defs": {
+          "ErrorInfo": {
+            "properties": {
+              "code": {
+                "description": "Stable machine-readable code; see ERROR_CODES.",
+                "title": "Code",
+                "type": "string"
+              },
+              "hint": {
+                "description": "What to do next; follow it instead of retrying blindly.",
+                "title": "Hint",
+                "type": "string"
+              },
+              "message": {
+                "description": "What went wrong, in one sentence.",
+                "title": "Message",
+                "type": "string"
+              }
+            },
+            "required": [
+              "code",
+              "message",
+              "hint"
+            ],
+            "title": "ErrorInfo",
+            "type": "object"
+          }
+        },
+        "description": "The public tool-result contract.",
+        "properties": {
+          "data": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Data"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ErrorInfo"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "meta": {
+            "additionalProperties": true,
+            "title": "Meta",
+            "type": "object"
+          },
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok"
+        ],
+        "title": "Envelope",
+        "type": "object"
+      },
+      "read_only": true
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {},
+        "title": "get_viewer_measurementsArguments",
+        "type": "object"
+      },
+      "name": "get_viewer_measurements",
       "output_schema": {
         "$defs": {
           "ErrorInfo": {
@@ -3158,6 +3494,407 @@
         "type": "object"
       },
       "name": "list_models",
+      "output_schema": {
+        "$defs": {
+          "ErrorInfo": {
+            "properties": {
+              "code": {
+                "description": "Stable machine-readable code; see ERROR_CODES.",
+                "title": "Code",
+                "type": "string"
+              },
+              "hint": {
+                "description": "What to do next; follow it instead of retrying blindly.",
+                "title": "Hint",
+                "type": "string"
+              },
+              "message": {
+                "description": "What went wrong, in one sentence.",
+                "title": "Message",
+                "type": "string"
+              }
+            },
+            "required": [
+              "code",
+              "message",
+              "hint"
+            ],
+            "title": "ErrorInfo",
+            "type": "object"
+          }
+        },
+        "description": "The public tool-result contract.",
+        "properties": {
+          "data": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Data"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ErrorInfo"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "meta": {
+            "additionalProperties": true,
+            "title": "Meta",
+            "type": "object"
+          },
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok"
+        ],
+        "title": "Envelope",
+        "type": "object"
+      },
+      "read_only": true
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
+          "global_ids_a": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 200,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Global Ids A"
+          },
+          "global_ids_b": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 200,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Global Ids B"
+          },
+          "max_elements": {
+            "default": 200,
+            "maximum": 1000,
+            "minimum": 1,
+            "title": "Max Elements",
+            "type": "integer"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "model_id of an attached model (see list_models); omit for the active model.",
+            "title": "Model"
+          },
+          "physical_only": {
+            "default": true,
+            "title": "Physical Only",
+            "type": "boolean"
+          },
+          "set_a": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Selector for side A; or pass global_ids_a.",
+            "title": "Set A"
+          },
+          "set_b": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Selector for side B; or pass global_ids_b.",
+            "title": "Set B"
+          }
+        },
+        "title": "measure_distance_toolArguments",
+        "type": "object"
+      },
+      "name": "measure_distance",
+      "output_schema": {
+        "$defs": {
+          "ErrorInfo": {
+            "properties": {
+              "code": {
+                "description": "Stable machine-readable code; see ERROR_CODES.",
+                "title": "Code",
+                "type": "string"
+              },
+              "hint": {
+                "description": "What to do next; follow it instead of retrying blindly.",
+                "title": "Hint",
+                "type": "string"
+              },
+              "message": {
+                "description": "What went wrong, in one sentence.",
+                "title": "Message",
+                "type": "string"
+              }
+            },
+            "required": [
+              "code",
+              "message",
+              "hint"
+            ],
+            "title": "ErrorInfo",
+            "type": "object"
+          }
+        },
+        "description": "The public tool-result contract.",
+        "properties": {
+          "data": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Data"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ErrorInfo"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "meta": {
+            "additionalProperties": true,
+            "title": "Meta",
+            "type": "object"
+          },
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok"
+        ],
+        "title": "Envelope",
+        "type": "object"
+      },
+      "read_only": true
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
+          "axis": {
+            "default": "local_y",
+            "enum": [
+              "local_x",
+              "local_y",
+              "local_z",
+              "world_x",
+              "world_y",
+              "world_z"
+            ],
+            "title": "Axis",
+            "type": "string"
+          },
+          "exclude_layers": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 20,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "layer_sum: drop layers matching these globs.",
+            "title": "Exclude Layers"
+          },
+          "global_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 500,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Explicit GlobalIds to measure.",
+            "title": "Global Ids"
+          },
+          "include_layers": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 20,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "layer_sum: keep only layers matching these globs.",
+            "title": "Include Layers"
+          },
+          "max_elements": {
+            "default": 500,
+            "maximum": 2000,
+            "minimum": 1,
+            "title": "Max Elements",
+            "type": "integer"
+          },
+          "method": {
+            "enum": [
+              "stored_qto",
+              "layer_sum",
+              "geometry_extent"
+            ],
+            "title": "Method",
+            "type": "string"
+          },
+          "metric": {
+            "anyOf": [
+              {
+                "maxLength": 80,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Label for the report, e.g. 'thickness'.",
+            "title": "Metric"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "model_id of an attached model (see list_models); omit for the active model.",
+            "title": "Model"
+          },
+          "physical_only": {
+            "default": true,
+            "title": "Physical Only",
+            "type": "boolean"
+          },
+          "qto_set": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "stored_qto: restrict to one quantity set, e.g. 'Qto_WallBaseQuantities'.",
+            "title": "Qto Set"
+          },
+          "quantity": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "stored_qto: the quantity name, e.g. 'Width'.",
+            "title": "Quantity"
+          },
+          "selector": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "IfcOpenShell selector; or pass global_ids.",
+            "title": "Selector"
+          }
+        },
+        "required": [
+          "method"
+        ],
+        "title": "measure_elements_toolArguments",
+        "type": "object"
+      },
+      "name": "measure_elements",
       "output_schema": {
         "$defs": {
           "ErrorInfo": {
@@ -4045,6 +4782,17 @@
       "destructive": false,
       "input_schema": {
         "properties": {
+          "corpus": {
+            "default": "all",
+            "description": "Which corpus to search; results are never score-merged.",
+            "enum": [
+              "builtin",
+              "project",
+              "all"
+            ],
+            "title": "Corpus",
+            "type": "string"
+          },
           "kind": {
             "anyOf": [
               {
@@ -4055,7 +4803,8 @@
                     "property",
                     "type",
                     "api",
-                    "recipe"
+                    "recipe",
+                    "doc"
                   ],
                   "type": "string"
                 },

@@ -25,12 +25,19 @@ def project(tmp_path: Path, minimal_ifc4_path: Path) -> Path:
     return root
 
 
-async def test_find_files_lists_every_kind_and_opens_nothing(harness_factory, project: Path):
+async def test_find_files_ranks_bim_data_first_and_opens_nothing(harness_factory, project: Path):
     h = await harness_factory(model=project / "tower-architecture.ifc")
     out = await h.call("find_files")
     assert out["ok"] is True
-    kinds = {row["kind"] for row in out["data"]["files"]}
-    assert kinds == {"ifc", "ids"}
+    files = out["data"]["files"]
+    kinds = {row["kind"] for row in files}
+    assert {"ifc", "ids"} <= kinds
+    # documents never bury the models: everything BIM comes before them
+    opens = [row["opens_as"] for row in files]
+    if "document" in opens:
+        assert opens.index("document") > opens.index("model")
+        first_document = opens.index("document")
+        assert all(kind == "document" for kind in opens[first_document:])
     assert len(h.core.models.sessions) == 1  # nothing was loaded by searching
 
     ids_only = await h.call("find_files", kinds=["ids"])

@@ -10,6 +10,7 @@ from ifc_console.agents.delegation import AgentToolSource
 from ifc_console.agents.models import (
     AgentEvent,
     AgentEventType,
+    AgentImage,
     AgentLimits,
     AgentMessage,
     AgentModel,
@@ -29,6 +30,7 @@ __all__ = [
     "Agent",
     "AgentEvent",
     "AgentEventType",
+    "AgentImage",
     "AgentLimits",
     "AgentMessage",
     "AgentModel",

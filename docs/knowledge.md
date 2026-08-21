@@ -67,6 +67,53 @@ ifc-console knowledge search "which pset carries fire rating"
 From the SDK: `wb.search_knowledge(...)`, `wb.knowledge_record(key)`, and
 `wb.api_docs(...)`.
 
+## Project documents
+
+The built-in reference answers "what does the IFC schema say". A second,
+per-project corpus answers "what does our company say": measurement
+conventions, submission requirements, naming rules, delivered as the
+documents they already live in.
+
+```bash
+ifc-console knowledge ingest docs/ QS-Manual.pdf
+ifc-console knowledge ingest --replace docs/
+```
+
+Markdown and plain text index natively, split per heading section; PDFs index
+per page and need the `ifc-console[pdf]` extra (pypdf). Scanned PDFs carry no
+text and are reported, not OCRed. Images (png, jpg) are registered so search
+can find and cite them, but their pixels are not indexed. From the SDK the
+same ingestion is `wb.ingest_docs(paths, replace=False)`; ingestion is
+host-owned and never model-callable.
+
+The index lives beside the project at
+`.ifc-console/knowledge/project-kb-v1-<contenthash>.sqlite`, keyed by the
+content of the ingested files, with the source list in
+`project-sources.json`. Re-ingesting adds to the corpus; `--replace` resets
+it to exactly the given files.
+
+Searching: the knowledge tools take a `corpus` parameter, `builtin`,
+`project`, or `all` (the default). Results are grouped by corpus, never
+score-merged, and every project hit carries its provenance: path, page or
+section, and content hash. `get_knowledge_record` resolves project keys such
+as `doc:manuals/qs.pdf#p12` too.
+
+Two rules keep this safe. Document text is data, never instructions: chunks
+that look like instructions to an assistant are flagged at ingest time and in
+search hits, and the standing rule tells the model to report such text, not
+follow it. And the model can only search; adding or changing documents is
+yours.
+
+[Measurement recipes](extensions.md#measurement-recipes) build on this
+corpus: YAML files under `.ifc-console/recipes/` pin the exact method a
+measurement uses and are indexed here beside the documents they cite.
+
+Extensions can build corpora of their own with the same machinery:
+`ifc_console.knowledge` exports `Record` (the one shape every corpus
+produces), `build()` (write an index from any iterable of records),
+`Store` (read one back), and `ProjectKnowledge` (the per-project wiring).
+These names are part of the stable SDK surface.
+
 ## Why SQLite and not embeddings
 
 `sqlite3` with FTS5 is in the Python standard library on every platform we

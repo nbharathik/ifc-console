@@ -441,8 +441,19 @@ def build_parser() -> argparse.ArgumentParser:
     tok_path = tok_sub.add_parser("path", help="Print where the token is stored.")
     tok_path.set_defaults(func=_cmd_token_path)
 
-    kb = sub.add_parser("knowledge", help="The offline IFC reference index.")
+    kb = sub.add_parser("knowledge", help="The offline IFC reference and project document index.")
     kb_sub = kb.add_subparsers(dest="knowledge_cmd", required=True)
+    kb_ingest = kb_sub.add_parser(
+        "ingest",
+        help="Index project documents (md, txt, pdf, png/jpg) for retrieval.",
+    )
+    kb_ingest.add_argument("paths", nargs="+", type=Path, help="Documents or folders of them.")
+    kb_ingest.add_argument(
+        "--replace",
+        action="store_true",
+        help="Reset the corpus to exactly these documents.",
+    )
+    kb_ingest.set_defaults(func=_cmd_knowledge_ingest)
     kb_build = kb_sub.add_parser("build", help="Build or rebuild the index.")
     kb_build.add_argument("--force", action="store_true", help="Rebuild even if it exists.")
     kb_build.set_defaults(func=_cmd_knowledge_build)
@@ -456,6 +467,38 @@ def build_parser() -> argparse.ArgumentParser:
     kb_search.add_argument("--limit", type=int, default=10)
     kb_search.add_argument("--json", action="store_true")
     kb_search.set_defaults(func=_cmd_knowledge_search)
+
+    ext = sub.add_parser(
+        "extensions",
+        help="The extension store: agents and plugins built on ifc-console.",
+    )
+    ext_sub = ext.add_subparsers(dest="extensions_cmd", required=True)
+    ext_search = ext_sub.add_parser("search", help="Search the extension catalog.")
+    ext_search.add_argument("query", nargs="*", default=[])
+    ext_search.add_argument("--catalog", default=None, help="Catalog URL or file override.")
+    ext_search.add_argument("--json", action="store_true")
+    ext_search.set_defaults(func=_cmd_extensions_search)
+    ext_list = ext_sub.add_parser("list", help="Catalog entries plus what is installed here.")
+    ext_list.add_argument("--catalog", default=None, help="Catalog URL or file override.")
+    ext_list.add_argument("--json", action="store_true")
+    ext_list.set_defaults(func=_cmd_extensions_list)
+    ext_install = ext_sub.add_parser(
+        "install", help="Install one agent into its own environment via uv tool."
+    )
+    ext_install.add_argument("name", help="Catalog name, pip requirement, or git URL.")
+    ext_install.add_argument("--catalog", default=None, help="Catalog URL or file override.")
+    ext_install.set_defaults(func=_cmd_extensions_install)
+    ext_uninstall = ext_sub.add_parser("uninstall", help="Remove an installed agent.")
+    ext_uninstall.add_argument("name")
+    ext_uninstall.set_defaults(func=_cmd_extensions_uninstall)
+    ext_new = ext_sub.add_parser(
+        "new", help="Scaffold a new agent extension project from the template."
+    )
+    ext_new.add_argument("name", help="Extension name, e.g. acme-measure.")
+    ext_new.add_argument(
+        "--dir", type=Path, default=Path.cwd(), help="Directory to create the project in."
+    )
+    ext_new.set_defaults(func=_cmd_extensions_new)
 
     plugins = sub.add_parser("plugins", help="Inspect trusted operation plugins.")
     plugins_sub = plugins.add_subparsers(dest="plugins_cmd", required=True)
@@ -2413,10 +2456,20 @@ def _cmd_knowledge_build(args: argparse.Namespace) -> int:
 
 
 def _cmd_knowledge_status(args: argparse.Namespace) -> int:
+    from ifc_console.knowledge.project import ProjectKnowledge
+
     kb = _knowledge()
     stats = kb.stats()
+    project = ProjectKnowledge(_new_store().project_dir)
+    project_stats = project.stats()
     if args.json:
-        print(json.dumps({"path": str(kb.path), **stats}, indent=2, default=str))
+        print(
+            json.dumps(
+                {"path": str(kb.path), **stats, "project": project_stats},
+                indent=2,
+                default=str,
+            )
+        )
         return 0
     if not stats["ready"]:
         print(f"not built ({kb.path})\nbuild it with: ifc-console knowledge build")
@@ -2425,6 +2478,48 @@ def _cmd_knowledge_status(args: argparse.Namespace) -> int:
     print(f"index    {kb.path}")
     print(f"records  {stats['total']} ({counts})")
     print(f"search   {stats['search']}   ifcopenshell {stats.get('ifcopenshell', '?')}")
+    if project_stats.get("ready"):
+        print(
+            f"project  {project_stats['path']} "
+            f"({project_stats['documents']} documents, {project_stats.get('total', 0)} records)"
+        )
+    else:
+        print("project  no documents ingested (ifc-console knowledge ingest <paths>)")
+    return 0
+
+
+def _cmd_knowledge_ingest(args: argparse.Namespace) -> int:
+    from ifc_console.knowledge.project import ProjectKnowledge
+    from ifc_console.mcp.envelope import ToolError
+
+    store = _new_store()
+    project = ProjectKnowledge(store.project_dir)
+    try:
+        report = project.ingest([Path(p) for p in args.paths], replace=args.replace)
+    except ToolError as exc:
+        print(f"{exc.code}: {exc}")
+        if exc.hint:
+            print(exc.hint)
+        return 1
+    if getattr(args, "json", False):
+        print(json.dumps(report, indent=2, default=str))
+        return 0
+    print(f"indexed {report['records']} chunks from {report['documents']} documents")
+    print(f"index   {report['index']}")
+    for entry in report["files"]:
+        note = " (no extractable text)" if entry.get("no_text") else ""
+        print(f"  {entry['media']:8} {entry['path']} ({entry['records']} chunks){note}")
+    for key, label in (
+        ("skipped_unsupported", "skipped"),
+        ("dropped_missing", "dropped, missing"),
+    ):
+        for item in report.get(key, ()):
+            print(f"  {label}: {item}")
+    if report.get("instruction_like_chunks"):
+        print(
+            f"note: {report['instruction_like_chunks']} chunks look like instructions; "
+            "they are stored as data and never followed"
+        )
     return 0
 
 
@@ -2448,6 +2543,115 @@ def _cmd_knowledge_search(args: argparse.Namespace) -> int:
     for hit in hits:
         schema = f" [{hit['schema']}]" if hit.get("schema") else ""
         print(f"{hit['kind']:9} {hit['name']}{schema}\n    {hit['summary'][:100]}")
+    return 0
+
+
+# --------------------------------------------------------------------------- extensions
+def _extension_rows(entries) -> list[dict]:
+    return [entry.model_dump(mode="json", exclude_none=True) for entry in entries]
+
+
+def _print_extension_rows(entries, installed: dict) -> None:
+    if not entries:
+        print("no matches")
+        return
+    for entry in entries:
+        mark = "installed" if entry.name in installed else entry.kind
+        command = f"   run: {entry.command}" if entry.command else ""
+        print(f"{entry.name:16} [{mark}] {entry.description}{command}")
+
+
+def _cmd_extensions_search(args: argparse.Namespace) -> int:
+    from ifc_console import extensions
+
+    hits, source = extensions.search(" ".join(args.query), catalog_url=args.catalog)
+    installed = extensions.InstallRecord(_new_store().home).load()
+    if args.json:
+        print(json.dumps({"source": source, "extensions": _extension_rows(hits)}, indent=2))
+        return 0
+    print(f"catalog: {source}")
+    _print_extension_rows(hits, installed)
+    return 0 if hits else 1
+
+
+def _cmd_extensions_list(args: argparse.Namespace) -> int:
+    from ifc_console import extensions
+
+    catalog, source = extensions.fetch_catalog(args.catalog)
+    installed = extensions.InstallRecord(_new_store().home).load()
+    if args.json:
+        print(
+            json.dumps(
+                {
+                    "source": source,
+                    "extensions": _extension_rows(catalog.extensions),
+                    "installed": installed,
+                },
+                indent=2,
+            )
+        )
+        return 0
+    print(f"catalog: {source}")
+    _print_extension_rows(catalog.extensions, installed)
+    extras = sorted(set(installed) - {entry.name for entry in catalog.extensions})
+    for name in extras:
+        record = installed[name]
+        print(f"{name:16} [installed] {record.get('package')} (outside the catalog)")
+    return 0
+
+
+def _cmd_extensions_install(args: argparse.Namespace) -> int:
+    from ifc_console import extensions
+    from ifc_console.mcp.envelope import ToolError
+
+    try:
+        record = extensions.install(_new_store().home, args.name, catalog_url=args.catalog)
+    except ToolError as exc:
+        print(f"{exc.code}: {exc}")
+        if exc.hint:
+            print(exc.hint)
+        return 1
+    print(f"installed {record['name']} ({record['package']}) in its own environment")
+    if record.get("command"):
+        print(f"run it with: {record['command']} --help")
+    if record.get("note"):
+        print(f"note: {record['note']}")
+    return 0
+
+
+def _cmd_extensions_uninstall(args: argparse.Namespace) -> int:
+    from ifc_console import extensions
+    from ifc_console.mcp.envelope import ToolError
+
+    try:
+        record = extensions.uninstall(_new_store().home, args.name)
+    except ToolError as exc:
+        print(f"{exc.code}: {exc}")
+        if exc.hint:
+            print(exc.hint)
+        return 1
+    print(f"removed {args.name} ({record.get('package')})")
+    return 0
+
+
+def _cmd_extensions_new(args: argparse.Namespace) -> int:
+    from ifc_console.extensions.scaffold import generate
+    from ifc_console.mcp.envelope import ToolError
+
+    try:
+        files = generate(args.dir, args.name)
+    except ToolError as exc:
+        print(f"{exc.code}: {exc}")
+        if exc.hint:
+            print(exc.hint)
+        return 1
+    for path in files:
+        print(f"created {path}")
+    project_root = next(path.parent for path in files if path.name == "pyproject.toml")
+    print(
+        f"\nnext: cd {project_root.name}, run `uv sync`, edit src/*/agent.py, "
+        "and run the offline test with `uv run python -m pytest -q`"
+    )
     return 0
 
 

@@ -62,6 +62,7 @@ nav:
   - Build and automate:
       - Python SDK: sdk.md
       - Agent applications: agents.md
+      - Extensions: extensions.md
       - Automation workflows: workflows.md
       - Operation plugins: plugins.md
   - Reference:

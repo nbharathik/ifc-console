@@ -148,6 +148,40 @@ print(result.text)
 The same construction is available as `await runtime.create_agent(...)`, which
 builds the selected toolset and agent in one call.
 
+`tools.describe()` renders a prompt-ready summary of the selected tools, so
+system prompts list the surface from code instead of by hand. Rounds where
+every requested call is read-only execute concurrently; set
+`AgentLimits(parallel_read_only=False)` to serialize them again.
+
+## Structured answers
+
+Applications want data out of agents, not prose. Pass a Pydantic model and
+the run ends in a validated instance, with one retry that feeds the
+validation error back to the model:
+
+```python
+from pydantic import BaseModel
+
+class Finding(BaseModel):
+    global_id: str
+    problem: str
+
+result = await agent.run("Review the walls", response_model=Finding)
+print(result.data.global_id)
+```
+
+The schema is appended to the prompt; a final answer that still does not
+validate raises `AgentRunError`.
+
+## Test without an LLM key
+
+`ifc_console.testing` ships the fakes the internal suite uses:
+`ScriptedAgentModel` plays back provider rounds (`text_round`,
+`tool_call_round` build them), `RecordingThreadStore` remembers saves, and
+`ok_envelope`/`error_envelope` shape tool results. A complete agent test
+needs a model file and no network; `packages/ifc-agent-measure/tests` shows
+the pattern end to end.
+
 ## Use LangChain/LangGraph directly
 
 Install LangChain and its model-provider package in the agent application's own
@@ -184,6 +218,34 @@ protect its directory because transcripts can contain model data.
 
 `agent.stream()` emits typed events for text, reasoning, tool calls, approvals,
 usage, completion, and failure. Every event carries run and thread IDs.
+
+## The event contract
+
+| event | fires | fields set beyond run and thread ids |
+| ----- | ----- | ------------------------------------ |
+| `run_started` | once, first | |
+| `text_delta` | per streamed answer fragment | `text` |
+| `reasoning_delta` | per streamed reasoning fragment, providers that expose it | `text` |
+| `tool_call_started` | before each tool executes, always paired with a finish | `tool_call_id`, `tool_name`, `arguments` |
+| `approval_requested` | when a protected tool waits on the host | the started fields plus `approval` |
+| `approval_resolved` | when the host decides | `tool_call_id`, `tool_name`, `decision` |
+| `tool_call_finished` | after each tool, budget and parse failures included | the started fields plus `result` |
+| `usage` | after each model round that reports tokens | `usage` |
+| `run_completed` | once, on success, last | `run_result` |
+| `run_failed` | once, on timeout, budget exhaustion, or provider failure, last | `text` |
+
+Exactly one of `run_completed` or `run_failed` ends every run. In a round
+where every requested call is read-only, all started events precede the
+finished events because the calls execute concurrently.
+
+## Vision
+
+`Agent.run(..., images=[AgentImage.from_file("detail.png")])` attaches images
+to the prompt; providers that support vision receive them as native image
+content. Tool results that carry images (such as `get_viewer_screenshot`
+through the SDK) are split automatically: the transcript keeps a count where
+the base64 was, and the pixels follow the round as vision input. Image-bearing
+threads grow quickly; size `JsonThreadStore` limits accordingly.
 
 ## Protect actions
 
@@ -248,3 +310,8 @@ store, browser approvals, and loopback-only hosting before deployment.
 `pyproject.toml` and virtual environment. It resolves elements by name,
 GlobalId, selector, or viewer selection; inspects the unit; previews thickness;
 then requires host-side approval before the durable transaction commit.
+
+To ship an agent as an installable product with its own environment, command,
+and customer, see [Extensions](extensions.md):
+`ifc-console extensions new` scaffolds the whole project, and
+`ifc-agent-measure` is the built reference.

@@ -199,6 +199,7 @@ class LocalRuntime(IfcRuntime):
         home: str | Path | None = None,
         allowed_dirs: tuple[str | Path, ...] = (),
         settings: dict[str, Any] | None = None,
+        project_dir: str | Path | None = None,
     ) -> LocalRuntime:
         workbench = await AsyncWorkbench.create(
             path,
@@ -206,6 +207,7 @@ class LocalRuntime(IfcRuntime):
             home=home,
             allowed_dirs=allowed_dirs,
             settings=settings,
+            project_dir=project_dir,
         )
         return cls(LocalOperationBackend(workbench))
 

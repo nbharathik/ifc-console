@@ -29,6 +29,29 @@ def utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+class AgentImage(BaseModel):
+    """One image a message carries, as base64 without a data: prefix."""
+
+    model_config = ConfigDict(frozen=True)
+
+    media_type: str = Field(pattern=r"^image/(png|jpeg|gif|webp)$")
+    data: str = Field(min_length=1)
+
+    @classmethod
+    def from_file(cls, path: str | Any) -> AgentImage:
+        """Load a png, jpg, gif, or webp file from disk."""
+        import base64
+        from pathlib import Path
+
+        target = Path(path)
+        suffix = target.suffix.lower().lstrip(".")
+        media = {"jpg": "jpeg"}.get(suffix, suffix)
+        return cls(
+            media_type=f"image/{media}",
+            data=base64.b64encode(target.read_bytes()).decode("ascii"),
+        )
+
+
 class AgentMessage(BaseModel):
     """Provider-neutral conversation message, including tool round state."""
 
@@ -39,6 +62,8 @@ class AgentMessage(BaseModel):
     tool_calls: tuple[dict[str, Any], ...] = ()
     tool_call_id: str | None = None
     name: str | None = None
+    # vision input; providers that cannot carry images on a role drop them
+    images: tuple[AgentImage, ...] = ()
 
 
 class AgentLimits(BaseModel):
@@ -50,6 +75,8 @@ class AgentLimits(BaseModel):
     max_tool_calls: int = Field(default=32, ge=0, le=1000)
     timeout_s: float = Field(default=600.0, gt=0, le=86_400)
     max_tool_result_chars: int = Field(default=12_000, ge=512, le=1_000_000)
+    # rounds where every requested call is read-only run concurrently
+    parallel_read_only: bool = True
 
 
 class ApprovalRequest(BaseModel):
@@ -103,6 +130,8 @@ class AgentRunResult(BaseModel):
     tool_calls: tuple[AgentToolCallRecord, ...] = ()
     usage: AgentUsage = Field(default_factory=AgentUsage)
     error: str | None = None
+    # the validated response_model instance when Agent.run asked for one
+    data: Any = None
 
 
 class AgentEvent(BaseModel):

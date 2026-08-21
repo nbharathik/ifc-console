@@ -16,6 +16,8 @@ from ifc_console.core.operations import OperationAnnotations as ToolAnnotations
 from ifc_console.core.operations import OperationRegistry
 from ifc_console.core.results import Envelope, ToolError, ok
 from ifc_console.ifc.clash import MAX_ELEMENTS, MAX_RESULTS, compare_sets, prepare_set
+from ifc_console.ifc.geometry import probe_elements
+from ifc_console.ifc.measure import measure_distance, measure_elements
 from ifc_console.ifc.quantities import AGGREGATE_BY, build_georeferencing, compute_quantities
 from ifc_console.ifc.query import ALLOWED_FIELDS, DEFAULT_FIELDS, element_row
 from ifc_console.ifc.validation import run_ids_validation, run_schema_validation
@@ -112,7 +114,8 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
             "quantity sets (Qto_*): per-group sums and grand totals with the "
             "model's units. aggregate_by groups per class, type, storey, "
             "material, or none. Optionally restrict to named quantities, e.g. "
-            "['NetVolume', 'GrossArea']."
+            "['NetVolume', 'GrossArea']. source='derived' fills elements that "
+            "have no stored values from their mesh geometry, marked as such."
         ),
     )
     @enveloped(core, "compute_quantities")
@@ -125,6 +128,7 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
             list[str] | None,
             Field(description="Quantity names to include; omit for all numeric ones."),
         ] = None,
+        source: Literal["stored", "derived"] = "stored",
         model: Annotated[str | None, Field(description=MODEL_ARG)] = None,
     ) -> Envelope:
         s = core.resolve_session(model)
@@ -142,8 +146,174 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
                 selector,
                 aggregate_by=aggregate_by,
                 quantities=wanted,
+                source=source,
             ),
-            key=(selector, aggregate_by, wanted),
+            key=(selector, aggregate_by, wanted, source),
+            timeout=_HEAVY_TIMEOUT if source == "derived" else 120,
+            session=s,
+        )
+        return ok(
+            report, core.session_meta(), char_limit=limit_, cached=cached, **read_meta(core, s)
+        )
+
+    @mcp.tool(
+        name="get_element_geometry",
+        annotations=ANALYSIS_ANN,
+        description=(
+            "[QUERY] Derived geometry per element from its triangle mesh, in SI "
+            "metres: world bounding box, length/width/height extents along the "
+            "placement axes, plan footprint area, volume, centroid, and a "
+            "prismatic-confidence rating. The local y extent is the geometric "
+            "thickness of a placement-aligned wall. Pass a selector or explicit "
+            "global_ids from search_elements or get_viewer_selection."
+        ),
+    )
+    @enveloped(core, "get_element_geometry")
+    async def get_element_geometry(
+        selector: Annotated[
+            str | None, Field(description="IfcOpenShell selector; or pass global_ids.")
+        ] = None,
+        global_ids: Annotated[
+            list[str] | None, Field(max_length=500, description="Explicit GlobalIds to probe.")
+        ] = None,
+        physical_only: bool = True,
+        max_elements: Annotated[int, Field(ge=1, le=2000)] = 500,
+        model: Annotated[str | None, Field(description=MODEL_ARG)] = None,
+    ) -> Envelope:
+        s = core.resolve_session(model)
+        gids = tuple(global_ids) if global_ids else None
+        report, cached = await core.cached_read(
+            "get_element_geometry",
+            lambda: probe_elements(
+                s.ifc,
+                selector=selector,
+                global_ids=list(gids) if gids else None,
+                physical_only=physical_only,
+                max_elements=max_elements,
+            ),
+            key=(selector, gids, physical_only, max_elements),
+            timeout=_HEAVY_TIMEOUT,
+            session=s,
+        )
+        return ok(
+            report, core.session_meta(), char_limit=limit_, cached=cached, **read_meta(core, s)
+        )
+
+    @mcp.tool(
+        name="measure_elements",
+        annotations=ANALYSIS_ANN,
+        description=(
+            "[QUERY] Measure one metric for a set of elements with one named, "
+            "auditable method: stored_qto reads a quantity-set value, layer_sum "
+            "adds material layer thicknesses (include/exclude glob filters on "
+            "layer and material names), geometry_extent measures the mesh along "
+            "a placement or world axis. Values come back in the file's units "
+            "and SI, per element plus a summary. Pass a selector or global_ids."
+        ),
+    )
+    @enveloped(core, "measure_elements")
+    async def measure_elements_tool(
+        method: Literal["stored_qto", "layer_sum", "geometry_extent"],
+        selector: Annotated[
+            str | None, Field(description="IfcOpenShell selector; or pass global_ids.")
+        ] = None,
+        global_ids: Annotated[
+            list[str] | None, Field(max_length=500, description="Explicit GlobalIds to measure.")
+        ] = None,
+        metric: Annotated[
+            str | None,
+            Field(max_length=80, description="Label for the report, e.g. 'thickness'."),
+        ] = None,
+        quantity: Annotated[
+            str | None,
+            Field(description="stored_qto: the quantity name, e.g. 'Width'."),
+        ] = None,
+        qto_set: Annotated[
+            str | None,
+            Field(description="stored_qto: restrict to one quantity set, e.g. 'Qto_WallBaseQuantities'."),
+        ] = None,
+        include_layers: Annotated[
+            list[str] | None,
+            Field(max_length=20, description="layer_sum: keep only layers matching these globs."),
+        ] = None,
+        exclude_layers: Annotated[
+            list[str] | None,
+            Field(max_length=20, description="layer_sum: drop layers matching these globs."),
+        ] = None,
+        axis: Literal["local_x", "local_y", "local_z", "world_x", "world_y", "world_z"] = "local_y",
+        physical_only: bool = True,
+        max_elements: Annotated[int, Field(ge=1, le=2000)] = 500,
+        model: Annotated[str | None, Field(description=MODEL_ARG)] = None,
+    ) -> Envelope:
+        s = core.resolve_session(model)
+        gids = tuple(global_ids) if global_ids else None
+        include = tuple(include_layers) if include_layers else None
+        exclude = tuple(exclude_layers) if exclude_layers else None
+        report, cached = await core.cached_read(
+            "measure_elements",
+            lambda: measure_elements(
+                s.ifc,
+                selector=selector,
+                global_ids=list(gids) if gids else None,
+                method=method,
+                metric=metric,
+                qto_set=qto_set,
+                quantity=quantity,
+                include_layers=list(include) if include else None,
+                exclude_layers=list(exclude) if exclude else None,
+                axis=axis,
+                physical_only=physical_only,
+                max_elements=max_elements,
+            ),
+            key=(selector, gids, method, metric, qto_set, quantity, include, exclude, axis, physical_only, max_elements),
+            timeout=_HEAVY_TIMEOUT,
+            session=s,
+        )
+        return ok(
+            report, core.session_meta(), char_limit=limit_, cached=cached, **read_meta(core, s)
+        )
+
+    @mcp.tool(
+        name="measure_distance",
+        annotations=ANALYSIS_ANN,
+        description=(
+            "[QUERY] Closest approach between two element sets: centroid "
+            "distance, axis-aligned bounding-box gap, and closest-point surface "
+            "distance for the nearest pair, in SI metres and file units. Each "
+            "side is a selector or a GlobalId list. Overlapping pairs report a "
+            "surface distance of zero; detect_clashes quantifies the overlap."
+        ),
+    )
+    @enveloped(core, "measure_distance")
+    async def measure_distance_tool(
+        set_a: Annotated[
+            str | None, Field(description="Selector for side A; or pass global_ids_a.")
+        ] = None,
+        global_ids_a: Annotated[list[str] | None, Field(max_length=200)] = None,
+        set_b: Annotated[
+            str | None, Field(description="Selector for side B; or pass global_ids_b.")
+        ] = None,
+        global_ids_b: Annotated[list[str] | None, Field(max_length=200)] = None,
+        physical_only: bool = True,
+        max_elements: Annotated[int, Field(ge=1, le=1000)] = 200,
+        model: Annotated[str | None, Field(description=MODEL_ARG)] = None,
+    ) -> Envelope:
+        s = core.resolve_session(model)
+        gids_a = tuple(global_ids_a) if global_ids_a else None
+        gids_b = tuple(global_ids_b) if global_ids_b else None
+        report, cached = await core.cached_read(
+            "measure_distance",
+            lambda: measure_distance(
+                s.ifc,
+                set_a=set_a,
+                global_ids_a=list(gids_a) if gids_a else None,
+                set_b=set_b,
+                global_ids_b=list(gids_b) if gids_b else None,
+                physical_only=physical_only,
+                max_elements=max_elements,
+            ),
+            key=(set_a, gids_a, set_b, gids_b, physical_only, max_elements),
+            timeout=_HEAVY_TIMEOUT,
             session=s,
         )
         return ok(
@@ -227,6 +397,40 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
         )
         report["models"] = {"set_a": session_a.model_id, "set_b": session_b.model_id}
         return ok(report, core.session_meta(), char_limit=limit_, **read_meta(core, session_a))
+
+    @mcp.tool(
+        name="get_measurement_recipe",
+        annotations=ANALYSIS_ANN,
+        description=(
+            "[QUERY] The project's measurement recipe for one element class and "
+            "property: the company's method, its parameters, tolerance, and the "
+            "document citation it came from. Type-specific recipes beat "
+            "class-level ones; pass type_name when you know it. The result "
+            "includes suggested_arguments ready for measure_elements. A miss is "
+            "not a failure: fall back to search_ifc_knowledge(corpus='project') "
+            "and pick a method yourself, saying so in the report."
+        ),
+    )
+    @enveloped(core, "get_measurement_recipe")
+    async def get_measurement_recipe(
+        ifc_class: Annotated[str, Field(description="Element class, e.g. IfcWall.")],
+        property_name: Annotated[
+            str, Field(description="The measured property, e.g. 'thickness'.")
+        ],
+        type_name: Annotated[
+            str | None,
+            Field(description="The element's type name, from get_element or query_elements."),
+        ] = None,
+    ) -> Envelope:
+        from ifc_console.knowledge.project_recipes import find_recipe
+
+        result = find_recipe(
+            core.store.project_dir,
+            ifc_class=ifc_class,
+            property_name=property_name,
+            type_name=type_name,
+        )
+        return ok(result, core.session_meta(), char_limit=limit_)
 
     @mcp.tool(
         annotations=ARTIFACT_ANN,

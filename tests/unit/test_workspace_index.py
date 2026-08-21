@@ -24,12 +24,12 @@ def _project(tmp_path: Path, model: Path, names: list[str]) -> Path:
 
 def test_scan_indexes_kinds_without_loading(tmp_path: Path, minimal_ifc4_path: Path) -> None:
     root = _project(tmp_path, minimal_ifc4_path, ["arch.ifc", "struct.ifc"])
-    (root / "readme.md").write_text("not a bim file", encoding="utf-8")
+    (root / "readme.md").write_text("an ingestable project document", encoding="utf-8")
     index = WorkspaceIndex(lambda: [root])
     index.scan()
 
     kinds = sorted(e.kind for e in index.entries)
-    assert kinds == ["ids", "ifc", "ifc"]
+    assert kinds == ["ids", "ifc", "ifc", "md"]
     model = index.get("arch")
     assert model is not None and model.detail["schema"] == "IFC4"
     spec = index.get("employer-requirements")

@@ -1171,6 +1171,38 @@ async def _kb(console: ConsoleScreen, args: str) -> None:
     console.print("\n".join(lines))
 
 
+@command(
+    "extensions",
+    "/extensions [query]",
+    "browse the extension store (agents installed via `ifc-console extensions install`)",
+    "console",
+    examples=("/extensions", "/extensions measure"),
+)
+async def _extensions(console: ConsoleScreen, args: str) -> None:
+    from ifc_console import extensions as ext
+
+    query = _strip_quotes(args)
+    if query:
+        hits, source = await asyncio.to_thread(ext.search, query)
+    else:
+        catalog, source = await asyncio.to_thread(ext.fetch_catalog)
+        hits = catalog.extensions
+    installed = ext.InstallRecord(console.core.store.home).load()
+    lines = [f"[b]extension store[/b] [dim]({escape(source)})[/dim]"]
+    if not hits:
+        lines.append(f"  [dim]nothing found for {escape(query)}[/dim]")
+    for entry in hits:
+        mark = "[green]installed[/green]" if entry.name in installed else f"[dim]{entry.kind}[/dim]"
+        lines.append(f"  [cyan]{escape(entry.name):16}[/cyan] {mark} {escape(entry.description)}")
+        if entry.command:
+            lines.append(f"      [dim]run: {escape(entry.command)}[/dim]")
+    lines.append(
+        "[dim]install with: ifc-console extensions install <name> (each agent gets "
+        "its own environment)[/dim]"
+    )
+    console.print("\n".join(lines))
+
+
 @command("clear", "/clear", "clear the log", "console")
 async def _clear(console: ConsoleScreen, _args: str) -> None:
     console.clear_log()

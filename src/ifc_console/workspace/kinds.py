@@ -40,6 +40,11 @@ KINDS: tuple[FileKind, ...] = (
     FileKind("bcf", "BCF", (".bcf", ".bcfzip"), "issues", None, "bcf"),
     FileKind("csv", "CSV", (".csv",), "table", None, None),
     FileKind("ifcjson", "JSON", (".ifcjson",), "model", None, None),
+    # documents feed the project knowledge corpus via `ifc-console knowledge ingest`
+    FileKind("pdf", "PDF", (".pdf",), "document", None, "pdf"),
+    FileKind("md", "MD", (".md", ".markdown"), "document", None, None),
+    FileKind("txt", "TXT", (".txt",), "document", None, None),
+    FileKind("image", "IMG", (".png", ".jpg", ".jpeg"), "document", None, None),
 )
 
 _BY_NAME = {k.name: k for k in KINDS}

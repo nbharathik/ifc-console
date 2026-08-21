@@ -53,17 +53,22 @@ _INSPECT_TOOLS = frozenset(
         "detect_clashes",
         "get_api_docs",
         "get_element",
+        "get_element_geometry",
         "get_georeferencing",
         "get_ifc_project_info",
         "get_knowledge_record",
+        "get_measurement_recipe",
         "get_psets",
         "get_schema_docs",
         "get_session_status",
         "get_spatial_structure",
+        "get_viewer_measurements",
         "get_viewer_screenshot",
         "get_viewer_selection",
         "highlight_elements",
         "list_models",
+        "measure_distance",
+        "measure_elements",
         "orient",
         "query_elements",
         "search_elements",
@@ -281,6 +286,19 @@ class Toolset:
 
     def schemas(self) -> list[dict[str, Any]]:
         return [definition.provider_schema() for definition in self.definitions]
+
+    def describe(self) -> str:
+        """A compact markdown tool summary for pasting into a system prompt."""
+
+        lines = []
+        for definition in self.definitions:
+            text = " ".join(definition.description.split())
+            sentence = text.split(". ")[0].rstrip(".")
+            if len(sentence) > 160:
+                sentence = sentence[:157] + "..."
+            suffix = " (needs host approval)" if definition.requires_approval else ""
+            lines.append(f"- {definition.name}: {sentence}.{suffix}")
+        return "\n".join(lines)
 
     def as_langchain_tools(self, *, structured_artifacts: bool = True) -> list[Any]:
         """Project this toolset directly into LangChain without an MCP server."""

@@ -19,7 +19,15 @@ from __future__ import annotations
 
 import asyncio
 import threading
-from collections.abc import AsyncIterator, Callable, Coroutine, Iterable, Iterator, Mapping
+from collections.abc import (
+    AsyncIterator,
+    Callable,
+    Coroutine,
+    Iterable,
+    Iterator,
+    Mapping,
+    Sequence,
+)
 from concurrent.futures import CancelledError as FutureCancelledError
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from contextlib import suppress
@@ -72,7 +80,7 @@ from ifc_console.core.operation_data import (
     ValidationData,
     ValidationIssue,
 )
-from ifc_console.core.operations import OperationAnnotations, OperationDefinition
+from ifc_console.core.operations import OperationAnnotations, OperationDefinition, OperationImage
 from ifc_console.core.results import Envelope, ErrorInfo, ToolError
 from ifc_console.core.revisions import RevisionRef
 from ifc_console.core.transaction_journal import (
@@ -272,6 +280,38 @@ def _refresh_live_settings(core: Any, keys: Iterable[str]) -> None:
             refresh(core.store.get(key))
 
 
+def _transport_envelope(result: Any, meta: dict[str, Any]) -> Envelope | None:
+    """Image transport content as an envelope, so every caller can consume it.
+
+    MCP clients receive native image content; SDK and agent callers get the
+    same pixels as base64 in data.images. Anything unrecognized stays None
+    and keeps the INVALID_OUTPUT contract.
+    """
+    import base64
+
+    items = result if isinstance(result, (list, tuple)) else [result]
+    images: list[dict[str, str]] = []
+    notes: list[str] = []
+    for item in items:
+        if isinstance(item, OperationImage):
+            images.append(
+                {
+                    "media_type": f"image/{item.format.lower()}",
+                    "data": base64.b64encode(item.data).decode("ascii"),
+                }
+            )
+        elif isinstance(item, str):
+            notes.append(item)
+        else:
+            return None
+    if not images:
+        return None
+    data: dict[str, Any] = {"images": images}
+    if notes:
+        data["note"] = " ".join(notes)
+    return Envelope(ok=True, data=data, meta={**meta, "transport": "content"})
+
+
 def _unwrap(envelope: Any) -> dict[str, Any]:
     payload = envelope.model_dump() if hasattr(envelope, "model_dump") else dict(envelope)
     if payload.get("ok"):
@@ -301,13 +341,17 @@ class AsyncWorkbench:
         home: str | Path | None = None,
         allowed_dirs: tuple[str | Path, ...] = (),
         settings: dict[str, Any] | None = None,
+        project_dir: str | Path | None = None,
     ) -> AsyncWorkbench:
         from ifc_console.app import AppCore
         from ifc_console.application.operations import build_operations
         from ifc_console.policy.modes import Mode
         from ifc_console.settings import SettingsStore
 
-        store = SettingsStore(home=Path(home) if home else None)
+        store = SettingsStore(
+            home=Path(home) if home else None,
+            project_dir=Path(project_dir) if project_dir else None,
+        )
         _apply_settings(store, settings or {})
         try:
             selected_mode = Mode(mode)
@@ -320,6 +364,8 @@ class AsyncWorkbench:
         core = AppCore(store, mode=selected_mode, transport="sdk")
         try:
             core.start_audit()
+            if project_dir:
+                core.add_allowed_dir(Path(project_dir))
             for directory in allowed_dirs:
                 core.add_allowed_dir(Path(directory))
             workbench = cls(core)
@@ -500,11 +546,14 @@ class AsyncWorkbench:
             )
         result = await self._core.operation_service.call(name, kwargs)
         if not isinstance(result, Envelope):
-            raise IfcConsoleError(
-                "INVALID_OUTPUT",
-                f"operation {name!r} returns transport content, not an envelope",
-                "Call it through its supported transport.",
-            )
+            converted = _transport_envelope(result, self._core.session_meta())
+            if converted is None:
+                raise IfcConsoleError(
+                    "INVALID_OUTPUT",
+                    f"operation {name!r} returns transport content, not an envelope",
+                    "Call it through its supported transport.",
+                )
+            return converted
         return result
 
     async def call(self, name: str, **kwargs: Any) -> dict[str, Any]:
@@ -1077,9 +1126,24 @@ class AsyncWorkbench:
         """Build the offline reference index (seconds, no network)."""
         return self._core.knowledge.build(force=force)
 
+    async def ingest_docs(
+        self, paths: Sequence[str | Path], *, replace: bool = False
+    ) -> dict[str, Any]:
+        """Index project documents (md, txt, pdf, images) for retrieval.
+
+        Host-owned: the model can search the result but never ingest. Paths
+        must lie inside the allowed directories.
+        """
+        resolved = [self._core.require_path_allowed(Path(p)) for p in paths]
+        return await asyncio.to_thread(
+            self._core.project_knowledge.ingest, resolved, replace=replace
+        )
+
     async def search_knowledge(self, query: str, **kwargs: Any) -> list[dict[str, Any]]:
         data = await self._data("search_ifc_knowledge", query=query, **kwargs)
-        return data.get("hits", [])
+        hits = list(data.get("hits", []))
+        hits.extend(data.get("project_hits", []))
+        return hits
 
     async def knowledge_record(self, key: str) -> dict[str, Any]:
         """Fetch a complete knowledge or recipe record by search-result key."""
@@ -1181,6 +1245,7 @@ class Workbench:
         home: str | Path | None = None,
         allowed_dirs: tuple[str | Path, ...] = (),
         settings: dict[str, Any] | None = None,
+        project_dir: str | Path | None = None,
     ) -> Workbench:
         """Open a model (or none) and return a ready workbench."""
         loop = _Loop()
@@ -1192,6 +1257,7 @@ class Workbench:
                     home=home,
                     allowed_dirs=allowed_dirs,
                     settings=settings,
+                    project_dir=project_dir,
                 )
             )
         except BaseException:
@@ -1640,6 +1706,11 @@ class Workbench:
     # -- knowledge ------------------------------------------------------------
     def build_knowledge(self, *, force: bool = False) -> dict[str, Any]:
         return self._wb.build_knowledge(force=force)
+
+    def ingest_docs(
+        self, paths: Sequence[str | Path], *, replace: bool = False
+    ) -> dict[str, Any]:
+        return self._run(lambda: self._wb.ingest_docs(paths, replace=replace))
 
     def search_knowledge(self, query: str, **kwargs: Any) -> list[dict[str, Any]]:
         return self._run(lambda: self._wb.search_knowledge(query, **kwargs))

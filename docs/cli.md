@@ -196,7 +196,8 @@ on a copied or version-controlled model.
 | `recents list|clear` | manage recently opened models |
 | `sessions list|show|verify|clear` | inspect and verify audit sessions |
 | `plugins list|doctor` | inspect trusted operation plugins |
-| `knowledge build|status|search` | manage the offline reference index |
+| `knowledge build|status|search|ingest` | manage the reference index and the project document corpus |
+| `extensions search|list|install|uninstall|new` | the extension store: agents in isolated environments, plus the project scaffold |
 
 Examples:
 

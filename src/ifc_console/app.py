@@ -111,6 +111,7 @@ class AppCore:
         self.sandbox = SandboxRunner(self)
         self.knowledge = KnowledgeBase(store.home, schemas=tuple(s.knowledge.schemas))
         self._knowledge_thread: threading.Thread | None = None
+        self._project_knowledge = None
         self.server_running = False
         # Why the last start attempt failed, so /viewer and /chat can say more
         # than "not running" (a port conflict is the usual reason).
@@ -742,6 +743,15 @@ class AppCore:
         return resolved
 
     # -- knowledge base -------------------------------------------------------
+    @property
+    def project_knowledge(self):
+        """The per-project document corpus, created on first use."""
+        if self._project_knowledge is None:
+            from ifc_console.knowledge.project import ProjectKnowledge
+
+            self._project_knowledge = ProjectKnowledge(self.store.project_dir)
+        return self._project_knowledge
+
     def start_knowledge(self) -> None:
         """Build the reference index in the background if it is missing.
 
@@ -776,6 +786,8 @@ class AppCore:
         self.sandbox.close()
         self.models.close_all()
         self.knowledge.close()
+        if self._project_knowledge is not None:
+            self._project_knowledge.close()
         self.audit.end()
 
     async def ashutdown(self) -> None:
@@ -787,6 +799,8 @@ class AppCore:
         self.sandbox.close()
         self.models.close_all()
         self.knowledge.close()
+        if self._project_knowledge is not None:
+            self._project_knowledge.close()
         self.audit.end()
 
     # -- logging helper used by the tool wrapper ------------------------------------

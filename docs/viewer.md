@@ -62,7 +62,9 @@ Results use the live in-memory model, including unsaved edits.
 - **Properties:** attributes, type, container, materials, properties, and
   quantities for the selected element.
 - **Sections:** combine axis planes for storey slices or corner cuts.
-- **Measurements:** total distance plus X, Y, and Z components.
+- **Measurements:** total distance plus X, Y, and Z components. The model can
+  read them back with `get_viewer_measurements`, so "the distance I measured"
+  is something it can check.
 - **Saved views:** named camera positions stored in the browser.
 - **Color themes:** labeled groups with a colorblind-safe legend.
 - **Grid and axes:** local visual aids that never modify the IFC model.

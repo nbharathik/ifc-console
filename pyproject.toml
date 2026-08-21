@@ -42,6 +42,8 @@ dependencies = [
     # imports are ours, so the dependency is ours.
     "numpy>=1.24",
     "rich>=13",
+    # workflow manifests and measurement recipes are YAML
+    "pyyaml>=6",
 ]
 
 [project.optional-dependencies]
@@ -71,6 +73,10 @@ dev = [
 docs = [
     "mkdocs>=1.6",
     "mkdocs-material>=9.5",
+]
+pdf = [
+    # text extraction for `ifc-console knowledge ingest` of PDF manuals
+    "pypdf>=4",
 ]
 
 [project.urls]

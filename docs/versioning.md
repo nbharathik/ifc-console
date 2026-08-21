@@ -18,8 +18,11 @@ minor and patch releases will not break you.
 5. **Resource URIs** (`ifc://...`) and prompt names.
 6. **The documented Python SDK**: names exported from `ifc_console`, documented
    `Workbench` and `AsyncWorkbench` methods, their call signatures, and the
-   public fields of exported typed records and result models. Modules below
-   `ifc_console.*` that are not re-exported are internal.
+   public fields of exported typed records and result models. Two auxiliary
+   modules are public by name: `ifc_console.testing` (the agent test doubles)
+   and the exports of `ifc_console.knowledge` (the corpus surface extensions
+   build on). Other modules below `ifc_console.*` that are not re-exported
+   are internal.
 7. **Plugin API version 1**: `PluginManifest`, `PluginAPI`,
    `OperationPlugin`, synchronous registration and shutdown, structured
    operation registration, capability declarations, and the result helpers
@@ -34,6 +37,10 @@ Additive changes arrive in minor releases and do not break correct clients:
 - new optional parameters with unchanged defaults
 - new fields inside `data` or `meta`
 - new error codes
+
+When a name has to go, it is deprecated first: it keeps working for at least
+one minor release, warns where practical, and its replacement is named in the
+changelog entry that deprecates it.
 
 Breaking changes gate a major release:
 

@@ -14,6 +14,7 @@ resolution-markers = [
 
 [manifest]
 members = [
+    "ifc-agent-measure",
     "ifc-console",
     "ifc-console-viewer",
 ]
@@ -510,6 +511,42 @@ wheels = [
 ]
 
 [[package]]
+name = "ifc-agent-measure"
+version = "0.1.0"
+source = { editable = "packages/ifc-agent-measure" }
+dependencies = [
+    { name = "ifc-console" },
+]
+
+[package.optional-dependencies]
+pdf = [
+    { name = "ifc-console", extra = ["pdf"] },
+]
+viewer = [
+    { name = "ifc-console", extra = ["viewer"] },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "ifc-console", editable = "." },
+    { name = "ifc-console", extras = ["pdf"], marker = "extra == 'pdf'", editable = "." },
+    { name = "ifc-console", extras = ["viewer"], marker = "extra == 'viewer'", editable = "." },
+]
+provides-extras = ["viewer", "pdf"]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "pytest", specifier = ">=8" },
+    { name = "pytest-asyncio", specifier = ">=0.23" },
+]
+
+[[package]]
 name = "ifc-console"
 source = { editable = "." }
 dependencies = [
@@ -541,6 +578,9 @@ docs = [
     { name = "mkdocs" },
     { name = "mkdocs-material" },
 ]
+pdf = [
+    { name = "pypdf" },
+]
 validation = [
     { name = "ifctester" },
 ]
@@ -563,8 +603,10 @@ requires-dist = [
     { name = "mkdocs-material", marker = "extra == 'docs'", specifier = ">=9.5" },
     { name = "numpy", specifier = ">=1.24" },
     { name = "pydantic", specifier = ">=2.7,<3" },
+    { name = "pypdf", marker = "extra == 'pdf'", specifier = ">=4" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23" },
+    { name = "pyyaml", specifier = ">=6" },
     { name = "pyyaml", specifier = ">=6,<7" },
     { name = "rich", specifier = ">=13" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.5" },
@@ -574,7 +616,7 @@ requires-dist = [
     { name = "websockets", marker = "extra == 'dev'", specifier = ">=12" },
     { name = "websockets", marker = "extra == 'viewer'", specifier = ">=12" },
 ]
-provides-extras = ["dev", "docs", "validation", "viewer"]
+provides-extras = ["dev", "docs", "pdf", "validation", "viewer"]
 
 [[package]]
 name = "ifc-console-viewer"
@@ -1417,6 +1459,18 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/21/a9/5f0c535ba3b08fe09270c16808e053a968868242ecbd5676d4e3a488bf28/pymdown_extensions-11.0.1.tar.gz", hash = "sha256:dd2905ae6fc5b75582fafb139a1266ffc754705efa902aa50067fa7ff4f94ec0", size = 857113, upload-time = "2026-07-02T17:59:22.955Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/d6/54/da572c98c0b77626a91b5d3b89f0231d8bff5125c225420908632f8b342d/pymdown_extensions-11.0.1-py3-none-any.whl", hash = "sha256:db3943a62bab7e03af1364f0c4083e64b91fb097675a4b6cceccfbe9a77e5eb2", size = 269455, upload-time = "2026-07-02T17:59:21.271Z" },
+]
+
+[[package]]
+name = "pypdf"
+version = "6.16.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "typing-extensions", marker = "python_full_version < '3.11'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/b6/5a/df92d1c1ef8806ca28f20f978ee059894868d93de797a7e2edebe7fe1a43/pypdf-6.16.1.tar.gz", hash = "sha256:c4d1b43ddae921387321cf63936cd16a7743b91d2da92f165c149a195c972ba9", size = 7003737, upload-time = "2026-08-14T12:24:04.531Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/33/a1/724b18d6757ab7253a8fecd3a430eb8d980ed26872ba16651e7b5ddfc63f/pypdf-6.16.1-py3-none-any.whl", hash = "sha256:63fec31c4092ae50b6729beedcb469055b60d20c834bde1c402df241f371f644", size = 382924, upload-time = "2026-08-14T12:24:02.854Z" },
 ]
 
 [[package]]

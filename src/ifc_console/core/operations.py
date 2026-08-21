@@ -235,11 +235,20 @@ _CAPABILITY_GROUPS: tuple[tuple[frozenset[str], tuple[Capability, ...]], ...] = 
         (Capability.MODEL_READ, Capability.FILE_READ),
     ),
     (
-        frozenset({"detect_clashes"}),
+        frozenset(
+            {"detect_clashes", "get_element_geometry", "measure_elements", "measure_distance"}
+        ),
         (Capability.MODEL_READ, Capability.GEOMETRY),
     ),
     (
-        frozenset({"search_ifc_knowledge", "get_knowledge_record", "get_api_docs"}),
+        frozenset(
+            {
+                "search_ifc_knowledge",
+                "get_knowledge_record",
+                "get_api_docs",
+                "get_measurement_recipe",
+            }
+        ),
         (Capability.KNOWLEDGE_READ,),
     ),
     (
@@ -267,7 +276,9 @@ _CAPABILITY_GROUPS: tuple[tuple[frozenset[str], tuple[Capability, ...]], ...] = 
         (Capability.MODEL_PREVIEW, Capability.ARTIFACT_WRITE),
     ),
     (
-        frozenset({"get_viewer_selection", "get_viewer_screenshot"}),
+        frozenset(
+            {"get_viewer_selection", "get_viewer_measurements", "get_viewer_screenshot"}
+        ),
         (Capability.VIEWER_READ,),
     ),
     (

@@ -10,9 +10,12 @@ import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from typing import Any
 
+from pydantic import BaseModel, ValidationError
+
 from ifc_console.agents.approvals import DenyAllApprovals
 from ifc_console.agents.models import (
     AgentEvent,
+    AgentImage,
     AgentLimits,
     AgentMessage,
     AgentModel,
@@ -64,6 +67,36 @@ async def _before_deadline(
         raise TimeoutError("agent run exceeded its timeout") from None
 
 
+def _extract_images(tool_result: dict[str, Any]) -> tuple[dict[str, Any], tuple[AgentImage, ...]]:
+    """Split image content out of a tool result.
+
+    Base64 images do not belong in the JSON a model rereads every round; they
+    become vision input on a follow-up user message instead. The tool result
+    keeps a count in their place.
+    """
+    data = tool_result.get("data")
+    if not isinstance(data, Mapping):
+        return tool_result, ()
+    raw = data.get("images")
+    if not isinstance(raw, list) or not raw:
+        return tool_result, ()
+    images: list[AgentImage] = []
+    for item in raw:
+        if (
+            isinstance(item, Mapping)
+            and str(item.get("media_type", "")).startswith("image/")
+            and isinstance(item.get("data"), str)
+        ):
+            try:
+                images.append(AgentImage.model_validate(dict(item)))
+            except Exception:
+                return tool_result, ()
+        else:
+            return tool_result, ()
+    slim = {**tool_result, "data": {**dict(data), "images": len(images)}}
+    return slim, tuple(images)
+
+
 def _timeout_tool_result() -> dict[str, Any]:
     return {
         "ok": False,
@@ -74,6 +107,30 @@ def _timeout_tool_result() -> dict[str, Any]:
         },
         "meta": {},
     }
+
+
+def _parse_structured(text: str, response_model: type[BaseModel]) -> BaseModel:
+    """The final text as a validated response_model instance, or ValueError."""
+    body = text.strip()
+    if body.startswith("```"):
+        first_break = body.find("\n")
+        closing = body.rfind("```")
+        if first_break != -1 and closing > first_break:
+            body = body[first_break + 1 : closing].strip()
+    start = body.find("{")
+    end = body.rfind("}")
+    if start == -1 or end <= start:
+        raise ValueError("the answer contains no JSON object")
+    try:
+        payload = json.loads(body[start : end + 1])
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"the answer is not valid JSON: {exc}") from exc
+    try:
+        return response_model.model_validate(payload)
+    except ValidationError as exc:
+        first = exc.errors(include_url=False)[0]
+        where = ".".join(str(part) for part in first.get("loc", ()))
+        raise ValueError(f"{where or 'answer'}: {first.get('msg')}") from exc
 
 
 def _add_usage(total: AgentUsage, current: AgentUsage) -> AgentUsage:
@@ -124,10 +181,53 @@ class Agent:
         *,
         thread_id: str | None = None,
         options: Mapping[str, Any] | None = None,
+        response_model: type[BaseModel] | None = None,
+        images: Sequence[AgentImage | Mapping[str, str]] | None = None,
+    ) -> AgentRunResult:
+        if response_model is None:
+            return await self._run_once(
+                prompt, thread_id=thread_id, options=options, images=images
+            )
+        schema = json.dumps(response_model.model_json_schema(), ensure_ascii=False)
+        guided = (
+            f"{prompt}\n\nEnd your final answer with only a JSON object matching "
+            f"this schema, no prose around it:\n{schema}"
+        )
+        result = await self._run_once(
+            guided, thread_id=thread_id, options=options, images=images
+        )
+        for attempt in (0, 1):
+            try:
+                data = _parse_structured(result.text, response_model)
+            except ValueError as exc:
+                if attempt:
+                    raise AgentRunError(
+                        f"the final answer did not match {response_model.__name__}: {exc}"
+                    ) from exc
+                correction = (
+                    f"That answer did not validate ({exc}). Answer again with "
+                    "only the JSON object, nothing else."
+                )
+                result = await self._run_once(
+                    correction, thread_id=result.thread_id, options=options
+                )
+                continue
+            return result.model_copy(update={"data": data})
+        raise AgentRunError("structured answer retry loop ended unexpectedly")
+
+    async def _run_once(
+        self,
+        prompt: str,
+        *,
+        thread_id: str | None = None,
+        options: Mapping[str, Any] | None = None,
+        images: Sequence[AgentImage | Mapping[str, str]] | None = None,
     ) -> AgentRunResult:
         completed: AgentRunResult | None = None
         failure: str | None = None
-        async for event in self.stream(prompt, thread_id=thread_id, options=options):
+        async for event in self.stream(
+            prompt, thread_id=thread_id, options=options, images=images
+        ):
             if event.type == "run_completed":
                 completed = event.run_result
             elif event.type == "run_failed":
@@ -142,9 +242,11 @@ class Agent:
         *,
         thread_id: str | None = None,
         options: Mapping[str, Any] | None = None,
+        images: Sequence[AgentImage | Mapping[str, str]] | None = None,
     ) -> AsyncIterator[AgentEvent]:
         if not prompt.strip():
             raise ValueError("prompt must not be empty")
+        attached = tuple(AgentImage.model_validate(image) for image in images or ())
         selected_thread = thread_id or _id("thread")
         lock = self._thread_locks.setdefault(selected_thread, asyncio.Lock())
         self._thread_lock_users[selected_thread] = (
@@ -156,6 +258,7 @@ class Agent:
                     prompt.strip(),
                     thread_id=selected_thread,
                     options=dict(options or {}),
+                    images=attached,
                 ):
                     yield event
         finally:
@@ -173,11 +276,12 @@ class Agent:
         *,
         thread_id: str,
         options: Mapping[str, Any],
+        images: tuple[AgentImage, ...] = (),
     ) -> AsyncIterator[AgentEvent]:
         run_id = _id("run")
         deadline = time.monotonic() + self.limits.timeout_s
         history = list(await self.thread_store.load(thread_id))
-        history.append(AgentMessage(role="user", text=prompt))
+        history.append(AgentMessage(role="user", text=prompt, images=images))
         await self.thread_store.save(thread_id, history)
         records: list[AgentToolCallRecord] = []
         answer_parts: list[str] = []
@@ -272,6 +376,78 @@ class Agent:
                 )
                 budget_exhausted = False
                 deadline_exhausted = False
+                # image-bearing results attach after the whole round: a user
+                # message between two tool replies breaks provider transcripts
+                round_images: list[tuple[str, tuple[AgentImage, ...]]] = []
+                parallel = self._parallel_batch(calls, round_index)
+                if parallel is not None and len(records) + len(calls) <= self.limits.max_tool_calls:
+                    for call_id, name, arguments, _ in parallel:
+                        yield AgentEvent(
+                            type="tool_call_started",
+                            run_id=run_id,
+                            thread_id=thread_id,
+                            tool_call_id=call_id,
+                            tool_name=name,
+                            arguments=arguments,
+                        )
+                    try:
+                        results = await _before_deadline(
+                            deadline,
+                            lambda batch=parallel: asyncio.gather(
+                                *(self._execute_tool(item[3]) for item in batch),
+                                return_exceptions=True,
+                            ),
+                        )
+                    except TimeoutError:
+                        deadline_exhausted = True
+                        results = [_timeout_tool_result() for _ in parallel]
+                    for raised in results:
+                        if isinstance(raised, BaseException):
+                            raise raised
+                    for (call_id, name, arguments, _), raw_result in zip(
+                        parallel, results, strict=True
+                    ):
+                        tool_result, tool_images = _extract_images(raw_result)
+                        if tool_images:
+                            round_images.append((name, tool_images))
+                        record = AgentToolCallRecord(
+                            id=call_id,
+                            name=name,
+                            arguments=arguments,
+                            ok=bool(tool_result.get("ok")),
+                            summary=_summary(tool_result),
+                            result=tool_result,
+                        )
+                        records.append(record)
+                        yield AgentEvent(
+                            type="tool_call_finished",
+                            run_id=run_id,
+                            thread_id=thread_id,
+                            tool_call_id=call_id,
+                            tool_name=name,
+                            arguments=arguments,
+                            result=tool_result,
+                        )
+                        history.append(
+                            AgentMessage(
+                                role="tool",
+                                tool_call_id=call_id,
+                                name=name,
+                                text=_tool_text(tool_result, self.limits.max_tool_result_chars),
+                            )
+                        )
+                    for name, tool_images in round_images:
+                        history.append(
+                            AgentMessage(
+                                role="user",
+                                text=f"[image content from {name}]",
+                                images=tool_images,
+                            )
+                        )
+                    await self.thread_store.save(thread_id, history)
+                    if deadline_exhausted:
+                        raise TimeoutError("agent run exceeded its timeout")
+                    continue
                 for index, raw_call in enumerate(calls):
                     call_id = str(raw_call.get("id") or f"call-{round_index}-{index}")
                     name = str(raw_call.get("name") or "")
@@ -408,6 +584,9 @@ class Agent:
                                 deadline_exhausted = True
                                 tool_result = _timeout_tool_result()
 
+                    tool_result, tool_images = _extract_images(tool_result)
+                    if tool_images:
+                        round_images.append((name, tool_images))
                     record = AgentToolCallRecord(
                         id=call_id,
                         name=name,
@@ -434,6 +613,14 @@ class Agent:
                             text=_tool_text(tool_result, self.limits.max_tool_result_chars),
                         )
                     )
+                for name, tool_images in round_images:
+                    history.append(
+                        AgentMessage(
+                            role="user",
+                            text=f"[image content from {name}]",
+                            images=tool_images,
+                        )
+                    )
                 await self.thread_store.save(thread_id, history)
                 if deadline_exhausted:
                     raise TimeoutError("agent run exceeded its timeout")
@@ -456,6 +643,43 @@ class Agent:
                 thread_id=thread_id,
                 text=f"agent dependency failed with {type(exc).__name__}",
             )
+
+    def _parallel_batch(
+        self, calls: list[dict[str, Any]], round_index: int
+    ) -> list[tuple[str, str, dict[str, Any], ToolCall]] | None:
+        """The round's calls prepared for concurrent execution, or None.
+
+        Only rounds where every call parses, resolves, is read-only, and needs
+        no approval qualify; anything else takes the sequential path with its
+        budget, approval, and error handling.
+        """
+        if not self.limits.parallel_read_only or len(calls) < 2:
+            return None
+        batch: list[tuple[str, str, dict[str, Any], ToolCall]] = []
+        for index, raw_call in enumerate(calls):
+            call_id = str(raw_call.get("id") or f"call-{round_index}-{index}")
+            name = str(raw_call.get("name") or "")
+            raw_arguments = raw_call.get("arguments") or "{}"
+            try:
+                arguments = (
+                    json.loads(raw_arguments)
+                    if isinstance(raw_arguments, str)
+                    else dict(raw_arguments)
+                )
+                if not isinstance(arguments, dict):
+                    return None
+            except (TypeError, ValueError, json.JSONDecodeError):
+                return None
+            try:
+                definition = self.tools.require(name)
+            except KeyError:
+                return None
+            if definition.requires_approval:
+                return None
+            if definition.annotations.get("readOnlyHint") is not True:
+                return None
+            batch.append((call_id, name, arguments, ToolCall(id=call_id, name=name, arguments=arguments)))
+        return batch
 
     async def _execute_tool(self, call: ToolCall) -> dict[str, Any]:
         async def terminal(next_call: ToolCall) -> dict[str, Any]:

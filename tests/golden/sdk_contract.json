@@ -180,6 +180,7 @@
     "Agent",
     "AgentEvent",
     "AgentEventType",
+    "AgentImage",
     "AgentLimits",
     "AgentMessage",
     "AgentModel",
@@ -306,6 +307,18 @@
             "default": "None",
             "kind": "KEYWORD_ONLY",
             "name": "options"
+          },
+          {
+            "annotation": "type[BaseModel] | None",
+            "default": "None",
+            "kind": "KEYWORD_ONLY",
+            "name": "response_model"
+          },
+          {
+            "annotation": "Sequence[AgentImage | Mapping[str, str]] | None",
+            "default": "None",
+            "kind": "KEYWORD_ONLY",
+            "name": "images"
           }
         ],
         "returns": "AgentRunResult"
@@ -330,6 +343,12 @@
             "default": "None",
             "kind": "KEYWORD_ONLY",
             "name": "options"
+          },
+          {
+            "annotation": "Sequence[AgentImage | Mapping[str, str]] | None",
+            "default": "None",
+            "kind": "KEYWORD_ONLY",
+            "name": "images"
           }
         ],
         "returns": "AsyncIterator[AgentEvent]"
@@ -774,6 +793,12 @@
             "default": "None",
             "kind": "KEYWORD_ONLY",
             "name": "settings"
+          },
+          {
+            "annotation": "str | Path | None",
+            "default": "None",
+            "kind": "KEYWORD_ONLY",
+            "name": "project_dir"
           }
         ],
         "returns": "AsyncWorkbench"
@@ -906,6 +931,24 @@
       "info": {
         "async": true,
         "parameters": [],
+        "returns": "dict[str, Any]"
+      },
+      "ingest_docs": {
+        "async": true,
+        "parameters": [
+          {
+            "annotation": "Sequence[str | Path]",
+            "kind": "POSITIONAL_OR_KEYWORD",
+            "name": "paths",
+            "required": true
+          },
+          {
+            "annotation": "bool",
+            "default": "False",
+            "kind": "KEYWORD_ONLY",
+            "name": "replace"
+          }
+        ],
         "returns": "dict[str, Any]"
       },
       "job": {
@@ -2392,6 +2435,12 @@
             "default": "None",
             "kind": "KEYWORD_ONLY",
             "name": "settings"
+          },
+          {
+            "annotation": "str | Path | None",
+            "default": "None",
+            "kind": "KEYWORD_ONLY",
+            "name": "project_dir"
           }
         ],
         "returns": "LocalRuntime"
@@ -2732,6 +2781,11 @@
           }
         ],
         "returns": "dict[str, Any]"
+      },
+      "describe": {
+        "async": false,
+        "parameters": [],
+        "returns": "str"
       },
       "exclude": {
         "async": false,
@@ -3313,6 +3367,24 @@
         "parameters": [],
         "returns": "dict[str, Any]"
       },
+      "ingest_docs": {
+        "async": false,
+        "parameters": [
+          {
+            "annotation": "Sequence[str | Path]",
+            "kind": "POSITIONAL_OR_KEYWORD",
+            "name": "paths",
+            "required": true
+          },
+          {
+            "annotation": "bool",
+            "default": "False",
+            "kind": "KEYWORD_ONLY",
+            "name": "replace"
+          }
+        ],
+        "returns": "dict[str, Any]"
+      },
       "job": {
         "async": false,
         "parameters": [
@@ -3386,6 +3458,12 @@
             "default": "None",
             "kind": "KEYWORD_ONLY",
             "name": "settings"
+          },
+          {
+            "annotation": "str | Path | None",
+            "default": "None",
+            "kind": "KEYWORD_ONLY",
+            "name": "project_dir"
           }
         ],
         "returns": "Workbench"
@@ -4385,9 +4463,38 @@
   "models": {
     "AgentEvent": {
       "$defs": {
+        "AgentImage": {
+          "description": "One image a message carries, as base64 without a data: prefix.",
+          "properties": {
+            "data": {
+              "minLength": 1,
+              "title": "Data",
+              "type": "string"
+            },
+            "media_type": {
+              "pattern": "^image/(png|jpeg|gif|webp)$",
+              "title": "Media Type",
+              "type": "string"
+            }
+          },
+          "required": [
+            "media_type",
+            "data"
+          ],
+          "title": "AgentImage",
+          "type": "object"
+        },
         "AgentMessage": {
           "description": "Provider-neutral conversation message, including tool round state.",
           "properties": {
+            "images": {
+              "default": [],
+              "items": {
+                "$ref": "#/$defs/AgentImage"
+              },
+              "title": "Images",
+              "type": "array"
+            },
             "name": {
               "anyOf": [
                 {
@@ -4444,6 +4551,10 @@
         },
         "AgentRunResult": {
           "properties": {
+            "data": {
+              "default": null,
+              "title": "Data"
+            },
             "error": {
               "anyOf": [
                 {
@@ -4789,6 +4900,27 @@
       "title": "AgentEvent",
       "type": "object"
     },
+    "AgentImage": {
+      "description": "One image a message carries, as base64 without a data: prefix.",
+      "properties": {
+        "data": {
+          "minLength": 1,
+          "title": "Data",
+          "type": "string"
+        },
+        "media_type": {
+          "pattern": "^image/(png|jpeg|gif|webp)$",
+          "title": "Media Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "media_type",
+        "data"
+      ],
+      "title": "AgentImage",
+      "type": "object"
+    },
     "AgentLimits": {
       "description": "Hard limits for one run.",
       "properties": {
@@ -4813,6 +4945,11 @@
           "title": "Max Tool Rounds",
           "type": "integer"
         },
+        "parallel_read_only": {
+          "default": true,
+          "title": "Parallel Read Only",
+          "type": "boolean"
+        },
         "timeout_s": {
           "default": 600.0,
           "exclusiveMinimum": 0,
@@ -4825,8 +4962,39 @@
       "type": "object"
     },
     "AgentMessage": {
+      "$defs": {
+        "AgentImage": {
+          "description": "One image a message carries, as base64 without a data: prefix.",
+          "properties": {
+            "data": {
+              "minLength": 1,
+              "title": "Data",
+              "type": "string"
+            },
+            "media_type": {
+              "pattern": "^image/(png|jpeg|gif|webp)$",
+              "title": "Media Type",
+              "type": "string"
+            }
+          },
+          "required": [
+            "media_type",
+            "data"
+          ],
+          "title": "AgentImage",
+          "type": "object"
+        }
+      },
       "description": "Provider-neutral conversation message, including tool round state.",
       "properties": {
+        "images": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/AgentImage"
+          },
+          "title": "Images",
+          "type": "array"
+        },
         "name": {
           "anyOf": [
             {
@@ -4883,9 +5051,38 @@
     },
     "AgentRunResult": {
       "$defs": {
+        "AgentImage": {
+          "description": "One image a message carries, as base64 without a data: prefix.",
+          "properties": {
+            "data": {
+              "minLength": 1,
+              "title": "Data",
+              "type": "string"
+            },
+            "media_type": {
+              "pattern": "^image/(png|jpeg|gif|webp)$",
+              "title": "Media Type",
+              "type": "string"
+            }
+          },
+          "required": [
+            "media_type",
+            "data"
+          ],
+          "title": "AgentImage",
+          "type": "object"
+        },
         "AgentMessage": {
           "description": "Provider-neutral conversation message, including tool round state.",
           "properties": {
+            "images": {
+              "default": [],
+              "items": {
+                "$ref": "#/$defs/AgentImage"
+              },
+              "title": "Images",
+              "type": "array"
+            },
             "name": {
               "anyOf": [
                 {
@@ -5012,6 +5209,10 @@
         }
       },
       "properties": {
+        "data": {
+          "default": null,
+          "title": "Data"
+        },
         "error": {
           "anyOf": [
             {

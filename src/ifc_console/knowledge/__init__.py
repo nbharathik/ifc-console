@@ -18,7 +18,18 @@ from ifc_console.knowledge.store import SCHEMA_VERSION, Store, build
 
 log = logging.getLogger("ifc-console.knowledge")
 
-__all__ = ["KINDS", "KnowledgeBase", "Record"]
+# The corpus surface extensions may build on: Record is the one shape every
+# corpus produces, build() writes an index from any iterable of them, Store
+# reads one back, and ProjectKnowledge is the per-project reference wiring.
+__all__ = ["KINDS", "KnowledgeBase", "ProjectKnowledge", "Record", "Store", "build"]
+
+
+def __getattr__(name: str):
+    if name == "ProjectKnowledge":
+        from ifc_console.knowledge.project import ProjectKnowledge
+
+        return ProjectKnowledge
+    raise AttributeError(name)
 
 
 def _ifcopenshell_version() -> str:

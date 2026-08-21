@@ -38,6 +38,9 @@ _TOKEN_SPLIT = re.compile(r"[^0-9a-zA-Z]+")
 _REVISION_RE = re.compile(r"(?:^|[^a-z])(?:r|rev|v)[\s_-]?(\d{1,3})(?:$|[^0-9])", re.IGNORECASE)
 _DATE_RE = re.compile(r"(20\d{2})[-_]?(\d{2})[-_]?(\d{2})")
 
+# Default-listing order for what a file opens as; lower comes first.
+_OPENS_PRIORITY = {"model": 0, "spec": 1, "issues": 2, "table": 3, "document": 4}
+
 
 def _tokens(stem: str) -> list[str]:
     return [t for t in _TOKEN_SPLIT.split(stem.lower()) if t]
@@ -302,7 +305,10 @@ class WorkspaceIndex:
         """Ranked candidates plus an ambiguity flag. Opens nothing."""
         pool = self.by_kind(kinds)
         if not query or not query.strip():
+            # BIM data outranks documents: a folder full of notes and manuals
+            # must never bury the models in the default listing.
             ranked = sorted(pool, key=lambda e: e.mtime, reverse=True)
+            ranked.sort(key=lambda e: _OPENS_PRIORITY.get(e.opens_as, 9))
             return ranked[:limit], False
         parts = [p for p in _tokens(query) if p]
         scored: list[tuple[float, FileEntry]] = []

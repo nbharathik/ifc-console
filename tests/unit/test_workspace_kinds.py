@@ -66,8 +66,8 @@ def test_zip_members_decide_ifczip_and_bcf(tmp_path: Path, minimal_ifc4_path: Pa
 
 
 def test_unknown_and_unreadable_files_are_not_kinds(tmp_path: Path) -> None:
-    plain = tmp_path / "notes.md"
-    plain.write_text("# notes", encoding="utf-8")
+    plain = tmp_path / "notes.xyz"
+    plain.write_text("no recognized kind", encoding="utf-8")
     assert detect_kind(plain) is None
     assert detect_kind(tmp_path / "missing.ifc") == "ifc"  # extension only, no content
     empty = tmp_path / "empty.ids"

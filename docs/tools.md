@@ -65,12 +65,15 @@ The knowledge index is local and built from the installed IfcOpenShell package.
 
 | tool | use |
 | ---- | --- |
-| `search_ifc_knowledge` | search entities, property sets, properties, types, APIs, and recipes |
+| `search_ifc_knowledge` | search entities, property sets, properties, types, APIs, recipes, and ingested project documents |
 | `get_knowledge_record` | read one result by its returned key |
 | `get_api_docs` | get an exact `ifcopenshell.api` signature or search API names |
+| `get_measurement_recipe` | the project's measurement method for one class and property, with its citation |
 
-`search_ifc_knowledge` accepts plain words, an optional kind and schema, and a
-result limit. See [Knowledge index](knowledge.md).
+`search_ifc_knowledge` accepts plain words, an optional kind and schema, a
+result limit, and a `corpus` (`builtin`, `project`, or `all`). See
+[Knowledge index](knowledge.md) for the project document corpus and
+[Extensions](extensions.md#measurement-recipes) for recipes.
 
 ## Analysis
 
@@ -78,8 +81,11 @@ result limit. See [Knowledge index](knowledge.md).
 | ---- | ---------- | ------ |
 | `validate_model` | `express_rules=false`, `max_issues=200` | schema validity and grouped issues |
 | `validate_ids` | IDS path, failure limit | buildingSMART IDS results; needs the validation extra |
-| `compute_quantities` | selector, grouping, quantity names | stored `Qto_*` totals in model units |
+| `compute_quantities` | selector, grouping, quantity names, `source` | stored `Qto_*` totals in model units; `source="derived"` fills missing values from geometry |
 | `detect_clashes` | two selectors, tolerance, precision, optional model IDs | overlap or clearance pairs |
+| `get_element_geometry` | selector or GlobalIds | per-element mesh geometry in SI metres: bounding box, placement-axis extents, footprint, volume, confidence |
+| `measure_elements` | selector or GlobalIds, method, method params | one metric per element by an explicit method (`stored_qto`, `layer_sum`, `geometry_extent`), in file units and SI |
+| `measure_distance` | two selectors or GlobalId lists | centroid distance, bounding-box gap, and closest-surface distance of the nearest pair |
 | `get_georeferencing` | none | CRS, map conversion, and north directions |
 | `export_csv` | selector, path, fields, properties | audited CSV report inside an allowed directory |
 
@@ -181,6 +187,7 @@ is connected.
 | tool | use |
 | ---- | --- |
 | `get_viewer_selection` | read the user's selected elements |
+| `get_viewer_measurements` | read the distances the user measured with the M tool |
 | `highlight_elements` | color, isolate, clear, or frame up to 500 elements |
 | `apply_color_theme` | paint labeled groups and show a legend |
 | `get_viewer_screenshot` | capture a preset or current view as JPEG or PNG |

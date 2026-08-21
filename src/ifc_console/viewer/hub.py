@@ -43,6 +43,39 @@ def _utcnow() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+_MAX_MEASUREMENTS = 100
+
+
+def _clean_measurements(items: Any) -> list[dict]:
+    """Validated user measurements from a client frame; anything odd drops."""
+
+    def triple(value: Any) -> list[float] | None:
+        if not isinstance(value, list) or len(value) != 3:
+            return None
+        try:
+            return [round(float(v), 6) for v in value]
+        except (TypeError, ValueError):
+            return None
+
+    cleaned: list[dict] = []
+    if not isinstance(items, list):
+        return cleaned
+    for item in items[:_MAX_MEASUREMENTS]:
+        if not isinstance(item, dict):
+            continue
+        start = triple(item.get("from"))
+        end = triple(item.get("to"))
+        delta = triple(item.get("delta"))
+        distance = item.get("distance")
+        if start is None or end is None or not isinstance(distance, (int, float)):
+            continue
+        entry = {"from": start, "to": end, "distance": round(float(distance), 6)}
+        if delta is not None:
+            entry["delta"] = delta
+        cleaned.append(entry)
+    return cleaned
+
+
 class ViewerClient:
     """One connected browser tab."""
 
@@ -61,6 +94,9 @@ class ViewerClient:
         self.view_model_id: str | None = None
         self.selected_at: str | None = None
         self.selection_order = 0
+        self.measurements: list[dict] = []
+        self.measured_at: str | None = None
+        self.measurement_order = 0
 
     def touch(self) -> None:
         self.last_active = next(self._activity)
@@ -182,6 +218,18 @@ class ViewerHub:
                 hint + " Meanwhile query_elements/get_element give the same information as text.",
             )
 
+    def latest_measurements(self) -> tuple[list[dict], str | None]:
+        """The most recent connected tab's measurements, with their timestamp."""
+        newest: ViewerClient | None = None
+        for client in self.clients:
+            if client.measured_at is None:
+                continue
+            if newest is None or client.measurement_order > newest.measurement_order:
+                newest = client
+        if newest is None:
+            return [], None
+        return list(newest.measurements), newest.measured_at
+
     # -- state payloads ----------------------------------------------------------
     def model_etag(self, session: Any = None) -> str | None:
         s = session or self.core.session
@@ -276,6 +324,11 @@ class ViewerHub:
             self.core.events.emit(
                 "viewer_selection", guids=guids, count=len(guids), model_id=model_id
             )
+        elif ftype == "measurements":
+            client.measurements = _clean_measurements(frame.get("items"))
+            client.measured_at = _utcnow()
+            client.measurement_order = next(self._selection_updates)
+            self.core.events.emit("viewer_measurements", count=len(client.measurements))
         elif ftype == "screenshot_response":
             pending = self._shots.get(str(frame.get("id")))
             if pending is not None:
