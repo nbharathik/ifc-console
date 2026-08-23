@@ -78,6 +78,42 @@
   letter-spacing: 0.04em;
   text-transform: uppercase;
 }
+/* the agent picker takes the title's place when packs are installed */
+.chat-agent {
+  flex: none;
+  max-width: 46%;
+  padding: 2px 4px;
+  color: var(--chat-dim);
+  background: transparent;
+  border: 1px solid transparent;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+.chat-agent:hover, .chat-agent:focus-visible { border-color: var(--chat-line); }
+.chat-agent option { text-transform: none; letter-spacing: normal; }
+
+.chat-attach {
+  flex: none;
+  width: 26px;
+  height: 26px;
+  min-height: 26px;
+  padding: 0;
+  color: var(--chat-dim);
+}
+.chat-attach:hover { color: var(--chat-text); }
+
+.chat-note {
+  margin: 6px 0;
+  padding-left: 9px;
+  border-left: 2px solid var(--chat-line);
+  color: var(--chat-dim);
+  font-size: 12px;
+}
+.chat-note.bad { border-left-color: var(--chat-bad); color: var(--chat-bad); }
 .chat-spacer { flex: 1; }
 .chat-dot {
   flex: none;
@@ -142,6 +178,70 @@
 .chat-route.blocked { color: var(--chat-bad); }
 .chat-route.off { color: var(--chat-quiet); }
 .chat-file { display: none; max-width: 20ch; overflow: hidden; text-overflow: ellipsis; }
+
+/* A compact evidence ledger: the measurement workflow should always make it
+ * visible which local references can support the answer. */
+.chat-evidence {
+  flex: none;
+  padding: 7px 10px 8px 12px;
+  background:
+    linear-gradient(90deg, var(--chat-wash), transparent 68%),
+    var(--chat-deep);
+  border-bottom: 1px solid var(--chat-line);
+}
+.chat-evidence[hidden] { display: none; }
+.chat-evidence-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.chat-evidence-title {
+  flex: 1;
+  min-width: 0;
+  color: var(--chat-text);
+  font-family: var(--chat-mono);
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 0.035em;
+  text-transform: uppercase;
+}
+.chat-evidence-add {
+  min-height: 20px;
+  padding: 1px 5px;
+  color: var(--chat-accent-bright);
+  border: 1px solid var(--chat-accent-line);
+  font: inherit;
+  font-size: 10px;
+}
+.chat-evidence-add:hover { color: var(--chat-text); border-color: var(--chat-accent); }
+.chat-evidence-list {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  margin-top: 5px;
+  overflow: hidden;
+  color: var(--chat-dim);
+  font-size: 10px;
+  white-space: nowrap;
+}
+.chat-evidence-counts { flex: none; color: var(--chat-quiet); }
+.chat-evidence-file {
+  min-width: 0;
+  max-width: 16ch;
+  padding: 1px 5px;
+  overflow: hidden;
+  border: 1px solid var(--chat-line);
+  text-overflow: ellipsis;
+}
+.chat-evidence-file.indexed { border-left-color: var(--chat-ok); }
+.chat-evidence-file.pending { border-left-color: var(--chat-warn); }
+.chat-evidence-more { color: var(--chat-accent-bright); }
+.chat-evidence-empty, .chat-evidence-problem {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.chat-evidence-problem { color: var(--chat-warn); }
 .chat-mode {
   display: inline-flex;
   align-items: center;

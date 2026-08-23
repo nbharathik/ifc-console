@@ -134,7 +134,7 @@ class KnowledgeSettings(BaseModel):
 
 
 class PluginSettings(BaseModel):
-    """Trusted Python extensions. Disabled and deny-by-default."""
+    """Trusted operation plugins. Disabled and deny-by-default."""
 
     enabled: bool = False
     allow: list[str] = Field(default_factory=list)

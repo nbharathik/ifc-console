@@ -16,9 +16,11 @@ uv run python examples/sdk/model_report.py model.ifc
 The script opens no server or browser. It uses typed validation results and
 prints stable JSON that a CI job or another application can consume.
 
-For a complete agent application with scoped tools, streaming, threads,
-approvals, company functions, and an optional viewer, see
-[`agent_chat/README.md`](agent_chat/README.md).
+For the complete browser agent experience, install `ifc-console[viewer]`, run
+IFC Console, and open `/agent`. The production panel now lives in the main
+package instead of being duplicated as an SDK example. Its implementation uses
+the same public `Agent`, `Toolset`, `ProviderModel`, and runtime APIs shown by
+the terminal quickstart.
 
 For a focused LangChain workflow that resolves elements by name, GlobalId,
 selector, or viewer selection and previews a company-controlled thickness

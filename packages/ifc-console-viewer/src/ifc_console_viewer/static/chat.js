@@ -125,6 +125,10 @@ const svg = (body, size = 16) =>
 
 const I = {
   send: svg('<path d="M8 13.2V3.4M8 3.4 4.2 7.2M8 3.4l3.8 3.8"/>', 15),
+  clip: svg(
+    '<path d="M10.8 6.2 6.9 10a1.6 1.6 0 0 1-2.3-2.3l4.6-4.6a2.6 2.6 0 0 1 3.7 3.7l-4.9 4.9a3.7 3.7 0 0 1-5.2-5.2l4-4"/>',
+    15,
+  ),
   stop: '<svg viewBox="0 0 16 16" width="15" height="15" fill="currentColor" aria-hidden="true"><rect x="5" y="5" width="6" height="6"/></svg>',
   gear: svg(
     '<circle cx="8" cy="8" r="4.6"/><circle cx="8" cy="8" r="1.7"/>' +
@@ -143,7 +147,8 @@ const I = {
 // -------------------------------------------------------------------- markup
 const TEMPLATE = `
 <header class="chat-head">
-  <span class="chat-title">Assistant</span>
+  <span class="chat-title" data-role="title">Assistant</span>
+  <select class="chat-agent" data-role="agent" hidden aria-label="Assistant agent"></select>
   <span class="chat-dot" data-role="dot" role="status" aria-live="polite"
         aria-label="Assistant unavailable" title=""></span>
   <span class="chat-spacer"></span>
@@ -163,14 +168,26 @@ const TEMPLATE = `
   <span class="chat-context-meta" data-role="context"></span>
 </button>
 
+<section class="chat-evidence" data-role="evidence" hidden aria-label="Agent reference files">
+  <div class="chat-evidence-head">
+    <span class="chat-evidence-title" data-role="file-summary">Project references</span>
+    <button class="chat-evidence-add" data-act="attach" type="button">Add files</button>
+  </div>
+  <div class="chat-evidence-list" data-role="file-list"></div>
+</section>
+
 <div class="chat-log" data-role="log" role="log" aria-label="Conversation"
      aria-live="off"></div>
 
 <footer class="chat-composer">
   <div class="chat-input-wrap">
     <textarea data-role="input" rows="1" placeholder="Ask about the model..." aria-label="Message"></textarea>
+    <button class="chat-attach" data-act="attach" hidden title="Add a document to the project knowledge"
+            aria-label="Add a document to the project knowledge">${I.clip}</button>
     <button class="chat-send" data-act="send" title="Send" aria-label="Send message">${I.send}</button>
   </div>
+  <input type="file" data-role="file" hidden multiple
+         accept=".md,.markdown,.txt,.pdf,.png,.jpg,.jpeg" aria-hidden="true">
   <div class="chat-hint" data-role="status" role="status" aria-live="polite"></div>
   <div class="chat-sr" data-role="announce" role="status" aria-live="polite"></div>
 </footer>
@@ -271,6 +288,27 @@ export function mountChat(root, options = {}) {
   let localOnly = false;
   let sessionStatus = {};
   let settingsReturnFocus = null;
+  // Agent packs: server-hosted specialists behind the same panel. Plain chat
+  // is agent "" and keeps its stateless turns; a pack keeps its thread on the
+  // console, so we only remember the thread id here.
+  let agents = [];
+  let currentAgent = "";
+  let referenceFiles = [];
+  let agentThreads = {};
+  try {
+    agentThreads = JSON.parse(sessionStorage.getItem("ifc-console-agent-threads") || "{}");
+    if (!isPlainObject(agentThreads)) agentThreads = {};
+  } catch {
+    agentThreads = {};
+  }
+  const saveThreads = () => {
+    try {
+      sessionStorage.setItem("ifc-console-agent-threads", JSON.stringify(agentThreads));
+    } catch {
+      /* private mode: threads just will not survive a reload */
+    }
+  };
+  const pack = () => agents.find((agent) => agent.name === currentAgent) || null;
   const settings = loadSettings();
 
   if (options.onClose) {
@@ -299,6 +337,7 @@ export function mountChat(root, options = {}) {
       tools: saved.tools !== false,
       temp: saved.temp ?? "",
       maxtok: saved.maxtok ?? "",
+      agent: typeof saved.agent === "string" ? saved.agent : "",
     };
   }
 
@@ -319,6 +358,7 @@ export function mountChat(root, options = {}) {
     settings.tools = el("tools").checked;
     settings.temp = el("temp").value;
     settings.maxtok = el("maxtok").value;
+    settings.agent = currentAgent;
     try {
       localStorage.setItem(STORE, JSON.stringify(settings));
     } catch {
@@ -406,6 +446,11 @@ export function mountChat(root, options = {}) {
       "aria-label",
       ready ? "Assistant ready" : "Assistant needs an AI model or API key",
     );
+    const usesFiles = Boolean(pack() && (pack().features || []).includes("files"));
+    for (const attach of root.querySelectorAll('[data-act="attach"]')) {
+      attach.hidden = !usesFiles;
+    }
+    el("evidence").hidden = !usesFiles;
     send.disabled = !ready && !busy;
     if (!turns.length && !busy) empty();
     if (p) {
@@ -469,6 +514,175 @@ export function mountChat(root, options = {}) {
     if (hasKey(provider())) loadModels({ quiet: true });
     // no model yet is not an error worth a modal on open: the empty state
     // offers the button, and the dialog would cover the panel every time.
+  }
+
+  async function loadAgents() {
+    let payload;
+    try {
+      const response = await api("/api/agents");
+      if (!response.ok) return;
+      payload = await response.json();
+    } catch {
+      return;
+    }
+    agents = Array.isArray(payload.agents) ? payload.agents : [];
+    const select = el("agent");
+    const title = el("title");
+    if (!agents.length) {
+      select.hidden = true;
+      title.hidden = false;
+      if (currentAgent) switchAgent("");
+      renderFiles();
+      return;
+    }
+    select.innerHTML = "";
+    const add = (value, label) => {
+      const option = document.createElement("option");
+      option.value = value;
+      option.textContent = label;
+      select.appendChild(option);
+    };
+    add("", "Chat");
+    for (const agent of agents) add(agent.name, agent.title);
+    const wanted = agents.some((a) => a.name === settings.agent) ? settings.agent : "";
+    select.value = wanted;
+    select.hidden = false;
+    title.hidden = true;
+    if (wanted !== currentAgent) switchAgent(wanted);
+    else {
+      render();
+      loadFiles();
+    }
+  }
+
+  function switchAgent(name) {
+    if (busy) aborter?.abort();
+    saveHistory();
+    currentAgent = name;
+    el("agent").value = name;
+    turns = [];
+    log.innerHTML = "";
+    const restored = restoreHistory();
+    if (!restored) empty();
+    saveSettings();
+    loadFiles();
+    input.focus();
+  }
+
+  function formatBytes(size) {
+    if (size < 1024) return `${size} B`;
+    if (size < 1024 * 1024) return `${Math.round(size / 1024)} KB`;
+    return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+  }
+
+  function renderFiles(problem = "") {
+    const active = pack();
+    const usesFiles = Boolean(active && (active.features || []).includes("files"));
+    const evidence = el("evidence");
+    evidence.hidden = !usesFiles;
+    if (!usesFiles) return;
+    const images = referenceFiles.filter((file) => file.media === "image").length;
+    const documents = referenceFiles.length - images;
+    el("file-summary").textContent = referenceFiles.length
+      ? `${referenceFiles.length} project reference${referenceFiles.length === 1 ? "" : "s"}`
+      : "No project references yet";
+    const list = el("file-list");
+    list.innerHTML = "";
+    if (problem) {
+      const warning = document.createElement("span");
+      warning.className = "chat-evidence-problem";
+      warning.textContent = problem;
+      list.appendChild(warning);
+      return;
+    }
+    if (!referenceFiles.length) {
+      const empty = document.createElement("span");
+      empty.className = "chat-evidence-empty";
+      empty.textContent = "Add a manual, specification, drawing, or site image.";
+      list.appendChild(empty);
+      return;
+    }
+    const counts = document.createElement("span");
+    counts.className = "chat-evidence-counts";
+    counts.textContent = `${documents} doc${documents === 1 ? "" : "s"} · ${images} image${images === 1 ? "" : "s"}`;
+    list.appendChild(counts);
+    for (const file of referenceFiles.slice(0, 4)) {
+      const chip = document.createElement("span");
+      chip.className = `chat-evidence-file ${file.indexed ? "indexed" : "pending"}`;
+      chip.textContent = file.name;
+      chip.title = `${file.path} · ${formatBytes(file.size_bytes)} · ${file.indexed ? "indexed" : "not indexed"}`;
+      list.appendChild(chip);
+    }
+    if (referenceFiles.length > 4) {
+      const more = document.createElement("span");
+      more.className = "chat-evidence-more";
+      more.textContent = `+${referenceFiles.length - 4}`;
+      list.appendChild(more);
+    }
+  }
+
+  async function loadFiles() {
+    const agent = currentAgent;
+    const active = pack();
+    if (!agent || !(active?.features || []).includes("files")) {
+      referenceFiles = [];
+      renderFiles();
+      return;
+    }
+    try {
+      const query = `agent=${encodeURIComponent(agent)}`;
+      const response = await api(`/api/agents/files?${query}`);
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
+      if (agent !== currentAgent) return;
+      referenceFiles = Array.isArray(payload.files) ? payload.files : [];
+      renderFiles(payload.problem || "");
+    } catch (exc) {
+      if (agent !== currentAgent) return;
+      referenceFiles = [];
+      renderFiles(exc.message || String(exc));
+    }
+  }
+
+  function note(text, bad = false) {
+    if (!turns.length && log.querySelector(".chat-empty")) log.innerHTML = "";
+    const line = document.createElement("div");
+    line.className = "chat-note" + (bad ? " bad" : "");
+    line.textContent = text;
+    log.appendChild(line);
+    scroll();
+  }
+
+  async function uploadFiles(files) {
+    const agent = currentAgent;
+    for (const file of files) {
+      note(`uploading ${file.name}...`);
+      try {
+        const query = `agent=${encodeURIComponent(agent)}&name=${encodeURIComponent(file.name)}`;
+        const response = await api(`/api/agents/upload?${query}`, {
+          method: "POST",
+          body: file,
+        });
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
+        if (payload.indexed) {
+          note(
+            `${file.name}: saved and indexed, ${payload.records} records across ` +
+              `${payload.documents} project file(s)` +
+              (payload.instruction_like_chunks
+                ? "; instruction-shaped text was flagged as data"
+                : ""),
+          );
+        } else {
+          note(`${file.name}: saved locally but not indexed — ${payload.error}`, true);
+        }
+        referenceFiles = Array.isArray(payload.files) ? payload.files : referenceFiles;
+        renderFiles();
+      } catch (exc) {
+        note(`${file.name}: ${exc.message || exc}`, true);
+      }
+    }
+    await loadFiles();
   }
 
   function setModelOptions(names, selected) {
@@ -554,10 +768,15 @@ export function mountChat(root, options = {}) {
   // line and leave the user to find it; the empty state now offers the button.
   function empty() {
     if (turns.length) return;
+    const active = pack();
+    const lead = active
+      ? active.description
+      : "Questions are answered from the file open in the console.";
+    const starters = active && active.starters?.length ? active.starters : STARTERS;
     const body = isReady()
-      ? `<p class="chat-empty-lead">Questions are answered from the file open in the console.</p>
+      ? `<p class="chat-empty-lead">${esc(lead)}</p>
          <div class="chat-starters">
-           ${STARTERS.map((s) => `<button class="chat-starter">${esc(s)}</button>`).join("")}
+           ${starters.map((s) => `<button class="chat-starter">${esc(s)}</button>`).join("")}
          </div>`
       : `<p class="chat-empty-lead">Nothing answers yet: choose an AI provider and model, and add a key if the provider needs one.</p>
          <div class="chat-setup">
@@ -655,9 +874,12 @@ export function mountChat(root, options = {}) {
   }
 
   // ------------------------------------------------------------------ history
+  // one transcript per assistant: plain chat and each agent keep their own
+  const historySlot = () => (currentAgent ? `${HISTORY}:${currentAgent}` : HISTORY);
+
   function saveHistory() {
     try {
-      sessionStorage.setItem(HISTORY, JSON.stringify(turns.slice(-HISTORY_LIMIT)));
+      sessionStorage.setItem(historySlot(), JSON.stringify(turns.slice(-HISTORY_LIMIT)));
     } catch {
       /* private mode or quota: the conversation just will not survive a reload */
     }
@@ -666,7 +888,7 @@ export function mountChat(root, options = {}) {
   function restoreHistory() {
     let saved = [];
     try {
-      saved = JSON.parse(sessionStorage.getItem(HISTORY) || "[]");
+      saved = JSON.parse(sessionStorage.getItem(historySlot()) || "[]");
     } catch {
       return false;
     }
@@ -746,19 +968,29 @@ export function mountChat(root, options = {}) {
     };
 
     try {
+      const shared = {
+        provider: el("provider").value,
+        model: chosenModel(),
+        base_url: el("baseurl").value.trim() || undefined,
+        api_key: el("key").value.trim() || undefined,
+        temperature: el("temp").value === "" ? undefined : parseFloat(el("temp").value),
+        max_tokens: el("maxtok").value === "" ? undefined : parseInt(el("maxtok").value, 10),
+      };
       const response = await postJSON(
-        "/api/chat/stream",
-        {
-          turns,
-          provider: el("provider").value,
-          model: chosenModel(),
-          base_url: el("baseurl").value.trim() || undefined,
-          api_key: el("key").value.trim() || undefined,
-          system: el("system").value.trim() || undefined,
-          tools: el("tools").checked,
-          temperature: el("temp").value === "" ? undefined : parseFloat(el("temp").value),
-          max_tokens: el("maxtok").value === "" ? undefined : parseInt(el("maxtok").value, 10),
-        },
+        currentAgent ? "/api/agents/stream" : "/api/chat/stream",
+        currentAgent
+          ? {
+              ...shared,
+              agent: currentAgent,
+              prompt: turns.findLast((turn) => turn.role === "user")?.text ?? "",
+              thread_id: agentThreads[currentAgent] || undefined,
+            }
+          : {
+              ...shared,
+              turns,
+              system: el("system").value.trim() || undefined,
+              tools: el("tools").checked,
+            },
         aborter.signal
       );
       if (!response.ok) throw new Error(`chat unavailable (HTTP ${response.status})`);
@@ -797,6 +1029,9 @@ export function mountChat(root, options = {}) {
               chip.querySelector(".chat-tool-state").textContent = event.summary || "";
               pending.delete(event.id);
             }
+          } else if (event.type === "thread") {
+            agentThreads[currentAgent] = event.id;
+            saveThreads();
           } else if (event.type === "usage") {
             usage = event;
           } else if (event.type === "finish") {
@@ -931,9 +1166,14 @@ export function mountChat(root, options = {}) {
     else if (action === "settings") openSettings(actionButton);
     else if (action === "close-settings") closeSettings();
     else if (action === "models") loadModels();
+    else if (action === "attach") el("file").click();
     else if (action === "clear") {
       turns = [];
-      sessionStorage.removeItem(HISTORY);
+      sessionStorage.removeItem(historySlot());
+      if (currentAgent) {
+        delete agentThreads[currentAgent];
+        saveThreads();
+      }
       log.innerHTML = "";
       empty();
       input.focus();
@@ -942,6 +1182,12 @@ export function mountChat(root, options = {}) {
       if (turns.at(-1)?.role === "assistant") turns.pop();
       run();
     }
+  });
+  el("agent").addEventListener("change", () => switchAgent(el("agent").value));
+  el("file").addEventListener("change", async () => {
+    const files = [...el("file").files];
+    el("file").value = "";
+    if (files.length && currentAgent) await uploadFiles(files);
   });
   el("model").addEventListener("change", () => {
     el("modelcustom").hidden = el("model").value !== "__custom__";
@@ -961,9 +1207,13 @@ export function mountChat(root, options = {}) {
     el(role).addEventListener("change", saveSettings);
   }
 
+  const urlAgent = new URLSearchParams(location.search).get("agent");
+  if (urlAgent) settings.agent = urlAgent;
+  currentAgent = settings.agent || "";
   if (!restoreHistory()) empty();
   refreshContext();
   loadProviders();
+  loadAgents();
   return {
     focus: () => input.focus(),
     ask: (text) => {

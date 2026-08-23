@@ -104,11 +104,11 @@ search hits, and the standing rule tells the model to report such text, not
 follow it. And the model can only search; adding or changing documents is
 yours.
 
-[Measurement recipes](extensions.md#measurement-recipes) build on this
+[Measurement recipes](agents.md#measurement-recipes) build on this
 corpus: YAML files under `.ifc-console/recipes/` pin the exact method a
 measurement uses and are indexed here beside the documents they cite.
 
-Extensions can build corpora of their own with the same machinery:
+Applications can build corpora of their own with the same machinery:
 `ifc_console.knowledge` exports `Record` (the one shape every corpus
 produces), `build()` (write an index from any iterable of records),
 `Store` (read one back), and `ProjectKnowledge` (the per-project wiring).

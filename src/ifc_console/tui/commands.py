@@ -1,4 +1,4 @@
-"""Slash-command registry for the console TUI.
+﻿"""Slash-command registry for the console TUI.
 
 Each command is a small async handler that receives the console screen and
 the raw argument string. Keeping them in a registry (instead of an if-chain)
@@ -175,10 +175,14 @@ def _console_hint(exc: ToolError) -> str:
     return _TUI_HINTS.get(exc.code, exc.hint)
 
 
-def _require_server(console: ConsoleScreen) -> bool:
-    """Browser features need the HTTP server. Say why it is missing."""
+async def _require_server(console: ConsoleScreen) -> bool:
+    """Browser features need the HTTP server. Start it, move it, or say why not."""
     core = console.core
     if core.server_running:
+        return True
+    fallback = getattr(console.app, "ensure_server_with_fallback", None)
+    # a sibling session may hold the port; the fallback finds a free one
+    if core.server_error and fallback is not None and await fallback():
         return True
     if core.server_error:
         console.print(
@@ -319,7 +323,7 @@ async def _help(console: ConsoleScreen, args: str) -> None:
         "pick, Enter selects, Esc closes"
     )
     lines.append(
-        "  a bare path to an .ifc file opens it · Up/Down recall history · "
+        "  a bare path to an .ifc file opens it Â· Up/Down recall history Â· "
         "PgUp/PgDn scroll the feed"
     )
     console.print("\n".join(lines))
@@ -428,8 +432,8 @@ async def _models(console: ConsoleScreen, _args: str) -> None:
                 f"[dim]({attachment.kind}, {used})[/dim]"
             )
     lines.append(
-        f"[dim]resident {len(core.models.sessions)}/{core.models.max_resident} · "
-        "/use <id> switches the active model · /detach <id> frees one[/dim]"
+        f"[dim]resident {len(core.models.sessions)}/{core.models.max_resident} Â· "
+        "/use <id> switches the active model Â· /detach <id> frees one[/dim]"
     )
     console.print("\n".join(lines))
 
@@ -582,7 +586,7 @@ async def _viewer(console: ConsoleScreen, args: str) -> None:
         )
         console.refresh_status()
         return
-    if not _require_server(console):
+    if not await _require_server(console):
         return
     from ifc_console.viewer import assets
 
@@ -648,7 +652,7 @@ async def _chat(console: ConsoleScreen, args: str) -> None:
         )
         return
 
-    if not _require_server(console):
+    if not await _require_server(console):
         return
     from ifc_console.viewer import assets
 
@@ -822,7 +826,7 @@ async def _status(console: ConsoleScreen, _args: str) -> None:
         lines.append("  viewer   off (/viewer to start)")
     if core.chat.enabled:
         model = core.chat.model or "no model chosen"
-        lines.append(f"  chat     on  {core.chat.provider} · {model}")
+        lines.append(f"  chat     on  {core.chat.provider} Â· {model}")
     else:
         lines.append("  chat     off (/chat to start)")
     sandbox = core.sandbox.status()
@@ -919,7 +923,7 @@ async def _model(console: ConsoleScreen, _args: str) -> None:
         rows.append(("IfcProduct (total)", len(ifc.by_type("IfcProduct"))))
         return rows
 
-    console.print("[dim]counting entities…[/dim]")
+    console.print("[dim]counting entitiesâ€¦[/dim]")
     try:
         rows = await core.session.run(job, timeout=60)
     except Exception as exc:
@@ -955,7 +959,7 @@ async def _save(console: ConsoleScreen, args: str) -> None:
         )
     ):
         return
-    console.print(f"[dim]saving {escape(target.name)}…[/dim]")
+    console.print(f"[dim]saving {escape(target.name)}â€¦[/dim]")
     try:
         result = await core.session.save(target, core.backups)
     except Exception as exc:
@@ -986,7 +990,7 @@ async def _reload(console: ConsoleScreen, _args: str) -> None:
         return
     if core.session.dirty and not await console.confirm("Reload and discard unsaved changes?"):
         return
-    console.print(f"[dim]reloading {escape(core.session.name or 'model')} from disk…[/dim]")
+    console.print(f"[dim]reloading {escape(core.session.name or 'model')} from diskâ€¦[/dim]")
     try:
         if core.session.poisoned:
             await core.session.recover()
@@ -1171,34 +1175,102 @@ async def _kb(console: ConsoleScreen, args: str) -> None:
     console.print("\n".join(lines))
 
 
-@command(
-    "extensions",
-    "/extensions [query]",
-    "browse the extension store (agents installed via `ifc-console extensions install`)",
-    "console",
-    examples=("/extensions", "/extensions measure"),
-)
-async def _extensions(console: ConsoleScreen, args: str) -> None:
-    from ifc_console import extensions as ext
+async def _agent_open(console: ConsoleScreen, name: str) -> None:
+    core = console.core
+    pack = core.agent_packs.get(name)
+    if pack is None:
+        available = ", ".join(info.name for info in core.agent_packs.active()) or "(none)"
+        console.print(
+            f"[red]no built-in agent named {escape(name)}[/red] "
+            f"[dim]available: {escape(available)}; /agent list shows everything[/dim]"
+        )
+        return
+    await _chat(console, "")
+    if core.chat.enabled:
+        head, _, fragment = core.chat_url.partition("#")
+        joiner = "&" if "?" in head else "?"
+        url = f"{head}{joiner}agent={pack.info.name}" + (f"#{fragment}" if fragment else "")
+        console.print(
+            f"[b]{escape(pack.info.title)}[/b] direct link (URL above opens plain chat): {url}"
+        )
 
-    query = _strip_quotes(args)
-    if query:
-        hits, source = await asyncio.to_thread(ext.search, query)
-    else:
-        catalog, source = await asyncio.to_thread(ext.fetch_catalog)
-        hits = catalog.extensions
-    installed = ext.InstallRecord(console.core.store.home).load()
-    lines = [f"[b]extension store[/b] [dim]({escape(source)})[/dim]"]
-    if not hits:
-        lines.append(f"  [dim]nothing found for {escape(query)}[/dim]")
-    for entry in hits:
-        mark = "[green]installed[/green]" if entry.name in installed else f"[dim]{entry.kind}[/dim]"
-        lines.append(f"  [cyan]{escape(entry.name):16}[/cyan] {mark} {escape(entry.description)}")
-        if entry.command:
-            lines.append(f"      [dim]run: {escape(entry.command)}[/dim]")
+
+async def _agent_pick(console: ConsoleScreen) -> None:
+    registry = console.core.agent_packs
+    infos = registry.active()
+    if not infos:
+        console.print("[dim]this build ships no agents[/dim]")
+        return
+    from ifc_console.tui.modals import AgentPickerModal
+
+    rows = [
+        (info.name, info.title, info.description)
+        for info in infos
+    ]
+    choice = await console.app.push_screen_wait(AgentPickerModal(rows))
+    if choice:
+        await _agent_open(console, choice)
+
+
+@command(
+    "agent",
+    "/agent [name|list|files]",
+    "pick an agent with the arrow keys and open it in the chat panel",
+    "connect",
+    examples=("/agent", "/agent measurement", "/agent files"),
+)
+async def _agent(console: ConsoleScreen, args: str) -> None:
+    core = console.core
+    parts = args.strip().lower().split()
+    registry = core.agent_packs
+
+    if parts and parts[0] == "files":
+        try:
+            summary = await asyncio.to_thread(core.agent_files.sync, core.project_knowledge)
+        except Exception as exc:
+            console.print(f"[red]reference sync failed:[/red] {escape(str(exc))}")
+            return
+        lines = [
+            "[b]agent reference files[/b]",
+            f"  [dim]{escape(summary['directory'])}[/dim]",
+        ]
+        for row in summary["files"]:
+            state = "[green]indexed[/green]" if row["indexed"] else "[yellow]not indexed[/yellow]"
+            lines.append(
+                f"  [cyan]{escape(row['name']):24}[/cyan] {state} [dim]{row['media']}[/dim]"
+            )
+        if not summary["files"]:
+            lines.append("  [dim]drop documents or images into this folder, then run /agent files[/dim]")
+        console.print("\n".join(lines))
+        return
+
+    if parts and parts[0] == "open":
+        if len(parts) > 1:
+            await _agent_open(console, parts[1])
+        else:
+            await _agent_pick(console)
+        return
+
+    if parts and parts[0] != "list":
+        await _agent_open(console, parts[0])
+        return
+
+    if not parts:
+        await _agent_pick(console)
+        return
+
+    infos = registry.installed()
+    lines = ["[b]built-in agents[/b]"]
+    if not infos:
+        lines.append("  [dim]none shipped by this build[/dim]")
+    for info in infos:
+        lines.append(
+            f"  [cyan]{escape(info.name):12}[/cyan] [green]ready[/green] "
+            f"{escape(info.description)}"
+        )
     lines.append(
-        "[dim]install with: ifc-console extensions install <name> (each agent gets "
-        "its own environment)[/dim]"
+        "[dim]/agent picks one with the arrow keys; /agent <name> opens it "
+        "directly; /agent files shows the project references[/dim]"
     )
     console.print("\n".join(lines))
 

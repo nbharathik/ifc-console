@@ -189,9 +189,11 @@ The context manager closes model and worker resources automatically.
 
 Search the offline reference with `search_knowledge()`,
 `knowledge_record()`, and `api_docs()`. Index the project's own documents
-with `ingest_docs(paths)` (markdown, text, PDF via the `[pdf]` extra) and
-search them with `search_knowledge(..., corpus="project")`; hits carry
-document and page provenance. The measurement tools, `get_element_geometry`,
+with `ingest_docs(paths)` (markdown, text, PDF via the `[pdf]` extra), list
+them with `project_documents()`, load indexed image pixels with
+`project_reference_image(path)`, and search them with
+`search_knowledge(..., corpus="project")`; hits carry document and page
+provenance. The measurement tools, `get_element_geometry`,
 `measure_elements`, `measure_distance`, and `get_measurement_recipe`, run
 through `call()` and return file units and SI side by side.
 `get_viewer_screenshot` returns its image as base64 in `data.images`, so SDK
@@ -357,9 +359,9 @@ Workbench.open(
 ```
 
 `project_dir` anchors the project folder convention: its `.ifc-console/`
-directory supplies project settings, the ingested document index, and
-measurement recipes, and the directory joins the allowed paths. It defaults
-to the working directory.
+directory supplies project settings, the ingested document index, built-in
+agent references, and measurement recipes, and the directory joins the allowed
+paths. It defaults to the working directory.
 
 Settings passed here apply only to this workbench and do not edit the user file.
 They can also be changed later with `wb.configure({...})`. In an async agent

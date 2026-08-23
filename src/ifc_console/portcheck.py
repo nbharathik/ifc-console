@@ -38,6 +38,18 @@ def classify_http(status_code: int, body: str) -> tuple[str, str]:
     return FOREIGN, f"an application that is not ifc-console (HTTP {status_code})"
 
 
+def find_free_port(start: int, tries: int = 15) -> int | None:
+    """The first bindable port after `start`, or None within the window."""
+    for candidate in range(start + 1, min(start + 1 + tries, 65536)):
+        with socket.socket() as sock:
+            try:
+                sock.bind(("127.0.0.1", candidate))
+                return candidate
+            except OSError:
+                continue
+    return None
+
+
 def port_status(port: int, token: str | None = None) -> tuple[str, str]:
     """(kind, human detail) for 127.0.0.1:<port>.
 

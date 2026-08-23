@@ -179,7 +179,7 @@ validate raises `AgentRunError`.
 `ScriptedAgentModel` plays back provider rounds (`text_round`,
 `tool_call_round` build them), `RecordingThreadStore` remembers saves, and
 `ok_envelope`/`error_envelope` shape tool results. A complete agent test
-needs a model file and no network; `packages/ifc-agent-measure/tests` shows
+needs a model file and no network; `tests/unit/test_builtin_agents.py` shows
 the pattern end to end.
 
 ## Use LangChain/LangGraph directly
@@ -295,23 +295,66 @@ validation/query graphs and delegation only when a model decision is needed.
 `examples/sdk/quickstart_agent.py` is the smallest runnable agent: it opens a
 model, selects six read tools, and streams the bundled `Agent` in a terminal.
 
-`examples/sdk/agent_chat` demonstrates streaming, durable browser threads,
-tool-call history, approvals, company functions, MCP, and the optional viewer:
+The complete browser chat is part of IFC Console itself. Install the viewer
+extra, start the Console in a project folder, and open the agent picker:
 
 ```bash
-python -m ifc_console.examples.agent_chat model.ifc \
-  --provider openai --model YOUR_MODEL_ID
+pip install "ifc-console[viewer]"
+ifc-console
+# then type /agent
 ```
 
-It is a reference, not a production identity system. Replace its local thread
-store, browser approvals, and loopback-only hosting before deployment.
+The main panel demonstrates the same public `Agent`, `Toolset`,
+`ProviderModel`, typed event, and image contracts without maintaining a second
+web-chat implementation under `examples/`.
 
 `examples/sdk/property_agent` is a separate LangChain project with its own
 `pyproject.toml` and virtual environment. It resolves elements by name,
 GlobalId, selector, or viewer selection; inspects the unit; previews thickness;
 then requires host-side approval before the durable transaction commit.
 
-To ship an agent as an installable product with its own environment, command,
-and customer, see [Extensions](extensions.md):
-`ifc-console extensions new` scaffolds the whole project, and
-`ifc-agent-measure` is the built reference.
+## The built-in agents
+
+`measurement` and `docs` ship in `ifc_console.agents.builtin`. They are available
+without discovery, installation, or an allow list. External agent extensions
+are intentionally not supported yet.
+
+The project reference directory is:
+
+```text
+project/
+  .ifc-console/
+    agents/references/    local manuals, drawings, and images
+    knowledge/            generated retrieval index and source manifest
+    recipes/              reviewed measurement recipes
+```
+
+Add files through the browser panel, with `ifc-console agents files <paths>`,
+or by copying them into `agents/references/` and running `/agent files`.
+`list_project_documents` lets an agent inspect the evidence ledger;
+`get_project_reference_image` provides image pixels as native vision input.
+
+The measurement agent resolves the target scope, consults a recipe, measures
+with an explicit deterministic method, cites the supporting document, and can
+prepare a revision-bound ChangeSet in `Company_Measurements`. It cannot approve
+or commit its own proposal.
+
+## Measurement recipes
+
+Recipes pin the method and citation as reviewable YAML under
+`.ifc-console/recipes/`:
+
+```yaml
+applies_to: {class: IfcWall, type_name: "Basic Wall: Interior*"}
+property: thickness
+method: layer_sum
+params: {exclude_layers: ["*Finish*", "*Render*"]}
+unit: mm
+tolerance: 2
+source: {document: "QS-Manual.pdf", page: 12}
+notes: structural layers only, per section 4.2
+```
+
+`get_measurement_recipe` resolves the most specific match (type before class)
+and returns ready-to-use `measure_elements` arguments. Recipes remain
+host-authored data: agents may read them but never write them.

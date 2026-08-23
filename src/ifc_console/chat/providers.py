@@ -97,8 +97,14 @@ PROVIDERS: dict[str, Provider] = {
 
 
 def resolve_key(provider: Provider, supplied: str | None = None) -> str:
+    """Supplied key first, then the system keyring, then the environment."""
     if supplied:
         return supplied.strip()
+    from ifc_console.credentials import get_api_key
+
+    stored = get_api_key(provider.id)
+    if stored:
+        return stored
     for name in provider.key_env:
         value = os.environ.get(name)
         if value:
@@ -107,7 +113,11 @@ def resolve_key(provider: Provider, supplied: str | None = None) -> str:
 
 
 def key_source(provider: Provider) -> str | None:
-    """Which environment variable is already set, if any."""
+    """Where a key would come from without pasting one: keyring or an env var."""
+    from ifc_console.credentials import get_api_key
+
+    if get_api_key(provider.id):
+        return "keyring"
     return next((name for name in provider.key_env if os.environ.get(name)), None)
 
 

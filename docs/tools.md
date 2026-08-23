@@ -67,13 +67,15 @@ The knowledge index is local and built from the installed IfcOpenShell package.
 | ---- | --- |
 | `search_ifc_knowledge` | search entities, property sets, properties, types, APIs, recipes, and ingested project documents |
 | `get_knowledge_record` | read one result by its returned key |
+| `list_project_documents` | list indexed project documents and images with provenance and hashes |
+| `get_project_reference_image` | load one indexed project image as native vision input |
 | `get_api_docs` | get an exact `ifcopenshell.api` signature or search API names |
 | `get_measurement_recipe` | the project's measurement method for one class and property, with its citation |
 
 `search_ifc_knowledge` accepts plain words, an optional kind and schema, a
 result limit, and a `corpus` (`builtin`, `project`, or `all`). See
 [Knowledge index](knowledge.md) for the project document corpus and
-[Extensions](extensions.md#measurement-recipes) for recipes.
+[Building agent applications](agents.md#measurement-recipes) for recipes.
 
 ## Analysis
 

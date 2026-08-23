@@ -508,8 +508,11 @@ def test_chat_persisted_settings_require_a_plain_object_and_write_is_best_effort
 
 
 def test_the_transcript_survives_a_reload_but_not_the_tab(chat_js: str):
-    assert "sessionStorage.setItem(HISTORY" in chat_js
+    # one transcript slot per assistant, all of them session-scoped
+    assert "sessionStorage.setItem(historySlot()" in chat_js
+    assert "const historySlot = () => (currentAgent" in chat_js
     assert "localStorage.setItem(HISTORY" not in chat_js
+    assert "localStorage.setItem(historySlot" not in chat_js
 
 
 def test_tool_chips_are_paired_by_id_not_by_name(chat_js: str):

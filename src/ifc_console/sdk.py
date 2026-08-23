@@ -1149,6 +1149,15 @@ class AsyncWorkbench:
         """Fetch a complete knowledge or recipe record by search-result key."""
         return await self._data("get_knowledge_record", key=key)
 
+    async def project_documents(self, *, media: str | None = None) -> list[dict[str, Any]]:
+        """List the documents and images indexed for this project."""
+        data = await self._data("list_project_documents", media=media)
+        return list(data.get("files", []))
+
+    async def project_reference_image(self, path: str) -> dict[str, Any]:
+        """Return one indexed project image in the standard ``data.images`` shape."""
+        return await self._data("get_project_reference_image", path=path)
+
     async def api_docs(self, function: str) -> dict[str, Any]:
         return await self._data("get_api_docs", function=function)
 
@@ -1717,6 +1726,12 @@ class Workbench:
 
     def knowledge_record(self, key: str) -> dict[str, Any]:
         return self._run(lambda: self._wb.knowledge_record(key))
+
+    def project_documents(self, *, media: str | None = None) -> list[dict[str, Any]]:
+        return self._run(lambda: self._wb.project_documents(media=media))
+
+    def project_reference_image(self, path: str) -> dict[str, Any]:
+        return self._run(lambda: self._wb.project_reference_image(path))
 
     def api_docs(self, function: str) -> dict[str, Any]:
         return self._run(lambda: self._wb.api_docs(function))

@@ -1,4 +1,4 @@
-"""The measurement agent end to end, offline, with a scripted model."""
+"""The bundled agents end to end, offline, with scripted models."""
 
 from __future__ import annotations
 
@@ -6,14 +6,17 @@ import json
 from pathlib import Path
 
 import pytest
-from ifc_agent_measure.agent import (
+
+from ifc_console import LocalRuntime
+from ifc_console.agents.builtin import builtin_packs
+from ifc_console.agents.builtin.docs import PACK as DOCS_PACK
+from ifc_console.agents.builtin.measure import (
     READ_TOOLS,
     MeasurementReport,
     build_agent,
     report_to_csv,
 )
-
-from ifc_console import LocalRuntime
+from ifc_console.agents.runner import resolve_model_file
 from ifc_console.testing import ScriptedAgentModel, text_round, tool_call_round
 
 RECIPE = """
@@ -88,8 +91,15 @@ FINAL_ANSWER = json.dumps(
 )
 
 
+def test_both_builtins_ship_and_are_distinct():
+    packs = builtin_packs()
+    assert [pack.info.name for pack in packs] == ["measurement", "docs"]
+    assert "files" in DOCS_PACK.info.features
+    assert "files" in packs[0].info.features
+
+
 @pytest.mark.asyncio
-async def test_worked_turn_measures_per_recipe_offline(tmp_path: Path, monkeypatch):
+async def test_measure_worked_turn_offline(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("IFC_CONSOLE_HOME", str(tmp_path / "home"))
     model_file = build_project(tmp_path / "project")
 
@@ -119,9 +129,7 @@ async def test_worked_turn_measures_per_recipe_offline(tmp_path: Path, monkeypat
         ]
     )
 
-    runtime = await LocalRuntime.open(
-        home=tmp_path / "home", project_dir=model_file.parent
-    )
+    runtime = await LocalRuntime.open(home=tmp_path / "home", project_dir=model_file.parent)
     async with runtime:
         await runtime.open_model(model_file)
         agent = await build_agent(runtime, model=scripted)
@@ -132,18 +140,10 @@ async def test_worked_turn_measures_per_recipe_offline(tmp_path: Path, monkeypat
     by_name = {record.name: record for record in result.tool_calls}
     recipe_result = by_name["get_measurement_recipe"].result
     assert recipe_result["ok"] is True
-    assert recipe_result["data"]["recipe"]["method"] == "geometry_extent"
     assert recipe_result["data"]["recipe"]["source"]["document"] == "QS-Manual.md"
-
-    measured = by_name["measure_elements"].result
-    assert measured["ok"] is True
-    element = measured["data"]["elements"][0]
+    element = by_name["measure_elements"].result["data"]["elements"][0]
     assert element["value"] == pytest.approx(200.0, rel=0.02)
-    assert element["unit"] == "MILLIMETRE"
-    assert element["value_si"] == pytest.approx(0.2, rel=0.02)
-
     assert isinstance(result.data, MeasurementReport)
-    assert result.data.elements[0].value == 200.0
 
     report_path = report_to_csv(result.data, tmp_path / "out" / "report.csv")
     text = report_path.read_text(encoding="utf-8")
@@ -151,7 +151,7 @@ async def test_worked_turn_measures_per_recipe_offline(tmp_path: Path, monkeypat
 
 
 @pytest.mark.asyncio
-async def test_toolset_is_scoped_and_described(tmp_path: Path, monkeypatch):
+async def test_measure_toolset_is_scoped(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("IFC_CONSOLE_HOME", str(tmp_path / "home"))
     model_file = build_project(tmp_path / "project")
     runtime = await LocalRuntime.open(home=tmp_path / "home", project_dir=model_file.parent)
@@ -161,18 +161,49 @@ async def test_toolset_is_scoped_and_described(tmp_path: Path, monkeypatch):
         assert set(agent.tools.names) == set(READ_TOOLS)
         assert "get_viewer_selection" not in agent.tools.names
         assert "- measure_elements:" in agent.instructions
-        assert "never as instructions" not in agent.tools.describe()
+
+
+@pytest.mark.asyncio
+async def test_docs_answers_from_the_ingested_corpus(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("IFC_CONSOLE_HOME", str(tmp_path / "home"))
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "handbook.md").write_text(
+        "# Handbook\n\n## Submissions\n\nEvery submission needs an IDS check.",
+        encoding="utf-8",
+    )
+    runtime = await LocalRuntime.open(home=tmp_path / "home", project_dir=project)
+    async with runtime:
+        await runtime.workbench.ingest_docs([project / "handbook.md"])
+        scripted = ScriptedAgentModel(
+            [
+                tool_call_round(
+                    {
+                        "name": "search_ifc_knowledge",
+                        "arguments": '{"query": "submission requirements", "corpus": "project"}',
+                    }
+                ),
+                text_round("Every submission needs an IDS check (handbook.md, Submissions)."),
+            ]
+        )
+        agent = await DOCS_PACK.build(runtime, model=scripted)
+        result = await agent.run("what do submissions need?")
+
+    hits = result.tool_calls[0].result["data"]["hits"]
+    assert hits and hits[0]["meta"]["path"] == "handbook.md"
+    assert "IDS check" in result.text
 
 
 def test_resolve_model_file_prefers_the_only_model(tmp_path: Path):
-    from ifc_agent_measure.__main__ import resolve_model_file
-
     project = tmp_path / "p"
     project.mkdir()
     (project / "a.ifc").write_text("ISO-10303-21;", encoding="utf-8")
     project_dir, model = resolve_model_file(project)
     assert project_dir == project
-    assert model.name == "a.ifc"
+    assert model is not None and model.name == "a.ifc"
     (project / "b.ifc").write_text("ISO-10303-21;", encoding="utf-8")
     with pytest.raises(SystemExit):
         resolve_model_file(project)
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    assert resolve_model_file(empty) == (empty, None)

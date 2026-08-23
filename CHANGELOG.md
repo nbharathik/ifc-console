@@ -2,6 +2,30 @@
 
 ## Unreleased
 
+- A second console session no longer dead-ends when its port is held by
+  another ifc-console with the same token: it moves itself to the next free
+  port automatically (that sibling keeps serving the pinned MCP clients),
+  at startup and again when /chat, /viewer, or /agent need the server.
+- `/agent` opens an arrow-key picker of the active agents; `/agent measurement`
+  opens one directly; `/agent list` keeps the text listing.
+- Ship the basic agents inside ifc-console itself: `measurement` (recipe-driven
+  measurement with citations and ChangeSet proposals) and `docs` (project
+  document/image Q&A)
+  install with the console, appear in `/agent` and the chat panel out of the
+  box, and run standalone via `ifc-console agents run <name>` or through the
+  SDK (`ifc_console.agents.builtin`). The panel gains an agent selector,
+  per-agent conversations with server-side threads, and starter prompts.
+- Add a shared reference ledger for the built-in agents under
+  `.ifc-console/agents/references/`: browser uploads, `ifc-console agents
+  files`, and direct folder copies are tracked and indexed locally. Add
+  `list_project_documents` and `get_project_reference_image` so agents can
+  inspect provenance and load image pixels as vision input.
+- Remove the unfinished extension catalog, installer, scaffold, settings, and
+  `/extensions` surface. External agent extensions are not supported yet;
+  built-in agents and trusted operation plugins remain separate concepts.
+- Store provider API keys in the system keyring via `ifc-console keys
+  set/list/delete` (new `ifc-console[keys]` extra). Resolution order
+  everywhere: pasted key, then keyring, then environment variable.
 - Add vision to the agent path: `AgentImage` (with `from_file`), image parts
   on prompts via `Agent.run(images=...)`, native image content in both
   provider adapters, and automatic handling of image-bearing tool results
@@ -10,7 +34,7 @@
   not only through MCP clients.
 - Add `get_viewer_measurements`: the distances the user measures in the 3D
   viewer (M key) now cross the websocket and are readable by the model.
-- Publish the extension corpus surface: `ifc_console.knowledge` exports
+- Publish the reusable corpus surface: `ifc_console.knowledge` exports
   `Record`, `build`, `Store`, and `ProjectKnowledge` as stable names, and
   the versioning policy names `ifc_console.testing` and the deprecation
   window.
@@ -30,11 +54,6 @@
   by the new `get_measurement_recipe` tool (most specific match wins, with
   the source citation and ready-to-use measure_elements arguments) and
   indexed beside the project documents.
-- Add the extension store: `ifc-console extensions search/list/install/
-  uninstall` over a static catalog with isolated per-agent environments
-  (uv tool), an install record, a TUI `/extensions` command, and
-  `ifc-console extensions new` scaffolding a complete agent project. The
-  first extension, `ifc-agent-measure`, lives in `packages/`.
 - Agent SDK: `Agent.run(response_model=...)` validates the final answer into
   typed data with one retry, rounds of read-only tool calls execute
   concurrently (opt out via `AgentLimits.parallel_read_only`),

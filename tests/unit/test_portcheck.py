@@ -15,6 +15,7 @@ from ifc_console.portcheck import (
     IFC_CONSOLE_OTHER,
     classify_http,
     conflict_hint,
+    find_free_port,
     port_status,
 )
 
@@ -28,6 +29,23 @@ def _free_port() -> int:
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
         return sock.getsockname()[1]
+
+
+# --------------------------------------------------------------- free ports
+def test_find_free_port_skips_an_occupied_one() -> None:
+    """A second same-token session moves itself right past the busy port."""
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        sock.listen(1)
+        busy = sock.getsockname()[1]
+        found = find_free_port(busy - 1, tries=5)
+        assert found is not None
+        assert found != busy
+        assert busy - 1 < found <= busy - 1 + 5
+
+
+def test_find_free_port_gives_up_inside_its_window() -> None:
+    assert find_free_port(65535, tries=5) is None
 
 
 # ------------------------------------------------------------- classification

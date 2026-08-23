@@ -112,6 +112,12 @@ class AppCore:
         self.knowledge = KnowledgeBase(store.home, schemas=tuple(s.knowledge.schemas))
         self._knowledge_thread: threading.Thread | None = None
         self._project_knowledge = None
+        from ifc_console.agents.files import AgentReferenceStore
+        from ifc_console.agents.packs import AgentPackRegistry
+
+        self.agent_packs = AgentPackRegistry()
+        self.agent_files = AgentReferenceStore(self.store.project_dir)
+        self.agent_panel = None  # created by the panel routes on first use
         self.server_running = False
         # Why the last start attempt failed, so /viewer and /chat can say more
         # than "not running" (a port conflict is the usual reason).

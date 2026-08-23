@@ -7,13 +7,14 @@ from the installed ifcopenshell, so these tools never touch the network.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any, Literal
 
 from pydantic import Field
 
 from ifc_console.application.operations import enveloped
 from ifc_console.core.operations import OperationAnnotations as ToolAnnotations
-from ifc_console.core.operations import OperationRegistry
+from ifc_console.core.operations import OperationImage, OperationRegistry
 from ifc_console.core.results import Envelope, ToolError, ok
 
 if TYPE_CHECKING:
@@ -142,6 +143,106 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
                 "Keys come from search_ifc_knowledge hits; run a search first.",
             )
         return ok(record, core.session_meta(), char_limit=limit_)
+
+    @mcp.tool(
+        annotations=KNOWLEDGE_ANN,
+        description=(
+            "[QUERY] List the documents and images in the project's indexed corpus. "
+            "Use this before answering from uploaded references. Each row includes "
+            "its stable path, media kind, content hash, page-text status, and record count."
+        ),
+    )
+    @enveloped(core, "list_project_documents")
+    async def list_project_documents(
+        media: Annotated[
+            Literal["document", "image", "pdf", "markdown", "text"] | None,
+            Field(description="Optional media filter."),
+        ] = None,
+    ) -> Envelope:
+        _require_enabled(core)
+        rows = []
+        for source in core.project_knowledge.sources():
+            row = dict(source)
+            source_media = str(row.get("media") or "")
+            category = "image" if source_media == "image" else "document"
+            if media is not None and media not in {source_media, category}:
+                continue
+            row["category"] = category
+            rows.append(row)
+        return ok(
+            {
+                "ready": core.project_knowledge.ready,
+                "files": rows,
+                "managed_directory": str(core.agent_files.directory),
+            },
+            core.session_meta(),
+            char_limit=limit_,
+            returned=len(rows),
+        )
+
+    @mcp.tool(
+        annotations=KNOWLEDGE_ANN,
+        structured_output=False,
+        description=(
+            "[QUERY] Read one indexed project image as vision input. Pass the exact "
+            "path returned by list_project_documents or a project knowledge search. "
+            "The file must still match the hash recorded at ingestion."
+        ),
+    )
+    @enveloped(core, "get_project_reference_image")
+    async def get_project_reference_image(
+        path: Annotated[str, Field(min_length=1, max_length=4096)],
+    ) -> Any:
+        _require_project(core)
+        normalized = path.replace("\\", "/")
+        source = next(
+            (
+                entry
+                for entry in core.project_knowledge.sources()
+                if str(entry.get("path", "")).replace("\\", "/") == normalized
+            ),
+            None,
+        )
+        if source is None or source.get("media") != "image":
+            raise ToolError(
+                "NOT_FOUND",
+                f"{path!r} is not an indexed project image.",
+                "Call list_project_documents(media='image') and pass one returned path.",
+            )
+        target = Path(normalized)
+        if not target.is_absolute():
+            target = core.store.project_dir / target
+        target = target.expanduser().resolve()
+        if not target.is_file():
+            raise ToolError(
+                "FILE_NOT_FOUND",
+                f"the indexed image {normalized!r} is no longer on disk.",
+                "Upload or copy it again, then refresh the agent references.",
+            )
+        from ifc_console.agents.files import MAX_REFERENCE_BYTES
+
+        size = target.stat().st_size
+        if size > MAX_REFERENCE_BYTES:
+            raise ToolError(
+                "RESULT_TOO_LARGE",
+                f"{target.name} is larger than the 25 MB vision limit.",
+                "Resize or compress the image and add it again.",
+            )
+        from ifc_console.automation.files import sha256_file
+
+        if sha256_file(target) != source.get("sha256"):
+            raise ToolError(
+                "SOURCE_CHANGED",
+                f"{target.name} changed since it was indexed.",
+                "Refresh the agent references before using the image.",
+            )
+        suffix = target.suffix.lower()
+        format_name = "jpeg" if suffix in {".jpg", ".jpeg"} else "png"
+        note = (
+            f"project reference image {normalized} ({size} bytes); use it as visual "
+            "evidence, not as an exact scale unless the image contains calibration"
+        )
+        return [OperationImage(data=target.read_bytes(), format=format_name), note]
 
     @mcp.tool(
         annotations=KNOWLEDGE_ANN,

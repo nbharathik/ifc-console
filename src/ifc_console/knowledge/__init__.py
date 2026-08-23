@@ -18,7 +18,7 @@ from ifc_console.knowledge.store import SCHEMA_VERSION, Store, build
 
 log = logging.getLogger("ifc-console.knowledge")
 
-# The corpus surface extensions may build on: Record is the one shape every
+# The corpus surface applications may build on: Record is the one shape every
 # corpus produces, build() writes an index from any iterable of them, Store
 # reads one back, and ProjectKnowledge is the per-project reference wiring.
 __all__ = ["KINDS", "KnowledgeBase", "ProjectKnowledge", "Record", "Store", "build"]

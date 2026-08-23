@@ -7,11 +7,13 @@ in the AI client, not here.
 
 from __future__ import annotations
 
+from rich.markup import escape
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
-from textual.widgets import Button, Label, Static
+from textual.widgets import Button, Label, OptionList, Static
+from textual.widgets.option_list import Option
 
 
 class ConfirmModal(ModalScreen[bool]):
@@ -53,6 +55,55 @@ class ConfirmModal(ModalScreen[bool]):
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         self.dismiss(event.button.id == "yes")
+
+
+class AgentPickerModal(ModalScreen["str | None"]):
+    """Arrows to move, Enter to open the agent in the chat panel, Esc cancels."""
+
+    BINDINGS = [
+        Binding("escape", "cancel", "Cancel", show=False),
+    ]
+
+    DEFAULT_CSS = """
+    AgentPickerModal { align: center middle; }
+    AgentPickerModal > Vertical {
+        width: 80%; max-width: 100; border: heavy $primary;
+        background: $surface; padding: 1 2;
+    }
+    AgentPickerModal OptionList { height: auto; max-height: 14; border: round $panel; }
+    AgentPickerModal .hint { color: $text-muted; height: 1; }
+    """
+
+    def __init__(self, agents: list[tuple[str, str, str]]) -> None:
+        """agents: (name, title, description) per row."""
+        super().__init__()
+        self._agents = agents
+
+    def compose(self) -> ComposeResult:
+        with Vertical():
+            yield Label("Open an agent in the chat panel")
+            yield OptionList(id="agents")
+            yield Static("up/down select · Enter open · Esc cancel", classes="hint")
+
+    def on_mount(self) -> None:
+        options = self.query_one("#agents", OptionList)
+        for name, title, description in self._agents:
+            options.add_option(
+                Option(
+                    f"[b]{escape(title)}[/b] [dim]({escape(name)})[/dim]\n"
+                    f"  [dim]{escape(description)}[/dim]"
+                )
+            )
+        if self._agents:
+            options.highlighted = 0
+        options.focus()
+
+    def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
+        if 0 <= event.option_index < len(self._agents):
+            self.dismiss(self._agents[event.option_index][0])
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
 
 
 class QuitModal(ModalScreen[str]):

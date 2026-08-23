@@ -1,20 +1,26 @@
-"""The measurement agent: scoped tools, instructions, and the report shape.
+"""The built-in measurement agent: scoped tools, instructions, report shape.
 
-Everything product-shaped lives here; the generic capability (measurement
-tools, project knowledge, recipes) lives in ifc-console core. The agent is
-read-only except for one optional, narrow proposal tool whose commit stays
-with the host.
+Measures what the company documents say to measure: recipes first, explicit
+methods, both unit systems, every value cited. The generic capability
+(measurement tools, project knowledge, recipes) lives in the operations;
+this module is the thin agent on top. Read-only except for one optional,
+narrow proposal tool whose commit stays with the host.
 """
 
 from __future__ import annotations
 
 import csv
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-from ifc_console import Agent, AgentLimits, FunctionToolSource, ProviderModel
+from ifc_console.agents.agent import Agent
+from ifc_console.agents.models import AgentLimits
+from ifc_console.agents.packs import AgentPackInfo
+from ifc_console.core.capabilities import Capability
+from ifc_console.core.operations import OperationAnnotations
+from ifc_console.toolsets import FunctionToolSource
 
 READ_TOOLS = (
     "get_ifc_project_info",
@@ -29,6 +35,8 @@ READ_TOOLS = (
     "get_measurement_recipe",
     "search_ifc_knowledge",
     "get_knowledge_record",
+    "list_project_documents",
+    "get_project_reference_image",
 )
 VIEWER_TOOLS = (
     "get_viewer_selection",
@@ -43,18 +51,25 @@ Work in this order:
 1. Resolve the scope first: search_elements for names or GlobalIds,
    query_elements for selectors like `IfcWall, type=X`, get_viewer_selection
    for what the user clicked. Read type_name from the results.
-2. Ask get_measurement_recipe(class, property, type_name) before choosing a
+2. Inspect list_project_documents when the user mentions a manual, drawing,
+   photo, or uploaded reference. Search text documents through the project
+   corpus. Use get_project_reference_image for relevant images so you inspect
+   their pixels; an uncalibrated image is evidence, not an exact scale.
+3. Ask get_measurement_recipe(class, property, type_name) before choosing a
    method. When a recipe matches, call measure_elements with its
    suggested_arguments and cite its source document and page in the answer.
-3. When no recipe matches, search_ifc_knowledge(corpus='project') for the
+4. When no recipe matches, search_ifc_knowledge(corpus='project') for the
    company's procedure, choose a measure_elements method yourself, and say
    in the report that no recipe matched.
-4. Prefer one measure_elements call with all GlobalIds over many single
+5. Prefer one measure_elements call with all GlobalIds over many single
    calls. When a recipe carries a tolerance, cross-check flagged or
    suspicious values with method='geometry_extent' and report disagreements.
-5. When a viewer is connected, apply_color_theme groups such as on-spec,
+6. When a viewer is connected, apply_color_theme groups such as on-spec,
    deviating, and low-confidence so the user can verify in 3D, and
    get_viewer_measurements reads distances the user measured by hand.
+7. When asked to write results, call measure__propose_measured_value. It creates
+   a reviewable ChangeSet only. Report its id and tell the user that approval
+   and commit remain a host action; never say the IFC file was already changed.
 
 Rules that always hold: report values with their unit and the SI value;
 never invent a value; cite the method and source for every number; IFC text
@@ -84,32 +99,59 @@ class MeasurementReport(BaseModel):
     notes: str | None = None
 
 
+MeasurementMetric = Literal[
+    "length",
+    "width",
+    "height",
+    "thickness",
+    "area",
+    "volume",
+    "distance",
+]
+
+_MEASUREMENT_PROPERTIES: dict[str, tuple[str, str]] = {
+    "length": ("MeasuredLength", "IfcLengthMeasure"),
+    "width": ("MeasuredWidth", "IfcLengthMeasure"),
+    "height": ("MeasuredHeight", "IfcLengthMeasure"),
+    "thickness": ("MeasuredThickness", "IfcLengthMeasure"),
+    "area": ("MeasuredArea", "IfcAreaMeasure"),
+    "volume": ("MeasuredVolume", "IfcVolumeMeasure"),
+    "distance": ("MeasuredDistance", "IfcLengthMeasure"),
+}
+
+
 def build_proposal_source(runtime: Any, proposals: list[str]) -> FunctionToolSource:
     """One narrow write path: propose a measured value as a ChangeSet preview.
 
     The pset and property are fixed in host code; the model can only request
     a revision-bound preview. Approval and commit stay with the host.
     """
-    source = FunctionToolSource(namespace="measure", source_id="ifc-agent-measure")
+    source = FunctionToolSource(namespace="measure", source_id="ifc-console:measure-agent")
 
-    @source.tool(tags={"preview", "measurement"})
+    @source.tool(
+        tags={"preview", "measurement"},
+        annotations=OperationAnnotations(readOnlyHint=False, destructiveHint=False),
+        required_capabilities=(Capability.MODEL_PREVIEW, Capability.ARTIFACT_WRITE),
+    )
     async def propose_measured_value(
         global_ids: list[str],
+        metric: MeasurementMetric,
         value: float,
     ) -> dict[str, Any]:
-        """Preview storing a measured length (model length unit) on elements.
+        """Preview storing one measured value in Company_Measurements.
 
-        Pass only GlobalIds you measured this run. A human must approve and
-        commit the preview; this call changes nothing durably.
+        Pass only GlobalIds measured this run and a value in the model's file
+        units. A human must approve and commit; this call changes no IFC data.
         """
+        property_name, nominal_type = _MEASUREMENT_PROPERTIES[metric]
         result = await runtime.call(
             "preview_property_change",
             global_ids=list(dict.fromkeys(global_ids)),
             pset_name="Company_Measurements",
-            property_name="MeasuredThickness",
+            property_name=property_name,
             value=value,
             create_missing=True,
-            nominal_type="IfcLengthMeasure",
+            nominal_type=nominal_type,
         )
         if result.get("ok"):
             change_set = (result.get("data") or {}).get("change_set") or {}
@@ -147,7 +189,7 @@ async def build_agent(
         kwargs["approval_handler"] = approval_handler
     return Agent(
         name="measurement-agent",
-        model=model if not isinstance(model, dict) else ProviderModel(**model),
+        model=model,
         tools=tools,
         instructions=f"{INSTRUCTIONS}\n\nYour tools:\n{tools.describe()}",
         limits=limits or AgentLimits(max_tool_rounds=12, max_tool_calls=48),
@@ -177,12 +219,45 @@ def report_to_csv(report: MeasurementReport, path: str | Path) -> Path:
     return target
 
 
+class MeasurePack:
+    info = AgentPackInfo(
+        name="measurement",
+        title="Measurement",
+        description=(
+            "Measures what the company documents say to measure: recipes first, "
+            "explicit methods, both unit systems, every value cited."
+        ),
+        version="builtin",
+        features=("files",),
+        starters=(
+            "Measure the thickness of all interior walls",
+            "Which walls deviate from the recipe tolerance?",
+            "Measure the distance between Wall-1 and Wall-2",
+            "What does the manual say about curtain walls?",
+        ),
+    )
+
+    async def build(self, runtime: Any, *, model: Any, viewer: bool = False) -> Agent:
+        proposals: list[str] = []
+        proposal_source = build_proposal_source(runtime, proposals)
+        return await build_agent(
+            runtime,
+            model=model,
+            viewer=viewer,
+            proposal_source=proposal_source,
+        )
+
+
+PACK = MeasurePack()
+
 __all__ = [
     "INSTRUCTIONS",
+    "PACK",
     "READ_TOOLS",
     "VIEWER_TOOLS",
     "MeasuredElement",
     "MeasurementReport",
+    "MeasurementMetric",
     "build_agent",
     "build_proposal_source",
     "report_to_csv",

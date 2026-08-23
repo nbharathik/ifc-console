@@ -18,11 +18,12 @@ minor and patch releases will not break you.
 5. **Resource URIs** (`ifc://...`) and prompt names.
 6. **The documented Python SDK**: names exported from `ifc_console`, documented
    `Workbench` and `AsyncWorkbench` methods, their call signatures, and the
-   public fields of exported typed records and result models. Two auxiliary
-   modules are public by name: `ifc_console.testing` (the agent test doubles)
-   and the exports of `ifc_console.knowledge` (the corpus surface extensions
-   build on). Other modules below `ifc_console.*` that are not re-exported
-   are internal.
+   public fields of exported typed records and result models. Auxiliary
+   modules public by name: `ifc_console.testing` (the agent test doubles),
+   the exports of `ifc_console.knowledge` (the corpus surface), the exports
+   of `ifc_console.agents.packs` (the agent pack contract), and the exports
+   of `ifc_console.credentials`. Other modules below `ifc_console.*` that
+   are not re-exported are internal.
 7. **Plugin API version 1**: `PluginManifest`, `PluginAPI`,
    `OperationPlugin`, synchronous registration and shutdown, structured
    operation registration, capability declarations, and the result helpers

@@ -197,7 +197,8 @@ on a copied or version-controlled model.
 | `sessions list|show|verify|clear` | inspect and verify audit sessions |
 | `plugins list|doctor` | inspect trusted operation plugins |
 | `knowledge build|status|search|ingest` | manage the reference index and the project document corpus |
-| `extensions search|list|install|uninstall|new` | the extension store: agents in isolated environments, plus the project scaffold |
+| `agents list|run|files` | list/run the built-in agents and manage their project-local references |
+| `keys set|list|delete` | provider API keys in the system keyring, never plain text |
 
 Examples:
 
@@ -206,6 +207,7 @@ ifc-console settings set sandbox.mode strict
 ifc-console token rotate
 ifc-console sessions verify SESSION_ID
 ifc-console plugins doctor --json
+ifc-console agents files manuals/ wall-detail.jpg
 ```
 
 ## Exit codes

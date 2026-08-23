@@ -43,12 +43,34 @@ For a local provider, set its base URL, for example
 `http://localhost:8000/v1`. Enable `chat.local_only=true` to reject any provider
 URL outside the local machine.
 
+## Agents in the panel
+
+A selector beside the panel title offers plain **Chat** or one of the
+agents. **Measurement** and **Documents** ship with ifc-console and are
+there out of the box. External agent extensions are not supported yet. An
+agent keeps its own conversation, starter prompts, and workflow: the
+measurement agent resolves recipes, reads reference images, cites pages, and
+can prepare a safe ChangeSet proposal; the documents agent answers from the
+ingested corpus.
+
+Both agents show the same project reference ledger. Use **Add files**, run
+`ifc-console agents files <paths>`, or copy supported files directly into
+`.ifc-console/agents/references/`. Documents are indexed for retrieval; images
+are stored locally and can be loaded as model vision input. The ledger shows
+whether each file is indexed. PDF text extraction needs `ifc-console[pdf]`.
+`/agent` in the terminal picks one with the arrow keys; `/agent measurement`
+opens the panel with it selected, and `/agent files` lists or refreshes the
+local references. Agent conversations keep their context on the console for
+the run; switching provider or model starts a fresh one.
+
 ## Credentials and model data
 
-If the normal environment variable is set, the console reads the key from its
-own environment. Otherwise, you can enter a key in the panel. The browser sends
-it directly to the running console and does not store a copy. The console keeps
-it only in memory until `/chat off` or exit.
+A key is found in this order: pasted in the panel, stored in the system
+keyring (`ifc-console keys set openai`, needs the `ifc-console[keys]`
+extra), or read from the provider's environment variable. Stored keys live
+in the OS credential store, never in a file; `ifc-console keys list` and
+`keys delete` manage them. A pasted key is held in console memory only,
+until `/chat off` or exit.
 
 The browser never contacts the provider directly. ifc-console sends the
 provider:
@@ -72,6 +94,10 @@ The same controls apply as with MCP:
 - only the terminal user can switch to `edit`;
 - each tool call and result appears below the answer;
 - every call is audited with provider and model metadata, never the key.
+
+The measurement agent may create a revision-bound ChangeSet preview in
+`Company_Measurements`. A preview changes neither the live model nor the IFC
+file. Approval and commit remain explicit SDK/CLI host actions.
 
 Turn `chat.tools` off when you want ordinary conversation without model tools.
 

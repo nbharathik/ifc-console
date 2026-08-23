@@ -245,11 +245,16 @@ _CAPABILITY_GROUPS: tuple[tuple[frozenset[str], tuple[Capability, ...]], ...] = 
             {
                 "search_ifc_knowledge",
                 "get_knowledge_record",
+                "list_project_documents",
                 "get_api_docs",
                 "get_measurement_recipe",
             }
         ),
         (Capability.KNOWLEDGE_READ,),
+    ),
+    (
+        frozenset({"get_project_reference_image"}),
+        (Capability.KNOWLEDGE_READ, Capability.FILE_READ),
     ),
     (
         frozenset({"execute_ifc_code"}),

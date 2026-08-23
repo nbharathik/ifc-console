@@ -43,8 +43,6 @@ REQUIRED_ASSETS = (
     "vendor/LICENSE.web-ifc.md",
 )
 _VIEWER_STATIC_PREFIX = "ifc_console_viewer/static/"
-_SDK_CHAT_STATIC_PREFIX = "ifc_console/examples/agent_chat/static/"
-SDK_CHAT_ASSETS = frozenset({"index.html", "app.css", "app.js"})
 _EXCLUDED_SOURCE_PARTS = frozenset(
     {"dev", "dist", ".github", ".tmp", ".vscode", "packages", "site"}
 )
@@ -244,10 +242,6 @@ def _unexpected_base_browser_assets(names: list[str]) -> list[str]:
         normalized = name.replace("\\", "/")
         if normalized.endswith("/"):
             continue
-        if normalized.startswith(_SDK_CHAT_STATIC_PREFIX):
-            relative = normalized.removeprefix(_SDK_CHAT_STATIC_PREFIX)
-            if relative in SDK_CHAT_ASSETS:
-                continue
         if (
             "/static/" in normalized
             or normalized.endswith(".wasm")

@@ -81,6 +81,7 @@ class IfcConsoleApp(App):
         self.autostart = autostart  # tests disable this to keep ports untouched
         self._server = None
         self._server_task: asyncio.Task | None = None
+        self._last_conflict_kind: str | None = None
         self._unsubscribe = None
         # Direct embedders and tests construct the TUI without going through
         # the CLI's warm-up path. Start the same import warm-up as soon as the
@@ -122,7 +123,7 @@ class IfcConsoleApp(App):
                     reason=f"could not load {self.initial_file}: {exc}",
                 )
             self.initial_file = None
-        await self.ensure_server(self.core.port)
+        await self.ensure_server_with_fallback()
 
     def _on_event(self, event: dict) -> None:
         # Events fire on the loop thread (tool handlers run there); forward to
@@ -132,6 +133,28 @@ class IfcConsoleApp(App):
                 self.call_later(screen.on_core_event, event)
 
     # -- server co-hosting --------------------------------------------------------
+    async def ensure_server_with_fallback(self) -> bool:
+        """Start on the configured port, or move beside a sibling session.
+
+        When the port is held by another ifc-console with this same token,
+        that session already serves the pinned MCP clients, so this one can
+        safely take the next free port instead of dead-ending.
+        """
+        if self.core.server_running:
+            return True
+        original = self.core.port
+        if await self.ensure_server(original):
+            return True
+        from ifc_console.portcheck import IFC_CONSOLE, find_free_port
+
+        if self._last_conflict_kind != IFC_CONSOLE:
+            return False
+        fallback = await asyncio.to_thread(find_free_port, original)
+        if fallback is None or not await self.ensure_server(fallback):
+            return False
+        self.core.events.emit("server_moved", port=fallback, original=original)
+        return True
+
     async def ensure_server(self, port: int) -> bool:
         if self._server is not None:
             return True
@@ -161,6 +184,7 @@ class IfcConsoleApp(App):
                 self.core.events.emit("server_started", url=self.core.mcp_url, port=port)
                 return True
         task_reason = task.result() if task.done() and not task.cancelled() else None
+        self._last_conflict_kind = None
         if task_reason:
             reason = task_reason
         else:
@@ -171,6 +195,7 @@ class IfcConsoleApp(App):
             if kind == FREE:
                 reason = f"port {port} did not come up"
             else:
+                self._last_conflict_kind = kind
                 reason = f"port {port} is in use by {detail}; {conflict_hint(kind, port)}"
         server.should_exit = True
         if not task.done():

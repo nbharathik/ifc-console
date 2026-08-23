@@ -101,7 +101,10 @@ untrusted files or prompts.
 - Multi-model coordination and an offline IFC/IfcOpenShell reference.
 - A framework-neutral agent SDK with individually selectable IFC tools, lazy
   framework adapters, MCP composition, host approvals, and embeddable surfaces.
-- Optional browser viewer, chat panel, and trusted operation plugins.
+- Built-in measurement and document agents with project-local reference files,
+  image input, cited retrieval, and reviewable IFC ChangeSet proposals.
+- Optional browser viewer, integrated agent/chat panel, and trusted operation
+  plugins. External agent extensions are not supported yet.
 
 ```python
 from ifc_console import Workbench

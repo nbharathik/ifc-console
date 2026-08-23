@@ -210,6 +210,7 @@ class TokenAuthMiddleware:
     TOKEN_EXEMPT = ("/viewer", "/chat", "/ws")
     MAX_MCP_BODY = 8 * 1024 * 1024
     MAX_CHAT_BODY = 4 * 1024 * 1024
+    MAX_AGENT_UPLOAD_BODY = 25 * 1024 * 1024
     SECURITY_HEADERS = (
         (b"x-content-type-options", b"nosniff"),
         (b"referrer-policy", b"no-referrer"),
@@ -326,9 +327,13 @@ class TokenAuthMiddleware:
             return None
         if path == "/mcp" or path.startswith("/mcp/"):
             return self.MAX_MCP_BODY
+        if path == "/api/agents/upload":
+            return self.MAX_AGENT_UPLOAD_BODY
         if (
             path == "/api/chat"
             or path.startswith("/api/chat/")
+            or path == "/api/agents"
+            or path.startswith("/api/agents/")
             or path == "/api/sdk"
             or path.startswith("/api/sdk/")
         ):
@@ -496,6 +501,9 @@ def build_http_app(
     ]
     extra.extend(build_viewer_routes(core))
     extra.extend(build_chat_routes(core))
+    from ifc_console.agents.panel import build_agent_panel_routes
+
+    extra.extend(build_agent_panel_routes(core))
     if viewer_assets.available():
         extra.append(Mount("/viewer/static", app=build_static_app(), name="viewer-static"))
     app.router.routes[0:0] = extra

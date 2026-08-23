@@ -6,7 +6,6 @@ import pytest
 from scripts.check_release import release_issues
 from scripts.check_wheels import (
     REQUIRED_ASSETS,
-    SDK_CHAT_ASSETS,
     _canonical_python_range,
     _source_entry_is_excluded,
     _unexpected_base_browser_assets,
@@ -165,19 +164,18 @@ def test_viewer_static_allowlist_rejects_unexpected_public_files() -> None:
     assert _unexpected_viewer_static([*expected, "ifc_console_viewer/not-public.txt"]) == []
 
 
-def test_core_wheel_allows_only_the_small_sdk_chat_assets() -> None:
-    expected = [f"ifc_console/examples/agent_chat/static/{asset}" for asset in SDK_CHAT_ASSETS]
-
-    assert _unexpected_base_browser_assets(expected) == []
+def test_core_wheel_rejects_all_browser_assets() -> None:
+    assert _unexpected_base_browser_assets([]) == []
     assert _unexpected_base_browser_assets(
         [
-            *expected,
-            "ifc_console/examples/agent_chat/static/config.json",
+            "ifc_console/examples/demo/static/config.json",
+            "ifc_console/examples/demo/static/app.js",
             "ifc_console_viewer/static/app.js",
             "ifc_console/vendor/web-ifc.wasm",
         ]
     ) == [
-        "ifc_console/examples/agent_chat/static/config.json",
+        "ifc_console/examples/demo/static/app.js",
+        "ifc_console/examples/demo/static/config.json",
         "ifc_console/vendor/web-ifc.wasm",
         "ifc_console_viewer/static/app.js",
     ]

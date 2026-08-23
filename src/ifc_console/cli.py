@@ -468,37 +468,56 @@ def build_parser() -> argparse.ArgumentParser:
     kb_search.add_argument("--json", action="store_true")
     kb_search.set_defaults(func=_cmd_knowledge_search)
 
-    ext = sub.add_parser(
-        "extensions",
-        help="The extension store: agents and plugins built on ifc-console.",
+    ag = sub.add_parser(
+        "agents",
+        help="The built-in agents used by the Console chat panel.",
     )
-    ext_sub = ext.add_subparsers(dest="extensions_cmd", required=True)
-    ext_search = ext_sub.add_parser("search", help="Search the extension catalog.")
-    ext_search.add_argument("query", nargs="*", default=[])
-    ext_search.add_argument("--catalog", default=None, help="Catalog URL or file override.")
-    ext_search.add_argument("--json", action="store_true")
-    ext_search.set_defaults(func=_cmd_extensions_search)
-    ext_list = ext_sub.add_parser("list", help="Catalog entries plus what is installed here.")
-    ext_list.add_argument("--catalog", default=None, help="Catalog URL or file override.")
-    ext_list.add_argument("--json", action="store_true")
-    ext_list.set_defaults(func=_cmd_extensions_list)
-    ext_install = ext_sub.add_parser(
-        "install", help="Install one agent into its own environment via uv tool."
+    ag_sub = ag.add_subparsers(dest="agents_cmd", required=True)
+    ag_list = ag_sub.add_parser("list", help="List the agents shipped with IFC Console.")
+    ag_list.add_argument("--json", action="store_true")
+    ag_list.set_defaults(func=_cmd_agents_list)
+    ag_files = ag_sub.add_parser(
+        "files",
+        help="Add, index, and list the built-in agents' project references.",
     )
-    ext_install.add_argument("name", help="Catalog name, pip requirement, or git URL.")
-    ext_install.add_argument("--catalog", default=None, help="Catalog URL or file override.")
-    ext_install.set_defaults(func=_cmd_extensions_install)
-    ext_uninstall = ext_sub.add_parser("uninstall", help="Remove an installed agent.")
-    ext_uninstall.add_argument("name")
-    ext_uninstall.set_defaults(func=_cmd_extensions_uninstall)
-    ext_new = ext_sub.add_parser(
-        "new", help="Scaffold a new agent extension project from the template."
+    ag_files.add_argument(
+        "paths",
+        nargs="*",
+        type=Path,
+        help="Documents, images, or directories to copy into the managed folder.",
     )
-    ext_new.add_argument("name", help="Extension name, e.g. acme-measure.")
-    ext_new.add_argument(
-        "--dir", type=Path, default=Path.cwd(), help="Directory to create the project in."
+    ag_files.add_argument("--json", action="store_true")
+    ag_files.set_defaults(func=_cmd_agents_files)
+    ag_run = ag_sub.add_parser(
+        "run", help="Run one agent in the terminal, standalone or attached."
     )
-    ext_new.set_defaults(func=_cmd_extensions_new)
+    ag_run.add_argument("name", help="Agent name, e.g. measurement or docs.")
+    ag_run.add_argument("path", type=Path, nargs="?", help="Project folder or .ifc file.")
+    ag_run.add_argument("--model", required=True, help="Model id at the chosen provider.")
+    ag_run.add_argument("--provider", default="openai", help="openai, anthropic, openrouter, local")
+    ag_run.add_argument("--base-url", default=None, help="OpenAI-compatible server URL.")
+    ag_run.add_argument("--attach", default=None, help="MCP URL of a running console.")
+    ag_run.add_argument("--token", default=None, help="Session token for --attach.")
+    ag_run.add_argument("--prompt", default=None, help="Run once instead of a chat loop.")
+    ag_run.add_argument("--home", type=Path, default=None, help="ifc-console home directory.")
+    ag_run.set_defaults(func=_cmd_agents_run)
+
+    keys = sub.add_parser(
+        "keys",
+        help="Provider API keys in the system keyring (never plain text).",
+    )
+    keys_sub = keys.add_subparsers(dest="keys_cmd", required=True)
+    keys_set = keys_sub.add_parser("set", help="Store or replace one provider key.")
+    keys_set.add_argument("provider", help="openai, anthropic, openrouter, or local")
+    keys_set.add_argument(
+        "--key", default=None, help="The key; omitted, it is prompted for without echo."
+    )
+    keys_set.set_defaults(func=_cmd_keys_set)
+    keys_list = keys_sub.add_parser("list", help="Providers with a stored key.")
+    keys_list.set_defaults(func=_cmd_keys_list)
+    keys_delete = keys_sub.add_parser("delete", help="Remove one stored key.")
+    keys_delete.add_argument("provider")
+    keys_delete.set_defaults(func=_cmd_keys_delete)
 
     plugins = sub.add_parser("plugins", help="Inspect trusted operation plugins.")
     plugins_sub = plugins.add_subparsers(dest="plugins_cmd", required=True)
@@ -2546,111 +2565,158 @@ def _cmd_knowledge_search(args: argparse.Namespace) -> int:
     return 0
 
 
-# --------------------------------------------------------------------------- extensions
-def _extension_rows(entries) -> list[dict]:
-    return [entry.model_dump(mode="json", exclude_none=True) for entry in entries]
+# --------------------------------------------------------------------------- agents
+def _agents_registry():
+    from ifc_console.agents.packs import AgentPackRegistry
+
+    return AgentPackRegistry()
 
 
-def _print_extension_rows(entries, installed: dict) -> None:
-    if not entries:
-        print("no matches")
-        return
-    for entry in entries:
-        mark = "installed" if entry.name in installed else entry.kind
-        command = f"   run: {entry.command}" if entry.command else ""
-        print(f"{entry.name:16} [{mark}] {entry.description}{command}")
-
-
-def _cmd_extensions_search(args: argparse.Namespace) -> int:
-    from ifc_console import extensions
-
-    hits, source = extensions.search(" ".join(args.query), catalog_url=args.catalog)
-    installed = extensions.InstallRecord(_new_store().home).load()
-    if args.json:
-        print(json.dumps({"source": source, "extensions": _extension_rows(hits)}, indent=2))
-        return 0
-    print(f"catalog: {source}")
-    _print_extension_rows(hits, installed)
-    return 0 if hits else 1
-
-
-def _cmd_extensions_list(args: argparse.Namespace) -> int:
-    from ifc_console import extensions
-
-    catalog, source = extensions.fetch_catalog(args.catalog)
-    installed = extensions.InstallRecord(_new_store().home).load()
+def _cmd_agents_list(args: argparse.Namespace) -> int:
+    registry = _agents_registry()
+    installed = registry.installed()
     if args.json:
         print(
             json.dumps(
                 {
-                    "source": source,
-                    "extensions": _extension_rows(catalog.extensions),
-                    "installed": installed,
+                    "agents": [
+                        {
+                            **info.model_dump(mode="json"),
+                            "builtin": registry.is_builtin(info.name),
+                        }
+                        for info in installed
+                    ],
                 },
                 indent=2,
             )
         )
         return 0
-    print(f"catalog: {source}")
-    _print_extension_rows(catalog.extensions, installed)
-    extras = sorted(set(installed) - {entry.name for entry in catalog.extensions})
-    for name in extras:
-        record = installed[name]
-        print(f"{name:16} [installed] {record.get('package')} (outside the catalog)")
+    if installed:
+        for info in installed:
+            print(f"{info.name:12} [built-in] {info.title}: {info.description}")
+    else:
+        print("this build ships no agents")
     return 0
 
 
-def _cmd_extensions_install(args: argparse.Namespace) -> int:
-    from ifc_console import extensions
+def _cmd_agents_files(args: argparse.Namespace) -> int:
+    from ifc_console.agents.files import AgentReferenceStore
+    from ifc_console.knowledge.project import ProjectKnowledge
     from ifc_console.mcp.envelope import ToolError
 
+    store = _new_store()
+    references = AgentReferenceStore(store.project_dir)
+    knowledge = ProjectKnowledge(store.project_dir)
     try:
-        record = extensions.install(_new_store().home, args.name, catalog_url=args.catalog)
+        added = references.add_paths(args.paths) if args.paths else []
+        summary = references.sync(knowledge)
     except ToolError as exc:
         print(f"{exc.code}: {exc}")
         if exc.hint:
             print(exc.hint)
         return 1
-    print(f"installed {record['name']} ({record['package']}) in its own environment")
-    if record.get("command"):
-        print(f"run it with: {record['command']} --help")
-    if record.get("note"):
-        print(f"note: {record['note']}")
+    finally:
+        knowledge.close()
+    payload = {**summary, "added": [str(path) for path in added]}
+    if args.json:
+        print(json.dumps(payload, indent=2))
+        return 0
+    print(f"reference folder: {summary['directory']}")
+    for row in summary["files"]:
+        state = "indexed" if row["indexed"] else "not indexed"
+        print(f"{row['name']:28} [{row['media']}, {state}]")
+    if not summary["files"]:
+        print("no references; copy files into the folder above or pass paths to this command")
     return 0
 
 
-def _cmd_extensions_uninstall(args: argparse.Namespace) -> int:
-    from ifc_console import extensions
+def _cmd_agents_run(args: argparse.Namespace) -> int:
+    import asyncio
+
+    from ifc_console.agents.runner import run_pack
+
+    registry = _agents_registry()
+    pack = registry.get(args.name.lower())
+    if pack is None:
+        active = ", ".join(info.name for info in registry.active()) or "(none)"
+        print(f"no built-in agent named {args.name!r}; available: {active}")
+        print("`ifc-console agents list` shows the agents shipped by this build")
+        return 1
+    asyncio.run(
+        run_pack(
+            pack,
+            path=args.path,
+            attach=args.attach,
+            token=args.token,
+            provider=args.provider,
+            model_id=args.model,
+            base_url=args.base_url,
+            prompt=args.prompt,
+            # terminal runs stay text-first; the panel is the viewer surface
+            viewer=False,
+            home=args.home,
+        )
+    )
+    return 0
+# --------------------------------------------------------------------------- keys
+def _cmd_keys_set(args: argparse.Namespace) -> int:
+    from ifc_console import credentials
     from ifc_console.mcp.envelope import ToolError
 
+    key = args.key
+    if key is None:
+        import getpass
+        import sys
+
+        if sys.stdin.isatty():
+            key = getpass.getpass(f"API key for {args.provider}: ")
+        else:
+            key = sys.stdin.readline()
+    store = _new_store()
     try:
-        record = extensions.uninstall(_new_store().home, args.name)
+        credentials.set_api_key(store.home, args.provider.lower(), key or "")
     except ToolError as exc:
         print(f"{exc.code}: {exc}")
         if exc.hint:
             print(exc.hint)
         return 1
-    print(f"removed {args.name} ({record.get('package')})")
+    print(f"key for {args.provider} stored in the system keyring")
     return 0
 
 
-def _cmd_extensions_new(args: argparse.Namespace) -> int:
-    from ifc_console.extensions.scaffold import generate
+def _cmd_keys_list(args: argparse.Namespace) -> int:
+    from ifc_console import credentials
+
+    store = _new_store()
+    if not credentials.keyring_available():
+        print('the keyring extra is not installed: pip install "ifc-console[keys]"')
+        print("keys currently come from environment variables only")
+        return 1
+    providers = credentials.stored_providers(store.home)
+    if not providers:
+        print("no keys stored; add one with: ifc-console keys set <provider>")
+        return 0
+    for provider in providers:
+        print(f"{provider}: stored in the system keyring")
+    return 0
+
+
+def _cmd_keys_delete(args: argparse.Namespace) -> int:
+    from ifc_console import credentials
     from ifc_console.mcp.envelope import ToolError
 
+    store = _new_store()
     try:
-        files = generate(args.dir, args.name)
+        existed = credentials.delete_api_key(store.home, args.provider.lower())
     except ToolError as exc:
         print(f"{exc.code}: {exc}")
         if exc.hint:
             print(exc.hint)
         return 1
-    for path in files:
-        print(f"created {path}")
-    project_root = next(path.parent for path in files if path.name == "pyproject.toml")
     print(
-        f"\nnext: cd {project_root.name}, run `uv sync`, edit src/*/agent.py, "
-        "and run the offline test with `uv run python -m pytest -q`"
+        f"key for {args.provider} removed"
+        if existed
+        else f"no stored key for {args.provider}"
     )
     return 0
 

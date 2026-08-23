@@ -236,6 +236,13 @@ class ConsoleScreen(Screen):
             self.refresh_status()
             self.print(f"[red]server failed to start:[/red] {escape(str(event.get('reason')))}")
             self.print("  [dim]try /port <number> to use another port[/dim]")
+        elif etype == "server_moved":
+            self.refresh_status()
+            self.print(
+                f"[green]second session moved to port {event.get('port')}[/green] "
+                f"[dim](port {event.get('original')} stays with your other "
+                "ifc-console session and its MCP clients)[/dim]"
+            )
         elif etype == "model_loading":
             self._loading = str(event.get("name") or "model")
             size_mb = (event.get("size_bytes") or 0) / 1_048_576
