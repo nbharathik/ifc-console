@@ -59,14 +59,15 @@ class TestStore:
             credentials.set_api_key(tmp_path, "openai", "   ")
         assert excinfo.value.code == "INVALID_INPUT"
 
-    def test_without_the_extra_everything_degrades(self, tmp_path: Path, no_keyring):
+    def test_without_the_bundled_dependency_everything_degrades(self, tmp_path: Path, no_keyring):
         assert credentials.keyring_available() is False
         assert credentials.get_api_key("openai") is None
         assert credentials.stored_providers(tmp_path) == []
         with pytest.raises(ToolError) as excinfo:
             credentials.set_api_key(tmp_path, "openai", "sk-x")
         assert excinfo.value.code == "EXTRA_NOT_INSTALLED"
-        assert "ifc-console[keys]" in excinfo.value.hint
+        assert "Reinstall or upgrade ifc-console" in excinfo.value.hint
+        assert "install" in excinfo.value.hint  # names the repair command
 
 
 class TestResolutionOrder:

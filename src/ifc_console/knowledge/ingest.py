@@ -1,8 +1,9 @@
 """Turn project documents into knowledge records.
 
 Markdown splits per heading section, plain text packs paragraphs, PDFs index
-per page (text PDFs only; scanned pages carry no text and are reported, not
-OCRed). Images are registered so search can find and cite them, but their
+per page, and every PDF page remains available as renderable visual evidence.
+Scanned pages carry no searchable text but can still be inspected by a vision
+model. Images are registered so search can find and cite them, but their
 pixels are not indexed. Document text is data, never instructions: chunks
 that look like instructions are flagged at ingest time.
 """
@@ -99,10 +100,12 @@ def chunk_pdf(path: Path) -> list[tuple[int, str]]:
     try:
         from pypdf import PdfReader
     except ImportError:
+        from ifc_console.agents.environment import missing_dependency_hint
+
         raise ToolError(
             "EXTRA_NOT_INSTALLED",
             "PDF ingestion needs the pypdf package.",
-            'Install it with: pip install "ifc-console[pdf]"',
+            missing_dependency_hint("pypdf"),
         ) from None
     try:
         reader = PdfReader(str(path))
@@ -181,10 +184,35 @@ def file_records(path: Path, *, base: Path) -> tuple[list[Record], dict[str, Any
     elif suffix in PDF_SUFFIXES:
         entry["media"] = "pdf"
         pages = chunk_pdf(path)
+        try:
+            from pypdf import PdfReader
+
+            entry["pages"] = len(PdfReader(str(path)).pages)
+        except Exception:
+            # chunk_pdf already produced the precise invalid-PDF error. This
+            # fallback only protects metadata collection from a second read.
+            entry["pages"] = max((number for number, _ in pages), default=0)
+        entry["text_pages"] = len(pages)
         if not pages:
             entry["no_text"] = True
-        for number, text in pages:
-            records.append(record(f"p{number}", None, text, number, "pdf"))
+        text_by_page = dict(pages)
+        visual_only = 0
+        for number in range(1, int(entry["pages"]) + 1):
+            text = text_by_page.get(number)
+            if text:
+                records.append(record(f"p{number}", None, text, number, "pdf"))
+                continue
+            visual_only += 1
+            records.append(
+                record(
+                    f"p{number}",
+                    None,
+                    f"Visual-only PDF page {number} in {path.name}; render this page to inspect it.",
+                    number,
+                    "pdf",
+                )
+            )
+        entry["visual_only_pages"] = visual_only
     else:
         media = "markdown" if suffix in MARKDOWN_SUFFIXES else "text"
         entry["media"] = media

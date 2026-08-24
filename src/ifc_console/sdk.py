@@ -1158,6 +1158,12 @@ class AsyncWorkbench:
         """Return one indexed project image in the standard ``data.images`` shape."""
         return await self._data("get_project_reference_image", path=path)
 
+    async def project_document_page(
+        self, path: str, page: int, **kwargs: Any
+    ) -> dict[str, Any]:
+        """Render one indexed PDF page in the standard ``data.images`` shape."""
+        return await self._data("get_project_document_page", path=path, page=page, **kwargs)
+
     async def api_docs(self, function: str) -> dict[str, Any]:
         return await self._data("get_api_docs", function=function)
 
@@ -1732,6 +1738,9 @@ class Workbench:
 
     def project_reference_image(self, path: str) -> dict[str, Any]:
         return self._run(lambda: self._wb.project_reference_image(path))
+
+    def project_document_page(self, path: str, page: int, **kwargs: Any) -> dict[str, Any]:
+        return self._run(lambda: self._wb.project_document_page(path, page, **kwargs))
 
     def api_docs(self, function: str) -> dict[str, Any]:
         return self._run(lambda: self._wb.api_docs(function))

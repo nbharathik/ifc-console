@@ -80,6 +80,29 @@ ifc-console check model.ifc --ids requirements.ids \
 Runs schema validation and optional IDS checks. Formats are `text`, `json`,
 `sarif`, and `junit`. Add `--express-rules` for slower EXPRESS where-rules.
 
+### `dev`
+
+```bash
+ifc-console dev --check
+ifc-console dev --open chat
+```
+
+Rehearses the browser panel against a generated demo project with an offline
+model, so no API key is needed. `--check` runs the headless feature checklist
+and never opens a browser tab; without it, at most one tab opens and only when
+a terminal asked for it. See [Testing the panel](testing.md).
+
+| Flag | Effect |
+| --- | --- |
+| `--check` | Run the checklist and exit; non-zero when a check fails |
+| `--json` | Machine-readable check results |
+| `--fresh` | Rebuild the demo project first |
+| `--keep` | Keep serving after `--check` |
+| `--open chat\|viewer\|solo\|none` | Which single surface to open |
+| `--project DIR` | Where the demo project lives |
+| `--file model.ifc` | Use your own model instead of the demo one |
+| `--port N` | Serve somewhere other than 8393 |
+
 ## Client setup
 
 ```bash
@@ -197,7 +220,7 @@ on a copied or version-controlled model.
 | `sessions list|show|verify|clear` | inspect and verify audit sessions |
 | `plugins list|doctor` | inspect trusted operation plugins |
 | `knowledge build|status|search|ingest` | manage the reference index and the project document corpus |
-| `agents list|run|files` | list/run the built-in agents and manage their project-local references |
+| `agents list|blocks|run|files` | list agents and the capability blocks they are built from, run one, and manage project-local references |
 | `keys set|list|delete` | provider API keys in the system keyring, never plain text |
 
 Examples:
@@ -208,6 +231,7 @@ ifc-console token rotate
 ifc-console sessions verify SESSION_ID
 ifc-console plugins doctor --json
 ifc-console agents files manuals/ wall-detail.jpg
+ifc-console agents blocks
 ```
 
 ## Exit codes

@@ -1158,6 +1158,54 @@
         ],
         "returns": "ChangeSetRecord"
       },
+      "project_document_page": {
+        "async": true,
+        "parameters": [
+          {
+            "annotation": "str",
+            "kind": "POSITIONAL_OR_KEYWORD",
+            "name": "path",
+            "required": true
+          },
+          {
+            "annotation": "int",
+            "kind": "POSITIONAL_OR_KEYWORD",
+            "name": "page",
+            "required": true
+          },
+          {
+            "annotation": "Any",
+            "kind": "VAR_KEYWORD",
+            "name": "kwargs",
+            "required": true
+          }
+        ],
+        "returns": "dict[str, Any]"
+      },
+      "project_documents": {
+        "async": true,
+        "parameters": [
+          {
+            "annotation": "str | None",
+            "default": "None",
+            "kind": "KEYWORD_ONLY",
+            "name": "media"
+          }
+        ],
+        "returns": "list[dict[str, Any]]"
+      },
+      "project_reference_image": {
+        "async": true,
+        "parameters": [
+          {
+            "annotation": "str",
+            "kind": "POSITIONAL_OR_KEYWORD",
+            "name": "path",
+            "required": true
+          }
+        ],
+        "returns": "dict[str, Any]"
+      },
       "psets": {
         "async": true,
         "parameters": [
@@ -3633,6 +3681,54 @@
           }
         ],
         "returns": "ChangeSetRecord"
+      },
+      "project_document_page": {
+        "async": false,
+        "parameters": [
+          {
+            "annotation": "str",
+            "kind": "POSITIONAL_OR_KEYWORD",
+            "name": "path",
+            "required": true
+          },
+          {
+            "annotation": "int",
+            "kind": "POSITIONAL_OR_KEYWORD",
+            "name": "page",
+            "required": true
+          },
+          {
+            "annotation": "Any",
+            "kind": "VAR_KEYWORD",
+            "name": "kwargs",
+            "required": true
+          }
+        ],
+        "returns": "dict[str, Any]"
+      },
+      "project_documents": {
+        "async": false,
+        "parameters": [
+          {
+            "annotation": "str | None",
+            "default": "None",
+            "kind": "KEYWORD_ONLY",
+            "name": "media"
+          }
+        ],
+        "returns": "list[dict[str, Any]]"
+      },
+      "project_reference_image": {
+        "async": false,
+        "parameters": [
+          {
+            "annotation": "str",
+            "kind": "POSITIONAL_OR_KEYWORD",
+            "name": "path",
+            "required": true
+          }
+        ],
+        "returns": "dict[str, Any]"
       },
       "psets": {
         "async": false,

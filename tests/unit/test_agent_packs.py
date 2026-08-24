@@ -88,3 +88,49 @@ class TestPanelRuntime:
         result = await agent.run("how many walls?")
         assert result.tool_calls[0].result["ok"] is True
         assert result.text == "three walls"
+
+
+class TestBlueprints:
+    def test_project_blueprint_is_atomic_and_appears_in_the_registry(self, tmp_path):
+        from ifc_console.agents.blueprints import AgentBlueprint, AgentBlueprintStore
+
+        blueprint = AgentBlueprint(
+            name="custom-envelope-review",
+            title="Envelope review",
+            description="Review envelope evidence and measurements.",
+            instructions="Use the project manual and report every source.",
+            blocks=("ifc-context", "documents", "measurements"),
+            starters=("Review the selected walls",),
+        )
+        store = AgentBlueprintStore(tmp_path)
+        target = store.save(blueprint)
+        assert target.is_file()
+        assert not list(target.parent.glob("*.tmp"))
+
+        registry = AgentPackRegistry(tmp_path)
+        info = next(item for item in registry.active() if item.name == blueprint.name)
+        assert info.kind == "custom"
+        assert info.blocks == blueprint.blocks
+        assert {"files", "vision"}.issubset(info.features)
+
+    async def test_blueprint_builds_only_selected_block_tools(self, tmp_path):
+        from ifc_console import LocalRuntime
+        from ifc_console.agents.blueprints import AgentBlueprint, BlueprintPack
+
+        blueprint = AgentBlueprint(
+            name="custom-doc-reader",
+            title="Doc reader",
+            description="Read project references.",
+            instructions="Answer with citations.",
+            blocks=("documents",),
+        )
+        async with await LocalRuntime.open(
+            home=tmp_path / "home", project_dir=tmp_path
+        ) as runtime:
+            agent = await BlueprintPack(blueprint).build(
+                runtime, model=ScriptedAgentModel([]), viewer=False
+            )
+
+        assert "get_project_document_page" in agent.tools.names
+        assert "measure_elements" not in agent.tools.names
+        assert "preview_property_change" not in agent.tools.names

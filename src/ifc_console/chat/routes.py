@@ -23,6 +23,7 @@ from ifc_console.chat.providers import (
     list_models,
     validate_base_url,
 )
+from ifc_console.core.results import ToolError
 from ifc_console.viewer import assets
 
 if TYPE_CHECKING:
@@ -161,6 +162,51 @@ def build_chat_routes(core: AppCore) -> list[Route]:
                 "viewer": {"enabled": core.viewer.enabled},
             }
         )
+
+    async def credentials(request) -> JSONResponse:
+        """Manage provider secrets without ever returning secret material."""
+        if not core.chat.enabled:
+            return _disabled()
+        from ifc_console import credentials as credential_store
+
+        if request.method == "GET":
+            return JSONResponse(
+                {
+                    "available": credential_store.keyring_available(),
+                    "providers": credential_store.stored_providers(core.store.home),
+                    "storage": "operating-system credential store",
+                }
+            )
+        body, error = await _json_object(request)
+        if error is not None:
+            return error
+        assert body is not None
+        try:
+            provider_id = (_optional_text(body, "provider", 50) or "").lower()
+            action = (_optional_text(body, "action", 20) or "store").lower()
+            key = _optional_text(body, "api_key", _MAX_KEY_CHARS)
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        if provider_id not in PROVIDERS:
+            return JSONResponse({"error": "unknown provider"}, status_code=400)
+        try:
+            if action == "delete":
+                removed = credential_store.delete_api_key(core.store.home, provider_id)
+                core.chat.keys.pop(provider_id, None)
+                core.audit.record("provider_key_deleted", provider=provider_id)
+                return JSONResponse({"ok": True, "stored": False, "removed": removed})
+            if action != "store":
+                return JSONResponse({"error": "action must be store or delete"}, status_code=400)
+            if not key:
+                return JSONResponse({"error": "api_key is required"}, status_code=400)
+            credential_store.set_api_key(core.store.home, provider_id, key)
+            core.chat.keys.pop(provider_id, None)
+            core.audit.record("provider_key_stored", provider=provider_id)
+            return JSONResponse({"ok": True, "stored": True})
+        except ToolError as exc:
+            return JSONResponse(
+                {"error": exc.message, "code": exc.code, "hint": exc.hint}, status_code=501
+            )
 
     async def models(request) -> JSONResponse:
         if not core.chat.enabled:
@@ -317,6 +363,7 @@ def build_chat_routes(core: AppCore) -> list[Route]:
     return [
         Route("/chat", chat_shell, methods=["GET"]),
         Route("/api/chat/providers", providers, methods=["GET"]),
+        Route("/api/chat/credentials", credentials, methods=["GET", "POST"]),
         Route("/api/chat/models", models, methods=["POST"]),
         Route("/api/chat/select", remember, methods=["POST"]),
         Route("/api/chat/stream", stream, methods=["POST"]),

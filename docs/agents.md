@@ -295,8 +295,9 @@ validation/query graphs and delegation only when a model decision is needed.
 `examples/sdk/quickstart_agent.py` is the smallest runnable agent: it opens a
 model, selects six read tools, and streams the bundled `Agent` in a terminal.
 
-The complete browser chat is part of IFC Console itself. Install the viewer
-extra, start the Console in a project folder, and open the agent picker:
+The complete browser chat is part of IFC Console itself. PDF ingestion and PDF
+page vision ship in the base package; install the viewer extra for the browser
+panel, start the Console in a project folder, and open the agent picker:
 
 ```bash
 pip install "ifc-console[viewer]"
@@ -313,11 +314,25 @@ web-chat implementation under `examples/`.
 GlobalId, selector, or viewer selection; inspects the unit; previews thickness;
 then requires host-side approval before the durable transaction commit.
 
-## The built-in agents
+## The shipped agents
 
-`measurement` and `docs` ship in `ifc_console.agents.builtin`. They are available
-without discovery, installation, or an allow list. External agent extensions
-are intentionally not supported yet.
+Four presets ship in `ifc_console.agents.presets`. They are data, not code: a
+role prompt, a set of capability blocks, and some worked examples. The same
+`compose()` call builds all of them and any agent a user creates, so a custom
+agent is never a second-class citizen.
+
+| Agent | Blocks | For |
+| --- | --- | --- |
+| `general` | every block except `code` | Start here. Queries, quantities, documents, validation, and marked proposals in one place. |
+| `measurement` | context, documents, measurements, viewer, proposals, audit | Recipe-driven measurement with a stated method and a cited source. |
+| `docs` | context, documents, spatial | Answers from the project corpus, every claim cited with its page. |
+| `review` | context, spatial, validation, clash, quantities, viewer | Schema, IDS, clashes, and missing data, worst first. |
+
+The focused presets exist because a narrower agent is easier to trust and to
+read, not because they are a different kind of thing: each is the general
+assistant with fewer blocks and a sharper prompt. To make your own, write
+standing instructions for one of them, or build a preset of your own from the
+blocks below.
 
 The project reference directory is:
 
@@ -325,19 +340,114 @@ The project reference directory is:
 project/
   .ifc-console/
     agents/references/    local manuals, drawings, and images
+    agents/custom/        your own agents, as inspectable JSON
     knowledge/            generated retrieval index and source manifest
     recipes/              reviewed measurement recipes
 ```
 
-Add files through the browser panel, with `ifc-console agents files <paths>`,
-or by copying them into `agents/references/` and running `/agent files`.
-`list_project_documents` lets an agent inspect the evidence ledger;
-`get_project_reference_image` provides image pixels as native vision input.
+Add files through the panel's Files tab, with `ifc-console agents files <paths>`,
+or by copying them into `agents/references/`. `list_project_documents` lets an
+agent inspect the evidence ledger; `get_project_reference_image` provides image
+pixels as native vision input; `get_project_document_page` renders a PDF page
+for native vision, so drawings, scans, and layout-dependent tables are not
+reduced to extracted text. Images attached in the panel are included directly
+with the next message.
 
-The measurement agent resolves the target scope, consults a recipe, measures
-with an explicit deterministic method, cites the supporting document, and can
-prepare a revision-bound ChangeSet in `Company_Measurements`. It cannot approve
-or commit its own proposal.
+## The agent workspace
+
+`GET /api/agents/workspace?agent=<name>` returns one payload describing an
+agent exactly as it would run right now: its role prompt, its blocks and which
+are available, every tool it holds with a one-line summary and its pipeline
+stage, the stages it can reach, its worked examples, what it may write, its
+limits, and the project files it can see. It is assembled from the same
+composition the agent runs with, so it cannot drift: a tool missing from the
+workspace is a tool the agent does not have.
+
+The browser panel renders it as a side panel with four tabs (how it works,
+tools, files, settings), which is what keeps "what is this thing and what can
+it reach" out of the conversation.
+
+## Capability blocks
+
+Every agent in this project, built-in or custom, is assembled from the same
+list in `ifc_console.agents.blocks`. One `compose()` call decides an agent's
+tool surface and safety preamble, so a custom agent is never a second-class
+citizen and no agent can widen policy by construction.
+
+| Block | What it adds |
+| --- | --- |
+| `ifc-context` | Elements, types, property sets, schema docs |
+| `spatial` | Site, building, storey, space hierarchy and georeferencing |
+| `documents` | Project corpus search, reference images, rendered PDF pages |
+| `measurements` | Recipes, geometry extents, distances, quantities |
+| `quantities` | Aggregated takeoff and CSV artifacts |
+| `validation` | Schema checks and IDS conformance |
+| `clash` | Intersection and near-touch detection |
+| `viewer` | Selection, hand measurements, highlight, theme, screenshots |
+| `property-proposals` | AI-marked, preview-only property and measurement writes |
+| `ai-audit` | Inventory of every AI-authored value already in the model |
+| `code` | Generated ifcopenshell code for what the tools do not cover |
+
+Composition degrades instead of failing: a viewer block with no viewer, or a
+validation block with no IDS engine, drops out and the agent is told in its
+prompt what it cannot do, so it never promises a capability it lacks.
+
+```python
+from ifc_console.agents.blocks import compose
+
+composition = await compose(
+    runtime,
+    ["ifc-context", "documents", "measurements", "property-proposals"],
+    role="You are a facade compliance assistant.",
+    extra_instructions=company_procedure,
+    viewer=False,
+    agent="facade-agent",
+)
+agent = Agent(name="facade", model=model, tools=composition.tools,
+              instructions=composition.instructions)
+```
+
+## Custom agents from blocks
+
+Open the visual builder with `/agent new`, or the sidebar's **Build an agent**
+in the browser panel. Choose the smallest set of blocks, write the company
+procedure as instructions, and add optional starter prompts. The resulting
+agent appears beside Documents and Measurement in `/agent`, in
+`ifc-console agents list`, and in the panel sidebar, where it can also be
+deleted.
+
+Blueprints cannot name arbitrary operations, load code, approve ChangeSets, or
+change runtime policy. The selected blocks expand to a fixed allowlist at build
+time; viewer tools disappear when no viewer surface is available. This makes a
+blueprint useful as reusable project configuration without turning it into a
+plugin or a second security boundary.
+
+## Marking what the model wrote
+
+An agent may propose values, never commit them, and everything it proposes is
+identifiable in the file afterwards. Two preview-only tools exist:
+
+- `measure__propose_measured_value` for the standard metrics, into
+  `IfcConsole_AI_Measurements`
+- `measure__propose_property_value` for a property your own instructions or a
+  document define, into `IfcConsole_AI_Properties`
+
+The property set names are fixed in host code. Alongside every value the agent
+writes an `AI_Provenance` record into `IfcConsole_AI_Provenance`:
+
+```json
+{"v": 1, "ai_generated": true, "agent": "measurement-agent",
+ "property": "IfcConsole_AI_Measurements.MeasuredThickness",
+ "method": "geometry_extent (local_y)", "model": "anthropic/claude-sonnet-5",
+ "source": "QS-Manual.pdf p12", "unit": "mm", "confidence": "medium",
+ "change_set": "sha256:...", "written_at": "2026-08-23T10:00:00+00:00",
+ "tool": "ifc-console"}
+```
+
+Because every AI-authored property set starts with `IfcConsole_AI_`, the whole
+AI-assisted layer is separable from the authored model by prefix match.
+`list_ai_authored_properties` returns that inventory for review, and
+`ifc_console.agents.provenance.read_ai_properties` does the same in Python.
 
 ## Measurement recipes
 

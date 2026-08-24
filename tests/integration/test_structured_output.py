@@ -46,6 +46,12 @@ async def test_tools_advertise_the_envelope_output_schema(harness_factory, work_
     missing = [
         tool.name
         for tool in listed.tools
-        if tool.name != "get_viewer_screenshot" and tool.outputSchema is None
+        if tool.name
+        not in {
+            "get_viewer_screenshot",
+            "get_project_reference_image",
+            "get_project_document_page",
+        }
+        and tool.outputSchema is None
     ]
     assert missing == []

@@ -106,6 +106,44 @@ async def test_the_panel_can_remember_a_choice_for_this_run(chat_core):
     assert chat_core.chat.keys["anthropic"] == "sk-ant"
 
 
+async def test_keys_can_be_saved_and_deleted_without_ever_being_returned(
+    chat_core, monkeypatch
+):
+    saved: dict[str, str] = {}
+    monkeypatch.setattr("ifc_console.credentials.keyring_available", lambda: True)
+    monkeypatch.setattr("ifc_console.credentials.stored_providers", lambda _home: list(saved))
+    monkeypatch.setattr(
+        "ifc_console.credentials.set_api_key",
+        lambda _home, provider, key: saved.__setitem__(provider, key),
+    )
+    monkeypatch.setattr(
+        "ifc_console.credentials.delete_api_key",
+        lambda _home, provider: saved.pop(provider, None) is not None,
+    )
+    client = _client(chat_core)
+    headers = _auth(chat_core)
+
+    stored = client.post(
+        "/api/chat/credentials",
+        headers=headers,
+        json={"provider": "anthropic", "action": "store", "api_key": "secret-value"},
+    )
+    assert stored.status_code == 200
+    assert "secret-value" not in stored.text
+    assert saved == {"anthropic": "secret-value"}
+    listing = client.get("/api/chat/credentials", headers=headers).json()
+    assert listing["providers"] == ["anthropic"]
+    assert "secret-value" not in json.dumps(listing)
+
+    deleted = client.post(
+        "/api/chat/credentials",
+        headers=headers,
+        json={"provider": "anthropic", "action": "delete"},
+    )
+    assert deleted.status_code == 200
+    assert saved == {}
+
+
 async def test_local_only_blocks_model_discovery_before_network(chat_core, monkeypatch):
     chat_core.store.settings.chat.local_only = True
 

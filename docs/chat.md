@@ -47,8 +47,10 @@ URL outside the local machine.
 
 A selector beside the panel title offers plain **Chat** or one of the
 agents. **Measurement** and **Documents** ship with ifc-console and are
-there out of the box. External agent extensions are not supported yet. An
-agent keeps its own conversation, starter prompts, and workflow: the
+there out of the box. The block button or `/agent new` builds project-local
+agents from reviewed capability blocks. Python hosts can still register packs
+explicitly; arbitrary extension discovery is not enabled. An agent keeps its
+own conversation, starter prompts, and workflow: the
 measurement agent resolves recipes, reads reference images, cites pages, and
 can prepare a safe ChangeSet proposal; the documents agent answers from the
 ingested corpus.
@@ -56,21 +58,26 @@ ingested corpus.
 Both agents show the same project reference ledger. Use **Add files**, run
 `ifc-console agents files <paths>`, or copy supported files directly into
 `.ifc-console/agents/references/`. Documents are indexed for retrieval; images
-are stored locally and can be loaded as model vision input. The ledger shows
-whether each file is indexed. PDF text extraction needs `ifc-console[pdf]`.
-`/agent` in the terminal picks one with the arrow keys; `/agent measurement`
-opens the panel with it selected, and `/agent files` lists or refreshes the
-local references. Agent conversations keep their context on the console for
-the run; switching provider or model starts a fresh one.
+are stored locally and can ride directly with the next model message. PDF text
+extraction and visual page rendering ship in the base package. The ledger shows
+whether each file is indexed. `/agent` in the terminal picks one with the arrow
+keys; `/agent measurement` opens that agent directly, `/agent new` opens the
+builder, and `/agent files` lists or refreshes the
+local references. When local history is enabled, agent threads are stored as
+bounded, atomic records under `.ifc-console/agents/threads/`, allowing the
+selected conversation to resume after the console restarts. Switching provider
+or model starts a compatible agent runtime while preserving the selected local
+conversation.
 
 ## Credentials and model data
 
 A key is found in this order: pasted in the panel, stored in the system
-keyring (`ifc-console keys set openai`, needs the `ifc-console[keys]`
-extra), or read from the provider's environment variable. Stored keys live
-in the OS credential store, never in a file; `ifc-console keys list` and
-`keys delete` manage them. A pasted key is held in console memory only,
-until `/chat off` or exit.
+keyring (`ifc-console keys set openai`), or read from the provider's
+environment variable. Keyring support ships with the base package. Select
+**Save in the operating-system credential store** to store a pasted key
+securely from the panel. Stored keys never enter browser or project storage;
+`ifc-console keys list` and `keys delete` manage them. Without that explicit
+choice, a pasted key is held in console memory only until `/chat off` or exit.
 
 The browser never contacts the provider directly. ifc-console sends the
 provider:
@@ -96,7 +103,8 @@ The same controls apply as with MCP:
 - every call is audited with provider and model metadata, never the key.
 
 The measurement agent may create a revision-bound ChangeSet preview in
-`Company_Measurements`. A preview changes neither the live model nor the IFC
+`IfcConsole_AI_Measurements`. The name permanently marks committed values as
+AI-assisted. A preview changes neither the live model nor the IFC
 file. Approval and commit remain explicit SDK/CLI host actions.
 
 Turn `chat.tools` off when you want ordinary conversation without model tools.
@@ -106,11 +114,21 @@ Turn `chat.tools` off when you want ordinary conversation without model tools.
 - Enter sends; Shift+Enter adds a line.
 - Escape closes settings or stops a running answer.
 - **Stop** cancels the current provider response.
-- **New chat** clears the conversation in that browser tab.
-- Reloading keeps the tab's conversation; closing the tab drops it.
+- **New chat** archives the current conversation locally and starts another.
+- **Conversation history** reopens or deletes previous local chats.
+- **Export** downloads the selected conversation as Markdown.
+- **Add files** indexes references and attaches them to the next agent turn.
+- The block button opens the custom-agent builder.
+- **Additional instructions** are saved per assistant and augment, but cannot
+  replace, its built-in safety and approval rules.
+- **Keep conversation history locally** controls browser transcript storage and
+  durable project-local agent context. Clearing history removes both.
 - Answers show tool calls, token counts, latency, and copy controls.
 
-Provider, model, and mode are always visible above the conversation.
+Provider, model, IFC file, evidence count, capability blocks, and safety mode
+are visible in the context map above the conversation. Live workflow markers
+show whether an agent is gathering evidence, using tools, verifying results, or
+preparing a proposal.
 
 ## Python
 

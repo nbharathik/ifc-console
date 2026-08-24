@@ -99,6 +99,33 @@ async def test_listing_shows_active_packs(panel_core):
     assert scripted["starters"] == ["say hello"]
 
 
+async def test_custom_agent_builder_lists_blocks_and_persists_a_pack(panel_core):
+    client = _client(panel_core)
+    blocks = client.get("/api/agents/blocks", headers=_auth(panel_core)).json()["blocks"]
+    assert {"documents", "measurements", "viewer"}.issubset(
+        {block["name"] for block in blocks}
+    )
+    response = client.post(
+        "/api/agents/custom",
+        headers=_auth(panel_core),
+        json={
+            "title": "Envelope review",
+            "description": "Review envelope evidence and measurements.",
+            "instructions": "Cite the manual for each reported value.",
+            "blocks": ["ifc-context", "documents", "measurements"],
+            "starters": ["Review the selected walls"],
+        },
+    )
+    assert response.status_code == 201
+    created = response.json()["agent"]
+    assert created["name"].startswith("custom-envelope-review")
+    assert created["kind"] == "custom"
+    listing = client.get("/api/agents", headers=_auth(panel_core)).json()["agents"]
+    assert created["name"] in {agent["name"] for agent in listing}
+    saved = panel_core.store.project_dir / ".ifc-console" / "agents" / "custom"
+    assert list(saved.glob("custom-envelope-review*.json"))
+
+
 async def test_stream_speaks_the_chat_vocabulary(panel_core):
     client = _client(panel_core)
     response = client.post(
@@ -140,6 +167,34 @@ async def test_thread_continuity_reuses_the_agent(panel_core):
     assert pack.built == 1
     text = "".join(e.get("text", "") for e in second if e["type"] == "content")
     assert text == "second"
+
+
+async def test_panel_threads_survive_a_server_state_rebuild_and_can_be_deleted(panel_core):
+    client = _client(panel_core)
+    first = _events(
+        client.post("/api/agents/stream", headers=_auth(panel_core), json=_stream_body())
+    )
+    thread_id = first[0]["id"]
+    thread_dir = panel_core.store.project_dir / ".ifc-console" / "agents" / "threads"
+    assert list(thread_dir.glob("*.json"))
+
+    panel_core.agent_panel.threads.clear()
+    resumed = _events(
+        client.post(
+            "/api/agents/stream",
+            headers=_auth(panel_core),
+            json=_stream_body(thread_id=thread_id),
+        )
+    )
+    assert resumed[0]["id"] == thread_id
+
+    deleted = client.post(
+        "/api/agents/thread/delete",
+        headers=_auth(panel_core),
+        json={"thread_id": thread_id},
+    )
+    assert deleted.status_code == 200
+    assert not list(thread_dir.glob("*.json"))
 
 
 async def test_tool_calls_stream_as_chips(panel_core):
@@ -199,6 +254,7 @@ async def test_upload_ingests_into_the_project_corpus(panel_core):
     assert payload["documents"] == 1
     assert payload["records"] >= 1
     assert payload["indexed"] is True
+    assert payload["attachment"]["path"].endswith("manual.md")
     assert payload["files"][0]["indexed"] is True
     assert ".ifc-console/agents/references/" in payload["files"][0]["path"]
     hits = panel_core.project_knowledge.search("wall thickness layers")

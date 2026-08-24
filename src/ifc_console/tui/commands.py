@@ -1181,18 +1181,45 @@ async def _agent_open(console: ConsoleScreen, name: str) -> None:
     if pack is None:
         available = ", ".join(info.name for info in core.agent_packs.active()) or "(none)"
         console.print(
-            f"[red]no built-in agent named {escape(name)}[/red] "
+            f"[red]no agent named {escape(name)}[/red] "
             f"[dim]available: {escape(available)}; /agent list shows everything[/dim]"
         )
         return
-    await _chat(console, "")
-    if core.chat.enabled:
-        head, _, fragment = core.chat_url.partition("#")
-        joiner = "&" if "?" in head else "?"
-        url = f"{head}{joiner}agent={pack.info.name}" + (f"#{fragment}" if fragment else "")
-        console.print(
-            f"[b]{escape(pack.info.title)}[/b] direct link (URL above opens plain chat): {url}"
-        )
+    await _agent_open_url(console, agent=pack.info.name)
+
+
+async def _agent_open_url(
+    console: ConsoleScreen, *, agent: str | None = None, builder: bool = False
+) -> None:
+    """Enable the panel and open the requested agent surface directly."""
+    core = console.core
+    if not await _require_server(console):
+        return
+    from ifc_console.viewer import assets
+
+    if not assets.available():
+        console.print(f"[red]{escape(assets.INSTALL_HINT)}[/red]")
+        return
+    core.enable_viewer()
+    core.enable_chat()
+    head, _, fragment = core.chat_url.partition("#")
+    query = f"agent={agent}" if agent else "builder=1"
+    joiner = "&" if "?" in head else "?"
+    url = f"{head}{joiner}{query}" + (f"#{fragment}" if fragment else "")
+    console.app.copy_to_clipboard(url)
+    import webbrowser
+
+    try:
+        opened = webbrowser.open(url)
+    except Exception:
+        opened = False
+    label = "custom agent builder" if builder else core.agent_packs.get(agent or "").info.title
+    console.print(
+        f"[green]{escape(label)} opened in your browser[/green] (URL copied): {url}"
+        if opened
+        else f"{escape(label)}: URL copied: {url}"
+    )
+    console.refresh_status()
 
 
 async def _agent_pick(console: ConsoleScreen) -> None:
@@ -1214,15 +1241,19 @@ async def _agent_pick(console: ConsoleScreen) -> None:
 
 @command(
     "agent",
-    "/agent [name|list|files]",
-    "pick an agent with the arrow keys and open it in the chat panel",
+    "/agent [name|new|list|files]",
+    "open a built-in or custom agent, or compose one from capability blocks",
     "connect",
-    examples=("/agent", "/agent measurement", "/agent files"),
+    examples=("/agent", "/agent measurement", "/agent new", "/agent files"),
 )
 async def _agent(console: ConsoleScreen, args: str) -> None:
     core = console.core
     parts = args.strip().lower().split()
     registry = core.agent_packs
+
+    if parts and parts[0] in {"new", "build", "custom"}:
+        await _agent_open_url(console, builder=True)
+        return
 
     if parts and parts[0] == "files":
         try:
@@ -1260,17 +1291,18 @@ async def _agent(console: ConsoleScreen, args: str) -> None:
         return
 
     infos = registry.installed()
-    lines = ["[b]built-in agents[/b]"]
+    lines = ["[b]available agents[/b]"]
     if not infos:
         lines.append("  [dim]none shipped by this build[/dim]")
     for info in infos:
         lines.append(
-            f"  [cyan]{escape(info.name):12}[/cyan] [green]ready[/green] "
+            f"  [cyan]{escape(info.name):20}[/cyan] [green]ready[/green] "
+            f"[dim]{escape(info.kind)}[/dim] "
             f"{escape(info.description)}"
         )
     lines.append(
         "[dim]/agent picks one with the arrow keys; /agent <name> opens it "
-        "directly; /agent files shows the project references[/dim]"
+        "directly; /agent new builds one from blocks; /agent files shows references[/dim]"
     )
     console.print("\n".join(lines))
 

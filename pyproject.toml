@@ -44,6 +44,14 @@ dependencies = [
     "rich>=13",
     # workflow manifests and measurement recipes are YAML
     "pyyaml>=6",
+    # Built-in Docs and Measurement agents ingest PDF manuals. PyMuPDF makes
+    # drawings and scanned pages available to vision models as page images.
+    "pypdf>=4",
+    "PyMuPDF>=1.24,<2",
+    # The bundled chat panel can save provider credentials in the operating
+    # system credential store. This is core agent functionality: keeping it
+    # optional made the default UI offer a path that failed at runtime.
+    "keyring>=24",
 ]
 
 [project.optional-dependencies]
@@ -74,14 +82,13 @@ docs = [
     "mkdocs>=1.6",
     "mkdocs-material>=9.5",
 ]
-pdf = [
-    # text extraction for `ifc-console knowledge ingest` of PDF manuals
-    "pypdf>=4",
-]
-keys = [
-    # provider API keys in the OS credential store (`ifc-console keys`)
-    "keyring>=24",
-]
+# Kept as a compatibility extra for existing install commands. PDF support is
+# part of the base package because the bundled agents depend on it.
+pdf = []
+# Compatibility extras retained for existing installation commands. PDF and
+# credential-store support are part of the base package because bundled agents
+# and the panel use them directly.
+keys = []
 
 [project.urls]
 Homepage = "https://github.com/nbharathik/ifc-console"

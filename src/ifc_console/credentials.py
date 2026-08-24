@@ -3,15 +3,17 @@
 The secret lives in the operating system's credential store (Windows
 Credential Manager, macOS Keychain, Secret Service on Linux) under the
 service name "ifc-console". Only the provider names are indexed in a
-non-secret file, because keyrings cannot enumerate portably. Everything
-degrades to environment variables when the optional keyring package is
-absent.
+non-secret file, because keyrings cannot enumerate portably. Environment
+variables remain a supported alternative when an OS credential backend is not
+available.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import os
+import uuid
 from pathlib import Path
 
 from ifc_console.core.results import ToolError
@@ -20,7 +22,6 @@ log = logging.getLogger("ifc-console.credentials")
 
 SERVICE = "ifc-console"
 _INDEX_NAME = "keys.json"
-_HINT = 'Install it with: pip install "ifc-console[keys]"'
 
 
 def _backend():
@@ -39,10 +40,13 @@ def keyring_available() -> bool:
 def _require_backend():
     backend = _backend()
     if backend is None:
+        from ifc_console.agents.environment import missing_dependency_hint
+
         raise ToolError(
             "EXTRA_NOT_INSTALLED",
-            "storing keys needs the optional keyring package.",
-            _HINT + " Until then, set the provider's environment variable.",
+            "storing keys needs the bundled keyring package, but it is not installed.",
+            missing_dependency_hint("keyring")
+            + " Until then, set the provider's environment variable.",
         )
     return backend
 
@@ -63,10 +67,16 @@ def _load_index(home: Path) -> list[str]:
 def _save_index(home: Path, providers: list[str]) -> None:
     path = _index_path(home)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps({"version": 1, "providers": sorted(set(providers))}, indent=2) + "\n",
-        encoding="utf-8",
-    )
+    raw = json.dumps({"version": 1, "providers": sorted(set(providers))}, indent=2) + "\n"
+    temporary = path.with_suffix(f".{uuid.uuid4().hex}.tmp")
+    try:
+        with temporary.open("x", encoding="utf-8") as handle:
+            handle.write(raw)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def set_api_key(home: Path, provider: str, key: str) -> None:

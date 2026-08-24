@@ -25,6 +25,28 @@ def _fixtures() -> None:
     _ensure_fixtures()
 
 
+@pytest.fixture(autouse=True)
+def no_browser(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """No test may open a real browser tab.
+
+    The /viewer, /chat, and /agent commands call webbrowser.open. Without this
+    a full run launched one Chrome tab per command test. Tests that care about
+    the URL assert against the returned list.
+    """
+    import webbrowser
+
+    opened: list[str] = []
+
+    def record(url: str, *args: object, **kwargs: object) -> bool:
+        opened.append(url)
+        return True
+
+    monkeypatch.setattr(webbrowser, "open", record)
+    monkeypatch.setattr(webbrowser, "open_new", record, raising=False)
+    monkeypatch.setattr(webbrowser, "open_new_tab", record, raising=False)
+    return opened
+
+
 @pytest.fixture
 def minimal_ifc4_path() -> Path:
     _ensure_fixtures()

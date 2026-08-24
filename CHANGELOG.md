@@ -2,6 +2,99 @@
 
 ## Unreleased
 
+- Declutter the panel chrome. The header is one row (assistant, provider chip,
+  actions); the persistent stage rail, the reach sentence, and the description
+  subtitle are gone. Progress now appears inside the message making it, as a
+  single live line, and the tool calls fold into a "Used N tools" disclosure
+  once the run finishes. The conversation and composer sit in a centred reading
+  column.
+- The sidebar no longer opens on pointer hover; it opened whenever the cursor
+  crossed the left edge on its way past. It opens on click, on the pin, and on
+  keyboard focus.
+- Fix workspace tabs collapsing into circles when their labels wrapped inside a
+  pill radius. They no longer wrap, and the tab bar scrolls if it must.
+- Fix the reach line running off the right edge of the panel instead of
+  truncating.
+
+- Add a `general` assistant that holds every capability block, and make it the
+  default. `measurement`, `docs`, and the new `review` are presets of the same
+  machinery: a role prompt plus a narrower block set, declared as data in
+  `ifc_console.agents.presets`. Specialising an agent means writing standing
+  instructions or picking blocks, not writing a new agent.
+- Add the agent workspace: `GET /api/agents/workspace` returns one payload
+  describing an agent exactly as it would run (prompt, blocks, every tool with
+  its stage, reachable stages, examples, write policy, limits, files), built
+  from the same composition the agent runs with so it cannot drift. The panel
+  renders it as a side panel with how-it-works, tools, files, and per-agent
+  settings tabs, which keeps that material out of the conversation.
+- Rework the panel shell into three columns: a sidebar that leads with building
+  an assistant and groups conversations by recency, the conversation, and the
+  workspace. Files now have a real home with images and documents listed and
+  one-click attachment. Per-agent settings live in the workspace; provider,
+  model, and key stay in one general settings dialog.
+- Extract `chat_sidebar.js` and `chat_workspace.js` as pure, unit-tested
+  models, joining `chat_flow.js`, `chat_markdown.js`, and `chat_history.js`.
+- The agent builder can start from any shipped assistant instead of an empty
+  checklist.
+- Fix a stuck workspace panel: an entrance animation with `both` fill on an
+  initially `display:none` element keeps the keyframe's start state forever,
+  leaving the panel 12px off its anchor. Entrances now fill `forwards`, the
+  panel is unhidden before the class lands, and its reveal is opacity only.
+- Stop animating layout width. The rail and the stage dashes now change size by
+  transform, which is what kept the rail stuck at its old width when its grid
+  track resized underneath it.
+- The stage rail responds to pointer proximity: each dash reads its own
+  distance from the cursor and scales accordingly, skipped under reduced
+  motion.
+- Clamp the panel with `overflow: hidden` and anchor the workspace overlay to
+  the whole grid, so a docked panel can never widen the viewer around it.
+- Built-in agents keep their declared order in `/agent` and the panel, so the
+  general assistant is listed first rather than alphabetically.
+- `ifc-console agents blocks` lists the capability blocks every agent is built
+  from.
+
+- Add `ifc-console dev`, a one-command harness for the browser panel. `--check`
+  boots a generated demo project (IFC, PDF manual, drawing, measurement recipe)
+  on an isolated console home, walks every panel feature through the real HTTP
+  routes with an offline rehearsal model, prints a table, and exits without
+  opening a browser tab. Without `--check` it serves the panel and opens at
+  most one tab, only when a terminal asked for it.
+- Add the offline `rehearsal` provider used by `ifc-console dev`. It speaks the
+  normalized provider event vocabulary, walks the real multi-round tool loop,
+  and is registered only under `dev` or `IFC_CONSOLE_DEV=1`.
+- The test suite can no longer launch a browser: `/viewer`, `/chat`, and
+  `/agent` command tests recorded their URLs instead of opening tabs. A full
+  `pytest` run previously opened one Chrome tab per command test.
+- Add `node --test tests/ui` over the panel's pure modules (markdown rendering,
+  the context-flow reducer, the local conversation archive). No npm install and
+  no browser; `pytest` runs the same suite and fails when a pure panel module
+  has no test.
+- Assemble every agent from one shared list of capability blocks
+  (`ifc_console.agents.blocks`). Adds `spatial`, `quantities`, `validation`,
+  `clash`, `ai-audit`, and `code` beside the existing blocks, and composition
+  now degrades instead of failing when a block's tools are unavailable, telling
+  the model in its prompt what it cannot do.
+- Mark everything an agent writes. Values land in `IfcConsole_AI_Measurements`
+  or `IfcConsole_AI_Properties`, each accompanied by an `AI_Provenance` record
+  naming the agent, model, method, source document, unit, confidence, and
+  ChangeSet id. Add `measure__propose_property_value` for document-defined
+  properties and the read-only `list_ai_authored_properties` tool, so the whole
+  AI-assisted layer is findable and separable by prefix.
+- Standing instructions written in the panel now become part of the agent's
+  system prompt instead of a suffix on one message, and changing them rebuilds
+  the thread.
+- Rework the chat panel shell: a collapsible sidebar listing agents and saved
+  conversations, a context panel naming the blocks an agent is made of, a stage
+  rail (Scope, Evidence, Method, Verify, Propose) driven by the tools that
+  actually ran, proposal cards carrying their provenance, an instructions
+  shortcut in the composer, and deletion for custom agents.
+- Report missing agent dependencies before they fail. `/api/agents/capabilities`
+  and a panel banner name what is missing and print the exact repair command for
+  the running interpreter, whether it is a uv tool, a venv, or a system Python.
+- A rejected viewer token now says the link has no valid access token, forgets
+  the stale remembered token so the next fresh link works, and points at
+  `/viewer` for a new URL.
+
 - A second console session no longer dead-ends when its port is held by
   another ifc-console with the same token: it moves itself to the next free
   port automatically (that sibling keeps serving the pinned MCP clients),

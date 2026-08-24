@@ -64,6 +64,7 @@ nav:
       - Agent applications: agents.md
       - Automation workflows: workflows.md
       - Operation plugins: plugins.md
+      - Testing the panel: testing.md
   - Reference:
       - MCP tools: tools.md
       - CLI: cli.md

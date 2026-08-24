@@ -54,14 +54,15 @@ class TestChunking:
         assert len(chunks) > 1
         assert all(len(body) <= 4600 for _, body in chunks)
 
-    def test_pdf_without_pypdf_names_the_extra(self, tmp_path: Path, monkeypatch):
+    def test_pdf_without_pypdf_names_the_base_dependency(self, tmp_path: Path, monkeypatch):
         monkeypatch.setitem(sys.modules, "pypdf", None)
         target = tmp_path / "manual.pdf"
         target.write_bytes(b"%PDF-1.4 stub")
         with pytest.raises(ToolError) as excinfo:
             chunk_pdf(target)
         assert excinfo.value.code == "EXTRA_NOT_INSTALLED"
-        assert "ifc-console[pdf]" in excinfo.value.hint
+        assert "base package" in excinfo.value.hint
+        assert "install" in excinfo.value.hint
 
     def test_unsupported_suffix_is_a_clear_error(self, tmp_path: Path):
         target = tmp_path / "model.xyz"

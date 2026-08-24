@@ -22,6 +22,21 @@ def test_main_package_does_not_install_an_agent_framework() -> None:
     assert "langchain" not in metadata
 
 
+def test_pdf_dependencies_ship_with_the_built_in_agents() -> None:
+    metadata = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    dependencies = metadata.split("[project.optional-dependencies]", 1)[0].casefold()
+
+    assert '"pypdf>=4"' in dependencies
+    assert '"pymupdf>=1.24,<2"' in dependencies
+
+
+def test_secure_key_storage_ships_with_the_chat_panel() -> None:
+    metadata = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    dependencies = metadata.split("[project.optional-dependencies]", 1)[0].casefold()
+
+    assert '"keyring>=24"' in dependencies
+
+
 def _project(
     root: Path,
     *,

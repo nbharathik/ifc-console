@@ -75,3 +75,73 @@ async def test_indexed_reference_image_is_available_as_sdk_vision(tmp_path: Path
 
     assert result["images"][0]["media_type"] == "image/png"
     assert result["images"][0]["data"]
+
+
+def test_only_indexed_managed_images_can_ride_with_a_prompt(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    references = AgentReferenceStore(project)
+    image = references.save_upload("detail.png", b"\x89PNG\r\n\x1a\nreference pixels")
+    knowledge = ProjectKnowledge(project)
+    try:
+        knowledge.ingest([image])
+        relative = image.relative_to(project).as_posix()
+        prompt_images = references.prompt_images([relative, "../outside.png"], knowledge.sources())
+    finally:
+        knowledge.close()
+
+    assert len(prompt_images) == 1
+    assert prompt_images[0].media_type == "image/png"
+
+
+@pytest.mark.asyncio
+async def test_indexed_pdf_page_is_available_as_sdk_vision(tmp_path: Path) -> None:
+    import pymupdf
+
+    project = tmp_path / "project"
+    project.mkdir()
+    references = AgentReferenceStore(project)
+    document = pymupdf.open()
+    page = document.new_page(width=300, height=200)
+    page.insert_text((30, 50), "STEEL WALL DETAIL 138 mm")
+    pdf = references.save_upload("detail.pdf", document.tobytes())
+    document.close()
+    knowledge = ProjectKnowledge(project)
+    try:
+        report = knowledge.ingest([pdf])
+        entry = report["files"][0]
+        assert entry["pages"] == 1
+        assert entry["text_pages"] == 1
+    finally:
+        knowledge.close()
+
+    async with await LocalRuntime.open(home=tmp_path / "home", project_dir=project) as runtime:
+        result = await runtime.workbench.project_document_page(
+            entry["path"], 1, max_size=600, format="png"
+        )
+
+    image = result["images"][0]
+    assert image["media_type"] == "image/png"
+    assert image["data"]
+
+
+def test_scanned_pdf_pages_remain_searchable_visual_evidence(tmp_path: Path) -> None:
+    import pymupdf
+
+    document = pymupdf.open()
+    document.new_page(width=300, height=200)
+    pdf = tmp_path / "steel-wall-scan.pdf"
+    pdf.write_bytes(document.tobytes())
+    document.close()
+    knowledge = ProjectKnowledge(tmp_path)
+    try:
+        report = knowledge.ingest([pdf])
+        entry = report["files"][0]
+        hits = knowledge.search("steel wall scan")
+    finally:
+        knowledge.close()
+
+    assert entry["no_text"] is True
+    assert entry["visual_only_pages"] == 1
+    assert entry["records"] == 1
+    assert hits[0]["meta"]["page"] == 1

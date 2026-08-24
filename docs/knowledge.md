@@ -79,12 +79,16 @@ ifc-console knowledge ingest docs/ QS-Manual.pdf
 ifc-console knowledge ingest --replace docs/
 ```
 
-Markdown and plain text index natively, split per heading section; PDFs index
-per page and need the `ifc-console[pdf]` extra (pypdf). Scanned PDFs carry no
-text and are reported, not OCRed. Images (png, jpg) are registered so search
-can find and cite them, but their pixels are not indexed. From the SDK the
-same ingestion is `wb.ingest_docs(paths, replace=False)`; ingestion is
-host-owned and never model-callable.
+Markdown and plain text index natively, split per heading section. PDF text
+indexes per page with `pypdf`, and any page can be rendered with PyMuPDF for a
+vision model to inspect drawings, tables, or scans. Both dependencies ship in
+the base package because the built-in agents rely on them. Scanned PDFs carry
+no searchable text and are reported as visual-only rather than OCRed. Images
+(png, jpg) are registered so search can find and cite them, while their pixels
+remain on disk until a vision turn needs them. From the SDK the same ingestion
+is `wb.ingest_docs(paths, replace=False)` and page rendering is
+`wb.project_document_page(path, page)`; ingestion is host-owned and never
+model-callable.
 
 The index lives beside the project at
 `.ifc-console/knowledge/project-kb-v1-<contenthash>.sqlite`, keyed by the

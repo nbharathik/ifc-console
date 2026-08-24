@@ -30,6 +30,7 @@ REQUIRED_ASSETS = (
     "worker.js",
     "chat.html",
     "chat.js",
+    "chat_history.js",
     "chat.css",
     # the standalone page boots from this; without it /chat is a blank screen
     "chat-page.js",

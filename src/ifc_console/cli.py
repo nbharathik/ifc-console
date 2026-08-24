@@ -102,6 +102,46 @@ def build_parser() -> argparse.ArgumentParser:
     cfg.add_argument("--port", type=_port, default=None)
     cfg.set_defaults(func=_cmd_mcp_config)
 
+    dev = sub.add_parser(
+        "dev",
+        help="Rehearse the browser panel against a demo project, or check it headlessly.",
+    )
+    dev.add_argument(
+        "--project",
+        default=None,
+        metavar="DIR",
+        help="Where the demo project lives (default: a reusable folder under the temp dir).",
+    )
+    dev.add_argument("--file", default=None, help="Use this IFC file instead of the demo model.")
+    dev.add_argument("--port", type=_port, default=None, help="Dev server port (default 8393).")
+    dev.add_argument(
+        "--check",
+        action="store_true",
+        help="Run the headless feature checklist and exit. Opens no browser tab.",
+    )
+    dev.add_argument(
+        "--open",
+        dest="open_target",
+        choices=["chat", "viewer", "solo", "none"],
+        default=None,
+        help=(
+            "Which single surface to open. At most one tab, ever. Defaults to the "
+            "chat panel on a terminal and to none when output is piped or checked."
+        ),
+    )
+    dev.add_argument(
+        "--fresh",
+        action="store_true",
+        help="Delete and rebuild the demo project before starting.",
+    )
+    dev.add_argument(
+        "--keep",
+        action="store_true",
+        help="With --check, keep serving after the checks so you can look at the panel.",
+    )
+    dev.add_argument("--json", action="store_true", help="With --check, print JSON results.")
+    dev.set_defaults(func=_cmd_dev)
+
     doctor = sub.add_parser("doctor", help="Diagnose the environment.")
     doctor.add_argument("--file", default=None, help="Also parse this IFC file.")
     doctor.add_argument("--json", action="store_true")
@@ -470,15 +510,21 @@ def build_parser() -> argparse.ArgumentParser:
 
     ag = sub.add_parser(
         "agents",
-        help="The built-in agents used by the Console chat panel.",
+        help="Built-in and project agents used by the Console chat panel.",
     )
     ag_sub = ag.add_subparsers(dest="agents_cmd", required=True)
-    ag_list = ag_sub.add_parser("list", help="List the agents shipped with IFC Console.")
+    ag_list = ag_sub.add_parser("list", help="List built-in and project agents.")
     ag_list.add_argument("--json", action="store_true")
     ag_list.set_defaults(func=_cmd_agents_list)
+    ag_blocks = ag_sub.add_parser(
+        "blocks",
+        help="List the capability blocks every agent is assembled from.",
+    )
+    ag_blocks.add_argument("--json", action="store_true")
+    ag_blocks.set_defaults(func=_cmd_agents_blocks)
     ag_files = ag_sub.add_parser(
         "files",
-        help="Add, index, and list the built-in agents' project references.",
+        help="Add, index, and list agents' project references.",
     )
     ag_files.add_argument(
         "paths",
@@ -2179,6 +2225,77 @@ def _cmd_changes_restore(args: argparse.Namespace) -> int:
         core.shutdown()
 
 
+# --------------------------------------------------------------------------- dev
+def _cmd_dev(args: argparse.Namespace) -> int:
+    """Rehearse or check the browser panel without a provider key."""
+    import json as _json
+    import tempfile
+
+    from ifc_console.devkit.serve import DEFAULT_PORT, build_dev_core, run_dev, start
+
+    project = args.project or str(Path(tempfile.gettempdir()) / "ifc-console-dev-project")
+    port = args.port or DEFAULT_PORT
+    _setup_logging(_new_store(), level="warning", to_file=False)
+    if args.fresh:
+        import shutil
+
+        shutil.rmtree(project, ignore_errors=True)
+    # A browser tab is a deliberate act, not a side effect of running checks.
+    open_target = args.open_target
+    if open_target is None:
+        open_target = "none" if (args.check or not sys.stdout.isatty()) else "chat"
+
+    if not args.check:
+        return run_dev(
+            project_dir=project,
+            port=port,
+            model=args.file,
+            open_target=open_target,
+        )
+
+    from ifc_console.devkit.checks import render, run_checks
+
+    core, scenario = build_dev_core(project, port=port, model=args.file)
+    try:
+        dev = start(core)
+    except RuntimeError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        core.shutdown()
+        return 2
+    try:
+        run = run_checks(dev.base_url, dev.token)
+        if args.json:
+            print(
+                _json.dumps(
+                    {
+                        "project": str(scenario.project_dir),
+                        "passed": run.passed,
+                        "checks": [
+                            {"name": c.name, "status": c.status, "detail": c.detail}
+                            for c in run.checks
+                        ],
+                    },
+                    indent=2,
+                )
+            )
+        else:
+            print(f"project: {scenario.project_dir}")
+            for note in scenario.notes:
+                print(f"note   : {note}")
+            print()
+            print(render(run))
+        if args.keep:
+            print(f"\nserving: {dev.chat_url}\nCtrl+C to stop.")
+            try:
+                while dev.thread.is_alive():
+                    dev.thread.join(timeout=0.5)
+            except KeyboardInterrupt:
+                pass
+        return 0 if run.passed else 1
+    finally:
+        dev.stop()
+
+
 # --------------------------------------------------------------------------- doctor
 def _cmd_doctor(args: argparse.Namespace) -> int:
     checks: list[dict[str, Any]] = []
@@ -2203,6 +2320,24 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
             check(mod, "ok", version(mod))
         except Exception as exc:
             check(mod, "FAIL", str(exc))
+            rc = 2
+    for label, module_name, distribution in (
+        ("PDF text", "pypdf", "pypdf"),
+        ("PDF vision", "pymupdf", "PyMuPDF"),
+        ("secure keys", "keyring", "keyring"),
+    ):
+        try:
+            from importlib import import_module
+            from importlib.metadata import version
+
+            import_module(module_name)
+            check(label, "ok", version(distribution))
+        except Exception as exc:
+            check(
+                label,
+                "FAIL",
+                f"{exc} (reinstall or upgrade ifc-console in this environment)",
+            )
             rc = 2
 
     store = _new_store()
@@ -2526,7 +2661,13 @@ def _cmd_knowledge_ingest(args: argparse.Namespace) -> int:
     print(f"indexed {report['records']} chunks from {report['documents']} documents")
     print(f"index   {report['index']}")
     for entry in report["files"]:
-        note = " (no extractable text)" if entry.get("no_text") else ""
+        note = (
+            " (visual pages available; no searchable text)"
+            if entry.get("no_text") and entry.get("media") == "pdf"
+            else " (no extractable text)"
+            if entry.get("no_text")
+            else ""
+        )
         print(f"  {entry['media']:8} {entry['path']} ({entry['records']} chunks){note}")
     for key, label in (
         ("skipped_unsupported", "skipped"),
@@ -2569,7 +2710,7 @@ def _cmd_knowledge_search(args: argparse.Namespace) -> int:
 def _agents_registry():
     from ifc_console.agents.packs import AgentPackRegistry
 
-    return AgentPackRegistry()
+    return AgentPackRegistry(_new_store().project_dir)
 
 
 def _cmd_agents_list(args: argparse.Namespace) -> int:
@@ -2593,9 +2734,32 @@ def _cmd_agents_list(args: argparse.Namespace) -> int:
         return 0
     if installed:
         for info in installed:
-            print(f"{info.name:12} [built-in] {info.title}: {info.description}")
+            print(f"{info.name:20} [{info.kind}] {info.title}: {info.description}")
     else:
         print("this build ships no agents")
+    return 0
+
+
+def _cmd_agents_blocks(args: argparse.Namespace) -> int:
+    """The blocks a built-in or custom agent can be built from."""
+    from ifc_console.agents.blocks import BLOCKS
+
+    if args.json:
+        print(json.dumps([block.info().model_dump(mode="json") for block in BLOCKS], indent=2))
+        return 0
+    for block in BLOCKS:
+        marks = []
+        if block.viewer_only:
+            marks.append("viewer only")
+        if block.advanced:
+            marks.append("advanced")
+        if block.proposals:
+            marks.append("writes previews")
+        suffix = f" ({', '.join(marks)})" if marks else ""
+        print(f"{block.name:20} {block.title}{suffix}")
+        print(f"{'':20} {block.description}")
+        if block.tools:
+            print(f"{'':20} tools: {', '.join(block.tools)}")
     return 0
 
 
@@ -2639,8 +2803,8 @@ def _cmd_agents_run(args: argparse.Namespace) -> int:
     pack = registry.get(args.name.lower())
     if pack is None:
         active = ", ".join(info.name for info in registry.active()) or "(none)"
-        print(f"no built-in agent named {args.name!r}; available: {active}")
-        print("`ifc-console agents list` shows the agents shipped by this build")
+        print(f"no agent named {args.name!r}; available: {active}")
+        print("`ifc-console agents list` shows built-in and project agents")
         return 1
     asyncio.run(
         run_pack(
@@ -2689,7 +2853,7 @@ def _cmd_keys_list(args: argparse.Namespace) -> int:
 
     store = _new_store()
     if not credentials.keyring_available():
-        print('the keyring extra is not installed: pip install "ifc-console[keys]"')
+        print("the bundled keyring package is missing; reinstall or upgrade ifc-console")
         print("keys currently come from environment variables only")
         return 1
     providers = credentials.stored_providers(store.home)

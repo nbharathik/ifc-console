@@ -115,7 +115,7 @@ class AppCore:
         from ifc_console.agents.files import AgentReferenceStore
         from ifc_console.agents.packs import AgentPackRegistry
 
-        self.agent_packs = AgentPackRegistry()
+        self.agent_packs = AgentPackRegistry(self.store.project_dir)
         self.agent_files = AgentReferenceStore(self.store.project_dir)
         self.agent_panel = None  # created by the panel routes on first use
         self.server_running = False

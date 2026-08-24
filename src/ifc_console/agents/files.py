@@ -14,9 +14,10 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from ifc_console.agents.models import AgentImage
 from ifc_console.automation.files import sha256_file
 from ifc_console.core.results import ToolError
-from ifc_console.knowledge.ingest import SUPPORTED_SUFFIXES
+from ifc_console.knowledge.ingest import IMAGE_SUFFIXES, SUPPORTED_SUFFIXES
 
 MAX_REFERENCE_BYTES = 25 * 1024 * 1024
 REFERENCES_DIR = Path(".ifc-console") / "agents" / "references"
@@ -180,6 +181,50 @@ class AgentReferenceStore:
                 if key in report
             },
         }
+
+    def prompt_images(
+        self,
+        paths: list[str],
+        indexed_sources: list[dict[str, Any]],
+    ) -> tuple[AgentImage, ...]:
+        """Load indexed managed images for one user message.
+
+        The browser sends stable project-relative paths, never bytes or an
+        arbitrary filesystem path. Hash matching prevents a changed file from
+        silently becoming different evidence after ingestion.
+        """
+        indexed = {
+            str(entry.get("path", "")).replace("\\", "/"): entry
+            for entry in indexed_sources
+        }
+        images: list[AgentImage] = []
+        seen: set[str] = set()
+        managed = self.directory.resolve()
+        for raw in paths[:8]:
+            normalized = str(raw).replace("\\", "/")
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            entry = indexed.get(normalized)
+            if entry is None or entry.get("media") != "image":
+                continue
+            target = Path(normalized)
+            if not target.is_absolute():
+                target = self.project_dir / target
+            target = target.expanduser().resolve()
+            try:
+                target.relative_to(managed)
+            except ValueError:
+                continue
+            if (
+                not target.is_file()
+                or target.suffix.lower() not in IMAGE_SUFFIXES
+                or target.stat().st_size > MAX_REFERENCE_BYTES
+                or sha256_file(target) != entry.get("sha256")
+            ):
+                continue
+            images.append(AgentImage.from_file(target))
+        return tuple(images)
 
 
 __all__ = ["MAX_REFERENCE_BYTES", "REFERENCES_DIR", "AgentReferenceStore"]

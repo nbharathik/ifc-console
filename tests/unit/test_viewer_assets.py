@@ -337,6 +337,31 @@ def chat_css() -> str:
 
 
 @pytest.fixture(scope="module")
+def chat_history_js() -> str:
+    return (STATIC / "chat_history.js").read_text(encoding="utf-8")
+
+
+@pytest.fixture(scope="module")
+def chat_markdown_js() -> str:
+    return (STATIC / "chat_markdown.js").read_text(encoding="utf-8")
+
+
+@pytest.fixture(scope="module")
+def chat_flow_js() -> str:
+    return (STATIC / "chat_flow.js").read_text(encoding="utf-8")
+
+
+@pytest.fixture(scope="module")
+def chat_sidebar_js() -> str:
+    return (STATIC / "chat_sidebar.js").read_text(encoding="utf-8")
+
+
+@pytest.fixture(scope="module")
+def chat_workspace_js() -> str:
+    return (STATIC / "chat_workspace.js").read_text(encoding="utf-8")
+
+
+@pytest.fixture(scope="module")
 def chat_page_js() -> str:
     return (STATIC / "chat-page.js").read_text(encoding="utf-8")
 
@@ -407,15 +432,18 @@ def test_docked_transcript_text_is_selectable(chat_css: str) -> None:
     assert "user-select: text;" in log
 
 
-def test_markdown_escapes_attribute_delimiters(chat_js: str) -> None:
-    escaping = chat_js.split("const esc =", 1)[1].split("function mdInline", 1)[0]
+def test_markdown_escapes_attribute_delimiters(chat_markdown_js: str) -> None:
+    escaping = chat_markdown_js.split("export const esc =", 1)[1].split(
+        "function mdInline", 1
+    )[0]
     assert '.replace(/"/g, "&quot;")' in escaping
     assert ".replace(/'/g, \"&#39;\")" in escaping
 
 
 def test_settings_are_a_dialog_not_an_inline_panel(chat_js: str, chat_css: str):
     """An inline settings panel squeezed the conversation; it is a modal now."""
-    assert 'class="chat-modal"' in chat_js and 'class="chat-dialog"' in chat_js
+    assert 'class="chat-modal"' in chat_js
+    assert 'class="chat-dialog t-modal"' in chat_js
     assert ".chat-modal { position: absolute" in chat_css
     assert "chat-scrim" in chat_js, "the dialog needs a scrim to close on"
 
@@ -434,8 +462,31 @@ def test_chat_status_and_send_state_are_accessible(chat_js: str):
     assert 'send.setAttribute("aria-label", "Send message")' in chat_js
 
 
+def test_agent_builder_uses_allowlisted_blocks_and_an_accessible_dialog(
+    chat_js: str, chat_css: str
+) -> None:
+    assert 'id="chat-builder"' in chat_js
+    assert 'aria-label="Build an assistant"' in chat_js
+    assert 'postJSON("/api/agents/custom"' in chat_js
+    assert 'api("/api/agents/blocks")' in chat_js
+    assert ".chat-block input:checked + span" in chat_css
+
+
+def test_agent_attachments_and_ai_proposals_are_first_class(
+    chat_js: str, chat_css: str
+) -> None:
+    assert "pendingAttachments" in chat_js
+    assert "attachments: turns.findLast" in chat_js
+    assert 'event.type === "proposal"' in chat_js
+    assert "AI-marked · preview only" in chat_js
+    assert ".chat-proposal" in chat_css
+    assert ".chat-step" in chat_css
+
+
 def test_escape_closes_the_dialog_before_stopping_the_stream(chat_js: str):
-    handler = chat_js.split('root.addEventListener("keydown"', 1)[1].split("});", 1)[0]
+    handler = chat_js.split('root.addEventListener("keydown"', 1)[1].split(
+        'root.addEventListener("click"', 1
+    )[0]
     assert handler.index("closeSettings()") < handler.index("aborter?.abort()")
 
 
@@ -507,12 +558,26 @@ def test_chat_persisted_settings_require_a_plain_object_and_write_is_best_effort
     assert "} catch {" in writer
 
 
-def test_the_transcript_survives_a_reload_but_not_the_tab(chat_js: str):
-    # one transcript slot per assistant, all of them session-scoped
-    assert "sessionStorage.setItem(historySlot()" in chat_js
-    assert "const historySlot = () => (currentAgent" in chat_js
-    assert "localStorage.setItem(HISTORY" not in chat_js
-    assert "localStorage.setItem(historySlot" not in chat_js
+def test_conversations_are_local_exportable_and_separate_from_credentials(
+    chat_js: str, chat_history_js: str
+):
+    assert 'from "./chat_history.js"' in chat_js
+    assert "historyStore.save(conversationRecord())" in chat_js
+    assert "transcriptMarkdown(record" in chat_js
+    assert "provider" in chat_history_js.casefold()
+    assert "credentials" in chat_history_js.casefold()
+    assert "api_key" not in chat_history_js
+    assert "password" not in chat_history_js
+
+
+def test_context_flow_and_secure_key_controls_are_visible(chat_js: str, chat_css: str):
+    """Route, model, and mode stay on screen; the rest moved to the workspace."""
+    assert 'data-role="context"' in chat_js
+    assert 'data-role="modelname"' in chat_js
+    assert 'data-act="export"' in chat_js
+    assert "operating-system credential store" in chat_js
+    assert ".chat-history-panel" in chat_css
+    assert ".chat-head .chat-context" in chat_css
 
 
 def test_tool_chips_are_paired_by_id_not_by_name(chat_js: str):
@@ -524,7 +589,7 @@ def test_tool_chips_are_paired_by_id_not_by_name(chat_js: str):
 
 def test_chat_distinguishes_the_ai_model_from_the_open_ifc_model(chat_js: str):
     assert "no AI model" in chat_js
-    assert "Configure assistant" in chat_js
+    assert "Configure AI model" in chat_js
     assert 'for="chat-model">AI model<' in chat_js
 
 
@@ -544,3 +609,151 @@ def test_compact_layout_uses_overlays_instead_of_squeezing_the_canvas(
     dock = chat_css.split("@media (max-width: 900px)", 1)[1]
     assert "position: absolute" in dock
     assert "width: min(480px, 100%)" in dock
+
+
+def test_the_rail_lists_agents_and_conversations_and_is_keyboard_reachable(
+    chat_js: str, chat_css: str
+) -> None:
+    """The rail is the panel's map: which assistants exist and what was asked."""
+    assert 'data-role="rail-agents"' in chat_js
+    assert 'data-role="rail-history"' in chat_js
+    assert 'rail.addEventListener("focusin", expandRail)' in chat_js
+    assert "if (!rail.contains(event.relatedTarget)) collapseRail();" in chat_js
+    assert ".chat-root.rail-open .chat-rail" in chat_css
+    assert "@media (prefers-reduced-motion: reduce)" in chat_css
+
+
+def test_the_rail_pin_state_survives_a_reload_without_storing_secrets(
+    chat_js: str,
+) -> None:
+    assert 'localStorage.setItem("ifc-console-chat-rail"' in chat_js
+    assert 'localStorage.getItem("ifc-console-chat-rail")' in chat_js
+
+
+def test_custom_agents_can_be_deleted_from_the_panel(
+    chat_js: str, chat_sidebar_js: str
+) -> None:
+    assert 'postJSON("/api/agents/custom/delete"' in chat_js
+    assert "agent.deletable" in chat_js, "the rail asks the model, not the raw payload"
+    assert 'deletable: agent.kind === "custom"' in chat_sidebar_js
+
+
+def test_a_stale_install_is_reported_before_an_upload_fails(
+    chat_js: str, chat_css: str
+) -> None:
+    """The old failure mode was a PDF upload dying with a package name."""
+    assert 'api("/api/agents/capabilities")' in chat_js
+    assert "capabilities.repair" in chat_js
+    assert ".chat-alert" in chat_css
+
+
+def test_run_progress_lives_in_the_message_not_in_permanent_chrome(
+    chat_js: str, chat_css: str, chat_flow_js: str
+) -> None:
+    """A stage rail pinned above every conversation was chrome the reader paid
+    for on every turn; progress now appears in the message making it."""
+    assert 'from "./chat_flow.js"' in chat_js
+    assert "applyEvent(state, event)" in chat_js
+    assert "function showStep(" in chat_js and "function settleWork(" in chat_js
+    for stage in ("scope", "evidence", "method", "verify", "propose"):
+        assert f'id: "{stage}"' in chat_flow_js
+        assert f"{stage}:" in chat_js, f"{stage} has no human-readable step text"
+    assert ".chat-step" in chat_css and ".chat-work" in chat_css
+    assert 'class="chat-workflow"' not in chat_js, "the permanent rail is gone"
+
+
+def test_a_proposal_card_shows_its_provenance(chat_js: str, chat_css: str) -> None:
+    assert "proposal.method" in chat_js
+    assert "proposal.source" in chat_js
+    assert "provenance marker missing" in chat_js
+    assert ".chat-proposal-facts" in chat_css
+
+
+def test_standing_instructions_reach_the_agent_not_the_message(chat_js: str) -> None:
+    assert "additional_instructions: el(\"system\").value.trim() || undefined" in chat_js
+    assert "openInstructions" in chat_js
+    assert 'data-act="instructions"' in chat_js
+
+
+def test_the_workspace_explains_the_agent_instead_of_the_transcript(
+    chat_js: str, chat_css: str, chat_workspace_js: str
+) -> None:
+    """"What is this thing and what can it reach" has its own panel now."""
+    assert 'api(`/api/agents/workspace?' in chat_js
+    assert "workspaceModel(payload)" in chat_js
+    for name in ("wsOverview", "wsTools", "wsFiles", "wsSettings"):
+        assert f"function {name}(" in chat_js, name
+    for tab in ("overview", "tools", "files", "settings"):
+        assert f'id: "{tab}"' in chat_workspace_js
+    assert ".chat-ws-tab" in chat_css and ".chat-ws-pipeline" in chat_css
+
+
+def test_a_rejected_token_is_forgotten_and_explained_as_a_link_problem(
+    script: str,
+) -> None:
+    """A bookmarked /viewer URL with no #t= reused a dead token forever."""
+    assert "function forgetStaleToken()" in script
+    assert script.count("forgetStaleToken();") == 2, "both the fetch 401 and the WS 4401"
+    assert "const tokenFromLink = hashParams.has(\"t\")" in script
+    assert "missing its #t= access token" in script
+    assert "Viewer authorization expired" not in script
+
+
+def test_no_entrance_animation_can_strand_an_element(chat_css: str) -> None:
+    """`both` fill on an initially display:none panel left it 12px off its
+    anchor permanently, because the animation never started."""
+    assert "animation:" in chat_css
+    for line in chat_css.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("animation:") and "none" not in stripped:
+            assert " both" not in stripped, f"use forwards, not both: {stripped}"
+
+
+def test_nothing_animates_layout(chat_css: str) -> None:
+    """Animating width on a grid item fights the layout engine and jams."""
+    assert "transition: width" not in chat_css
+    assert "transition: height" not in chat_css
+
+
+def test_the_sidebar_does_not_open_on_hover(chat_js: str) -> None:
+    """It opened whenever the pointer crossed the left edge on its way past."""
+    assert "pointerenter" not in chat_js
+    assert "pointerleave" not in chat_js
+    assert 'rail.addEventListener("focusin", expandRail)' in chat_js, (
+        "keyboard focus must still reveal it"
+    )
+    assert 'data-act="toggle-rail"' in chat_js and 'data-act="pin-rail"' in chat_js
+
+
+def test_the_panel_cannot_widen_the_viewer_it_is_docked_in(chat_css: str) -> None:
+    """The dock must never be able to push its host into a sideways scroll."""
+    block = chat_css.split(".chat-root {")[2].split("}", 1)[0]
+    assert "overflow: hidden" in block
+    assert "grid-template-columns" in block
+
+
+def test_chat_layout_responds_to_its_container_not_only_the_viewport(
+    chat_js: str, chat_css: str
+) -> None:
+    """A narrow dock can live inside a wide browser, so viewport breakpoints
+    alone squeeze the conversation between a rail and workspace."""
+    assert "new ResizeObserver(syncShellLayout)" in chat_js
+    assert 'root.classList.toggle("chat-compact", compact)' in chat_js
+    assert 'root.classList.toggle("chat-overlay", overlay)' in chat_js
+    assert ".chat-root.chat-compact" in chat_css
+    assert ".chat-root.chat-overlay .chat-workspace" in chat_css
+
+
+def test_compact_chat_drawers_have_a_dismissible_scrim(chat_js: str, chat_css: str) -> None:
+    assert 'class="chat-shell-scrim"' in chat_js
+    assert 'action === "close-overlays"' in chat_js
+    assert ".chat-shell-scrim" in chat_css
+    assert 'workspace").setAttribute("aria-modal", "true")' in chat_js
+    assert 'root.classList.contains("rail-open")' in chat_js
+
+
+def test_the_workspace_overlay_is_anchored_to_the_whole_grid(chat_css: str) -> None:
+    """An abspos grid child anchors to its grid area, not the container."""
+    overlay = chat_css.split("@media (max-width: 1100px)", 1)[1]
+    assert "grid-area: 1 / 1 / -1 / -1" in overlay
+    assert "width: min(var(--ws-width), 92%)" in overlay

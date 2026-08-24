@@ -29,6 +29,26 @@ const hashParams = new URLSearchParams(location.hash.replace(/^#/, ""));
 const queryParams = new URLSearchParams(location.search);
 const token = hashParams.get("t") || sessionStorage.getItem("ifc-console-token") || "";
 if (token) sessionStorage.setItem("ifc-console-token", token);
+const tokenFromLink = hashParams.has("t");
+
+// A rejected token is almost always a remembered one from an earlier console
+// run, reached by opening a bookmarked URL with no #t= fragment. Forgetting it
+// is what makes the next fresh link work, so the message can be about the
+// link rather than about "authorization".
+function forgetStaleToken() {
+  try {
+    sessionStorage.removeItem("ifc-console-token");
+  } catch {
+    /* private mode: nothing was remembered anyway */
+  }
+}
+
+const STALE_TOKEN_TITLE = "This link has no valid access token";
+const STALE_TOKEN_BODY = tokenFromLink
+  ? "The console that issued this link is no longer running, or it restarted with a new token. "
+    + "Type /viewer in the ifc-console terminal for a fresh link."
+  : "This URL is missing its #t= access token, so the browser fell back to a remembered one from "
+    + "an earlier session. Type /viewer in the ifc-console terminal and use the link it copies.";
 if (hashParams.has("t")) history.replaceState(null, "", location.pathname + location.search);
 
 async function api(path, options = {}) {
@@ -1271,12 +1291,8 @@ async function loadModel() {
     }
     if (res.status === 401) {
       hideProgress();
-      showOverlay(
-        "Viewer authorization expired",
-        "Reopen the viewer from the ifc-console terminal with /viewer.",
-        null,
-        "error",
-      );
+      forgetStaleToken();
+      showOverlay(STALE_TOKEN_TITLE, STALE_TOKEN_BODY, null, "error");
       return;
     }
     if (!res.ok) {
@@ -2241,12 +2257,8 @@ function connect() {
     // 4401 (bad token) and 4404 (viewer switched off) are verdicts, not
     // outages: retrying cannot change either answer.
     if (event.code === 4401) {
-      showOverlay(
-        "Viewer authorization expired",
-        "Reopen the viewer from the ifc-console terminal with /viewer.",
-        null,
-        "error",
-      );
+      forgetStaleToken();
+      showOverlay(STALE_TOKEN_TITLE, STALE_TOKEN_BODY, null, "error");
       return;
     }
     if (event.code === 4404) {
@@ -3165,7 +3177,7 @@ const chatDock = $("chat-dock");
 const chatResize = $("chat-dock-resize");
 const chatBtn = $("btn-chat");
 const CHAT_DOCK_MIN_WIDTH = 300;
-const CHAT_DOCK_DEFAULT_WIDTH = 400;
+const CHAT_DOCK_DEFAULT_WIDTH = 480;
 let chatPanel = null;
 let chatLoadPromise = null;
 let chatDesiredOpen = false;

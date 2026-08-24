@@ -174,6 +174,16 @@ def _viewer_args(core: AppCore, rest: str, _files: FilesProvider | None) -> Menu
     )
 
 
+def _agent_args(core: AppCore, rest: str, _files: FilesProvider | None) -> MenuState:
+    rows = [
+        ("new", "compose a project agent from reviewed capability blocks"),
+        ("list", "show built-in and project agents"),
+        ("files", "refresh and list project references"),
+    ]
+    rows.extend((info.name, info.description) for info in core.agent_packs.active())
+    return _choices("agent", rest, rows, context="agent")
+
+
 def _sandbox_args(core: AppCore, rest: str, _files: FilesProvider | None) -> MenuState:
     current = core.settings.sandbox.mode
     rows = [
@@ -386,6 +396,7 @@ def _use_args(core: AppCore, rest: str, files: FilesProvider | None) -> MenuStat
 
 
 _ARG_PROVIDERS: dict[str, Provider] = {
+    "agent": _agent_args,
     "tools": _tools_args,
     "mode": _mode_args,
     "detach": _loaded_args,

@@ -2392,6 +2392,77 @@
       "destructive": false,
       "input_schema": {
         "properties": {
+          "format": {
+            "default": "jpeg",
+            "enum": [
+              "jpeg",
+              "png"
+            ],
+            "title": "Format",
+            "type": "string"
+          },
+          "max_size": {
+            "default": 1600,
+            "maximum": 2048,
+            "minimum": 256,
+            "title": "Max Size",
+            "type": "integer"
+          },
+          "page": {
+            "minimum": 1,
+            "title": "Page",
+            "type": "integer"
+          },
+          "path": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "title": "Path",
+            "type": "string"
+          },
+          "quality": {
+            "default": 88,
+            "maximum": 100,
+            "minimum": 40,
+            "title": "Quality",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "path",
+          "page"
+        ],
+        "title": "get_project_document_pageArguments",
+        "type": "object"
+      },
+      "name": "get_project_document_page",
+      "output_schema": null,
+      "read_only": true
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
+          "path": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "title": "Path",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "title": "get_project_reference_imageArguments",
+        "type": "object"
+      },
+      "name": "get_project_reference_image",
+      "output_schema": null,
+      "read_only": true
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
           "global_ids": {
             "items": {
               "type": "string"
@@ -3206,6 +3277,109 @@
       "input_schema": {
         "properties": {
           "limit": {
+            "default": 200,
+            "description": "Maximum elements.",
+            "maximum": 2000,
+            "minimum": 1,
+            "title": "Limit",
+            "type": "integer"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "model_id of an attached model (see list_models); omit for the active model.",
+            "title": "Model"
+          }
+        },
+        "title": "list_ai_authored_propertiesArguments",
+        "type": "object"
+      },
+      "name": "list_ai_authored_properties",
+      "output_schema": {
+        "$defs": {
+          "ErrorInfo": {
+            "properties": {
+              "code": {
+                "description": "Stable machine-readable code; see ERROR_CODES.",
+                "title": "Code",
+                "type": "string"
+              },
+              "hint": {
+                "description": "What to do next; follow it instead of retrying blindly.",
+                "title": "Hint",
+                "type": "string"
+              },
+              "message": {
+                "description": "What went wrong, in one sentence.",
+                "title": "Message",
+                "type": "string"
+              }
+            },
+            "required": [
+              "code",
+              "message",
+              "hint"
+            ],
+            "title": "ErrorInfo",
+            "type": "object"
+          }
+        },
+        "description": "The public tool-result contract.",
+        "properties": {
+          "data": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Data"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ErrorInfo"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "meta": {
+            "additionalProperties": true,
+            "title": "Meta",
+            "type": "object"
+          },
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok"
+        ],
+        "title": "Envelope",
+        "type": "object"
+      },
+      "read_only": true
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
+          "limit": {
             "default": 50,
             "maximum": 500,
             "minimum": 1,
@@ -3494,6 +3668,108 @@
         "type": "object"
       },
       "name": "list_models",
+      "output_schema": {
+        "$defs": {
+          "ErrorInfo": {
+            "properties": {
+              "code": {
+                "description": "Stable machine-readable code; see ERROR_CODES.",
+                "title": "Code",
+                "type": "string"
+              },
+              "hint": {
+                "description": "What to do next; follow it instead of retrying blindly.",
+                "title": "Hint",
+                "type": "string"
+              },
+              "message": {
+                "description": "What went wrong, in one sentence.",
+                "title": "Message",
+                "type": "string"
+              }
+            },
+            "required": [
+              "code",
+              "message",
+              "hint"
+            ],
+            "title": "ErrorInfo",
+            "type": "object"
+          }
+        },
+        "description": "The public tool-result contract.",
+        "properties": {
+          "data": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Data"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ErrorInfo"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "meta": {
+            "additionalProperties": true,
+            "title": "Meta",
+            "type": "object"
+          },
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok"
+        ],
+        "title": "Envelope",
+        "type": "object"
+      },
+      "read_only": true
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
+          "media": {
+            "anyOf": [
+              {
+                "enum": [
+                  "document",
+                  "image",
+                  "pdf",
+                  "markdown",
+                  "text"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional media filter.",
+            "title": "Media"
+          }
+        },
+        "title": "list_project_documentsArguments",
+        "type": "object"
+      },
+      "name": "list_project_documents",
       "output_schema": {
         "$defs": {
           "ErrorInfo": {

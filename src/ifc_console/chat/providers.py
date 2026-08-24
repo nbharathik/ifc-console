@@ -6,7 +6,9 @@ and the Anthropic messages shape. Requests go out with `urllib`, which keeps
 the install free of an HTTP client dependency; the blocking work runs on a
 worker thread.
 
-Keys are never logged, never written to disk by us, and never put in a URL.
+Keys are never logged, put in a URL, or written to browser/project storage.
+When the user explicitly opts in, the credentials module delegates durable
+storage to the operating system credential store.
 """
 
 from __future__ import annotations
@@ -326,6 +328,10 @@ def list_models(
     *,
     local_only: bool = False,
 ) -> list[str]:
+    if provider.family == "rehearsal":
+        from ifc_console.devkit.rehearsal import REHEARSAL_MODELS
+
+        return list(REHEARSAL_MODELS)
     base = validate_base_url(base_url or provider.base_url, local_only=local_only)
     headers = {k: v for k, v in _headers(provider, key).items() if k != "accept"}
     with _request(
@@ -783,6 +789,19 @@ def stream(
     local_only: bool = False,
 ) -> Iterator[dict]:
     """One provider round trip as a stream of normalized events."""
+    if provider.family == "rehearsal":
+        from ifc_console.devkit.rehearsal import rehearsal_stream
+
+        yield from rehearsal_stream(
+            provider,
+            model=model,
+            system=system,
+            turns=turns,
+            tools=tools,
+            options=options,
+            cancel=cancel,
+        )
+        return
     base = validate_base_url(base_url or provider.base_url, local_only=local_only)
     if provider.family == "anthropic":
         yield from _stream_anthropic(

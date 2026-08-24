@@ -69,6 +69,7 @@ The knowledge index is local and built from the installed IfcOpenShell package.
 | `get_knowledge_record` | read one result by its returned key |
 | `list_project_documents` | list indexed project documents and images with provenance and hashes |
 | `get_project_reference_image` | load one indexed project image as native vision input |
+| `get_project_document_page` | render one indexed PDF page as native vision input for diagrams, scans, and layout |
 | `get_api_docs` | get an exact `ifcopenshell.api` signature or search API names |
 | `get_measurement_recipe` | the project's measurement method for one class and property, with its citation |
 
@@ -134,6 +135,7 @@ Human SDK/CLI: approve -> commit -> optional restore
 | `preview_property_change` | preview one property value across selected elements |
 | `preview_classification_assignment` | preview a direct classification assignment |
 | `get_change_set` | inspect a stored revision-bound ChangeSet |
+| `list_ai_authored_properties` | inventory every AI-authored value in the model |
 
 Previewing changes does not modify the model. AI-visible tools cannot approve,
 commit, restore, or change the mode. Those actions remain direct SDK and CLI
@@ -141,6 +143,12 @@ operations.
 
 Property creation requires `create_missing=true`. Set `nominal_type` when the
 exact IFC value type cannot be inferred.
+
+Values written on an agent's behalf go only into the reserved `IfcConsole_AI_`
+property sets and carry an `AI_Provenance` record naming the agent, model,
+method, and source document. `list_ai_authored_properties` returns that
+inventory, so the AI-assisted layer stays separable from the authored model by
+prefix match. See [Marking what the model wrote](agents.md#marking-what-the-model-wrote).
 
 ## Generated Python
 

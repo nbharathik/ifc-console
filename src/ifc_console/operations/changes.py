@@ -21,6 +21,8 @@ PREVIEW_ANN = OperationAnnotations(
     idempotentHint=False,
     openWorldHint=False,
 )
+MODEL_ARG = "model_id of an attached model (see list_models); omit for the active model."
+
 READ_ANN = OperationAnnotations(
     readOnlyHint=True,
     destructiveHint=False,
@@ -114,4 +116,31 @@ def register(registry: OperationRegistry, core: AppCore) -> None:
             {"change_set": record.model_dump(mode="json")},
             core.session_meta(),
             char_limit=char_limit,
+        )
+
+    @registry.tool(
+        annotations=READ_ANN,
+        description=(
+            "[QUERY] List every element in the open model that carries an "
+            "AI-authored property set. Agents write only into the reserved "
+            "IfcConsole_AI_ namespace, so this is the complete inventory of "
+            "AI-assisted data in the file, with the provenance record (agent, "
+            "model, method, source document) stored beside each value. Use it "
+            "to review, report, or strip that layer."
+        ),
+    )
+    @enveloped(core, "list_ai_authored_properties")
+    async def list_ai_authored_properties(
+        limit: Annotated[int, Field(ge=1, le=2000, description="Maximum elements.")] = 200,
+        model: Annotated[str | None, Field(description=MODEL_ARG)] = None,
+    ) -> Envelope:
+        from ifc_console.agents.provenance import read_ai_properties
+
+        session = core.resolve_session(model)
+        data = await session.run(lambda: read_ai_properties(session.ifc, limit=limit))
+        return ok(
+            data,
+            core.session_meta(),
+            char_limit=char_limit,
+            returned=len(data["elements"]),
         )

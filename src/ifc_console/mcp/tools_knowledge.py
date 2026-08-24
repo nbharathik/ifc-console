@@ -246,6 +246,100 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
 
     @mcp.tool(
         annotations=KNOWLEDGE_ANN,
+        structured_output=False,
+        description=(
+            "[QUERY] Render one indexed PDF page as native vision input. Use this "
+            "for drawings, diagrams, tables, scanned pages, and layout-dependent "
+            "instructions after list_project_documents identifies the PDF and page."
+        ),
+    )
+    @enveloped(core, "get_project_document_page")
+    async def get_project_document_page(
+        path: Annotated[str, Field(min_length=1, max_length=4096)],
+        page: Annotated[int, Field(ge=1)],
+        max_size: Annotated[int, Field(ge=256, le=2048)] = 1600,
+        format: Literal["jpeg", "png"] = "jpeg",
+        quality: Annotated[int, Field(ge=40, le=100)] = 88,
+    ) -> Any:
+        _require_project(core)
+        normalized = path.replace("\\", "/")
+        source = next(
+            (
+                entry
+                for entry in core.project_knowledge.sources()
+                if str(entry.get("path", "")).replace("\\", "/") == normalized
+            ),
+            None,
+        )
+        if source is None or source.get("media") != "pdf":
+            raise ToolError(
+                "NOT_FOUND",
+                f"{path!r} is not an indexed PDF.",
+                "Call list_project_documents(media='pdf') and pass one returned path.",
+            )
+        target = Path(normalized)
+        if not target.is_absolute():
+            target = core.store.project_dir / target
+        target = target.expanduser().resolve()
+        if not target.is_file():
+            raise ToolError(
+                "FILE_NOT_FOUND",
+                f"the indexed PDF {normalized!r} is no longer on disk.",
+                "Upload or copy it again, then refresh the agent references.",
+            )
+        from ifc_console.automation.files import sha256_file
+
+        if sha256_file(target) != source.get("sha256"):
+            raise ToolError(
+                "SOURCE_CHANGED",
+                f"{target.name} changed since it was indexed.",
+                "Refresh the agent references before rendering a page.",
+            )
+        try:
+            import pymupdf
+        except ImportError:
+            from ifc_console.agents.environment import missing_dependency_hint
+
+            raise ToolError(
+                "EXTRA_NOT_INSTALLED",
+                "PDF page rendering needs the PyMuPDF package.",
+                missing_dependency_hint("PyMuPDF"),
+            ) from None
+        try:
+            document = pymupdf.open(target)
+        except Exception as exc:
+            raise ToolError(
+                "INVALID_INPUT",
+                f"{target.name} could not be rendered: {exc}",
+                "Check that the PDF is readable and not encrypted.",
+            ) from exc
+        try:
+            if page > document.page_count:
+                raise ToolError(
+                    "INVALID_INPUT",
+                    f"page {page} is outside the 1-{document.page_count} page range.",
+                    "Use the page count returned by list_project_documents.",
+                )
+            pdf_page = document[page - 1]
+            rect = pdf_page.rect
+            scale = min(max_size / max(rect.width, rect.height), 4.0)
+            pixmap = pdf_page.get_pixmap(
+                matrix=pymupdf.Matrix(scale, scale),
+                colorspace=pymupdf.csRGB,
+                alpha=False,
+            )
+            data = pixmap.tobytes(output=format, jpg_quality=quality)
+            width, height = pixmap.width, pixmap.height
+        finally:
+            document.close()
+        note = (
+            f"{normalized} page {page} rendered at {width}x{height}; inspect visual "
+            "annotations and dimensions, but do not infer scale without calibration"
+        )
+        return [OperationImage(data=data, format=format), note]
+
+    @mcp.tool(
+        annotations=KNOWLEDGE_ANN,
         description=(
             "[QUERY] Documentation for an ifcopenshell.api function: the exact "
             "call signature, argument meanings, and usage notes. Name it as "

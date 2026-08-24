@@ -8,14 +8,17 @@ from pathlib import Path
 import pytest
 
 from ifc_console import LocalRuntime
+from ifc_console.agents.blocks import BLOCK_BY_NAME
 from ifc_console.agents.builtin import builtin_packs
 from ifc_console.agents.builtin.docs import PACK as DOCS_PACK
+from ifc_console.agents.builtin.measure import BLOCKS as MEASURE_BLOCKS
 from ifc_console.agents.builtin.measure import (
-    READ_TOOLS,
     MeasurementReport,
     build_agent,
+    build_proposal_source,
     report_to_csv,
 )
+from ifc_console.agents.proposals import PROPOSAL_TOOLS
 from ifc_console.agents.runner import resolve_model_file
 from ifc_console.testing import ScriptedAgentModel, text_round, tool_call_round
 
@@ -91,11 +94,16 @@ FINAL_ANSWER = json.dumps(
 )
 
 
-def test_both_builtins_ship_and_are_distinct():
+def test_the_general_agent_ships_first_and_holds_the_others_capabilities():
+    """One agent does everything; the focused presets are narrower views of it."""
     packs = builtin_packs()
-    assert [pack.info.name for pack in packs] == ["measurement", "docs"]
+    names = [pack.info.name for pack in packs]
+    assert names[0] == "general"
+    assert {"measurement", "docs", "review"} <= set(names)
+    general = packs[0].info
+    for pack in packs[1:]:
+        assert set(pack.info.blocks) <= set(general.blocks), pack.info.name
     assert "files" in DOCS_PACK.info.features
-    assert "files" in packs[0].info.features
 
 
 @pytest.mark.asyncio
@@ -158,9 +166,36 @@ async def test_measure_toolset_is_scoped(tmp_path: Path, monkeypatch):
     async with runtime:
         await runtime.open_model(model_file)
         agent = await build_agent(runtime, model=ScriptedAgentModel([]))
-        assert set(agent.tools.names) == set(READ_TOOLS)
+        expected = {
+            tool
+            for name in MEASURE_BLOCKS
+            if not BLOCK_BY_NAME[name].viewer_only
+            for tool in BLOCK_BY_NAME[name].tools
+        } | set(PROPOSAL_TOOLS)
+        assert set(agent.tools.names) == expected
         assert "get_viewer_selection" not in agent.tools.names
         assert "- measure_elements:" in agent.instructions
+        assert "IfcConsole_AI_" in agent.instructions
+
+
+@pytest.mark.asyncio
+async def test_measurement_proposals_are_marked_as_ai_assisted(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("IFC_CONSOLE_HOME", str(tmp_path / "home"))
+    model_file = build_project(tmp_path / "project")
+    async with await LocalRuntime.open(
+        model_file, home=tmp_path / "home", project_dir=model_file.parent
+    ) as runtime:
+        wall = (await runtime.workbench.query("IfcWall"))[0]
+        source = build_proposal_source(runtime, [])
+        tools = await runtime.tools("measure__propose_measured_value", sources=(source,))
+        result = await tools.call(
+            "measure__propose_measured_value",
+            {"global_ids": [wall["global_id"]], "metric": "thickness", "value": 200.0},
+        )
+
+    change = result["data"]["change_set"]["change_set"]["changes"][0]
+    assert change["pset_name"] == "IfcConsole_AI_Measurements"
+    assert change["property_name"] == "MeasuredThickness"
 
 
 @pytest.mark.asyncio
