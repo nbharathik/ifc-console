@@ -17,9 +17,11 @@ import itertools
 import json
 import logging
 from datetime import datetime, timezone
+from hashlib import sha256
 from typing import TYPE_CHECKING, Any
 
 from ifc_console.core.results import ToolError
+from ifc_console.ifc.units import unit_info
 
 if TYPE_CHECKING:
     from ifc_console.app import AppCore
@@ -30,6 +32,14 @@ log = logging.getLogger("ifc-console.viewer")
 # is far below this; the cap only trips when a client misbehaves.
 _PING_INTERVAL = 30.0
 _SCREENSHOT_TIMEOUT = 10.0
+# A viewer command is arithmetic on data already in the tab, so it either
+# answers immediately or the tab is not answering at all.
+_COMMAND_TIMEOUT = 8.0
+# A tab rebuilding its scene has no geometry to address, so a short wait beats
+# both a wrong answer and an eight second timeout.
+_REBUILD_WAIT = 3.0
+_REBUILD_POLL = 0.05
+_MAX_COMMAND_RESULT = 400_000
 _MAX_SCREENSHOT_B64 = 12_000_000
 _MAX_SCREENSHOT_DIMENSION = 8192
 _MAX_GUID_LENGTH = 128
@@ -46,34 +56,283 @@ def _utcnow() -> str:
 _MAX_MEASUREMENTS = 100
 
 
+def _triple(value: Any) -> list[float] | None:
+    if not isinstance(value, list) or len(value) != 3:
+        return None
+    try:
+        return [round(float(v), 6) for v in value]
+    except (TypeError, ValueError):
+        return None
+
+
+def _guid_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [
+        guid for guid in value if isinstance(guid, str) and 0 < len(guid) <= _MAX_GUID_LENGTH
+    ][:500]
+
+
+def _number(value: Any) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return round(float(value), 6)
+
+
+def _clean_distance(item: dict) -> dict | None:
+    start = _triple(item.get("from"))
+    end = _triple(item.get("to"))
+    distance = _number(item.get("distance"))
+    if start is None or end is None or distance is None:
+        return None
+    entry = {"from": start, "to": end, "distance": distance}
+    delta = _triple(item.get("delta"))
+    if delta is not None:
+        entry["delta"] = delta
+    ends = item.get("ends")
+    if isinstance(ends, list) and len(ends) == 2:
+        entry["ends"] = [str(end)[:20] for end in ends]
+    return entry
+
+
+def _clean_dimensions(item: dict) -> dict | None:
+    entry: dict = {}
+    for key in ("length", "width", "thickness", "diagonal", "area", "volume", "box_volume"):
+        value = _number(item.get(key))
+        if value is not None:
+            entry[key] = value
+    if not entry:
+        return None
+    for key in ("guid", "method"):
+        if isinstance(item.get(key), str):
+            entry[key] = item[key][:200]
+    # Dropping this flag would hand the caller an area and a volume the viewer
+    # itself considers unreliable, with nothing left to say so.
+    if item.get("approximate") is True:
+        entry["approximate"] = True
+    if isinstance(item.get("centre"), dict):
+        centre = {k: _number(v) for k, v in item["centre"].items() if k in "xyz"}
+        if len(centre) == 3 and None not in centre.values():
+            entry["centre"] = centre
+    return entry
+
+
+def _clean_laser(item: dict) -> dict | None:
+    axes = item.get("axes")
+    if not isinstance(axes, dict):
+        return None
+    out: dict = {}
+    for name in ("x", "y", "z"):
+        value = axes.get(name)
+        if not isinstance(value, dict):
+            continue
+        span = _number(value.get("span"))
+        hits = {}
+        for side in ("negative", "positive"):
+            hit = value.get(side)
+            if isinstance(hit, dict) and _number(hit.get("distance")) is not None:
+                hits[side] = {
+                    "distance": _number(hit.get("distance")),
+                    "guid": str(hit.get("guid"))[:200] if hit.get("guid") else None,
+                }
+        out[name] = {"span": span, **hits}
+    if not out:
+        return None
+    entry = {"axes": out}
+    if isinstance(item.get("method"), str):
+        entry["method"] = item["method"][:200]
+    origin = _triple(item.get("origin"))
+    if origin is not None:
+        entry["origin"] = origin
+    return entry
+
+
+def _clean_angle(item: dict) -> dict | None:
+    degrees = _number(item.get("degrees"))
+    at = _triple(item.get("at"))
+    if degrees is None or at is None:
+        return None
+    entry = {"degrees": degrees, "at": at}
+    for key in ("from", "to"):
+        point = _triple(item.get(key))
+        if point is not None:
+            entry[key] = point
+    legs = item.get("legs")
+    if isinstance(legs, list) and len(legs) == 2:
+        cleaned = [_number(leg) for leg in legs]
+        if None not in cleaned:
+            entry["legs"] = cleaned
+    return entry
+
+
+def _clean_area(item: dict) -> dict | None:
+    area = _number(item.get("area"))
+    points = item.get("points")
+    if area is None or not isinstance(points, list) or len(points) < 3:
+        return None
+    cleaned = [p for p in (_triple(point) for point in points[:200]) if p is not None]
+    if len(cleaned) < 3:
+        return None
+    entry = {"area": area, "points": cleaned}
+    for key in ("perimeter", "flatness"):
+        value = _number(item.get(key))
+        if value is not None:
+            entry[key] = value
+    # The normal says which plane the area was measured in and the centre says
+    # where; without them an area is a number with no place in the model.
+    for key in ("normal", "centre"):
+        vector = _triple(item.get(key))
+        if vector is not None:
+            entry[key] = vector
+    return entry
+
+
+_MEASUREMENT_KINDS = {
+    "distance": _clean_distance,
+    "dimensions": _clean_dimensions,
+    "laser": _clean_laser,
+    "angle": _clean_angle,
+    "area": _clean_area,
+}
+
+
 def _clean_measurements(items: Any) -> list[dict]:
-    """Validated user measurements from a client frame; anything odd drops."""
+    """Validated user measurements from a client frame; anything odd drops.
 
-    def triple(value: Any) -> list[float] | None:
-        if not isinstance(value, list) or len(value) != 3:
-            return None
-        try:
-            return [round(float(v), 6) for v in value]
-        except (TypeError, ValueError):
-            return None
-
+    A frame carries whatever the viewer's measure card is showing, which is
+    five different shapes. An untagged item is a distance, because that is
+    what the only shape used to be.
+    """
     cleaned: list[dict] = []
     if not isinstance(items, list):
         return cleaned
     for item in items[:_MAX_MEASUREMENTS]:
         if not isinstance(item, dict):
             continue
-        start = triple(item.get("from"))
-        end = triple(item.get("to"))
-        delta = triple(item.get("delta"))
-        distance = item.get("distance")
-        if start is None or end is None or not isinstance(distance, (int, float)):
+        kind = item.get("kind")
+        kind = kind if isinstance(kind, str) and kind in _MEASUREMENT_KINDS else "distance"
+        entry = _MEASUREMENT_KINDS[kind](item)
+        if entry is None:
             continue
-        entry = {"from": start, "to": end, "distance": round(float(distance), 6)}
-        if delta is not None:
-            entry["delta"] = delta
+        if kind != "distance":
+            entry = {"kind": kind, **entry}
+        # A stable per-row id is what lets a caller name one measurement; tabs
+        # that do not send one simply have no id.
+        item_id = item.get("id")
+        if isinstance(item_id, str) and 0 < len(item_id) <= 64:
+            entry = {"id": item_id, **entry}
         cleaned.append(entry)
     return cleaned
+
+
+_KEEP_SIDES = ("above", "below")
+_PROJECTIONS = ("perspective", "orthographic")
+
+
+def _clean_camera(item: Any) -> dict | None:
+    """The camera the tab is actually looking through, in model axes, metres."""
+    if not isinstance(item, dict):
+        return None
+    entry: dict = {}
+    for key in ("position", "target", "up"):
+        vector = _triple(item.get(key))
+        if vector is not None:
+            entry[key] = vector
+    for key in ("fov", "ortho_height", "distance", "world_per_pixel"):
+        value = _number(item.get(key))
+        if value is not None:
+            entry[key] = value
+    if item.get("projection") in _PROJECTIONS:
+        entry["projection"] = item["projection"]
+    return entry or None
+
+
+def _counts(item: Any, keys: tuple[str, ...]) -> dict | None:
+    if not isinstance(item, dict):
+        return None
+    entry = {}
+    for key in keys:
+        value = item.get(key)
+        if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= 10_000_000:
+            continue
+        entry[key] = value
+    return entry or None
+
+
+def _clean_section(item: Any) -> dict | None:
+    if not isinstance(item, dict):
+        return None
+    entry: dict = {}
+    axes: dict = {}
+    for name in ("x", "y", "z"):
+        axis = item.get(name)
+        if not isinstance(axis, dict):
+            continue
+        at = _number(axis.get("at"))
+        if at is None:
+            continue
+        keep = axis.get("keep") if axis.get("keep") in _KEEP_SIDES else "below"
+        axes[name] = {"at": at, "keep": keep}
+    if axes:
+        entry["axes"] = axes
+    depth = _number(item.get("slice"))
+    if depth is not None:
+        entry["slice"] = depth
+    return entry or None
+
+
+def _clean_viewport_state(state: Any) -> dict | None:
+    """One tab's viewport, whitelisted the way measurement frames are.
+
+    Everything here is context the agent otherwise cannot see: what the camera
+    is looking at, how much of the model is cut away, and how much is hidden.
+    """
+    if not isinstance(state, dict):
+        return None
+    entry: dict = {}
+    camera = _clean_camera(state.get("camera"))
+    if camera is not None:
+        entry["camera"] = camera
+    viewport = _counts(state.get("viewport"), ("width", "height"))
+    if viewport is not None:
+        entry["viewport"] = viewport
+    visibility = _counts(state.get("visibility"), ("hidden", "isolated", "total", "visible"))
+    if visibility is not None:
+        entry["visibility"] = visibility
+    section = _clean_section(state.get("section"))
+    if section is not None:
+        entry["section"] = section
+    if isinstance(state.get("view"), str):
+        entry["view"] = state["view"][:20]
+    if isinstance(state.get("model_id"), str):
+        entry["model_id"] = state["model_id"][:_MAX_MODEL_ID_LENGTH]
+    return entry or None
+
+
+def _summarize_viewport(state: dict) -> str | None:
+    """One line an agent can read before it re-isolates what is already isolated."""
+    parts: list[str] = []
+    camera = state.get("camera") or {}
+    view = state.get("view")
+    projection = camera.get("projection")
+    if view and projection:
+        parts.append(f"{projection} {view} view")
+    elif view:
+        parts.append(f"{view} view")
+    elif projection:
+        parts.append(f"{projection} view")
+    section = state.get("section") or {}
+    for name, axis in (section.get("axes") or {}).items():
+        parts.append(f"section cut on {name} at {axis['at']:g} m keeping {axis['keep']}")
+    visibility = state.get("visibility") or {}
+    total = visibility.get("total")
+    isolated = visibility.get("isolated")
+    hidden = visibility.get("hidden")
+    if isolated:
+        parts.append(f"isolated to {isolated} elements")
+    elif hidden:
+        parts.append(f"{hidden} of {total} elements hidden" if total else f"{hidden} elements hidden")
+    return "; ".join(parts) or None
 
 
 class ViewerClient:
@@ -96,7 +355,18 @@ class ViewerClient:
         self.selection_order = 0
         self.measurements: list[dict] = []
         self.measured_at: str | None = None
+        self.measurement_model_id: str | None = None
         self.measurement_order = 0
+        # A tab that predates the scene_state frame never sends one, so
+        # "ready" is the only default that keeps it working.
+        self.scene_state = "ready"
+        # Last viewport this tab published: camera, section, visibility counts.
+        self.viewport: dict | None = None
+        self.viewport_at: str | None = None
+        # Ids of the calls this tab still owes an answer to, so closing it
+        # fails them now instead of at the timeout.
+        self.commands: set[str] = set()
+        self.shots: set[str] = set()
 
     def touch(self) -> None:
         self.last_active = next(self._activity)
@@ -118,13 +388,19 @@ class ViewerHub:
         self.last_color_theme: dict | None = None
         self._shots: dict[str, tuple[ViewerClient, str | None, asyncio.Future]] = {}
         self._shot_ids = itertools.count(1)
+        # Viewer commands share the id counter: one sequence, no collisions.
+        self._commands: dict[str, tuple[ViewerClient, asyncio.Future]] = {}
         self._ping_task: asyncio.Task | None = None
         # Model bytes cached per ETag so several tabs (or a reconnect) do not
         # re-serialize the same revision; a few entries cover model switching.
         self._model_cache: dict[str, bytes] = {}
-        # Serializes the cache-miss path so N tabs opening together queue one
-        # serialization on the model worker, not N.
-        self.model_bytes_lock = asyncio.Lock()
+        # One in-flight serialization per ETag, so N tabs opening together
+        # queue one job on the model worker, not N.
+        self._model_jobs: dict[str, asyncio.Future] = {}
+        # Length unit per model, stamped with the fingerprint it was read at.
+        # status_payload is synchronous and the model belongs to its worker, so
+        # the units are read there and served from here.
+        self._units: dict[str, tuple[str | None, dict]] = {}
         core.events.subscribe(self._on_event)
 
     # -- connection registry ---------------------------------------------------
@@ -148,17 +424,37 @@ class ViewerHub:
         self._selection_client = None
         self.core.viewer.selection = []
 
-    def _adopt_selection(self, client: ViewerClient) -> None:
+    def _set_selection(self, client: ViewerClient) -> None:
         self.selection = list(client.selection)
         self.selection_model_id = client.selection_model_id
         self.selected_at = client.selected_at
         self._selection_client = client
         self.core.viewer.selection = list(client.selection)
 
+    def _adopt_selection(self, client: ViewerClient) -> None:
+        """Take this tab's selection unless doing so would erase another's.
+
+        Every tab publishes an empty selection while it rebuilds its scene, so
+        last-writer-wins let a freshly opened tab tell the LLM that nothing is
+        selected while the first tab still shows the user's picks. Only the tab
+        that owns the selection may empty it.
+        """
+        if (
+            not client.selection
+            and self.selection
+            and self._selection_client is not None
+            and self._selection_client is not client
+            and self._selection_client in self.clients
+        ):
+            return
+        self._set_selection(client)
+
     def _restore_latest_selection(self) -> None:
         candidates = [client for client in self.clients if client.selection_order]
-        if candidates:
-            self._adopt_selection(max(candidates, key=lambda client: client.selection_order))
+        with_selection = [client for client in candidates if client.selection]
+        pool = with_selection or candidates
+        if pool:
+            self._set_selection(max(pool, key=lambda client: client.selection_order))
         else:
             self._clear_selection()
 
@@ -175,12 +471,32 @@ class ViewerHub:
         if changed:
             self._restore_latest_selection()
 
+    def _tab_gone(self) -> ToolError:
+        return ToolError(
+            "VIEWER_NOT_CONNECTED",
+            "the viewer tab closed before it answered.",
+            "Ask the user to reopen the viewer (type /viewer in the ifc-console "
+            "terminal), then retry.",
+        )
+
+    def _fail_pending(self, client: ViewerClient) -> None:
+        """Fail a closed tab's calls now rather than at their timeout."""
+        for command_id in list(client.commands):
+            pending = self._commands.get(command_id)
+            if pending is not None and not pending[1].done():
+                pending[1].set_exception(self._tab_gone())
+        for shot_id in list(client.shots):
+            entry = self._shots.get(shot_id)
+            if entry is not None and not entry[2].done():
+                entry[2].set_exception(self._tab_gone())
+
     def unregister(self, client: ViewerClient) -> None:
         # close_all() unregisters first and the socket's finally block
         # unregisters again; only the first call may emit.
         if client not in self.clients:
             return
         self.clients.remove(client)
+        self._fail_pending(client)
         self.core.viewer.connected = self.connected
         self.core.events.emit("viewer_disconnected", client_id=client.id, tabs=self.connected)
         if not self.clients:
@@ -218,17 +534,58 @@ class ViewerHub:
                 hint + " Meanwhile query_elements/get_element give the same information as text.",
             )
 
+    @property
+    def selection_client_id(self) -> int | None:
+        """Which tab the shared selection came from, so two tabs disagreeing
+        is visible to the caller instead of silent."""
+        client = self._selection_client
+        return client.id if client is not None and client in self.clients else None
+
+    def measurement_source(self) -> ViewerClient | None:
+        """The tab whose measurements the tools should read.
+
+        Content beats recency: a tab rebuilding its scene publishes an empty
+        list, which must not erase the dimensions another tab is showing.
+        """
+        active = self.core.models.active_id
+        candidates = [
+            client
+            for client in self.clients
+            if client.measured_at is not None and client.measurement_model_id == active
+        ]
+        if not candidates:
+            return None
+        with_items = [client for client in candidates if client.measurements]
+        return max(with_items or candidates, key=lambda client: client.measurement_order)
+
     def latest_measurements(self) -> tuple[list[dict], str | None]:
-        """The most recent connected tab's measurements, with their timestamp."""
-        newest: ViewerClient | None = None
-        for client in self.clients:
-            if client.measured_at is None:
-                continue
-            if newest is None or client.measurement_order > newest.measurement_order:
-                newest = client
-        if newest is None:
+        """The measurements a tool should report, with their timestamp."""
+        client = self.measurement_source()
+        if client is None:
             return [], None
-        return list(newest.measurements), newest.measured_at
+        return list(client.measurements), client.measured_at
+
+    def viewport_source(self) -> ViewerClient | None:
+        """The tab whose viewport the tools should describe."""
+        candidates = [
+            client
+            for client in self.clients
+            if client.viewport is not None and client.view_model_id == self.core.models.active_id
+        ]
+        if not candidates:
+            return None
+        ready = [client for client in candidates if client.scene_state == "ready"]
+        return max(ready or candidates, key=lambda client: client.last_active)
+
+    def viewport_state(self) -> dict | None:
+        """The full viewport of the tab showing the active model, or None."""
+        client = self.viewport_source()
+        return dict(client.viewport) if client is not None and client.viewport else None
+
+    def viewport_summary(self) -> str | None:
+        """One line describing what is on screen, for a status or a panel note."""
+        state = self.viewport_state()
+        return _summarize_viewport(state) if state else None
 
     # -- state payloads ----------------------------------------------------------
     def model_etag(self, session: Any = None) -> str | None:
@@ -237,6 +594,45 @@ class ViewerHub:
             return None
         model_id = s.model_id or "model"
         return f"{model_id}-{s.fingerprint}-{s.revision}"
+
+    def units(self, session: Any = None) -> dict | None:
+        """The cached length unit for a model, or None until it has been read."""
+        s = session or self.core.session
+        cached = self._units.get(s.model_id or "model")
+        if cached is None or cached[0] != s.fingerprint:
+            return None
+        return cached[1]
+
+    async def refresh_units(self) -> None:
+        """Read every resident model's length unit on its own worker.
+
+        The viewer needs the file's unit to label anything it measures, and
+        status_payload cannot read the model itself: the file object belongs to
+        the model worker. Cached per fingerprint, so this is a no-op per load.
+        """
+        for session in list(self.core.models.sessions.values()):
+            if not session.loaded or self.units(session) is not None:
+                continue
+            fingerprint = session.fingerprint
+            try:
+                info = await session.run(lambda s=session: unit_info(s.ifc), timeout=30)
+            except Exception:
+                # A busy or detached model simply has no units yet; the next
+                # status frame asks again.
+                continue
+            self._units[session.model_id or "model"] = (fingerprint, info)
+
+    async def _publish_units(self) -> None:
+        """Resend status once the units are known.
+
+        The first status after a load cannot carry them (the model belongs to
+        its worker and status_payload is synchronous), so the tab gets them in
+        the next frame rather than waiting on the model worker for the first.
+        """
+        before = dict(self._units)
+        await self.refresh_units()
+        if self._units != before and self.clients:
+            await self.broadcast(self.status_payload())
 
     def model_rows(self) -> list[dict]:
         """Every resident model the viewer may show; the active one leads."""
@@ -249,10 +645,17 @@ class ViewerHub:
                     "schema": session.schema,
                     "active": model_id == self.core.models.active_id,
                     "etag": self.model_etag(session),
+                    "units": self.units(session),
                 }
             )
         rows.sort(key=lambda r: (not r["active"], r["id"]))
         return rows
+
+    def project_scope(self) -> str:
+        """Stable opaque browser-storage scope for this project directory."""
+        return sha256(
+            str(self.core.store.project_dir.resolve()).encode("utf-8")
+        ).hexdigest()[:16]
 
     def status_payload(self) -> dict:
         s = self.core.session
@@ -265,6 +668,13 @@ class ViewerHub:
             "theme": "light" if self.core.ui_theme == "light" else "dark",
             "dirty": s.dirty,
             "fingerprint": s.fingerprint,
+            # The file's own length unit: the viewer measures in SI metres and
+            # cannot label a number without it.
+            "units": self.units(s),
+            # A stable opaque scope keeps browser conversation archives from
+            # crossing projects served later on the same local origin without
+            # exposing the project path to the page.
+            "project_scope": self.project_scope(),
             "etag": self.model_etag(),
             "selection": list(self.selection),
             "highlight": self.last_highlight,
@@ -287,6 +697,36 @@ class ViewerHub:
 
     def cached_model_bytes(self, etag: str) -> bytes | None:
         return self._model_cache.get(etag)
+
+    async def _serialize_model(self, etag: str, session: Any) -> bytes:
+        # Serialization runs on the model worker: the file object is not
+        # thread-safe and edits must not interleave with it.
+        data = await session.run(lambda: session.ifc.to_string().encode("utf-8"))
+        budget = self.core.settings.viewer.max_model_mb * 1_048_576
+        # Bytes from a revision that has already moved on would be served to
+        # the next tab under an ETag they no longer describe.
+        if len(data) <= budget and self.model_etag(session) == etag:
+            self.cache_model_bytes(etag, data)
+        return data
+
+    def model_bytes_job(self, etag: str, session: Any) -> asyncio.Future:
+        """One serialization per ETag, shared by every tab waiting on it.
+
+        N tabs opening together must queue one job on the single model worker,
+        and a caller that gives up must not abandon the work the others need.
+        """
+        job = self._model_jobs.get(etag)
+        if job is not None and not job.done():
+            return job
+        job = asyncio.ensure_future(self._serialize_model(etag, session))
+
+        def forget(done: asyncio.Future) -> None:
+            if self._model_jobs.get(etag) is done:
+                del self._model_jobs[etag]
+
+        self._model_jobs[etag] = job
+        job.add_done_callback(forget)
+        return job
 
     # -- incoming frames -----------------------------------------------------------
     async def handle_frame(self, client: ViewerClient, frame: dict) -> None:
@@ -325,10 +765,37 @@ class ViewerHub:
                 "viewer_selection", guids=guids, count=len(guids), model_id=model_id
             )
         elif ftype == "measurements":
+            requested_model = frame.get("model_id")
+            active_id = self.core.models.active_id
+            if requested_model is not None and requested_model != active_id:
+                # A tab showing another model must not publish over the
+                # measurements taken on the active one.
+                return
             client.measurements = _clean_measurements(frame.get("items"))
             client.measured_at = _utcnow()
+            client.measurement_model_id = active_id
             client.measurement_order = next(self._selection_updates)
-            self.core.events.emit("viewer_measurements", count=len(client.measurements))
+            self.core.events.emit(
+                "viewer_measurements", count=len(client.measurements), model_id=active_id
+            )
+        elif ftype == "scene_state":
+            state = frame.get("state")
+            if state in ("rebuilding", "ready"):
+                client.scene_state = state
+        elif ftype == "viewer_state":
+            viewport = _clean_viewport_state(frame.get("state") or frame)
+            if viewport is not None:
+                shown = viewport.get("model_id")
+                if shown is not None and self.core.models.get(shown) is not None:
+                    client.view_model_id = shown
+                client.viewport = viewport
+                client.viewport_at = _utcnow()
+        elif ftype == "command_result":
+            pending = self._commands.get(str(frame.get("id")))
+            if pending is not None:
+                target, fut = pending
+                if client is target and not fut.done():
+                    fut.set_result(frame)
         elif ftype == "screenshot_response":
             pending = self._shots.get(str(frame.get("id")))
             if pending is not None:
@@ -391,7 +858,83 @@ class ViewerHub:
                 "no connected viewer tab is showing the active model.",
                 "Ask the user to open or switch a viewer tab to the active model, then retry.",
             )
-        return max(candidates, key=lambda c: c.last_active)
+        # A tab mid-rebuild has disposed its geometry, so it would answer any
+        # id-addressed command with "not in this model".
+        ready = [client for client in candidates if client.scene_state == "ready"]
+        return max(ready or candidates, key=lambda c: c.last_active)
+
+    def _busy_error(self, action: str) -> ToolError:
+        return ToolError(
+            "VIEWER_BUSY",
+            f"the viewer is rebuilding its scene, so it cannot run {action} yet.",
+            "The tab reloads the model after a change and has no geometry to "
+            "address meanwhile; the GlobalIds are fine. Retry in a moment.",
+        )
+
+    async def _ready_client(self, model_id: str | None, action: str) -> ViewerClient:
+        """The target tab, once it has a scene to act on."""
+        client = self._target_client(model_id)
+        if client.scene_state == "ready":
+            return client
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + _REBUILD_WAIT
+        while loop.time() < deadline:
+            await asyncio.sleep(_REBUILD_POLL)
+            client = self._target_client(model_id)  # raises once the tab is gone
+            if client.scene_state == "ready":
+                return client
+        raise self._busy_error(action)
+
+    async def run_command(self, action: str, params: dict | None = None) -> Any:
+        """Run one viewer command in the tab showing the active model.
+
+        Returns whatever the command produced. Raises VIEWER_NOT_CONNECTED if
+        no tab is showing the model, VIEWER_BUSY while it rebuilds its scene,
+        VIEWER_TIMEOUT if none answers, and VIEWER_ERROR carrying the viewer's
+        own message if it refused.
+        """
+        client = await self._ready_client(self.core.models.active_id, action)
+        command_id = str(next(self._shot_ids))
+        loop = asyncio.get_running_loop()
+        fut: asyncio.Future = loop.create_future()
+        self._commands[command_id] = (client, fut)
+        client.commands.add(command_id)
+        try:
+            await client.send({"type": "command", "id": command_id, "action": action, **(params or {})})
+            try:
+                frame = await asyncio.wait_for(fut, timeout=_COMMAND_TIMEOUT)
+            except asyncio.TimeoutError:
+                raise ToolError(
+                    "VIEWER_TIMEOUT",
+                    f"the viewer did not answer {action} within {_COMMAND_TIMEOUT:.0f}s.",
+                    "The viewer tab may be hidden or busy. Ask the user to bring "
+                    "it to the foreground, then retry once.",
+                ) from None
+        finally:
+            self._commands.pop(command_id, None)
+            client.commands.discard(command_id)
+
+        if not frame.get("ok"):
+            error = str(frame.get("error"))[:400]
+            # The tab refuses id-addressed work while it rebuilds; that is not
+            # a bad argument and must not read like one.
+            if "VIEWER_BUSY" in error:
+                raise self._busy_error(action)
+            raise ToolError(
+                "VIEWER_ERROR",
+                f"the viewer refused {action}: {error}",
+                "Check the arguments against describe_capabilities, then retry.",
+            )
+        result = frame.get("result")
+        # The tab is a client like any other; a reply it cannot have meant
+        # should not become an unbounded tool result.
+        if len(json.dumps(result, default=str)) > _MAX_COMMAND_RESULT:
+            raise ToolError(
+                "RESULT_TOO_LARGE",
+                f"the viewer returned an oversized result for {action}.",
+                "Narrow the request, then retry.",
+            )
+        return result
 
     async def request_screenshot(
         self,
@@ -404,15 +947,18 @@ class ViewerHub:
     ) -> tuple[bytes, int, int]:
         """Ask the most recently active tab for a canvas capture.
 
-        Returns (image bytes, width, height). Raises VIEWER_TIMEOUT if no tab
-        answers in time and VIEWER_ERROR / RESULT_TOO_LARGE on bad replies.
+        Returns (image bytes, width, height). Raises VIEWER_BUSY while the tab
+        rebuilds its scene (an empty viewport is worse evidence than none),
+        VIEWER_TIMEOUT if no tab answers in time, and VIEWER_ERROR /
+        RESULT_TOO_LARGE on bad replies.
         """
         model_id = self.core.models.active_id
-        client = self._target_client(model_id)
+        client = await self._ready_client(model_id, "a screenshot")
         shot_id = str(next(self._shot_ids))
         loop = asyncio.get_running_loop()
         fut: asyncio.Future = loop.create_future()
         self._shots[shot_id] = (client, model_id, fut)
+        client.shots.add(shot_id)
         try:
             await client.send(
                 {
@@ -437,6 +983,7 @@ class ViewerHub:
                 ) from None
         finally:
             self._shots.pop(shot_id, None)
+            client.shots.discard(shot_id)
 
         error = frame.get("error")
         if error:
@@ -492,6 +1039,21 @@ class ViewerHub:
         return data, width, height
 
     # -- event bridge -----------------------------------------------------------------
+    @staticmethod
+    def _geometry_changed(etype: str, event: dict) -> bool:
+        """Whether the tab has to re-parse the model, or only re-read text.
+
+        A rebuild costs seconds to minutes on a large file, so skipping it after
+        an edit that touched no shape is the whole point. Claiming "no geometry"
+        wrongly leaves stale geometry on screen, which is worse than a slow
+        reload, so True is the default and only two cases opt out: a save, which
+        writes the in-memory model out and changes nothing in it, and a mutation
+        whose emitter states it touched no representation.
+        """
+        if etype == "model_saved":
+            return False
+        return event.get("geometry") is not False
+
     def _on_event(self, event: dict) -> None:
         """EventBus subscriber: translate core events into protocol frames.
 
@@ -507,12 +1069,17 @@ class ViewerHub:
                 self._prune_selection_models()
                 self.last_highlight = None
                 self.last_color_theme = None
+                self._units.clear()
             frame = {
                 "type": "model_updated",
                 "etag": self.model_etag(),
                 "reason": reasons[etype],
                 "dirty": self.core.session.dirty,
+                "geometry": self._geometry_changed(etype, event),
             }
+            touched = _guid_list(event.get("guids"))
+            if touched:
+                frame["elements"] = touched
         elif etype in (
             "model_attached",
             "model_detached",
@@ -538,6 +1105,8 @@ class ViewerHub:
         loop.create_task(self.broadcast(frame))
         if etype == "model_loaded":
             loop.create_task(self.broadcast(self.status_payload()))
+        if etype in ("model_loaded", "model_saved", "model_attached", "active_model_changed"):
+            loop.create_task(self._publish_units())
 
     # -- keepalive ---------------------------------------------------------------------
     async def _ping_loop(self) -> None:

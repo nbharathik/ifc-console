@@ -23,6 +23,10 @@ _DERIVED_QUANTITIES = {
     "Width": 1,
     "Height": 1,
     "GrossFootprintArea": 2,
+    "GrossFloorArea": 2,
+    "GrossSideArea": 2,
+    "GrossTopArea": 2,
+    "GrossSurfaceArea": 2,
     "GrossVolume": 3,
 }
 
@@ -105,16 +109,38 @@ def _group_key(element: Any, aggregate_by: str) -> str:
     return "all"
 
 
-def _derived_values(probe: dict[str, Any], factor: float) -> dict[str, float]:
-    """Mesh-derived quantities converted from SI metres to file units."""
+def _is_space(element: Any) -> bool:
+    return bool(element.is_a("IfcSpace") or element.is_a("IfcSpatialZone"))
+
+
+def _derived_values(
+    probe: dict[str, Any], factor: float, *, space: bool = False
+) -> dict[str, float]:
+    """Mesh-derived quantities converted from SI metres to file units.
+
+    Spaces take the Qto_SpaceBaseQuantities names; everything else takes the
+    element vocabulary.
+    """
     extents = probe["local_extents"]
-    si_values = {
-        "Length": extents["x"],
-        "Width": extents["y"],
-        "Height": extents["z"],
-        "GrossFootprintArea": probe["footprint_area"],
-        "GrossVolume": probe["volume"],
-    }
+    if space:
+        si_values = {
+            "Height": extents["z"],
+            "GrossFloorArea": probe["footprint_area"],
+            "GrossVolume": probe["volume"],
+        }
+    else:
+        si_values = {
+            "Length": extents["x"],
+            "Width": extents["y"],
+            "Height": extents["z"],
+            "GrossFootprintArea": probe["footprint_area"],
+            # opposing faces come in pairs, so half the larger pair is the
+            # elevation area a takeoff means by GrossSideArea
+            "GrossSideArea": max(probe["side_area_x"], probe["side_area_y"]) / 2.0,
+            "GrossTopArea": probe["top_area"],
+            "GrossSurfaceArea": probe["surface_area"],
+            "GrossVolume": probe["volume"],
+        }
     scale = factor if factor > 0 else 1.0
     return {
         name: float(value) / (scale ** _DERIVED_QUANTITIES[name])
@@ -195,7 +221,9 @@ def compute_quantities(
 
         factor = unit_info(ifc)["to_si_factor"]
         verdict: dict[str, bool] = {}
-        candidates = [e for e in fallback if not geometry.is_non_physical(e, verdict)]
+        # spaces reach here only when the selector asked for them, and a room
+        # takeoff is exactly what they are for; openings and grids stay out
+        candidates = [e for e in fallback if not geometry.is_non_measurable(e, verdict)]
         meshes = geometry.element_meshes(ifc, candidates)
         for element in candidates:
             mesh = meshes.get(element.id())
@@ -205,7 +233,7 @@ def compute_quantities(
             probe = geometry.probe_element(element, mesh)
             key = _group_key(element, aggregate_by)
             derived_elements += 1
-            for name, value in _derived_values(probe, factor).items():
+            for name, value in _derived_values(probe, factor, space=_is_space(element)).items():
                 if quantities and name not in quantities:
                     continue
                 groups[key][name] += value
@@ -243,8 +271,9 @@ def compute_quantities(
         if derived_elements:
             result["note"] = (
                 "elements without stored values received mesh-derived "
-                "Length/Width/Height/GrossFootprintArea/GrossVolume; "
-                "get_element_geometry shows the per-element confidence"
+                "dimensions, gross areas and GrossVolume (spaces get the "
+                "Qto_SpaceBaseQuantities names); get_element_geometry shows "
+                "the per-element confidence"
             )
     if skipped:
         result["skipped"] = skipped

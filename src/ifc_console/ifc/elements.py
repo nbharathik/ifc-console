@@ -5,12 +5,13 @@ from __future__ import annotations
 from typing import Any
 
 import ifcopenshell
+import ifcopenshell.util.classification as classification_util
 import ifcopenshell.util.element as element_util
 
 INCLUDE_DEFAULT = ("attributes", "psets", "type", "container")
 INCLUDE_ALLOWED = (
     "attributes", "psets", "qtos", "materials", "type", "container",
-    "openings", "decomposition",
+    "openings", "decomposition", "classification",
 )
 
 _SKIP_ATTRS = {"OwnerHistory", "Representation", "ObjectPlacement"}
@@ -89,6 +90,37 @@ def _material_info(material: Any) -> Any:
         return {"kind": cls}
     except Exception:
         return {"kind": "unknown"}
+
+
+def _classification_references(e: Any) -> list[dict[str, Any]]:
+    """Classification references on the element, type-inherited ones included."""
+    try:
+        references = classification_util.get_references(e)
+        direct = {
+            ref.id() for ref in classification_util.get_references(e, should_inherit=False)
+        }
+    except Exception:
+        return []
+    rows: list[dict[str, Any]] = []
+    for ref in references:
+        try:
+            system = classification_util.get_classification(ref)
+        except Exception:
+            system = None
+        rows.append(
+            {
+                "system": getattr(system, "Name", None),
+                # IFC2X3 spells Identification ItemReference
+                "identification": getattr(ref, "Identification", None)
+                or getattr(ref, "ItemReference", None),
+                "name": getattr(ref, "Name", None),
+                "location": getattr(ref, "Location", None),
+                "inherited": ref.id() not in direct,
+            }
+        )
+    # get_references returns a set; sort so repeated reads agree
+    rows.sort(key=lambda row: tuple(row[k] or "" for k in ("system", "identification", "name")))
+    return rows
 
 
 def _container_chain(e: Any) -> list[dict[str, Any]]:
@@ -170,4 +202,6 @@ def element_detail(e: Any, include: tuple[str, ...]) -> dict[str, Any]:
             }
             for p in list(parts)[:50]
         ]
+    if "classification" in include:
+        out["classification"] = _classification_references(e)
     return out

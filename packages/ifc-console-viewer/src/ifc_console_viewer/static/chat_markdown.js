@@ -14,6 +14,24 @@ export const esc = (value) =>
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#39;");
 
+// An IFC GlobalId is 22 chars of this base64 variant, and its first char
+// encodes the UUID's top bits, so it is always 0-3. Tight enough that plain
+// words never match; loose enough that every real id does.
+const GUID_CHIP =
+  '<button type="button" class="chat-guid" data-guid="$1" ' +
+  'title="Select this element in the 3D view">$1</button>';
+
+/** GlobalIds become live chips: click one, the viewer frames that element. */
+function mdGlobalIds(h) {
+  h = h.replace(/<code>([0-3][0-9A-Za-z_$]{21})<\/code>/g, GUID_CHIP);
+  // ids already wrapped by the pass above sit right before </button>
+  h = h.replace(
+    /(^|[\s>({[,;:])([0-3][0-9A-Za-z_$]{21})(?!<\/button>)(?=$|[\s<)\]}.,;:])/g,
+    (m, pre, id) => pre + GUID_CHIP.replaceAll("$1", id)
+  );
+  return h;
+}
+
 function mdInline(h) {
   h = h.replace(/`([^`\n]+)`/g, "<code>$1</code>");
   h = h.replace(
@@ -22,6 +40,7 @@ function mdInline(h) {
   );
   h = h.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
   h = h.replace(/(^|[\s(])\*([^*\n]+)\*/g, "$1<em>$2</em>");
+  h = mdGlobalIds(h);
   return h;
 }
 
@@ -49,6 +68,27 @@ function mdTables(h, stash) {
   return out.join("\n");
 }
 
+/* A wrapped list item is still one item.
+ *
+ * Models wrap long bullets at ~80 columns. Matching list markers line by line
+ * left the continuation outside the <li>, so half the sentence appeared
+ * unindented under the list and read as a new paragraph.
+ */
+function mdListContinuations(h) {
+  const isItem = (line) => /^\s*(?:[-*]|\d+[.)]) /.test(line);
+  const out = [];
+  let open = false;
+  for (const line of h.split("\n")) {
+    if (open && !isItem(line) && line.trim() && /^\s+\S/.test(line)) {
+      out[out.length - 1] += " " + line.trim();
+      continue;
+    }
+    open = isItem(line);
+    out.push(line);
+  }
+  return out.join("\n");
+}
+
 export function md(src) {
   const blocks = [];
   const tables = [];
@@ -59,15 +99,21 @@ export function md(src) {
   let h = esc(src);
   h = mdTables(h, tables);
   h = h.replace(/^\s*(-{3,}|\*{3,}|_{3,})\s*$/gm, "<hr>");
-  h = h.replace(/^#{1,6} (.*)$/gm, "<h3>$1</h3>");
-  h = h.replace(/^[-*] (.*)$/gm, "<li>$1</li>");
-  h = h.replace(/^\d+[.)] (.*)$/gm, "<oli>$1</oli>");
+  h = h.replace(/^(#{1,6}) (.*)$/gm, (m, hashes, body) => {
+    const level = Math.min(hashes.length + 2, 6);
+    return `<h${level}>${body}</h${level}>`;
+  });
+  h = h.replace(/^&gt; ?(.*)$/gm, "<blockquote>$1</blockquote>");
+  h = mdListContinuations(h);
+  h = h.replace(/^\s*[-*] (.*)$/gm, "<li>$1</li>");
+  h = h.replace(/^\s*\d+[.)] (.*)$/gm, "<oli>$1</oli>");
   h = mdInline(h);
   h = h.replace(/(?:<li>.*<\/li>\n?)+/g, (m) => "<ul>" + m.replace(/\n/g, "") + "</ul>");
   h = h.replace(/(?:<oli>.*<\/oli>\n?)+/g, (m) =>
     "<ol>" + m.replace(/oli>/g, "li>").replace(/\n/g, "") + "</ol>"
   );
-  h = h.replace(/(<\/h3>|<hr>|<\/ul>|<\/ol>|<\/div>)\n/g, "$1");
+  h = h.replace(/<\/blockquote>\n<blockquote>/g, "<br>");
+  h = h.replace(/(<\/h[3-6]>|<hr>|<\/ul>|<\/ol>|<\/div>|<\/blockquote>)\n/g, "$1");
   h = h.replace(/\n/g, "<br>");
   h = h.replace(/\x00(\d+)\x00/g, (m, i) => {
     const b = blocks[i];

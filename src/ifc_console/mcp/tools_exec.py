@@ -9,6 +9,7 @@ land in the live model and already required edit mode.
 
 from __future__ import annotations
 
+import asyncio
 import time
 from typing import TYPE_CHECKING, Annotated, Any
 
@@ -340,6 +341,11 @@ async def _run_in_process(
 
     def job() -> tuple[executor.ExecResult, int | None, int | None]:
         pre = session.max_id()
+        if allow_mutation:
+            # The thread that performs the edit owns the flag. A cancelled or
+            # timed-out await unwinds while this thread keeps mutating, and a
+            # false clean flag silently discards the edit at the next open.
+            session.mark_dirty()
         with (
             entity_mutation_lock(enabled=not allow_mutation),
             model_write_lock(enabled=not core.policy.allow_ai_save),
@@ -348,20 +354,26 @@ async def _run_in_process(
         post = session.max_id()
         return result, pre, post
 
+    def announce_mutation() -> None:
+        """Publish what job() already flagged, so live consumers refresh."""
+        if allow_mutation and session.dirty:
+            core.events.emit("model_mutated", tool="execute_ifc_code")
+
     start = time.perf_counter()
     try:
         result, pre, post = await session.run(
             job, timeout=settings.exec.timeout_seconds, timeout_code="EXEC_TIMEOUT"
         )
     except ToolError:
+        # includes EXEC_TIMEOUT, where the worker is still mutating
+        announce_mutation()
+        raise
+    except asyncio.CancelledError:
+        # a BaseException, so the handlers below never see it
+        announce_mutation()
         raise
     except GuardError as exc:
-        if allow_mutation:
-            # Code may have changed the model before reaching a blocked write.
-            # A false dirty flag costs a discard prompt; a false clean flag
-            # could silently lose an in-memory edit.
-            session.mark_dirty()
-            core.events.emit("model_mutated", tool="execute_ifc_code")
+        announce_mutation()
         core.audit.record("exec", ok=False, blocked=True, op_class=cls.op_class.value, code=code)
         ai_save_blocked = not core.policy.allow_ai_save and "writing an IFC file" in str(exc)
         raise ToolError(
@@ -377,11 +389,7 @@ async def _run_in_process(
             ),
         ) from exc
     except Exception as exc:
-        if allow_mutation:
-            # The crashed code may have mutated before raising; a false
-            # dirty costs a save prompt, a false clean loses edits.
-            session.mark_dirty()
-            core.events.emit("model_mutated", tool="execute_ifc_code")
+        announce_mutation()
         core.audit.record("exec", ok=False, op_class=cls.op_class.value, error=repr(exc), code=code)
         raise ToolError(
             "EXEC_ERROR",
@@ -393,10 +401,9 @@ async def _run_in_process(
 
     mutated = False
     if allow_mutation:
-        session.mark_dirty()
         mutated = True
         # Lets live consumers (the web viewer) refresh their copy.
-        core.events.emit("model_mutated", tool="execute_ifc_code")
+        announce_mutation()
     elif pre is not None and post is not None and post > pre:
         # a guarded run grew the model: classifier false negative
         session.tainted = True

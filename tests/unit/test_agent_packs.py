@@ -113,6 +113,77 @@ class TestBlueprints:
         assert info.blocks == blueprint.blocks
         assert {"files", "vision"}.issubset(info.features)
 
+    def test_old_blueprint_defaults_to_the_previous_budget(self):
+        from ifc_console.agents.blueprints import AgentBlueprint
+
+        blueprint = AgentBlueprint.model_validate(
+            {
+                "version": "1",
+                "name": "custom-legacy",
+                "title": "Legacy",
+                "description": "Loaded without workflow settings.",
+                "instructions": "Inspect the model.",
+                "blocks": ["ifc-context"],
+            }
+        )
+
+        assert blueprint.workflow.strategy == "adaptive"
+        assert blueprint.workflow.max_tool_rounds == 12
+        assert blueprint.workflow.max_tool_calls == 48
+        assert blueprint.content_paths is None
+
+    def test_blueprint_persists_an_explicit_content_selection(self, tmp_path):
+        from ifc_console.agents.blueprints import AgentBlueprint, AgentBlueprintStore
+
+        path = ".ifc-console/agents/references/manual.md"
+        blueprint = AgentBlueprint(
+            name="custom-content-reader",
+            title="Content reader",
+            description="Reads selected project references.",
+            instructions="Cite the selected manual.",
+            blocks=("documents",),
+            content_paths=(path, path),
+        )
+        store = AgentBlueprintStore(tmp_path)
+        store.save(blueprint)
+
+        assert store.load()[0].content_paths == (path,)
+        with pytest.raises(ValueError):
+            AgentBlueprint(
+                name="custom-unsafe-content",
+                title="Unsafe content",
+                description="Rejects paths outside the project.",
+                instructions="Read a file.",
+                blocks=("documents",),
+                content_paths=("../private.md",),
+            )
+
+    @pytest.mark.parametrize(
+        "workflow",
+        [
+            {"strategy": "unknown"},
+            {"max_tool_rounds": 0},
+            {"max_tool_rounds": 101},
+            {"max_tool_calls": 0},
+            {"max_tool_calls": 1001},
+            {"max_tool_rounds": True},
+            {"max_tool_rounds": "7"},
+            {"max_tool_calls": 3.0},
+        ],
+    )
+    def test_blueprint_rejects_invalid_workflow(self, workflow):
+        from ifc_console.agents.blueprints import AgentBlueprint
+
+        with pytest.raises(ValueError):
+            AgentBlueprint(
+                name="custom-invalid-workflow",
+                title="Invalid workflow",
+                description="Invalid workflow settings.",
+                instructions="Inspect the model.",
+                blocks=("ifc-context",),
+                workflow=workflow,
+            )
+
     async def test_blueprint_builds_only_selected_block_tools(self, tmp_path):
         from ifc_console import LocalRuntime
         from ifc_console.agents.blueprints import AgentBlueprint, BlueprintPack
@@ -123,6 +194,11 @@ class TestBlueprints:
             description="Read project references.",
             instructions="Answer with citations.",
             blocks=("documents",),
+            workflow={
+                "strategy": "evidence-first",
+                "max_tool_rounds": 3,
+                "max_tool_calls": 7,
+            },
         )
         async with await LocalRuntime.open(
             home=tmp_path / "home", project_dir=tmp_path
@@ -134,3 +210,6 @@ class TestBlueprints:
         assert "get_project_document_page" in agent.tools.names
         assert "measure_elements" not in agent.tools.names
         assert "preview_property_change" not in agent.tools.names
+        assert agent.limits.max_tool_rounds == 3
+        assert agent.limits.max_tool_calls == 7
+        assert "gather and cite model or document evidence" in agent.instructions

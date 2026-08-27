@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import {
+  PLAIN_CHAT,
   agentGroups,
   conversationGroups,
   initials,
@@ -97,4 +98,13 @@ test("an empty panel still returns a usable model", () => {
   assert.deepEqual(model.agentGroups, []);
   assert.deepEqual(model.conversationGroups, []);
   assert.equal(model.hasCustom, false);
+});
+
+test("plain chat is listed like any other assistant", () => {
+  const groups = agentGroups([...AGENTS, PLAIN_CHAT], "");
+  const builtin = groups[0].agents;
+  assert.equal(builtin.at(-1).name, "");
+  assert.equal(builtin.at(-1).title, "Plain chat");
+  assert.equal(builtin.at(-1).active, true);
+  assert.equal(builtin.at(-1).deletable, false);
 });

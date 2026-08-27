@@ -20,6 +20,27 @@
 
 import * as THREE from "./vendor/three.module.min.js";
 import { OrbitControls } from "./vendor/OrbitControls.js";
+import {
+  angleMeasure as angleCore,
+  boxExtents,
+  clearanceAxes,
+  closestOnSegmentToRay,
+  emptyBox,
+  formatArea as formatAreaIn,
+  formatLength as formatLengthIn,
+  formatVolume as formatVolumeIn,
+  geometryMass,
+  inferAxis,
+  LENGTH_UNITS,
+  norm3,
+  obbCorners,
+  outlinePoints,
+  planSpatialGrid,
+  polygonMeasure as polygonCore,
+  unionBoxCorners,
+  unitForFile,
+  unitOf,
+} from "./measure_math.js";
 
 // ---------------------------------------------------------------- token / api
 // The token arrives in the URL fragment so it never reaches the server or its
@@ -131,6 +152,91 @@ function el(tag, className, text) {
   return node;
 }
 
+// ---------------------------------------------------------------- units
+// Geometry is SI metres whatever the file says, so every number the viewer
+// holds is metres and only the label changes. The default is the file's own
+// unit: a millimetre-authored model that reads "0.200 m" here and "200
+// MILLIMETRE" from the tools is one product disagreeing with itself.
+let lengthUnitChoice = "file";      // "file", or a key of LENGTH_UNITS
+let fileLengthUnit = "m";           // what the open file is drawn in
+let fileUnitInfo = null;            // the server's {length_unit, to_si_factor}
+let lengthDecimals = null;          // null follows the unit's own default
+
+function activeLengthUnit() {
+  return LENGTH_UNITS[lengthUnitChoice] ? lengthUnitChoice : fileLengthUnit;
+}
+
+function activeDecimals() {
+  return lengthDecimals === null ? unitOf(activeLengthUnit()).decimals : lengthDecimals;
+}
+
+function formatLength(metres) {
+  return formatLengthIn(metres, activeLengthUnit(), activeDecimals());
+}
+
+function formatArea(squareMetres) {
+  return formatAreaIn(squareMetres, activeLengthUnit());
+}
+
+function formatVolume(cubicMetres) {
+  return formatVolumeIn(cubicMetres, activeLengthUnit());
+}
+
+/** How many of the active unit one metre is, for the controls that take one. */
+function perMetre() {
+  return unitOf(activeLengthUnit()).perMetre;
+}
+
+/** Repaint everything that carries a number, after a unit or precision change. */
+function refreshUnitDisplay() {
+  syncUnitControls();
+  syncSliceInput();
+  renderMeasurements();
+  updateVisibilityInfo();
+  scheduleViewerContext("units");
+}
+
+function syncUnitControls() {
+  const picker = $("measure-unit");
+  if (picker) {
+    const fileOption = picker.querySelector('option[value="file"]');
+    if (fileOption) fileOption.textContent = `File (${unitOf(fileLengthUnit).label})`;
+    picker.value = lengthUnitChoice;
+  }
+  const places = $("measure-decimals");
+  if (places) places.value = lengthDecimals === null ? "auto" : String(lengthDecimals);
+}
+
+function setLengthUnit(choice, { persist = true } = {}) {
+  lengthUnitChoice = LENGTH_UNITS[choice] ? choice : "file";
+  if (persist) {
+    uiState.lengthUnit = lengthUnitChoice;
+    saveUi();
+  }
+  refreshUnitDisplay();
+}
+
+function setLengthDecimals(value, { persist = true } = {}) {
+  const places = Number(value);
+  lengthDecimals = Number.isInteger(places) && places >= 0 && places <= 4 ? places : null;
+  if (persist) {
+    uiState.lengthDecimals = lengthDecimals;
+    saveUi();
+  }
+  refreshUnitDisplay();
+}
+
+/** Adopt whatever unit the open file is drawn in, from the server's reading. */
+function setFileUnits(units) {
+  const next = unitForFile(units);
+  const name = units ? units.length_unit || null : null;
+  const known = fileUnitInfo ? fileUnitInfo.length_unit || null : null;
+  if (units) fileUnitInfo = units;
+  if (next === fileLengthUnit && name === known) return;
+  fileLengthUnit = next;
+  refreshUnitDisplay();
+}
+
 // ---------------------------------------------------------------- three scene
 const canvas = $("canvas");
 let renderer;
@@ -163,13 +269,32 @@ canvas.addEventListener("webglcontextrestored", () => { loadModel(); });
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x101720);
 
-const camera = new THREE.PerspectiveCamera(50, 1, 0.1, 5000);
-camera.position.set(12, 10, 12);
+const perspectiveCamera = new THREE.PerspectiveCamera(50, 1, 0.1, 5000);
+perspectiveCamera.position.set(12, 10, 12);
+// Built next to it rather than on demand: the swap has to be able to happen
+// mid-gesture without allocating anything.
+const orthographicCamera = new THREE.OrthographicCamera(-10, 10, 10, -10, -1000, 5000);
+orthographicCamera.position.copy(perspectiveCamera.position);
+let camera = perspectiveCamera;
+let orthoHeight = 40;
 
 const controls = new OrbitControls(camera, canvas);
 controls.dampingFactor = 0.12;
+// Dolly toward the pointer, not the orbit target. On a site-scale model the
+// target sits at the middle of the whole file, so zooming used to pull the
+// camera into the centre and every look at a corner became zoom-then-pan.
+controls.zoomToCursor = true;
+controls.zoomSpeed = 1.6;
+// Pan and orbit are both measured from the pivot, so a pivot that has been
+// pulled to within millimetres of the lens makes a full drag move the camera
+// almost nowhere. The floor is set from the model once it is known.
+controls.minDistance = 0.05;
 controls.listenToKeyEvents(canvas);
 const motionPreference = window.matchMedia("(prefers-reduced-motion: reduce)");
+// The factor OrbitControls would use at 60fps. Every frame rescales it to the
+// time that frame actually took, so the glide is the same length in seconds
+// whether the model draws in 4ms or 120ms.
+const BASE_DAMPING = 0.12;
 const applyMotionPreference = () => {
   controls.enableDamping = !motionPreference.matches;
 };
@@ -240,24 +365,57 @@ scene.add(grid);
 let axes = null;   // rebuilt per model so its size matches the model
 let groundY = 0;   // grid sits at the model's lowest point
 
-// Theme: the console pushes dark/light over the WS; the chrome follows via
-// CSS variables, the 3D canvas and grid via these colors.
+// Theme: the workspace supplies the system choice over the WS. A local viewer
+// preference may override it without changing the rest of the console.
 const THEME_COLORS = {
   dark: { canvas: 0x101720, gridMinor: 0x24303d, gridMajor: 0x3c536a },
   light: { canvas: 0xe7edf3, gridMinor: 0xc7d2dd, gridMajor: 0x9fb0c0 },
 };
+const colorPreference = window.matchMedia("(prefers-color-scheme: dark)");
 let uiTheme = "dark";
+let consoleTheme = null;
+let themePreference = "system";
 
-function applyTheme(name) {
-  const theme = THEME_COLORS[name] ? name : "dark";
+function resolvedTheme() {
+  if (THEME_COLORS[themePreference]) return themePreference;
+  if (consoleTheme && THEME_COLORS[consoleTheme]) return consoleTheme;
+  return colorPreference.matches ? "dark" : "light";
+}
+
+function paintTheme(theme) {
   uiTheme = theme;
   document.documentElement.dataset.theme = theme;
+  document.documentElement.dataset.themePreference = themePreference;
   const colors = THEME_COLORS[theme];
   scene.background.set(colors.canvas);
   grid.material.uniforms.uMinor.value.set(colors.gridMinor);
   grid.material.uniforms.uMajor.value.set(colors.gridMajor);
+  // Ghosted context is pulled towards whatever the canvas is, so it recedes
+  // in either theme instead of turning into grey fog on a light one.
+  ghostTint.set(colors.canvas);
   invalidate();
+  scheduleViewerContext("theme");
 }
+
+function applyTheme(name) {
+  if (THEME_COLORS[name]) consoleTheme = name;
+  paintTheme(resolvedTheme());
+}
+
+function setThemePreference(value, { persist = true } = {}) {
+  themePreference = value === "dark" || value === "light" ? value : "system";
+  if (persist) {
+    uiState.themePreference = themePreference;
+    saveUi();
+  }
+  const picker = $("set-theme");
+  if (picker) picker.value = themePreference;
+  paintTheme(resolvedTheme());
+}
+
+colorPreference.addEventListener("change", () => {
+  if (themePreference === "system" && !consoleTheme) paintTheme(resolvedTheme());
+});
 
 const modelRoot = new THREE.Group();
 scene.add(modelRoot);
@@ -276,16 +434,30 @@ function invalidate() {
   needsRender = true;
 }
 
+// A reader that has to know where the camera is should not have to poll for
+// it, but the controls fire start and end around every single wheel tick, so
+// the push waits for the gesture to settle rather than riding each frame.
+let cameraSettle = 0;
 controls.addEventListener("start", () => {
   interacting = true;
   userMovedCamera = true;
+  clearTimeout(cameraSettle);
+  // The hand on the mouse outranks any glide still in flight; carrying on
+  // would fight the damping the gesture is about to apply.
+  cameraTween = null;
 });
 controls.addEventListener("end", () => {
   interacting = false;
+  clearTimeout(cameraSettle);
+  cameraSettle = setTimeout(() => scheduleViewerContext("camera"), 250);
 });
 // OrbitControls applies wheel zoom synchronously. Its later update() can then
 // report no movement, so listen to change directly and never miss that frame.
 controls.addEventListener("change", invalidate);
+// Anything measured off the screen is measured off one camera. The counter
+// says which, so an answer that arrives after the view moved can be dropped.
+let cameraSerial = 0;
+controls.addEventListener("change", () => { cameraSerial++; });
 
 let viewportWidth = 0;
 let viewportHeight = 0;
@@ -301,8 +473,7 @@ function resize() {
   viewportWidth = w;
   viewportHeight = h;
   applyResolution();
-  camera.aspect = w / h;
-  camera.updateProjectionMatrix();
+  applyProjectionShape();
   // Re-render in the same frame; the observer fires before paint, so the
   // resized buffer never appears blank or stretched while dragging a splitter.
   renderer.render(scene, camera);
@@ -310,17 +481,128 @@ function resize() {
 new ResizeObserver(resize).observe(canvas.parentElement);
 resize();
 
+/** Give whichever camera is live the current aspect ratio. */
+function applyProjectionShape() {
+  const aspect = viewportWidth / Math.max(viewportHeight, 1);
+  perspectiveCamera.aspect = aspect;
+  perspectiveCamera.updateProjectionMatrix();
+  const half = orthoHeight / 2;
+  orthographicCamera.top = half;
+  orthographicCamera.bottom = -half;
+  orthographicCamera.left = -half * aspect;
+  orthographicCamera.right = half * aspect;
+  orthographicCamera.updateProjectionMatrix();
+}
+
+/** True while the viewer is drawing a parallel projection. */
+function isOrtho() {
+  return camera.isOrthographicCamera === true;
+}
+
+/**
+ * Swap projections without moving the eye.
+ *
+ * The two cameras share a position and a pivot, so the switch only has to
+ * choose a zoom that shows the same amount of model. Matching the vertical
+ * extent at the pivot distance is what makes it read as a change of
+ * projection rather than a jump to somewhere else.
+ */
+function setProjection(kind) {
+  const wantOrtho = kind === "orthographic" || kind === "ortho" || kind === true;
+  if (wantOrtho === isOrtho()) return isOrtho() ? "orthographic" : "perspective";
+  const distance = Math.max(camera.position.distanceTo(controls.target), 1e-4);
+  const target = wantOrtho ? orthographicCamera : perspectiveCamera;
+  target.position.copy(camera.position);
+  target.up.copy(camera.up);
+  target.quaternion.copy(camera.quaternion);
+  if (wantOrtho) {
+    // The height perspective is showing at the pivot, held exactly.
+    const visible = 2 * Math.tan((perspectiveCamera.fov * Math.PI) / 360) * distance;
+    target.zoom = orthoHeight / Math.max(visible, 1e-6);
+  } else {
+    // ... and back the other way, by placing the eye where that height would
+    // need it to be.
+    const visible = orthoHeight / Math.max(orthographicCamera.zoom, 1e-6);
+    const back = visible / (2 * Math.tan((perspectiveCamera.fov * Math.PI) / 360));
+    target.position.copy(controls.target).addScaledVector(
+      camera.position.clone().sub(controls.target).normalize(), back);
+  }
+  camera = target;
+  controls.object = camera;
+  applyProjectionShape();
+  applyNearFar();
+  controls.update();
+  const button = $("tool-ortho");
+  if (button) {
+    button.setAttribute("aria-pressed", String(wantOrtho));
+    button.classList.toggle("is-active", wantOrtho);
+  }
+  invalidate();
+  scheduleViewerContext("projection");
+  updateVisibilityInfo();
+  return wantOrtho ? "orthographic" : "perspective";
+}
+
+/** The model's overall size, or a sane default before one is loaded. */
+function sceneSpan() {
+  if (!modelBox) return 50;
+  return Math.max(
+    modelBox[3] - modelBox[0],
+    modelBox[4] - modelBox[1],
+    modelBox[5] - modelBox[2],
+    1e-3,
+  );
+}
+
+/**
+ * Depth range from where the camera is now, not from where it was framed.
+ *
+ * A fixed near plane is a zoom limit with no message: geometry simply vanishes
+ * as you approach. Deriving it from the live pivot distance keeps the same
+ * depth precision at every scale and lets the camera close on a detail as far
+ * as the geometry allows.
+ */
+function applyNearFar() {
+  const distance = Math.max(camera.position.distanceTo(controls.target), 1e-4);
+  // A parallel projection has no perspective divide, so depth precision does
+  // not collapse near the eye and the range can simply cover the model.
+  const near = isOrtho()
+    ? -Math.max(distance, sceneSpan()) * 2
+    : Math.max(distance / 2000, 1e-4);
+  const far = Math.max(distance, sceneSpan()) * (isOrtho() ? 4 : 200);
+  if (near === camera.near && far === camera.far) return;
+  camera.near = near;
+  camera.far = far;
+  camera.updateProjectionMatrix();
+}
+
 function renderNow() {
   grid.position.x = Math.round(controls.target.x / 100) * 100;
   grid.position.z = Math.round(controls.target.z / 100) * 100;
+  syncScreenMarkers();
   const t0 = performance.now();
   renderer.render(scene, camera);
   lastRenderMs = performance.now() - t0;
   needsRender = false;
 }
 
-renderer.setAnimationLoop(() => {
+let lastFrameAt = 0;
+renderer.setAnimationLoop((now) => {
+  // First, so the orbit controls read the pose the glide has just written.
+  if (cameraTween) stepCameraTween(now);
+  if (controls.enableDamping) {
+    const elapsed = lastFrameAt ? Math.min(now - lastFrameAt, 250) : 16.7;
+    // 1 - (1 - f)^n is the same decay applied n times, so a 100ms frame gets
+    // the six frames' worth of catch-up it stood in for.
+    controls.dampingFactor = Math.min(
+      1,
+      1 - Math.pow(1 - BASE_DAMPING, Math.max(elapsed, 1) / 16.7),
+    );
+  }
+  lastFrameAt = now;
+  if (syncEdgeVisibility()) needsRender = true;
   const moved = controls.update();
+  if (moved || needsRender) applyNearFar();
   if (moved || needsRender) {
     if (moved && interacting) {
       // Adaptive resolution: last frame's cost decides this frame's scale.
@@ -341,10 +623,12 @@ renderer.setAnimationLoop(() => {
 // Screenshots and picking need a full-resolution buffer regardless of the
 // adaptive scale the orbit interaction may have left behind.
 function ensureFullResolution() {
-  if (resScale !== 1) {
-    resScale = 1;
-    applyResolution();
-  }
+  if (resScale === 1) return false;
+  resScale = 1;
+  applyResolution();
+  // The drawing buffer was resized, so the canvas is owed a redraw; the caller
+  // knows whether anything else it did already owes one.
+  return true;
 }
 
 // ---------------------------------------------------------------- model state
@@ -371,11 +655,150 @@ const hiddenByTree = new Set();   // expressIDs hidden via tree checkboxes
 let userIsolateSet = null;        // user-driven isolation from the view tools
 const hiddenManual = new Set();   // expressIDs hidden via the view tools
 
+// Focus tabs: named per-element analysis views. GUID-keyed so they survive
+// rebuilds; the active tab is what drives userIsolateSet.
+const focusTabs = [];             // [{name, guids: [GlobalId]}]
+let activeFocusName = null;       // active tab name, or null for All
+
 // Color theme (LLM computes, viewer paints): GlobalId-keyed so it survives
 // scene rebuilds; unmatched ids simply paint nothing after a model switch.
 const themeByGuid = new Map();    // GlobalId -> hex
 let themeLegend = [];             // [{label, color, count}]
 let themeTitle = "";
+
+const VIEWER_CONTEXT_EVENT = "ifc-console:viewer-context";
+const VIEWER_COMMAND_EVENT = "ifc-console:viewer-command";
+const VIEWER_RESULT_EVENT = "ifc-console:viewer-result";
+let viewerContextQueued = false;
+let viewerContextReason = "state";
+
+function selectedGuids() {
+  return [...selection].map((id) => guidOf.get(id)).filter(Boolean);
+}
+
+function viewerContext(reason = viewerContextReason) {
+  const row = currentModelRow();
+  const fallbackName = $("model-name")?.textContent || "";
+  return {
+    version: 1,
+    reason,
+    model: row
+      ? { id: row.id, name: row.name, schema: row.schema || "" }
+      : fallbackName ? { id: null, name: fallbackName, schema: $("schema")?.textContent || "" } : null,
+    models: modelRows.map((item) => ({
+      id: item.id,
+      name: item.name,
+      schema: item.schema || "",
+      active: item.active === true,
+    })),
+    selection: { count: selection.size, guids: selectedGuids() },
+    mode: $("mode")?.dataset.mode || null,
+    theme: { preference: themePreference, resolved: uiTheme },
+    isolated: userIsolateSet ? userIsolateSet.size : 0,
+    // `hidden` is what isElementShown rejects, which is what hide, isolate,
+    // fit and every pick act on; a ghost is drawn but not among them, so it is
+    // counted there and named again on its own.
+    visibility: {
+      hidden: hiddenCount,
+      isolated: (userIsolateSet || isolateSet)?.size ?? 0,
+      ghosted: ghostCount,
+      total: elements.size,
+    },
+    focus: { tabs: focusTabs.map((tab) => tab.name), active: activeFocusName },
+    views: Object.keys(VIEW_DIRECTIONS),
+    projection: isOrtho() ? "orthographic" : "perspective",
+    // Where the eye is, in the model's axes. Without it an agent is reasoning
+    // about a screen it cannot see, and world_per_pixel is how it knows
+    // whether the detail it is about to talk about is even resolvable.
+    camera: cameraState(),
+    viewport: { width: viewportWidth, height: viewportHeight },
+    // Coordinates in and out of this viewer are the model's, not the
+    // viewport's; this says how the two are related on the current file.
+    frame: {
+      units: "metres, model axes (z up)",
+      coordinated: coordinationApplied,
+      axes: axisFrame,
+    },
+    // The wire stays SI; this is what the screen is labelled in, and what the
+    // file was drawn in, so an answer can quote the same unit the user reads.
+    units: {
+      display: activeLengthUnit(),
+      decimals: activeDecimals(),
+      file: activeLengthUnit() === fileLengthUnit,
+      file_unit: fileLengthUnit,
+      length_unit: fileUnitInfo ? fileUnitInfo.length_unit || null : null,
+      to_si_factor: fileUnitInfo ? fileUnitInfo.to_si_factor ?? null : null,
+    },
+    section: sectionState(),
+    savedViews: savedViews().map((view) => view.name),
+    panels: {
+      model: !$("tree-panel")?.classList.contains("collapsed"),
+      properties: !$("props-panel")?.classList.contains("collapsed"),
+    },
+    capabilities: {
+      modelSelection: true,
+      selectionContext: true,
+      screenshotEvidence: true,
+      panelControl: true,
+      themeControl: true,
+      cameraControl: true,
+      commands: [
+        "get-context",
+        "set-theme",
+        "set-model",
+        "set-panel",
+        "capture-evidence",
+        "set-selection",
+        "clear-selection",
+        "focus-selection",
+        "isolate",
+        "show-all",
+        "hide",
+        "focus",
+        "unfocus",
+        "set-view",
+        "set-camera",
+        "fit",
+        "measure-element",
+        "measure-laser",
+        "measure-points",
+        "measure-angle",
+        "measure-area",
+        "clear-measurements",
+        "set-projection",
+        "set-section",
+        "save-view",
+        "restore-view",
+        "list-views",
+      ],
+    },
+  };
+}
+
+function scheduleViewerContext(reason = "state") {
+  viewerContextReason = reason;
+  if (viewerContextQueued) return;
+  viewerContextQueued = true;
+  queueMicrotask(() => {
+    viewerContextQueued = false;
+    document.dispatchEvent(new CustomEvent(VIEWER_CONTEXT_EVENT, {
+      detail: viewerContext(viewerContextReason),
+    }));
+  });
+}
+
+function sendViewerResult(command, ok, result = null, error = null) {
+  document.dispatchEvent(new CustomEvent(VIEWER_RESULT_EVENT, {
+    detail: {
+      version: 1,
+      commandId: command.commandId || null,
+      action: command.action || "",
+      ok,
+      result,
+      error,
+    },
+  }));
+}
 
 // --------------------------------------------------- element state textures
 // Per-element render state lives in two RGBA textures indexed by a dense
@@ -482,6 +905,13 @@ const clipPlanes = {
   y: new THREE.Plane(AXIS_NORMALS.y.clone(), 0),
   z: new THREE.Plane(AXIS_NORMALS.z.clone(), 0),
 };
+// The far side of a slice, one per axis, only pushed when there is a slice.
+const clipPlanesBack = {
+  x: new THREE.Plane(AXIS_NORMALS.x.clone(), 0),
+  y: new THREE.Plane(AXIS_NORMALS.y.clone(), 0),
+  z: new THREE.Plane(AXIS_NORMALS.z.clone(), 0),
+};
+let sliceDepth = 0;
 const activeClipPlanes = [];
 const section = {
   x: { on: false, t: 1, flip: false },
@@ -489,10 +919,21 @@ const section = {
   z: { on: false, t: 1, flip: false },
 };
 
-// Patched Lambert: forward the element index, discard hidden elements,
-// substitute the override color, add the glow term.
+// Ghosting. The state texture's R channel is no longer a flag: 255 is drawn,
+// 0 is gone, and this middle value is context. Isolating a duct used to delete
+// the building around it, which is the opposite of what a review tool does and
+// leaves the isolated part floating with nothing to place it against.
+const GHOST_LEVEL = 64;
+// Screen-door transparency: a share of the pixels is discarded on an ordered
+// 4x4 grid. Real alpha would mean a transparent pass, a sort and a second draw
+// of half the model; this costs one compare and stays in the opaque queue.
+const ghostFill = { value: 0.22 };
+const ghostTint = new THREE.Color(THEME_COLORS.dark.canvas);
+
+// Patched Lambert: forward the element index, discard hidden elements, dither
+// ghosted ones, substitute the override color, add the glow term.
 const patchedMaterials = new Set();
-function patchMaterial(mat) {
+function patchMaterial(mat, { depthBias = 0 } = {}) {
   patchedMaterials.add(mat);
   mat.clippingPlanes = activeClipPlanes;
   mat.onBeforeCompile = (shader) => {
@@ -502,35 +943,72 @@ function patchMaterial(mat) {
     shader.uniforms.uStateTex = { value: stateTex };
     shader.uniforms.uOverrideTex = { value: overrideTex };
     shader.uniforms.uStateSize = { value: new THREE.Vector2(STATE_W, stateH) };
+    shader.uniforms.uGhostFill = ghostFill;
+    shader.uniforms.uGhostTint = { value: ghostTint };
     shader.vertexShader = shader.vertexShader
       .replace("#include <common>",
         "#include <common>\nattribute float aElementIndex;\nvarying float vIfcIndex;")
       .replace("#include <begin_vertex>",
         "vIfcIndex = aElementIndex;\n#include <begin_vertex>");
+    if (depthBias) {
+      // Edge lines sit exactly on the triangle edges they came from, so half
+      // their pixels lose the depth test to the surface and the outline
+      // shimmers. A constant nudge towards the eye in clip space is scale
+      // independent and costs one multiply-add.
+      shader.vertexShader = shader.vertexShader.replace(
+        "#include <project_vertex>",
+        `#include <project_vertex>\ngl_Position.z -= ${depthBias.toFixed(6)} * gl_Position.w;`);
+    }
     shader.fragmentShader = shader.fragmentShader
       .replace("#include <common>",
         "#include <common>\n"
         + "uniform sampler2D uStateTex;\n"
         + "uniform sampler2D uOverrideTex;\n"
         + "uniform vec2 uStateSize;\n"
-        + "varying float vIfcIndex;")
+        + "uniform float uGhostFill;\n"
+        + "uniform vec3 uGhostTint;\n"
+        + "varying float vIfcIndex;\n"
+        // A 4x4 ordered threshold built from two nested 2x2 ones: sixteen
+        // distinct values per tile, no texture and no integer ops.
+        + "float ifcOrdered(vec2 p) {\n"
+        + "  vec2 c = floor(mod(p, 4.0));\n"
+        + "  vec2 lo = mod(c, 2.0);\n"
+        + "  vec2 hi = floor(c * 0.5);\n"
+        + "  return (4.0 * mod(2.0 * lo.x + 3.0 * lo.y, 4.0)\n"
+        + "        + mod(2.0 * hi.x + 3.0 * hi.y, 4.0)) / 16.0;\n"
+        + "}")
       .replace("#include <clipping_planes_fragment>",
         "float ifcId = floor(vIfcIndex + 0.5);\n"
         + "vec2 ifcUv = vec2((mod(ifcId, uStateSize.x) + 0.5) / uStateSize.x,\n"
         + "                  (floor(ifcId / uStateSize.x) + 0.5) / uStateSize.y);\n"
         + "vec4 ifcState = texture2D(uStateTex, ifcUv);\n"
-        + "if (ifcState.r < 0.5) discard;\n"
+        + "if (ifcState.r < 0.05) discard;\n"
+        + "float ifcGhost = step(ifcState.r, 0.5);\n"
+        + "if (ifcGhost > 0.5 && ifcOrdered(gl_FragCoord.xy) > uGhostFill) discard;\n"
         + "vec4 ifcOverride = texture2D(uOverrideTex, ifcUv);\n"
         + "#include <clipping_planes_fragment>")
+      // A colour theme repaints an element outright; a selection or a
+      // highlight must not. Flat-filling the body threw away the shading
+      // that says what the shape is, so it tints part way and puts the
+      // rest of the energy into a view-dependent rim, which reads as an
+      // outline along the silhouette.
       .replace("#include <color_fragment>",
         "#include <color_fragment>\n"
-        + "diffuseColor.rgb = mix(diffuseColor.rgb, ifcOverride.rgb, step(0.5, ifcOverride.a));")
+        + "float ifcMarked = step(0.001, ifcState.g);\n"
+        + "float ifcTint = step(0.5, ifcOverride.a) * mix(1.0, 0.42, ifcMarked);\n"
+        + "diffuseColor.rgb = mix(diffuseColor.rgb, ifcOverride.rgb, ifcTint);\n"
+        // Context reads as context: what survives the dither is pulled most of
+        // the way to the background so it never competes with the subject.
+        + "diffuseColor.rgb = mix(diffuseColor.rgb, uGhostTint, 0.55 * ifcGhost);")
       .replace("#include <emissivemap_fragment>",
         "#include <emissivemap_fragment>\n"
-        + "totalEmissiveRadiance += ifcOverride.rgb * ifcState.g;");
+        + "vec3 ifcView = normalize(vViewPosition);\n"
+        + "float ifcFace = clamp(abs(dot(normal, ifcView)), 0.0, 1.0);\n"
+        + "float ifcRim = pow(1.0 - ifcFace, 2.2);\n"
+        + "totalEmissiveRadiance += ifcOverride.rgb * ifcState.g * (0.30 + 2.2 * ifcRim);");
     liveShaders.add(shader);
   };
-  mat.customProgramCacheKey = () => "ifc-state";
+  mat.customProgramCacheKey = () => (depthBias ? "ifc-state-edge" : "ifc-state");
   return mat;
 }
 
@@ -554,6 +1032,84 @@ function instancedTransparentMaterialFor(alpha) {
     instancedTransparentMaterials.set(key, mat);
   }
   return mat;
+}
+
+// ---------------------------------------------------------------- edges
+// Untextured IFC geometry with no edges is unreadable: two walls of the same
+// colour that meet are one blob, and the adaptive resolution makes it an
+// aliased one. The lines carry the same aElementIndex as the surface they came
+// from, so hiding, clipping, ghosting and tinting all reach them for free.
+const EDGE_ANGLE = 30;
+const EDGE_DEPTH_BIAS = 0.0003;
+// Extraction is per unique shape and the bake is per placement, so the cost
+// tracks the merged half of the model; past this the lines stop paying for
+// their memory and the switch says so.
+const EDGE_VERTEX_BUDGET = 6_000_000;
+const edgeRoot = new THREE.Group();
+edgeRoot.name = "edges";
+scene.add(edgeRoot);
+const edgeMaterial = patchMaterial(new THREE.LineBasicMaterial({
+  color: 0x0d131a, transparent: true, opacity: 0.55, depthWrite: false,
+}), { depthBias: EDGE_DEPTH_BIAS });
+let edgesWanted = true;      // the Display switch
+let edgesAffordable = true;  // this model is small enough to draw them
+let edgeDrawCount = 0;
+
+function edgesOn() {
+  return edgesWanted && edgesAffordable;
+}
+
+/**
+ * Edges are dropped while the buffer is scaled down.
+ *
+ * That is the frame that is already late, and thin lines are exactly what a
+ * 0.45 buffer cannot draw without turning into a crawl of stairsteps.
+ */
+function syncEdgeVisibility() {
+  const want = edgesOn() && !(interacting && resScale < 1);
+  if (edgeRoot.visible === want) return false;
+  edgeRoot.visible = want;
+  return true;
+}
+
+/** Keep the Display switch honest about a model too big to outline. */
+function syncEdgeSwitch() {
+  const box = $("set-edges");
+  if (!box) return;
+  box.checked = edgesWanted;
+  box.disabled = !edgesAffordable;
+  const note = $("set-edges-note");
+  if (note) {
+    note.textContent = edgesAffordable
+      ? "Creases and outlines, drawn over the surfaces."
+      : "Off: this model is too large to outline.";
+  }
+}
+
+/**
+ * The crease and boundary edges of one unique shape, in its own coordinates.
+ *
+ * Deduplicated geometry is the point: a door type placed four hundred times
+ * pays for this once. Cached on the registry entry and built lazily, so a
+ * shape that ends up instanced never pays at all.
+ */
+function edgeListFor(geom) {
+  if (geom.edges !== undefined) return geom.edges;
+  let out = null;
+  try {
+    const source = new THREE.BufferGeometry();
+    source.setAttribute("position", new THREE.BufferAttribute(geom.positions, 3));
+    source.setIndex(new THREE.BufferAttribute(geom.indices, 1));
+    const edges = new THREE.EdgesGeometry(source, EDGE_ANGLE);
+    out = edges.getAttribute("position").array;
+    source.dispose();
+    edges.dispose();
+  } catch {
+    // A degenerate tessellation is not worth failing a model load over.
+    out = null;
+  }
+  geom.edges = out;
+  return out;
 }
 
 // GPU id picking: a 1x1 render with this override encodes elementIndex + 1
@@ -610,7 +1166,9 @@ const depthMaterial = new THREE.ShaderMaterial({
   uniforms: {
     uStateTex: { value: null },
     uStateSize: { value: new THREE.Vector2(STATE_W, stateH) },
+    uNear: { value: 0 },
     uFar: { value: 1 },
+    uOrtho: { value: 0 },
   },
   vertexShader: `
     attribute float aElementIndex;
@@ -633,7 +1191,9 @@ const depthMaterial = new THREE.ShaderMaterial({
     varying vec3 vMeasureViewPosition;
     uniform sampler2D uStateTex;
     uniform vec2 uStateSize;
+    uniform float uNear;
     uniform float uFar;
+    uniform float uOrtho;
     #include <clipping_planes_pars_fragment>
     void main() {
       #include <clipping_planes_fragment>
@@ -641,7 +1201,12 @@ const depthMaterial = new THREE.ShaderMaterial({
       vec2 uv = vec2((mod(id, uStateSize.x) + 0.5) / uStateSize.x,
                      (floor(id / uStateSize.x) + 0.5) / uStateSize.y);
       if (texture2D(uStateTex, uv).r < 0.5) discard;
-      float d = clamp(length(vMeasureViewPosition) / uFar, 0.0, 1.0);
+      // Perspective reconstructs along a unit ray from the eye, so radial
+      // distance is what it wants. Parallel reconstructs from a point on the
+      // camera plane straight down the view axis, so depth is, and that depth
+      // is negative for anything behind the plane.
+      float measured = uOrtho > 0.5 ? -vMeasureViewPosition.z : length(vMeasureViewPosition);
+      float d = clamp((measured - uNear) / (uFar - uNear), 0.0, 1.0);
       vec3 enc = fract(vec3(1.0, 255.0, 65025.0) * d);
       enc -= enc.yzz * vec3(1.0 / 255.0, 1.0 / 255.0, 0.0);
       gl_FragColor = vec4(enc, 1.0);
@@ -654,21 +1219,38 @@ const pickBuffer = new Uint8Array(4);
 
 // ---------------------------------------------------------------- batcher
 // Parsed chunks land here only after the complete IFC is available. Unique
-// geometries register once; placements
-// either bake into growing merged buffers (first occurrence) or promote the
-// geometry to an InstancedMesh (second occurrence onward). Merged buffers
-// finalize into meshes at a vertex limit and are bucketed into coarse spatial
-// cells so frustum culling has something to cut.
+// geometries register once; every placement then either bakes into a merged
+// buffer for the grid cell it stands in, or joins an InstancedMesh if that
+// geometry is placed often enough to be worth a draw call of its own. Merged
+// buffers finalize into meshes at a vertex limit.
 const CHUNK_VERTEX_LIMIT = 500_000;
 const SPATIAL_SPLIT_VERTS = 50_000;
+// A geometry placed fewer times than this is cheaper baked into its
+// neighbourhood: one InstancedMesh per pair of mirrored doors cost thousands
+// of uncullable draw calls to save a few thousand vertices.
+const INSTANCE_MIN = 8;
+// Past this many copies one instanced mesh spans the whole model and can never
+// be culled, so it is split by octant. Splitting on the finer merge grid
+// instead turns a curtain wall into one draw call per panel, which is the bug
+// this threshold exists to avoid, only from the other side.
+const INSTANCE_SPLIT = 256;
+// Roughly one merged draw call's worth of geometry per cell, and the vertices
+// the open cells may hold between them while the rest of the model arrives.
+// Chunks are in no spatial order, so every cell stays open to the end.
+const CELL_VERTEX_TARGET = 120_000;
+const STAGING_VERTEX_BUDGET = 6_000_000;
+const MIN_CHUNK_VERTS = 150_000;
+const MIN_CELLS = 8;
 const ORIGIN_THRESHOLD = 1e4;
 
 const elements = new Map();       // expressID -> {index, box: number[6]}
 const elementsByIndex = [];       // dense index -> expressID
 const registry = new Map();       // geometryID -> {positions, normals, indices, box, radius}
-const geomUse = new Map();        // `${gid}:${alphaKey}` -> "merged" | InstEntry
+const geomUse = new Map();        // `${gid}:${alphaKey}[#cell]` -> InstEntry
 let accumulators = new Map();     // cellKey -> Accumulator
 let modelBox = null;              // [minx,miny,minz,maxx,maxy,maxz] world f64
+let cellSize = 0;                 // batching grid pitch, 0 while unsplit
+let cellFlushAt = CHUNK_VERTEX_LIMIT;
 let origin = [0, 0, 0];
 let drawCount = 0;
 let triangleCount = 0;
@@ -704,6 +1286,18 @@ class Accumulator {
     this.elementIndex = new GrowArray(Float32Array);
     this.index = new GrowArray(Uint32Array);
     this.vertexCount = 0;
+    // The outline of the same cell, staged alongside so one flush ships both.
+    this.edgePositions = null;
+    this.edgeElementIndex = null;
+    this.edgeVertexCount = 0;
+  }
+
+  edges() {
+    if (!this.edgePositions) {
+      this.edgePositions = new GrowArray(Float32Array);
+      this.edgeElementIndex = new GrowArray(Float32Array);
+    }
+    return this.edgePositions;
   }
 }
 
@@ -715,6 +1309,13 @@ function elementRecord(expressID) {
     rec = {
       index,
       box: [Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity],
+      area: 0,
+      volume: 0,
+      // The placement of the biggest part, kept unflattened so measurement
+      // can ask about the element's own axes rather than the world's.
+      obb: null,
+      obbReach: -1,
+      scaled: false,
     };
     elements.set(expressID, rec);
     elementsByIndex.push(expressID);
@@ -725,37 +1326,129 @@ function elementRecord(expressID) {
 const _m4 = new THREE.Matrix4();
 const _n3 = new THREE.Matrix3();
 
-function unionBoxCorners(target, box, m) {
-  for (let c = 0; c < 8; c++) {
-    const x = box[c & 1 ? 3 : 0];
-    const y = box[c & 2 ? 4 : 1];
-    const z = box[c & 4 ? 5 : 2];
-    const wx = m[0] * x + m[4] * y + m[8] * z + m[12] - origin[0];
-    const wy = m[1] * x + m[5] * y + m[9] * z + m[13] - origin[1];
-    const wz = m[2] * x + m[6] * y + m[10] * z + m[14] - origin[2];
-    if (wx < target[0]) target[0] = wx;
-    if (wy < target[1]) target[1] = wy;
-    if (wz < target[2]) target[2] = wz;
-    if (wx > target[3]) target[3] = wx;
-    if (wy > target[4]) target[4] = wy;
-    if (wz > target[5]) target[5] = wz;
+// ------------------------------------------------------------- coordinates
+// Two frames. The scene's, which is what three.js draws and what every pick
+// and bounding box is in; and the model's, which is what the IFC file says
+// and what every answer has to be in. web-ifc's coordination matrix is the
+// step between them, and `origin` is the extra shift this viewer applies to
+// keep a georeferenced file inside f32.
+// web-ifc hands geometry back Y-up: the file's Z becomes the scene's Y and
+// the file's Y becomes the scene's -Z. Its coordination matrix carries the
+// origin shift on top of that and nothing else, so both are needed to get
+// back to the file's own coordinates.
+const IFC_TO_GL = new THREE.Matrix4().set(
+  1, 0, 0, 0,
+  0, 0, 1, 0,
+  0, -1, 0, 0,
+  0, 0, 0, 1,
+);
+let coordinationMatrix = new THREE.Matrix4();
+let coordinationApplied = false;
+const modelToScene = new THREE.Matrix4();
+const sceneToModel = new THREE.Matrix4();
+// Which scene axis each model axis runs along, and which way round.
+let axisFrame = {
+  x: { axis: "x", sign: 1 }, y: { axis: "z", sign: 1 }, z: { axis: "y", sign: 1 },
+};
+const MODEL_OF_SCENE = { x: "x", y: "z", z: "y" };
+
+function refreshFrames() {
+  modelToScene.copy(coordinationMatrix).multiply(IFC_TO_GL);
+  modelToScene.premultiply(
+    new THREE.Matrix4().makeTranslation(-origin[0], -origin[1], -origin[2]));
+  sceneToModel.copy(modelToScene).invert();
+  const probe = new THREE.Vector3();
+  for (const name of ["x", "y", "z"]) {
+    probe.set(name === "x" ? 1 : 0, name === "y" ? 1 : 0, name === "z" ? 1 : 0);
+    probe.transformDirection(modelToScene);
+    const axis = Math.abs(probe.x) >= Math.abs(probe.y) && Math.abs(probe.x) >= Math.abs(probe.z)
+      ? "x" : Math.abs(probe.y) >= Math.abs(probe.z) ? "y" : "z";
+    axisFrame[name] = { axis, sign: probe[axis] < 0 ? -1 : 1 };
+    MODEL_OF_SCENE[axis] = name;
   }
 }
+refreshFrames();
 
-// COORDINATE_TO_ORIGIN already recentres typical files; this catches models
-// whose placements still carry georeferenced offsets, shifting them in f64
-// before anything is cast to f32 so vertices never jitter.
+/** A scene point as the model's own [x, y, z]. */
+function toModelPoint(point) {
+  const out = point.clone().applyMatrix4(sceneToModel);
+  return [out.x, out.y, out.z];
+}
+
+/** A model [x, y, z] as a scene point. */
+function toScenePoint(triple) {
+  return new THREE.Vector3(triple[0], triple[1], triple[2]).applyMatrix4(modelToScene);
+}
+
+/** Where `value` on one scene axis falls on the model axis that runs along it. */
+function toModelAxis(sceneAxis, value) {
+  const probe = new THREE.Vector3();
+  probe[sceneAxis] = value;
+  const out = probe.applyMatrix4(sceneToModel);
+  return out[MODEL_OF_SCENE[sceneAxis]];
+}
+
+/** And back: a model-axis position as a position on the scene axis. */
+function toSceneAxis(sceneAxis, modelValue) {
+  const at0 = toModelAxis(sceneAxis, 0);
+  const at1 = toModelAxis(sceneAxis, 1);
+  return at1 === at0 ? 0 : (modelValue - at0) / (at1 - at0);
+}
+
+/** A scene direction as the model's own unit [x, y, z]; no origin shift. */
+function toModelDirection(vector) {
+  const out = vector.clone().transformDirection(sceneToModel);
+  return [out.x, out.y, out.z];
+}
+
+/** And back: a model direction as a scene direction. */
+function toSceneDirection(triple) {
+  return new THREE.Vector3(triple[0], triple[1], triple[2])
+    .transformDirection(modelToScene);
+}
+
+/**
+ * The origin shift, the model bounds, every placement's world box and how
+ * often each geometry is placed, in one walk over the placements.
+ *
+ * COORDINATE_TO_ORIGIN already recentres typical files; the shift catches
+ * models whose placements still carry georeferenced offsets, applied in f64
+ * before anything is cast to f32 so vertices never jitter.
+ *
+ * The boxes come back with it because ingest wants exactly the same eight
+ * corners, and because modelBox has to be whole before the first chunk is
+ * batched: cell keys taken against a box that is still growing put the
+ * earliest chunks in the wrong cells.
+ */
 function decideOrigin(chunks) {
   origin = [0, 0, 0];
   const probe = [Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity];
+  const layout = new Map();
+  const uses = new Map();
+  let total = 0;
   for (const chunk of chunks) {
     const placements = chunk.placements;
     const count = placements.expressIDs.length;
+    const boxes = new Float64Array(count * 6);
+    let verts = 0;
     for (let p = 0; p < count; p++) {
-      const box = registry.get(placements.geometryIDs[p])?.box;
-      if (!box) continue;
-      unionBoxCorners(probe, box, placements.matrices.subarray(p * 16, p * 16 + 16));
+      const at = p * 6;
+      emptyBox(boxes, at);
+      const geom = registry.get(placements.geometryIDs[p]);
+      if (!geom) continue;
+      verts += geom.positions.length / 3;
+      const key = useKeyFor(placements.geometryIDs[p], placements.colors[p * 4 + 3]);
+      uses.set(key, (uses.get(key) || 0) + 1);
+      unionBoxCorners(
+        boxes, geom.box, placements.matrices.subarray(p * 16, p * 16 + 16), at,
+        origin);
+      for (let k = 0; k < 3; k++) {
+        if (boxes[at + k] < probe[k]) probe[k] = boxes[at + k];
+        if (boxes[at + k + 3] > probe[k + 3]) probe[k + 3] = boxes[at + k + 3];
+      }
     }
+    layout.set(chunk, { boxes, verts });
+    total += verts;
   }
   const maxAbs = Math.max(...probe.map((v) => Math.abs(v)).filter((v) => isFinite(v)), 0);
   if (maxAbs > ORIGIN_THRESHOLD) {
@@ -764,7 +1457,23 @@ function decideOrigin(chunks) {
       (probe[1] + probe[4]) / 2,
       (probe[2] + probe[5]) / 2,
     ];
+    // Both were measured before the shift was known. Subtracting after the
+    // fact is exact: IEEE subtraction is monotonic, so no min or max moves.
+    for (const entry of layout.values()) {
+      const boxes = entry.boxes;
+      for (let i = 0; i < boxes.length; i += 6) {
+        for (let k = 0; k < 3; k++) {
+          boxes[i + k] -= origin[k];
+          boxes[i + k + 3] -= origin[k];
+        }
+      }
+    }
+    for (let k = 0; k < 3; k++) {
+      probe[k] -= origin[k];
+      probe[k + 3] -= origin[k];
+    }
   }
+  return { box: isFinite(probe[0]) ? probe : null, layout, uses, verts: total };
 }
 
 function freeUploadedArray() {
@@ -791,20 +1500,53 @@ function finalizeAccumulator(acc) {
   mesh.matrixAutoUpdate = false;
   modelRoot.add(mesh);
   drawCount++;
+  finalizeEdges(acc);
 }
 
-function cellKeyFor(rec, transparent, spread) {
-  if (!spread || !modelBox) return transparent ? "t" : "o";
-  // Coarse 2x2x2 bucketing over the running model bounds keeps merged
-  // chunks spatially tight enough for per-chunk frustum culling to bite.
-  const cx = rec.box[0] < (modelBox[0] + modelBox[3]) / 2 ? 0 : 1;
-  const cy = rec.box[1] < (modelBox[1] + modelBox[4]) / 2 ? 0 : 1;
-  const cz = rec.box[2] < (modelBox[2] + modelBox[5]) / 2 ? 0 : 1;
-  return `${transparent ? "t" : "o"}${cx}${cy}${cz}`;
+function finalizeEdges(acc) {
+  if (!acc.edgeVertexCount) return;
+  const geo = new THREE.BufferGeometry();
+  const pos = new THREE.BufferAttribute(acc.edgePositions.trim(), 3);
+  const idx = new THREE.BufferAttribute(acc.edgeElementIndex.trim(), 1);
+  geo.setAttribute("position", pos);
+  geo.setAttribute("aElementIndex", idx);
+  geo.computeBoundingSphere();
+  for (const attr of [pos, idx]) attr.onUpload(freeUploadedArray);
+  const lines = new THREE.LineSegments(geo, edgeMaterial);
+  lines.matrixAutoUpdate = false;
+  edgeRoot.add(lines);
+  edgeDrawCount++;
 }
 
-function bakeMerged(rec, geom, matrix, color, transparent, spread) {
-  const key = cellKeyFor(rec, transparent, spread);
+/**
+ * Which batching cell a placement's box belongs to.
+ *
+ * A 2x2x2 split of the model was too coarse to cull: a camera standing inside
+ * a room intersects most octants, so almost every triangle was submitted every
+ * frame, on every 1x1 pick and on every hover probe. The grid is a real one,
+ * sized by planSpatialGrid against the whole model's bounds, which is why
+ * modelBox has to be settled before the first chunk is batched.
+ */
+function cellKeyFor(box, at, transparent) {
+  const prefix = transparent ? "t" : "o";
+  if (!cellSize || !modelBox) return prefix;
+  const cx = Math.floor((box[at] - modelBox[0]) / cellSize);
+  const cy = Math.floor((box[at + 1] - modelBox[1]) / cellSize);
+  const cz = Math.floor((box[at + 2] - modelBox[2]) / cellSize);
+  return `${prefix}${cx},${cy},${cz}`;
+}
+
+/** Which eighth of the model a placement stands in, for splitting instances. */
+function octantKeyFor(box, at) {
+  if (!modelBox) return "";
+  let key = "";
+  for (let k = 0; k < 3; k++) {
+    key += box[at + k] < (modelBox[k] + modelBox[k + 3]) / 2 ? "0" : "1";
+  }
+  return key;
+}
+
+function bakeMerged(rec, geom, matrix, color, transparent, key) {
   let acc = accumulators.get(key);
   if (!acc || acc.transparent !== transparent) {
     acc = new Accumulator(transparent);
@@ -839,7 +1581,7 @@ function bakeMerged(rec, geom, matrix, color, transparent, spread) {
     let tx = n[0] * nx + n[3] * ny + n[6] * nz;
     let ty = n[1] * nx + n[4] * ny + n[7] * nz;
     let tz = n[2] * nx + n[5] * ny + n[8] * nz;
-    const len = Math.hypot(tx, ty, tz) || 1;
+    const len = norm3(tx, ty, tz) || 1;
     N.data[N.length++] = tx / len;
     N.data[N.length++] = ty / len;
     N.data[N.length++] = tz / len;
@@ -855,15 +1597,41 @@ function bakeMerged(rec, geom, matrix, color, transparent, spread) {
     I.data[I.length++] = geom.indices[i] + base;
   }
   acc.vertexCount += vCount;
-  if (acc.vertexCount >= CHUNK_VERTEX_LIMIT) {
+  // Affordability, not the switch: the outline is staged with the surface it
+  // belongs to, so a switch flipped later could not go back and build one.
+  if (edgesAffordable) bakeEdges(acc, rec, geom, m);
+  if (acc.vertexCount >= cellFlushAt) {
     finalizeAccumulator(acc);
     accumulators.delete(key);
   }
 }
 
+/** Place one shape's outline into the same cell its surface went into. */
+function bakeEdges(acc, rec, geom, m) {
+  const src = edgeListFor(geom);
+  if (!src || !src.length) return;
+  const EP = acc.edges();
+  const EE = acc.edgeElementIndex;
+  const count = src.length / 3;
+  EP.reserve(src.length);
+  EE.reserve(count);
+  for (let v = 0; v < count; v++) {
+    const s = v * 3;
+    const x = src[s], y = src[s + 1], z = src[s + 2];
+    EP.data[EP.length++] = m[0] * x + m[4] * y + m[8] * z + m[12] - origin[0];
+    EP.data[EP.length++] = m[1] * x + m[5] * y + m[9] * z + m[13] - origin[1];
+    EP.data[EP.length++] = m[2] * x + m[6] * y + m[10] * z + m[14] - origin[2];
+    EE.data[EE.length++] = rec.index;
+  }
+  acc.edgeVertexCount += count;
+}
+
 class InstEntry {
-  constructor(gid, geom, alpha) {
+  constructor(gid, geom, alpha, expected) {
     this.gid = gid;
+    // The count is known before ingest starts, so the per-instance arrays are
+    // allocated once instead of doubling from sixteen and copying each time.
+    this.expected = expected;
     this.geomRadius = Math.hypot(
       Math.max(Math.abs(geom.box[0]), Math.abs(geom.box[3])),
       Math.max(Math.abs(geom.box[1]), Math.abs(geom.box[4])),
@@ -890,7 +1658,7 @@ class InstEntry {
 
   _grow() {
     const old = this.mesh;
-    const capacity = old ? this.capacity * 2 : 16;
+    const capacity = old ? this.capacity * 2 : Math.max(16, this.expected);
     const geo = new THREE.BufferGeometry();
     geo.setAttribute("position", this.posAttr);
     geo.setAttribute("normal", this.norAttr);
@@ -944,15 +1712,15 @@ class InstEntry {
       if (t > this.tMax[k]) this.tMax[k] = t;
     }
     const scale = Math.max(
-      Math.hypot(e[0], e[1], e[2]),
-      Math.hypot(e[4], e[5], e[6]),
-      Math.hypot(e[8], e[9], e[10]));
+      norm3(e[0], e[1], e[2]),
+      norm3(e[4], e[5], e[6]),
+      norm3(e[8], e[9], e[10]));
     if (scale > this.maxScale) this.maxScale = scale;
     this.sphere.center.set(
       (this.tMin[0] + this.tMax[0]) / 2,
       (this.tMin[1] + this.tMax[1]) / 2,
       (this.tMin[2] + this.tMax[2]) / 2);
-    this.sphere.radius = Math.hypot(
+    this.sphere.radius = norm3(
       this.tMax[0] - this.tMin[0],
       this.tMax[1] - this.tMin[1],
       this.tMax[2] - this.tMin[2]) / 2 + this.geomRadius * this.maxScale;
@@ -968,11 +1736,16 @@ function registerChunkGeometry(chunk) {
   for (let i = 0; i < g.ids.length; i++) {
     const vc = g.vertexCounts[i];
     const ic = g.indexCounts[i];
+    const positions = g.positions.subarray(po, po + vc * 3);
+    const indices = g.indices.subarray(io, io + ic);
     registry.set(g.ids[i], {
-      positions: g.positions.subarray(po, po + vc * 3),
+      positions,
       normals: g.normals.subarray(po, po + vc * 3),
-      indices: g.indices.subarray(io, io + ic),
+      indices,
       box: g.bounds.subarray(bo, bo + 6),
+      // Deduplicated, so this runs once per shape however many times it is
+      // placed. Doing it later is not an option: the arrays are freed.
+      mass: geometryMass(positions, indices),
     });
     po += vc * 3;
     io += ic;
@@ -980,15 +1753,50 @@ function registerChunkGeometry(chunk) {
   }
 }
 
-function ingestChunk(chunk) {
+/**
+ * Add one placement's area, volume and candidate oriented box to its element.
+ *
+ * IFC placements are rigid in every file worth measuring, so the local numbers
+ * carry over unchanged. Where a placement does scale, volume follows the
+ * determinant exactly and area follows it only under uniform scale, which is
+ * why a scaled element says so rather than quietly reporting the wrong area.
+ */
+function accrueMass(rec, geom, m) {
+  const sx = norm3(m[0], m[1], m[2]);
+  const sy = norm3(m[4], m[5], m[6]);
+  const sz = norm3(m[8], m[9], m[10]);
+  const det = sx * sy * sz;
+  if (Math.max(sx, sy, sz) > Math.min(sx, sy, sz) * 1.01) rec.scaled = true;
+  rec.area += geom.mass.area * Math.cbrt(det * det);
+  rec.volume += geom.mass.volume * det;
+  // Biggest part wins the frame: a wall with a small opening solid attached
+  // should be measured along the wall.
+  const reach = norm3(
+    (geom.box[3] - geom.box[0]) * sx,
+    (geom.box[4] - geom.box[1]) * sy,
+    (geom.box[5] - geom.box[2]) * sz);
+  if (reach > rec.obbReach) {
+    rec.obbReach = reach;
+    const local = new Float32Array(16);
+    for (let k = 0; k < 16; k++) local[k] = m[k];
+    // The origin shift happens in f64 here so the f32 store never sees the
+    // georeferenced magnitude that made the shift necessary.
+    local[12] = m[12] - origin[0];
+    local[13] = m[13] - origin[1];
+    local[14] = m[14] - origin[2];
+    rec.obb = { m: local, box: Float32Array.from(geom.box) };
+  }
+}
+
+/** How the batcher tells two placements of one shape apart: shape and alpha. */
+function useKeyFor(geometryID, alpha) {
+  return alpha < 0.999 ? `${geometryID}:${alpha.toFixed(3)}` : `${geometryID}:o`;
+}
+
+function ingestChunk(chunk, layout, uses) {
   const p = chunk.placements;
   const P = p.expressIDs.length;
-  let chunkVerts = 0;
-  for (let i = 0; i < P; i++) {
-    const geom = registry.get(p.geometryIDs[i]);
-    if (geom) chunkVerts += geom.positions.length / 3;
-  }
-  const spread = chunkVerts >= SPATIAL_SPLIT_VERTS;
+  const boxes = layout.boxes;
 
   for (let i = 0; i < P; i++) {
     const geom = registry.get(p.geometryIDs[i]);
@@ -997,34 +1805,34 @@ function ingestChunk(chunk) {
     const matrix = p.matrices.subarray(i * 16, i * 16 + 16);
     const color = p.colors.subarray(i * 4, i * 4 + 4);
     const rec = elementRecord(expressID);
-    unionBoxCorners(rec.box, geom.box, matrix);
-    if (!modelBox) {
-      modelBox = rec.box.slice();
-    } else {
-      for (let k = 0; k < 3; k++) {
-        if (rec.box[k] < modelBox[k]) modelBox[k] = rec.box[k];
-        if (rec.box[k + 3] > modelBox[k + 3]) modelBox[k + 3] = rec.box[k + 3];
-      }
+    const at = i * 6;
+    for (let k = 0; k < 3; k++) {
+      if (boxes[at + k] < rec.box[k]) rec.box[k] = boxes[at + k];
+      if (boxes[at + k + 3] > rec.box[k + 3]) rec.box[k + 3] = boxes[at + k + 3];
     }
+    accrueMass(rec, geom, matrix);
     triangleCount += geom.indices.length / 3;
 
     const alpha = color[3];
     const transparent = alpha < 0.999;
-    const useKey = transparent
-      ? `${p.geometryIDs[i]}:${alpha.toFixed(3)}` : `${p.geometryIDs[i]}:o`;
-    const use = geomUse.get(useKey);
-    if (use === undefined) {
-      bakeMerged(rec, geom, matrix, color, transparent, spread);
-      geomUse.set(useKey, "merged");
-    } else if (use === "merged") {
-      // Second sighting: this geometry repeats, switch to instancing. The
-      // first copy stays baked; instances carry the rest.
-      const entry = new InstEntry(p.geometryIDs[i], geom, alpha);
-      entry.add(rec, matrix, color);
-      geomUse.set(useKey, entry);
-    } else {
-      use.add(rec, matrix, color);
+    const useKey = useKeyFor(p.geometryIDs[i], alpha);
+    // Decided once for the whole model rather than on the second sighting, so
+    // a shape placed twice no longer buys a draw call of its own.
+    const copies = uses.get(useKey) || 1;
+    if (copies < INSTANCE_MIN) {
+      bakeMerged(
+        rec, geom, matrix, color, transparent, cellKeyFor(boxes, at, transparent));
+      continue;
     }
+    const split = copies >= INSTANCE_SPLIT;
+    const instKey = split ? `${useKey}#${octantKeyFor(boxes, at)}` : useKey;
+    let entry = geomUse.get(instKey);
+    if (entry === undefined) {
+      entry = new InstEntry(
+        p.geometryIDs[i], geom, alpha, split ? Math.ceil(copies / 8) : copies);
+      geomUse.set(instKey, entry);
+    }
+    entry.add(rec, matrix, color);
   }
 }
 
@@ -1039,6 +1847,11 @@ function disposeModel() {
     if (child.isInstancedMesh) child.dispose();
     if (child.geometry) child.geometry.dispose();
   }
+  for (const child of [...edgeRoot.children]) {
+    edgeRoot.remove(child);
+    child.geometry.dispose();
+  }
+  edgeDrawCount = 0;
   for (const mat of instancedTransparentMaterials.values()) {
     const shader = mat.userData.ifcShader;
     if (shader) liveShaders.delete(shader);
@@ -1048,10 +1861,13 @@ function disposeModel() {
   instancedTransparentMaterials.clear();
   elements.clear();
   elementsByIndex.length = 0;
+  elementGrid = null;
   registry.clear();
   geomUse.clear();
   accumulators = new Map();
   modelBox = null;
+  cellSize = 0;
+  cellFlushAt = CHUNK_VERTEX_LIMIT;
   origin = [0, 0, 0];
   drawCount = 0;
   triangleCount = 0;
@@ -1070,9 +1886,84 @@ function disposeModel() {
   clearProperties();
 }
 
+// ------------------------------------------------------------ spatial index
+// Snapping asks "what is near this point" on every hover frame, and scanning
+// every element to answer it does not survive a large model. A uniform grid
+// over the boxes the viewer already keeps answers it in the cells it touches.
+const GRID_CELL_BUDGET = 512;
+let elementGrid = null;
+
+function buildElementGrid() {
+  elementGrid = null;
+  if (!modelBox || !elements.size) return;
+  const divisions = Math.max(8, Math.min(128, Math.round(Math.cbrt(elements.size) * 2)));
+  const size = Math.max(sceneSpan() / divisions, 1e-6);
+  const map = new Map();
+  const oversized = [];
+  for (const [id, rec] of elements) {
+    const b = rec.box;
+    if (!Number.isFinite(b[0])) continue;
+    const x0 = Math.floor((b[0] - modelBox[0]) / size);
+    const y0 = Math.floor((b[1] - modelBox[1]) / size);
+    const z0 = Math.floor((b[2] - modelBox[2]) / size);
+    const x1 = Math.floor((b[3] - modelBox[0]) / size);
+    const y1 = Math.floor((b[4] - modelBox[1]) / size);
+    const z1 = Math.floor((b[5] - modelBox[2]) / size);
+    // A site or a roof slab reaches across most of the grid, and writing it
+    // into every cell it touches costs more than testing it every time.
+    if ((x1 - x0 + 1) * (y1 - y0 + 1) * (z1 - z0 + 1) > GRID_CELL_BUDGET) {
+      oversized.push(id);
+      continue;
+    }
+    for (let x = x0; x <= x1; x++) {
+      for (let y = y0; y <= y1; y++) {
+        for (let z = z0; z <= z1; z++) {
+          const key = `${x},${y},${z}`;
+          const bucket = map.get(key);
+          if (bucket) bucket.push(id);
+          else map.set(key, [id]);
+        }
+      }
+    }
+  }
+  elementGrid = { size, map, oversized };
+}
+
+/** Element ids whose box comes within `radius` of `point`. */
+function elementsNear(point, radius, out) {
+  out.clear();
+  if (!elementGrid || !modelBox) return out;
+  const test = (id) => {
+    const b = elements.get(id)?.box;
+    if (!b || !Number.isFinite(b[0])) return;
+    if (point.x < b[0] - radius || point.x > b[3] + radius) return;
+    if (point.y < b[1] - radius || point.y > b[4] + radius) return;
+    if (point.z < b[2] - radius || point.z > b[5] + radius) return;
+    out.add(id);
+  };
+  for (const id of elementGrid.oversized) test(id);
+  const size = elementGrid.size;
+  const x0 = Math.floor((point.x - radius - modelBox[0]) / size);
+  const y0 = Math.floor((point.y - radius - modelBox[1]) / size);
+  const z0 = Math.floor((point.z - radius - modelBox[2]) / size);
+  const x1 = Math.floor((point.x + radius - modelBox[0]) / size);
+  const y1 = Math.floor((point.y + radius - modelBox[1]) / size);
+  const z1 = Math.floor((point.z + radius - modelBox[2]) / size);
+  for (let x = x0; x <= x1; x++) {
+    for (let y = y0; y <= y1; y++) {
+      for (let z = z0; z <= z1; z++) {
+        const bucket = elementGrid.map.get(`${x},${y},${z}`);
+        if (bucket) for (const id of bucket) test(id);
+      }
+    }
+  }
+  return out;
+}
+
 function updateStats() {
   $("stats").textContent = elements.size
-    ? `${elements.size} products · ${Math.round(triangleCount / 1000)}k tris · ${drawCount} draws`
+    ? `${elements.size} products · ${Math.round(triangleCount / 1000)}k tris · `
+      + `${drawCount + edgeDrawCount} draws`
     : "";
 }
 
@@ -1111,6 +2002,7 @@ function routeParserMessage(msg) {
   const h = activeHandlers;
   if (msg.type === "chunk") h.onChunk(msg);
   else if (msg.type === "progress") h.onProgress(msg);
+  else if (msg.type === "coordination") h.onCoordination(msg);
   else if (msg.type === "maps") h.onMaps(msg);
   else if (msg.type === "tree") h.onTree(msg);
   else if (msg.type === "done") h.onDone(msg);
@@ -1172,8 +2064,10 @@ function parseBuffer(buffer) {
     let chunks = [];
     let maps = null;
     let tree = null;
+    let coordination = null;
     const handlers = {
       onChunk: (msg) => chunks.push(msg),
+      onCoordination: (msg) => { coordination = msg.matrix; },
       onProgress: (msg) => {
         if (msg.stage === "geometry") {
           showProgress(`Reading geometry: ${msg.products} elements`, null);
@@ -1186,7 +2080,7 @@ function parseBuffer(buffer) {
       onDone: () => {
         finished = true;
         workerBusy = false;
-        resolve({ chunks, maps, tree });
+        resolve({ chunks, maps, tree, coordination });
       },
       onError: (err) => {
         finished = true;
@@ -1199,6 +2093,7 @@ function parseBuffer(buffer) {
         chunks = [];
         maps = null;
         tree = null;
+        coordination = null;
         showProgress("Retrying model load", null);
         parseInline(buffer, handlers).catch(handlers.onError);
       },
@@ -1254,6 +2149,8 @@ async function fetchModelBytes(res) {
 async function loadModel() {
   if (loading) {
     reloadQueued = true;
+    // another rebuild follows this one; the scene is not settling yet
+    sendSceneState("rebuilding");
     return;
   }
   loading = true;
@@ -1331,12 +2228,32 @@ async function loadModel() {
     if (reloadQueued) {
       reloadQueued = false;
       loadModel();
+    } else if (sceneState !== "ready") {
+      // a 304, a 404 or an error left the scene as it was; the hub must not
+      // go on holding commands for a rebuild that is not happening
+      sendSceneState("ready");
     }
   }
 }
 
+/**
+ * Yield to the browser, whether or not anyone is watching.
+ *
+ * A hidden tab gets no animation frames at all, so a build that yields on one
+ * stops at the first pause and only finishes when someone switches to it. The
+ * timeout is the floor, not the path: a visible tab still lands on the frame.
+ */
 function nextFrame() {
-  return new Promise((resolve) => requestAnimationFrame(() => resolve()));
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      resolve();
+    };
+    requestAnimationFrame(finish);
+    setTimeout(finish, 100);
+  });
 }
 
 async function buildScene(buffer) {
@@ -1346,6 +2263,11 @@ async function buildScene(buffer) {
   const keepPropertyGuid = keepSelection.at(-1) || null;
   const keepHighlight = [...highlightSet].map((id) => guidOf.get(id)).filter(Boolean);
   const keepIsolate = isolateSet !== null;
+  // Every revision bump rebuilds, so throwing the measurements away here meant
+  // the assistant writing one property set deleted the user's whole morning of
+  // dimensions, server copy included. They are anchored to GlobalIds instead.
+  const keepMeasurements = measurementCarry();
+  sendSceneState("rebuilding");
   disposeModel();
   userMovedCamera = false;
   showProgress("Reading IFC model", null);
@@ -1356,10 +2278,31 @@ async function buildScene(buffer) {
   // long synchronous block on a big model.
   await nextFrame();
   for (const chunk of parsed.chunks) registerChunkGeometry(chunk);
-  decideOrigin(parsed.chunks);
+  const placed = decideOrigin(parsed.chunks);
+  modelBox = placed.box;
+  const spatial = planSpatialGrid(placed.box, placed.verts, {
+    cellVertexTarget: CELL_VERTEX_TARGET,
+    stagingBudget: STAGING_VERTEX_BUDGET,
+    minChunkVerts: MIN_CHUNK_VERTS,
+    chunkVertexLimit: CHUNK_VERTEX_LIMIT,
+    splitVerts: SPATIAL_SPLIT_VERTS,
+    minCells: MIN_CELLS,
+  });
+  cellSize = spatial.size;
+  cellFlushAt = spatial.flushAt;
+  // Decided once, before the first bake: an outline is staged next to the
+  // surface it belongs to, so the choice cannot change halfway through.
+  edgesAffordable = placed.verts <= EDGE_VERTEX_BUDGET;
+  syncEdgeSwitch();
+  coordinationApplied = Array.isArray(parsed.coordination)
+    && parsed.coordination.length === 16;
+  coordinationMatrix = coordinationApplied
+    ? new THREE.Matrix4().fromArray(parsed.coordination)
+    : new THREE.Matrix4();
+  refreshFrames();
   let done = 0;
   for (const chunk of parsed.chunks) {
-    ingestChunk(chunk);
+    ingestChunk(chunk, placed.layout.get(chunk), placed.uses);
     // Batching dominates the wait on a large model; give the browser a frame
     // every so often so the progress bar advances instead of freezing.
     if ((++done % 24) === 0) {
@@ -1376,12 +2319,11 @@ async function buildScene(buffer) {
     }
   }
   renderTree(parsed.tree);
+  buildElementGrid();
   registry.clear();
   geomUse.clear();
   updateGround();
   updateStats();
-  // the geometry moved, so old measurements no longer point at anything
-  clearMeasurements();
   updateClipping();
 
   for (const guid of keepSelection) {
@@ -1404,8 +2346,23 @@ async function buildScene(buffer) {
   refreshSearch();
   // A rebuild resets the server's selection; tell it what survived.
   sendSelection();
+  if (activeFocusName !== null) {
+    // re-map the active focus tab onto the rebuilt express ids
+    try {
+      applyFocusTab(activeFocusName, false);
+    } catch {
+      applyFocusTab(null, false);
+    }
+  } else {
+    renderFocusTabs();
+  }
+  // Last, once every visibility gate is settled: each end re-resolves through
+  // its GlobalId, so a wall that moved carries its dimension with it, and a
+  // replayed clearance sees the same model the user does.
+  restoreMeasurements(keepMeasurements);
   if (!userMovedCamera) fitTo(null);
   invalidate();
+  sendSceneState("ready");
 }
 
 // ---------------------------------------------------------------- spatial tree
@@ -1608,23 +2565,62 @@ function applyAppearance() {
   applyAppearanceTo(elements.keys());
 }
 
-function isElementShown(id) {
-  const isolatedOut =
-    (isolateSet !== null && !isolateSet.has(id))
+function isolatedOut(id) {
+  return (isolateSet !== null && !isolateSet.has(id))
     || (userIsolateSet !== null && !userIsolateSet.has(id));
-  return !hiddenByTree.has(id) && !hiddenManual.has(id) && !isolatedOut;
+}
+
+function isElementShown(id) {
+  return !hiddenByTree.has(id) && !hiddenManual.has(id) && !isolatedOut(id);
+}
+
+/**
+ * Whether an element is off screen only because something else was isolated.
+ *
+ * That is the case worth ghosting: an isolated duct with the building around
+ * it faded still says where in the building it is. An element the user or the
+ * tree deliberately hid was meant to go away, and it does.
+ */
+function isGhosted(id) {
+  return ghostContext && isolatedOut(id)
+    && !hiddenByTree.has(id) && !hiddenManual.has(id);
 }
 
 let hiddenCount = 0;
+let ghostCount = 0;
+let ghostContext = true;
 function applyVisibility() {
   hiddenCount = 0;
+  ghostCount = 0;
   for (const [id, rec] of elements) {
     const shown = isElementShown(id);
     if (!shown) hiddenCount++;
-    stateData[rec.index * 4] = shown ? 255 : 0;
+    let level = 0;
+    if (shown) level = 255;
+    else if (isGhosted(id)) {
+      level = GHOST_LEVEL;
+      ghostCount++;
+    }
+    stateData[rec.index * 4] = level;
   }
   commitStyles();
   updateVisibilityInfo();
+  // Isolation, hiding and ghosting are all view state a reader has to see; it
+  // changed from a button, from the tree and from a command with no push.
+  scheduleViewerContext("visibility");
+}
+
+/** Turn ghosted context on or off, and repaint what that changes. */
+function setGhostContext(on) {
+  const want = on !== false;
+  if (want === ghostContext) return ghostContext;
+  ghostContext = want;
+  const box = $("tool-ghost");
+  if (box) box.checked = ghostContext;
+  uiState.ghost = ghostContext;
+  saveUi();
+  applyVisibility();
+  return ghostContext;
 }
 
 // ---------------------------------------------------------------- selection
@@ -1650,14 +2646,25 @@ function setSelection(ids, additive) {
 
 function updateSelectionInfo() {
   const n = selection.size;
+  const status = $("sel-info");
+  const propertiesTab = $("props-panel-tab");
+  status.dataset.selectionCount = String(n);
+  propertiesTab.classList.toggle("has-context", n > 0);
+  propertiesTab.title = n ? `Open properties for ${n} selected` : "Open properties panel";
+  propertiesTab.setAttribute(
+    "aria-label",
+    n ? `Open properties for ${n} selected` : "Open properties panel",
+  );
   updateToolButtons();
   if (!n) {
-    $("sel-info").textContent = "No selection";
+    status.textContent = "No selection";
+    scheduleViewerContext("selection");
     return;
   }
   const shown = [...selection].slice(0, 3)
     .map((id) => guidOf.get(id) || `#${id}`).join(", ");
-  $("sel-info").textContent = `${n} selected · ${shown}${n > 3 ? ", …" : ""}`;
+  status.textContent = `${n} selected · ${shown}${n > 3 ? ", …" : ""}`;
+  scheduleViewerContext("selection");
 }
 
 function updateHighlightInfo() {
@@ -1685,7 +2692,7 @@ function sendSelection() {
 // material and decode which element it belongs to.
 function pickElementAt(clientX, clientY) {
   if (!elements.size) return null;
-  ensureFullResolution();
+  const scaled = ensureFullResolution();
   const rect = canvas.getBoundingClientRect();
   const size = renderer.getDrawingBufferSize(new THREE.Vector2());
   const x = Math.floor(((clientX - rect.left) / rect.width) * size.x);
@@ -1696,6 +2703,8 @@ function pickElementAt(clientX, clientY) {
   const gridWasVisible = grid.visible;
   const axesWasVisible = axes ? axes.visible : false;
   const measureWasVisible = measureGroup.visible;
+  const snapWasVisible = snapGroup.visible;
+  const edgesWereVisible = edgeRoot.visible;
   const prevTarget = renderer.getRenderTarget();
   const prevClearColor = renderer.getClearColor(new THREE.Color()).clone();
   const prevClearAlpha = renderer.getClearAlpha();
@@ -1704,8 +2713,12 @@ function pickElementAt(clientX, clientY) {
     grid.visible = false;
     if (axes) axes.visible = false;
     // markers carry no element index, so leaving them in makes a click on one
-    // decode as element 0
+    // decode as element 0; the snap glyph sits under the cursor by definition
     measureGroup.visible = false;
+    snapGroup.visible = false;
+    // An outline sits exactly on the surface it outlines, so at a silhouette
+    // the winner of the depth test is a coin toss; the surface answers.
+    edgeRoot.visible = false;
     scene.overrideMaterial = pickMaterial;
     camera.setViewOffset(size.x, size.y, x, y, 1, 1);
     renderer.setRenderTarget(pickTarget);
@@ -1722,7 +2735,11 @@ function pickElementAt(clientX, clientY) {
     grid.visible = gridWasVisible;
     if (axes) axes.visible = axesWasVisible;
     measureGroup.visible = measureWasVisible;
-    invalidate();
+    snapGroup.visible = snapWasVisible;
+    edgeRoot.visible = edgesWereVisible;
+    // Only a resolution change owes the canvas a redraw; the pass itself never
+    // touched it.
+    if (scaled) invalidate();
   }
 
   const encoded = pickBuffer[0] * 65536 + pickBuffer[1] * 256 + pickBuffer[2];
@@ -1735,11 +2752,103 @@ function pickElementAt(clientX, clientY) {
 const DRAG_THRESHOLD = 6;
 let downAt = null;
 canvas.addEventListener("pointerdown", (e) => {
+  // The viewport has to hold focus for arrow-key panning, but :focus-visible
+  // cannot tell this focus() from a Tab press and drew a ring around the
+  // model on every click. Mark it so the ring is a keyboard affordance only.
+  canvas.dataset.quietFocus = "1";
   canvas.focus({ preventScroll: true });
   downAt = [e.clientX, e.clientY];
   canvas.classList.remove("is-dragging");
+  // Every gesture starts from the surface under the cursor: orbit, pan and
+  // zoom all scale from the pivot distance, so pan and orbit re-seat it too.
+  if (!measureMode) repivotIfStale(e.clientX, e.clientY);
 });
+
+const _pivotDir = new THREE.Vector3();
+const _pivotSeat = new THREE.Vector3();
+
+// Zooming to the cursor walks the camera away from wherever the model was
+// framed, leaving the orbit pivot floating somewhere else. The fix cannot be
+// to copy the cursor's 3D point: the camera always looks at the target, so an
+// off-axis pivot snaps the view sideways. Instead the pivot slides ALONG the
+// view axis to the depth of the surface under the cursor: the view does not
+// change at all, and orbit, pan and zoom now scale to what is in front of you.
+function repivotIfStale(clientX, clientY) {
+  const point = surfacePointAt(clientX, clientY);
+  if (!point) return;
+  camera.getWorldDirection(_pivotDir);
+  const depth = _pivotSeat.copy(point).sub(camera.position).dot(_pivotDir);
+  if (!(depth > 1e-6)) return;
+  _pivotSeat.copy(camera.position).addScaledVector(_pivotDir, depth);
+  // already there; a micro-move would only fight the controls
+  if (_pivotSeat.distanceTo(controls.target) < depth * 0.02) return;
+  controls.target.copy(_pivotSeat);
+  controls.update();
+  grid.position.set(_pivotSeat.x, groundY, _pivotSeat.z);
+  invalidate();
+}
+
+// After a run of cursor-zoom the pivot depth is stale even without a click;
+// one depth probe after the wheel settles keeps the next orbit anchored.
+let wheelRepivot = 0;
+canvas.addEventListener("wheel", (e) => {
+  clearTimeout(wheelRepivot);
+  wheelRepivot = setTimeout(() => {
+    if (!downAt) repivotIfStale(e.clientX, e.clientY);
+  }, 160);
+}, { passive: true });
+
+canvas.addEventListener("keydown", () => { delete canvas.dataset.quietFocus; });
+
+/**
+ * Whether a keystroke belongs to the viewport rather than to a text field.
+ *
+ * Single-letter shortcuts are only shortcuts where nobody is typing: measure
+ * mode used to read S, X, Y, Z and Backspace off the window, so writing the
+ * word "sxyz" into the chat composer toggled snapping, set an invisible axis
+ * lock and ate the delete key.
+ */
+function isShortcutSurface(target) {
+  return target === document.body
+    || target === canvas
+    || Boolean(target?.closest?.(".tree-label, .search-hit"));
+}
+
+window.addEventListener("keydown", (e) => {
+  if (!measureMode || e.ctrlKey || e.metaKey || e.altKey) return;
+  if (!isShortcutSurface(e.target)) return;
+  const key = e.key.toLowerCase();
+  if (key === "s") {
+    setSnap(!snapEnabled);
+    return;
+  }
+  if (key === "backspace") {
+    // undo the last click instead of editing whatever holds focus
+    if (undoPendingPoint()) e.preventDefault();
+    return;
+  }
+  if (key === "shift") {
+    // Shift hardens the current axis inference; pressed again it lets go.
+    if (axisLock) axisLock = "";
+    else if (inferredAxis) axisLock = inferredAxis;
+    else return;
+    renderMeasurements();
+    return;
+  }
+  if (!["x", "y", "z"].includes(key)) return;
+  // A toggle, not a hold: locking stays on across clicks until the same key,
+  // another axis, or leaving measure mode. Holding a key while aiming a
+  // two-click measurement was the two-handed version of this.
+  axisLock = axisLock === key ? "" : key;
+  renderMeasurements();
+});
+canvas.addEventListener("blur", () => { delete canvas.dataset.quietFocus; });
+canvas.addEventListener("pointerleave", () => clearSnapPreview());
+// A preview is a claim about where the cursor is pointing, and moving the
+// camera invalidates it before the pointer has moved at all.
+controls.addEventListener("change", () => clearSnapPreview());
 canvas.addEventListener("pointermove", (e) => {
+  if (measureMode && !downAt) showSnapPreview(e.clientX, e.clientY);
   if (!downAt) return;
   const moved = Math.hypot(e.clientX - downAt[0], e.clientY - downAt[1]);
   if (moved > DRAG_THRESHOLD) canvas.classList.add("is-dragging");
@@ -1752,13 +2861,43 @@ canvas.addEventListener("pointerup", (e) => {
   if (moved > DRAG_THRESHOLD || e.button !== 0) return;
 
   if (measureMode) {
+    if (e.altKey) {
+      const id = pickElementAt(e.clientX, e.clientY);
+      const dimensions = id === null ? null : elementDimensions(id);
+      if (dimensions) {
+        recordMeasurement(
+          "dimensions", dimensions, dimensions.guid || `#${id}`,
+          "", null, centreAnchor(dimensions));
+      }
+      return;
+    }
     handleMeasureClick(e.clientX, e.clientY);
     return;
   }
 
   const hit = pickElementAt(e.clientX, e.clientY);
-  if (hit !== null) setSelection([hit], e.ctrlKey || e.metaKey);
-  else if (!e.ctrlKey && !e.metaKey) setSelection([], false);
+  const additive = e.ctrlKey || e.metaKey || e.shiftKey;
+  if (hit !== null) setSelection([hit], additive);
+  else if (!additive) setSelection([], false);
+});
+
+// Double-click frames the element you clicked: the fastest way from a
+// site-scale view to working distance on one small part. Off the model it
+// re-seats the pivot depth without moving the camera.
+canvas.addEventListener("dblclick", (e) => {
+  if (measureMode) {
+    // pointerup already added a point for each half of the pair, so the second
+    // one goes back before the outline closes on the first
+    if (measureKind === "area") undoPendingPoint();
+    if (finishArea()) renderMeasurements();
+    return;
+  }
+  const id = pickElementAt(e.clientX, e.clientY);
+  if (id !== null && id !== undefined) {
+    fitTo([id]);
+    return;
+  }
+  repivotIfStale(e.clientX, e.clientY);
 });
 canvas.addEventListener("pointercancel", () => {
   downAt = null;
@@ -1801,21 +2940,40 @@ function boundsOf(ids) {
   return any ? _fitBox : null;
 }
 
-function frameBox(box, direction) {
+function frameBox(box, direction, padding = 1) {
   const center = box.getCenter(new THREE.Vector3());
   const sphere = box.getBoundingSphere(new THREE.Sphere());
-  const verticalFov = THREE.MathUtils.degToRad(camera.fov);
-  const horizontalFov = 2 * Math.atan(Math.tan(verticalFov / 2) * camera.aspect);
+  sphere.radius *= padding > 0 ? padding : 1;
+  // The standoff is a perspective question even in a parallel projection:
+  // it is what puts the model inside the depth range, and the ortho camera
+  // has no field of view to ask.
+  const verticalFov = THREE.MathUtils.degToRad(perspectiveCamera.fov);
+  const horizontalFov = 2 * Math.atan(
+    Math.tan(verticalFov / 2) * perspectiveCamera.aspect);
   const halfFov = Math.max(0.01, Math.min(verticalFov, horizontalFov) / 2);
   const distance = Math.max(sphere.radius, 1) / Math.sin(halfFov) * 1.1;
+  if (isOrtho()) {
+    // Fitting a parallel projection is a zoom, not a move.
+    orthoHeight = Math.max(sceneSpan(), 1e-3);
+    applyProjectionShape();
+    const aspect = viewportWidth / Math.max(viewportHeight, 1);
+    const fit = Math.max(sphere.radius * 2.2, 1e-4);
+    camera.zoom = Math.min(orthoHeight / fit, (orthoHeight * aspect) / fit);
+    camera.updateProjectionMatrix();
+  }
   const dir = direction
     || camera.position.clone().sub(controls.target).normalize();
   camera.position.copy(center.clone().add(dir.multiplyScalar(distance)));
   controls.target.copy(center);
   grid.position.set(center.x, groundY, center.z);
-  camera.near = Math.max(distance / 1000, 0.01);
-  camera.far = distance * 100;
-  camera.updateProjectionMatrix();
+  // 20mm on a 200m site, well under a millimetre in a single room: close
+  // enough to sit inside a connection detail, far enough that pan and orbit
+  // still have a radius to be proportional to.
+  // The zoom floor scales with the model but stays close enough to inspect a
+  // bolt on a site-scale file: 1 cm at a kilometre, never above a millimetre
+  // of slack on small models.
+  controls.minDistance = Math.max(sceneSpan() * 1e-5, 1e-3);
+  applyNearFar();
   invalidate();
 }
 
@@ -1850,6 +3008,217 @@ function fitTargetIds(fit) {
   return null;
 }
 
+// ------------------------------------------------------------- camera control
+// An agent that can read the camera and set it can compose a plan view, an
+// elevation and a walkthrough out of two primitives, so both halves speak the
+// model's own axes in metres and both report the same shape.
+const CAMERA_TRANSITION_MS = 420;
+// A millimetre: below this the eye is at the pivot and there is no view.
+const CAMERA_MIN_REACH = 1e-3;
+let cameraTween = null;
+
+/** Everything about the current view, in the model's own frame. */
+function cameraState() {
+  camera.updateMatrixWorld();
+  const up = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 1);
+  const ortho = isOrtho();
+  return {
+    position: toModelPoint(camera.position),
+    target: toModelPoint(controls.target),
+    up: toModelDirection(up),
+    fov: ortho ? null : camera.fov,
+    projection: ortho ? "orthographic" : "perspective",
+    ortho_height: ortho
+      ? (camera.top - camera.bottom) / Math.max(camera.zoom, 1e-9) : null,
+    distance: camera.position.distanceTo(controls.target),
+    world_per_pixel: worldPerPixel(controls.target),
+  };
+}
+
+/** The scene-space pose a transition interpolates, before or after a move. */
+function cameraPose() {
+  return {
+    position: camera.position.toArray(),
+    target: controls.target.toArray(),
+    up: camera.up.toArray(),
+    zoom: camera.zoom,
+    fov: perspectiveCamera.fov,
+  };
+}
+
+const _tweenUp = new THREE.Vector3();
+
+/**
+ * Ease from where the camera was to where a command already put it.
+ *
+ * The command applies its move immediately and reports the settled state, so
+ * the answer never describes a frame halfway through; the tween then rewinds
+ * the drawing to the old pose and glides back. Nothing renders in between, so
+ * there is no visible jump.
+ */
+function beginCameraTransition(from) {
+  const to = cameraPose();
+  if (motionPreference.matches) return;
+  const moved = _tweenUp.fromArray(from.position).distanceTo(camera.position)
+    + _tweenUp.fromArray(from.target).distanceTo(controls.target);
+  if (!(moved > CAMERA_MIN_REACH) && from.zoom === to.zoom && from.fov === to.fov) return;
+  cameraTween = { from, to, start: performance.now(), ms: CAMERA_TRANSITION_MS };
+}
+
+function stepCameraTween(now) {
+  const { from, to, start, ms } = cameraTween;
+  const t = Math.min(1, Math.max(0, (now - start) / ms));
+  // smoothstep: no velocity at either end, so it leaves and arrives quietly
+  const e = t * t * (3 - 2 * t);
+  const mix = (a, b) => a + (b - a) * e;
+  camera.position.set(
+    mix(from.position[0], to.position[0]),
+    mix(from.position[1], to.position[1]),
+    mix(from.position[2], to.position[2]));
+  controls.target.set(
+    mix(from.target[0], to.target[0]),
+    mix(from.target[1], to.target[1]),
+    mix(from.target[2], to.target[2]));
+  _tweenUp.set(
+    mix(from.up[0], to.up[0]), mix(from.up[1], to.up[1]), mix(from.up[2], to.up[2]));
+  if (_tweenUp.lengthSq() > 1e-12) camera.up.copy(_tweenUp.normalize());
+  // Zoom is a ratio, so it is interpolated as one; a linear ramp from 0.01 to
+  // 10 spends almost the whole glide arriving.
+  if (from.zoom !== to.zoom && from.zoom > 0 && to.zoom > 0) {
+    camera.zoom = Math.exp(mix(Math.log(from.zoom), Math.log(to.zoom)));
+    camera.updateProjectionMatrix();
+  }
+  if (from.fov !== to.fov) {
+    perspectiveCamera.fov = mix(from.fov, to.fov);
+    perspectiveCamera.updateProjectionMatrix();
+  }
+  if (t >= 1) cameraTween = null;
+  invalidate();
+}
+
+/** A [x, y, z] argument in model axes, or null when the caller omitted it. */
+function modelTriple(value, name) {
+  if (value === undefined || value === null) return null;
+  if (!Array.isArray(value) || value.length !== 3 || !value.every(Number.isFinite)) {
+    throw new Error(`${name} must be [x, y, z] in model axes, in metres`);
+  }
+  return value;
+}
+
+/**
+ * Put the camera exactly where a caller asked for it.
+ *
+ * Position and target are the whole of a view; up is the roll, and it defaults
+ * to the model's own up rather than the viewport's so a caller never has to
+ * know which way web-ifc turned the file.
+ */
+function applyCameraCommand(command) {
+  const before = cameraPose();
+  const wasOrtho = isOrtho();
+  if (command.projection !== undefined && command.projection !== null) {
+    setProjection(command.projection);
+  }
+  const target = command.target === undefined || command.target === null
+    ? controls.target.clone()
+    : toScenePoint(modelTriple(command.target, "target"));
+  const position = command.position === undefined || command.position === null
+    ? camera.position.clone()
+    : toScenePoint(modelTriple(command.position, "position"));
+  if (position.distanceTo(target) < CAMERA_MIN_REACH) {
+    throw new Error(
+      "The camera position and target are the same point; they must be at least a millimetre apart",
+    );
+  }
+  // Omitting up means the model's own up, not whatever the last command left
+  // behind: a caller that names a position and a target has described a view,
+  // and it should be the same view every time. A plan looks straight down that
+  // axis, and lookAt's own convention then puts the model's +Y up the screen,
+  // which is what a floor plan means by north.
+  const up = command.up === undefined || command.up === null
+    ? toSceneDirection([0, 0, 1])
+    : toSceneDirection(modelTriple(command.up, "up"));
+  if (command.up !== undefined && command.up !== null) {
+    const view = position.clone().sub(target).normalize();
+    if (up.lengthSq() < 1e-12 || Math.abs(up.dot(view)) > 0.999) {
+      throw new Error("up cannot be zero, or parallel to the direction of view");
+    }
+  }
+  perspectiveCamera.up.copy(up);
+  orthographicCamera.up.copy(up);
+  if (command.fov !== undefined && command.fov !== null) {
+    const fov = Number(command.fov);
+    if (!(fov > 1 && fov < 179)) throw new Error("fov must be between 1 and 179 degrees");
+    perspectiveCamera.fov = fov;
+  }
+  camera.position.copy(position);
+  controls.target.copy(target);
+  applyProjectionShape();
+  camera.lookAt(target);
+  applyNearFar();
+  controls.update();
+  userMovedCamera = true;
+  cameraTween = null;
+  // A projection swap moves the eye by a different rule at each end, so there
+  // is no pose to interpolate; it lands directly.
+  if (command.transition !== false && wasOrtho === isOrtho()) beginCameraTransition(before);
+  invalidate();
+  scheduleViewerContext("camera");
+  return cameraState();
+}
+
+/**
+ * Frame something and say what was framed, without touching the selection.
+ *
+ * This is the one way an agent frames anything: fitting used to be reachable
+ * only as a side effect of selecting or of taking a screenshot.
+ */
+function fitCommand(command) {
+  const before = cameraPose();
+  const missing = [];
+  let ids = null;
+  if (command.selection === true) {
+    if (!selection.size) throw new Error("Nothing is selected to fit");
+    ids = [...selection];
+  } else if (Array.isArray(command.guids) && command.guids.length) {
+    ids = [];
+    for (const guid of command.guids) {
+      const id = expressOf.get(guid);
+      const rec = id === undefined ? null : elements.get(id);
+      if (rec && isFinite(rec.box[0])) ids.push(id);
+      else missing.push(guid);
+    }
+    if (!ids.length) throw new Error("None of those elements have geometry in this model");
+  }
+  const view = command.view === undefined || command.view === null
+    ? "" : String(command.view);
+  if (view && !VIEW_DIRECTIONS[view]) {
+    throw new Error(
+      `Unknown view ${view}; use one of ${Object.keys(VIEW_DIRECTIONS).join(", ")}`,
+    );
+  }
+  const box = boundsOf(ids);
+  if (!box) throw new Error("There is nothing on screen to fit");
+  const asked = Number(command.padding);
+  const padding = Number.isFinite(asked) && asked > 0 ? asked : 1;
+  frameBox(
+    box, view ? new THREE.Vector3(...VIEW_DIRECTIONS[view]).normalize() : null, padding);
+  userMovedCamera = true;
+  cameraTween = null;
+  if (command.transition === true) beginCameraTransition(before);
+  scheduleViewerContext("camera");
+  let framed = 0;
+  let hidden = 0;
+  if (ids) {
+    framed = ids.length;
+    // The camera is aimed at where they are whether or not they are on screen,
+    // so say how many of them the frame cannot actually show.
+    for (const id of ids) if (!isElementShown(id)) hidden++;
+  } else {
+    for (const [id, rec] of elements) if (isElementShown(id) && isFinite(rec.box[0])) framed++;
+  }
+  return { framed, hidden, missing, camera: cameraState() };
+}
+
 // ---------------------------------------------------------------- sectioning
 const AXIS_INDEX = { x: 0, y: 1, z: 2 };
 
@@ -1874,6 +3243,14 @@ function updateClipping() {
     plane.normal.copy(AXIS_NORMALS[axis]).multiplyScalar(sign);
     plane.constant = sign * at;
     activeClipPlanes.push(plane);
+    if (sliceDepth > 0) {
+      // The same cut from the other side, one slice further along, which is
+      // what turns a half-space into a floor plan.
+      const back = clipPlanesBack[axis];
+      back.normal.copy(AXIS_NORMALS[axis]).multiplyScalar(-sign);
+      back.constant = -sign * (at - sign * sliceDepth);
+      activeClipPlanes.push(back);
+    }
   }
   const count = activeClipPlanes.length;
   renderer.localClippingEnabled = count > 0;
@@ -1887,7 +3264,29 @@ function updateClipping() {
       mat.needsUpdate = true;
     }
   }
+  updateVisibilityInfo();
+  scheduleViewerContext("section");
   invalidate();
+}
+
+/** The cuts as numbers in the model's own axes, not slider fractions. */
+function sectionState() {
+  const out = { slice: sliceDepth, axes: {} };
+  for (const axis of AXES) {
+    const state = section[axis];
+    const [low, high] = axisRange(axis);
+    const scenePosition = low + (high - low) * state.t;
+    const name = MODEL_OF_SCENE[axis];
+    // A cut that keeps the lower side of a scene axis keeps the upper side of
+    // a model axis that runs the other way.
+    const below = axisFrame[name].sign < 0 ? state.flip : !state.flip;
+    out.axes[name] = {
+      on: state.on,
+      at: toModelAxis(axis, scenePosition),
+      keep: below ? "below" : "above",
+    };
+  }
+  return out;
 }
 
 function sectionActive() {
@@ -1901,79 +3300,301 @@ scene.add(measureGroup);
 
 const measurements = [];
 let measureMode = false;
-let pendingPoint = null;
+// Distance wants two clicks, angle three, area as many as the outline has.
+// One pending list serves all three; the tool says when it is satisfied.
+const MEASURE_KINDS = { distance: 2, angle: 3, area: 0 };
+// Two outline points closer than a micrometre are one point clicked twice.
+const AREA_MIN_EDGE_SQ = 1e-12;
+let measureKind = "distance";
+const pending = [];
+let pendingNormal = null;
+// Toggled while measuring (press X, Y or Z). IFC is Z-up and three.js is
+// Y-up, so the lock names are the model's axes and axisFrame maps them.
+let axisLock = "";
+// A soft lock the tool infers on its own: a rubber band within a few degrees
+// of a model axis sticks to it, SketchUp style, and Shift hardens the stick.
+let inferredAxis = "";
+const AXIS_INFER_COS = Math.cos((8 * Math.PI) / 180);
+// CAD convention: X red, Y green, Z blue, in the model's axes.
+const AXIS_COLORS = { x: 0xe0645c, y: 0x69b56b, z: 0x5a8fd6 };
+
+/** The point a distance click or preview lands on, lock and inference applied. */
+function constrainedMeasurePoint(anchor, raw) {
+  inferredAxis = "";
+  if (!anchor || measureKind !== "distance") return raw;
+  if (axisLock) return constrainToAxis(anchor, raw, axisLock);
+  inferredAxis = inferAxis(anchor, raw, axisFrame, AXIS_INFER_COS);
+  return inferredAxis ? constrainToAxis(anchor, raw, inferredAxis) : raw;
+}
+// Snapping is on by default: a measurement that lands a centimetre inside the
+// face it was aimed at is worse than no measurement, because it looks right.
+let snapEnabled = true;
+let lastSnapKind = "";
 const raycaster = new THREE.Raycaster();
 const _ndc = new THREE.Vector2();
 
-function markerRadius() {
-  if (!modelBox) return 0.05;
-  const span = Math.max(
-    modelBox[3] - modelBox[0],
-    modelBox[4] - modelBox[1],
-    modelBox[5] - modelBox[2]);
-  return Math.max(span * 0.004, 0.01);
+/** Project `point` onto the locked world axis through `origin`. */
+function constrainToAxis(origin, point, lock) {
+  const frame = axisFrame[lock];
+  if (!frame) return point.clone();
+  const out = origin.clone();
+  out[frame.axis] = point[frame.axis];
+  return out;
 }
 
-function addMarker(point) {
+// Markers hold a constant on-screen size. A radius derived from the model
+// span filled the viewport the moment anyone zoomed close to a small element;
+// deriving it from the camera distance every frame makes a dot a dot at any
+// zoom on any model.
+const MARKER_PX = 4.5;
+const MEASURE_COLOR = 0xffb454;
+const EMPHASIS_COLOR = 0x5ad1ff;
+
+function screenScaledDot(px, color) {
   const dot = new THREE.Mesh(
-    new THREE.SphereGeometry(markerRadius(), 12, 8),
-    new THREE.MeshBasicMaterial({ color: 0xffb454, depthTest: false }));
-  dot.position.copy(point);
+    new THREE.SphereGeometry(1, 12, 8),
+    new THREE.MeshBasicMaterial({ color, depthTest: false }));
+  dot.userData.px = px;
   dot.renderOrder = 999;
-  measureGroup.add(dot);
   return dot;
 }
 
-function surfacePointAt(clientX, clientY) {
+function syncMarkerScale(marker) {
+  const perPixel = Math.max(worldPerPixel(marker.position), 1e-9);
+  if (marker.isSprite) {
+    marker.scale.set(
+      perPixel * marker.userData.pxW, perPixel * marker.userData.pxH, 1);
+  } else {
+    marker.scale.setScalar(Math.max(perPixel * marker.userData.px, 1e-6));
+  }
+}
+
+function syncScreenMarkers() {
+  measureGroup.traverse((child) => {
+    if (child.userData.px || child.userData.pxW) syncMarkerScale(child);
+  });
+  for (const child of snapGroup.children) {
+    if (child.userData.px || child.userData.pxW) syncMarkerScale(child);
+  }
+}
+
+// Snap glyphs follow the CAD convention people already read: square for a
+// corner, triangle for a midpoint, circle for a face centre, diamond for a
+// point along an edge, and a plain dot for a bare surface hit.
+const GLYPH_PX = { corner: 13, midpoint: 13, centre: 12, edge: 12, surface: 7 };
+const _glyphTextures = new Map();
+
+function snapGlyphTexture(kind) {
+  let texture = _glyphTextures.get(kind);
+  if (texture) return texture;
+  const size = 64;
+  const canvas = document.createElement("canvas");
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext("2d");
+  ctx.strokeStyle = "#ffffff";
+  ctx.fillStyle = "#ffffff";
+  ctx.lineWidth = 7;
+  ctx.lineJoin = "miter";
+  const m = 10;
+  if (kind === "corner") {
+    ctx.strokeRect(m, m, size - 2 * m, size - 2 * m);
+  } else if (kind === "midpoint") {
+    ctx.beginPath();
+    ctx.moveTo(size / 2, m);
+    ctx.lineTo(size - m, size - m);
+    ctx.lineTo(m, size - m);
+    ctx.closePath();
+    ctx.stroke();
+  } else if (kind === "centre") {
+    ctx.beginPath();
+    ctx.arc(size / 2, size / 2, size / 2 - m, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(size / 2, size / 2, 5, 0, Math.PI * 2);
+    ctx.fill();
+  } else if (kind === "edge") {
+    ctx.beginPath();
+    ctx.moveTo(size / 2, m);
+    ctx.lineTo(size - m, size / 2);
+    ctx.lineTo(size / 2, size - m);
+    ctx.lineTo(m, size / 2);
+    ctx.closePath();
+    ctx.stroke();
+  } else {
+    ctx.beginPath();
+    ctx.arc(size / 2, size / 2, size / 2 - m * 2, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  texture = new THREE.CanvasTexture(canvas);
+  _glyphTextures.set(kind, texture);
+  return texture;
+}
+
+/** A floating dimension tag, drawn once and screen-scaled every frame. */
+function labelSprite(text) {
+  const scale = 2;
+  const canvas = document.createElement("canvas");
+  const ctx = canvas.getContext("2d");
+  const font = `600 ${12 * scale}px "Segoe UI Variable Text", "Segoe UI", Arial, sans-serif`;
+  ctx.font = font;
+  const pad = 7 * scale;
+  canvas.width = Math.ceil(ctx.measureText(text).width) + pad * 2;
+  canvas.height = 21 * scale;
+  ctx.font = font;
+  ctx.fillStyle = "rgba(18, 25, 33, 0.92)";
+  ctx.strokeStyle = "rgba(111, 168, 216, 0.65)";
+  ctx.lineWidth = scale;
+  if (ctx.roundRect) {
+    ctx.beginPath();
+    ctx.roundRect(scale, scale, canvas.width - 2 * scale, canvas.height - 2 * scale, 5 * scale);
+    ctx.fill();
+    ctx.stroke();
+  } else {
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+  }
+  ctx.fillStyle = "#eaf1f7";
+  ctx.textBaseline = "middle";
+  ctx.fillText(text, pad, canvas.height / 2 + scale);
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  const sprite = new THREE.Sprite(new THREE.SpriteMaterial({
+    map: texture, depthTest: false, transparent: true,
+  }));
+  sprite.userData.pxW = canvas.width / scale;
+  sprite.userData.pxH = canvas.height / scale;
+  sprite.userData.isLabel = true;
+  sprite.renderOrder = 1002;
+  return sprite;
+}
+
+// In-progress clicks collect here; a commit adopts them into its own group,
+// so one measurement is one deletable, highlightable object.
+let pendingGroup = null;
+
+function ensurePendingGroup() {
+  if (!pendingGroup) {
+    pendingGroup = new THREE.Group();
+    measureGroup.add(pendingGroup);
+  }
+  return pendingGroup;
+}
+
+function disposeVisual(object) {
+  for (const child of [...object.children]) disposeVisual(child);
+  if (object.geometry) object.geometry.dispose();
+  if (object.material) {
+    if (object.material.map) object.material.map.dispose();
+    object.material.dispose();
+  }
+}
+
+/** Adopt every pending visual into one group, with an optional dimension tag. */
+function adoptPending(labelText, labelPoint) {
+  const group = new THREE.Group();
+  const bucket = ensurePendingGroup();
+  while (bucket.children.length) group.add(bucket.children[0]);
+  if (labelText && labelPoint) {
+    const tag = labelSprite(labelText);
+    tag.position.copy(labelPoint);
+    syncMarkerScale(tag);
+    group.add(tag);
+  }
+  measureGroup.add(group);
+  return group;
+}
+
+function addMarker(point) {
+  const dot = screenScaledDot(MARKER_PX, MEASURE_COLOR);
+  dot.position.copy(point);
+  syncMarkerScale(dot);
+  ensurePendingGroup().add(dot);
+  return dot;
+}
+
+/**
+ * Draw the depth of one pixel into pickTarget, and remember what to put back.
+ *
+ * A click can afford to block for the pixel and a hover cannot, so the two
+ * readbacks share this setup rather than keeping two copies of it. Everything
+ * the decode depends on is captured here: the camera may well have moved by
+ * the time an asynchronous read comes back.
+ */
+function beginDepthProbe(clientX, clientY) {
   if (!elements.size) return null;
-  ensureFullResolution();
+  const scaled = ensureFullResolution();
   const rect = canvas.getBoundingClientRect();
   const size = renderer.getDrawingBufferSize(new THREE.Vector2());
   const x = Math.floor(((clientX - rect.left) / rect.width) * size.x);
   const y = Math.floor(((clientY - rect.top) / rect.height) * size.y);
+  const ortho = isOrtho();
+  const state = {
+    rect,
+    scaled,
+    ortho,
+    // Perspective measures from the eye outwards, so its range starts at
+    // zero whatever the near plane says.
+    near: ortho ? camera.near : 0,
+    far: camera.far,
+    serial: cameraSerial,
+    background: scene.background,
+    override: scene.overrideMaterial,
+    gridWasVisible: grid.visible,
+    axesWasVisible: axes ? axes.visible : false,
+    measureWasVisible: measureGroup.visible,
+    snapWasVisible: snapGroup.visible,
+    edgesWereVisible: edgeRoot.visible,
+    target: renderer.getRenderTarget(),
+    clearColor: renderer.getClearColor(new THREE.Color()).clone(),
+    clearAlpha: renderer.getClearAlpha(),
+  };
+  scene.background = null;
+  grid.visible = false;
+  if (axes) axes.visible = false;
+  // the preview glyph would otherwise be the nearest surface to itself
+  measureGroup.visible = false;
+  snapGroup.visible = false;
+  // A line drawn on a surface would be measured instead of the surface.
+  edgeRoot.visible = false;
+  depthMaterial.uniforms.uStateTex.value = stateTex;
+  depthMaterial.uniforms.uStateSize.value.set(STATE_W, stateH);
+  depthMaterial.uniforms.uNear.value = state.near;
+  depthMaterial.uniforms.uFar.value = state.far;
+  depthMaterial.uniforms.uOrtho.value = ortho ? 1 : 0;
+  depthMaterial.clippingPlanes = activeClipPlanes;
+  scene.overrideMaterial = depthMaterial;
+  camera.setViewOffset(size.x, size.y, x, y, 1, 1);
+  renderer.setRenderTarget(pickTarget);
+  renderer.setClearColor(0x000000, 0);
+  renderer.clear();
+  renderer.render(scene, camera);
+  return state;
+}
 
-  const prevBackground = scene.background;
-  const prevOverride = scene.overrideMaterial;
-  const gridWasVisible = grid.visible;
-  const axesWasVisible = axes ? axes.visible : false;
-  const measureWasVisible = measureGroup.visible;
-  const prevTarget = renderer.getRenderTarget();
-  const prevClearColor = renderer.getClearColor(new THREE.Color()).clone();
-  const prevClearAlpha = renderer.getClearAlpha();
-  try {
-    scene.background = null;
-    grid.visible = false;
-    if (axes) axes.visible = false;
-    measureGroup.visible = false;
-    depthMaterial.uniforms.uStateTex.value = stateTex;
-    depthMaterial.uniforms.uStateSize.value.set(STATE_W, stateH);
-    depthMaterial.uniforms.uFar.value = camera.far;
-    depthMaterial.clippingPlanes = activeClipPlanes;
-    scene.overrideMaterial = depthMaterial;
-    camera.setViewOffset(size.x, size.y, x, y, 1, 1);
-    renderer.setRenderTarget(pickTarget);
-    renderer.setClearColor(0x000000, 0);
-    renderer.clear();
-    renderer.render(scene, camera);
-    renderer.readRenderTargetPixels(pickTarget, 0, 0, 1, 1, pickBuffer);
-  } finally {
-    renderer.setRenderTarget(prevTarget);
-    renderer.setClearColor(prevClearColor, prevClearAlpha);
-    camera.clearViewOffset();
-    scene.overrideMaterial = prevOverride;
-    scene.background = prevBackground;
-    grid.visible = gridWasVisible;
-    if (axes) axes.visible = axesWasVisible;
-    measureGroup.visible = measureWasVisible;
-    invalidate();
-  }
+function endDepthProbe(state) {
+  renderer.setRenderTarget(state.target);
+  renderer.setClearColor(state.clearColor, state.clearAlpha);
+  camera.clearViewOffset();
+  scene.overrideMaterial = state.override;
+  scene.background = state.background;
+  grid.visible = state.gridWasVisible;
+  if (axes) axes.visible = state.axesWasVisible;
+  measureGroup.visible = state.measureWasVisible;
+  snapGroup.visible = state.snapWasVisible;
+  edgeRoot.visible = state.edgesWereVisible;
+  // The probe renders into pickTarget and never touches the canvas, so only a
+  // resolution change owes the screen a redraw.
+  if (state.scaled) invalidate();
+}
 
-  if (!pickBuffer[3]) return null;
-  const normalized =
-    pickBuffer[0] / 255 + pickBuffer[1] / 65025 + pickBuffer[2] / 16581375;
-  const distance = normalized * camera.far;
-  if (!(distance > 0)) return null;
-
+/** The encoded depth as a point on the ray through the cursor. */
+function depthPointFrom(state, clientX, clientY, buffer) {
+  if (!buffer[3]) return null;
+  const normalized = buffer[0] / 255 + buffer[1] / 65025 + buffer[2] / 16581375;
+  const distance = state.near + normalized * (state.far - state.near);
+  if (!Number.isFinite(distance)) return null;
+  if (!state.ortho && !(distance > 0)) return null;
+  const rect = state.rect;
   _ndc.x = ((clientX - rect.left) / rect.width) * 2 - 1;
   _ndc.y = -((clientY - rect.top) / rect.height) * 2 + 1;
   raycaster.setFromCamera(_ndc, camera);
@@ -1982,57 +3603,793 @@ function surfacePointAt(clientX, clientY) {
     .add(raycaster.ray.direction.clone().multiplyScalar(distance));
 }
 
-function formatLength(metres) {
-  if (Math.abs(metres) >= 1) return `${metres.toFixed(3)} m`;
-  return `${(metres * 1000).toFixed(0)} mm`;
+function surfacePointAt(clientX, clientY) {
+  const state = beginDepthProbe(clientX, clientY);
+  if (!state) return null;
+  try {
+    renderer.readRenderTargetPixels(pickTarget, 0, 0, 1, 1, pickBuffer);
+  } finally {
+    endDepthProbe(state);
+  }
+  return depthPointFrom(state, clientX, clientY, pickBuffer);
 }
 
-// The MCP side reads these back (get_viewer_measurements), so the server
-// hears about every commit and clear.
-function sendMeasurements() {
-  wsSend({
-    type: "measurements",
-    items: measurements.map((m) => ({
-      from: [m.from.x, m.from.y, m.from.z],
-      to: [m.to.x, m.to.y, m.to.z],
-      distance: m.distance,
-      delta: m.delta,
-    })),
+const probeBuffer = new Uint8Array(4);
+let asyncProbeWorks = true;
+
+/**
+ * The same probe, without the stall.
+ *
+ * readRenderTargetPixels flushes the command stream and blocks JavaScript
+ * until the GPU has caught up, which is why the hover preview could never
+ * exceed 25 Hz. three.js issues the asynchronous read straight away and only
+ * waits on a fence, so the scene goes back before the wait and just the decode
+ * happens after it.
+ */
+async function surfacePointAsync(clientX, clientY) {
+  if (!asyncProbeWorks || typeof renderer.readRenderTargetPixelsAsync !== "function") {
+    return surfacePointAt(clientX, clientY);
+  }
+  const state = beginDepthProbe(clientX, clientY);
+  if (!state) return null;
+  let read;
+  try {
+    read = renderer.readRenderTargetPixelsAsync(pickTarget, 0, 0, 1, 1, probeBuffer);
+  } finally {
+    endDepthProbe(state);
+  }
+  try {
+    await read;
+  } catch {
+    // Never again on this context: a preview that silently stopped appearing
+    // would be worse than one that blocks for its pixel.
+    asyncProbeWorks = false;
+    return surfacePointAt(clientX, clientY);
+  }
+  // A camera that moved during the wait would put the ray somewhere the pixel
+  // was never measured from.
+  if (state.serial !== cameraSerial) return null;
+  return depthPointFrom(state, clientX, clientY, probeBuffer);
+}
+
+// ---------------------------------------------------------------- snapping
+// Screen pixels a feature reaches for the cursor. A corner reaches furthest
+// because it is what people aim at; a face centre barely reaches at all
+// because nobody aims at one by accident.
+const SNAP_RADIUS = { corner: 15, midpoint: 11, centre: 9, edge: 8 };
+const SNAP_RANK = { corner: 0, midpoint: 1, centre: 2, edge: 3, surface: 4 };
+const SNAP_REACH_PX = 15;
+// How far behind the surface under the cursor a feature may still sit. A face
+// is not perfectly flat against its own box, so a couple of pixels of world
+// is slack, not permission to reach through the wall.
+const SNAP_DEPTH_SLACK_PX = 3;
+// A crowded corner still only has so many useful answers in it.
+const SNAP_CANDIDATE_LIMIT = 24;
+
+// Corner c has bit 0 for x, bit 1 for y, bit 2 for z, so an edge is a pair
+// differing in one bit and a face is the four sharing one.
+const BOX_EDGES = [
+  [0, 1], [2, 3], [4, 5], [6, 7],
+  [0, 2], [1, 3], [4, 6], [5, 7],
+  [0, 4], [1, 5], [2, 6], [3, 7],
+];
+const BOX_FACES = [
+  [0, 2, 4, 6], [1, 3, 5, 7],
+  [0, 1, 4, 5], [2, 3, 6, 7],
+  [0, 1, 2, 3], [4, 5, 6, 7],
+];
+
+const _snapVP = new THREE.Matrix4();
+const _snapV = new THREE.Vector3();
+const _snapHit = new THREE.Vector3();
+const _snapDir = new THREE.Vector3();
+const _snapDepth = new THREE.Vector3();
+const _corner = Array.from({ length: 8 }, () => new THREE.Vector3());
+const _screenX = new Float64Array(8);
+const _screenY = new Float64Array(8);
+const _onScreen = new Uint8Array(8);
+const _nearIds = new Set();
+
+/** How much world one screen pixel covers at `point`. */
+function worldPerPixel(point) {
+  const height = canvas.clientHeight || canvas.height || 1;
+  if (isOrtho()) return (camera.top - camera.bottom) / camera.zoom / height;
+  const distance = camera.position.distanceTo(point);
+  return (2 * Math.tan((camera.fov * Math.PI) / 360) * distance) / height;
+}
+
+/**
+ * The feature the cursor is asking for, or null.
+ *
+ * Judged in screen space, because that is how the person holding the mouse
+ * judges it: a corner ten pixels away is the one they mean, not one three
+ * centimetres away in a direction the screen cannot show. Candidates come
+ * from every element near the cursor, not just the one in front, so the
+ * corner where two walls meet offers both walls.
+ *
+ * Screen space alone cannot tell a near corner from a far one: in a plan view
+ * a wall's top and bottom corners land on the same pixel, so the depth of the
+ * surface under the cursor is what decides between them.
+ */
+function snapAt(clientX, clientY, surface) {
+  if (!snapEnabled || !elements.size) return null;
+  const rect = canvas.getBoundingClientRect();
+  camera.updateMatrixWorld();
+  _snapVP.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
+  _ndc.x = ((clientX - rect.left) / rect.width) * 2 - 1;
+  _ndc.y = -((clientY - rect.top) / rect.height) * 2 + 1;
+  raycaster.setFromCamera(_ndc, camera);
+  const ray = raycaster.ray;
+
+  // Depth along the view axis, which both projections agree on.
+  const view = camera.getWorldDirection(_snapDir);
+  const surfaceDepth = surface
+    ? _snapDepth.copy(surface).sub(camera.position).dot(view) : 0;
+  const depthSlack = surface
+    ? worldPerPixel(surface) * SNAP_DEPTH_SLACK_PX : Infinity;
+
+  let best = null;
+  let bestId = null;
+  const project = (point) => {
+    _snapV.copy(point).applyMatrix4(_snapVP);
+    // Behind the lens the projection wraps and the pixel distance is a lie.
+    if (_snapV.z < -1 || _snapV.z > 1) return -1;
+    const sx = rect.left + (_snapV.x * 0.5 + 0.5) * rect.width - clientX;
+    const sy = rect.top + (0.5 - _snapV.y * 0.5) * rect.height - clientY;
+    // Squared: thousands of these run per hover and only the order matters.
+    return sx * sx + sy * sy;
+  };
+
+  for (const id of snapCandidates(surface)) {
+    const rec = elements.get(id);
+    if (!rec || !isElementShown(id)) continue;
+    if (!obbCorners(rec, _corner)) continue;
+    for (let c = 0; c < 8; c++) {
+      const d = project(_corner[c]);
+      _onScreen[c] = d < 0 ? 0 : 1;
+      _screenX[c] = d;
+    }
+    const offer = (kind, distance, point) => {
+      const reach = SNAP_RADIUS[kind];
+      if (!(distance >= 0) || distance >= reach * reach) return;
+      if (best && (SNAP_RANK[best.kind] < SNAP_RANK[kind]
+        || (best.kind === kind && best.distance <= distance))) return;
+      // A section cuts the geometry away for the eye and for the pick pass;
+      // its corners must not survive either.
+      for (const plane of activeClipPlanes) {
+        if (plane.distanceToPoint(point) < 0) return;
+      }
+      // Behind the surface means hidden by it. In front is a silhouette, which
+      // is exactly what people snap to, so only the far side is refused.
+      const depth = _snapDepth.copy(point).sub(camera.position).dot(view) - surfaceDepth;
+      if (depth > depthSlack) return;
+      best = { kind, distance, point: point.clone(), depth };
+      bestId = id;
+    };
+    for (let c = 0; c < 8; c++) {
+      if (_onScreen[c]) offer("corner", _screenX[c], _corner[c]);
+    }
+    for (const [a, b] of BOX_EDGES) {
+      if (!_onScreen[a] || !_onScreen[b]) continue;
+      _snapHit.addVectors(_corner[a], _corner[b]).multiplyScalar(0.5);
+      offer("midpoint", project(_snapHit), _snapHit);
+      // Anywhere along the edge, not just its ends: the useful answer when
+      // measuring to the side of an opening rather than to its corner.
+      closestOnSegmentToRay(_corner[a], _corner[b], ray, _snapHit);
+      offer("edge", project(_snapHit), _snapHit);
+    }
+    for (const face of BOX_FACES) {
+      if (face.some((c) => !_onScreen[c])) continue;
+      _snapHit.set(0, 0, 0);
+      for (const c of face) _snapHit.add(_corner[c]);
+      _snapHit.multiplyScalar(0.25);
+      offer("centre", project(_snapHit), _snapHit);
+    }
+  }
+  if (!best) return null;
+  best.express_id = bestId;
+  return best;
+}
+
+/** Elements worth testing for a snap near `surface`, nearest first. */
+function snapCandidates(surface) {
+  if (!surface) return [];
+  const reach = worldPerPixel(surface) * SNAP_REACH_PX;
+  elementsNear(surface, reach, _nearIds);
+  if (_nearIds.size <= SNAP_CANDIDATE_LIMIT) return _nearIds;
+  const scored = [];
+  for (const id of _nearIds) {
+    const b = elements.get(id).box;
+    scored.push([id, Math.hypot(
+      surface.x - (b[0] + b[3]) / 2,
+      surface.y - (b[1] + b[4]) / 2,
+      surface.z - (b[2] + b[5]) / 2)]);
+  }
+  scored.sort((a, b) => a[1] - b[1]);
+  return scored.slice(0, SNAP_CANDIDATE_LIMIT).map((entry) => entry[0]);
+}
+
+/**
+ * Where a measured point goes: a feature if one is in reach, else the surface.
+ *
+ * `needId` is the click path only. Naming the element behind a plain surface
+ * point costs a second depth pass, and the hover preview redraws far too
+ * often to pay for a number nobody reads until the click lands.
+ */
+function measurePointAt(clientX, clientY, { needId = true } = {}) {
+  return snapOnSurface(clientX, clientY, surfacePointAt(clientX, clientY), needId);
+}
+
+/** The same answer for the hover preview, off the probe that does not block. */
+async function measurePointAsync(clientX, clientY) {
+  const surface = await surfacePointAsync(clientX, clientY);
+  return snapOnSurface(clientX, clientY, surface, false);
+}
+
+function snapOnSurface(clientX, clientY, surface, needId) {
+  const snapped = snapAt(clientX, clientY, surface);
+  if (snapped) {
+    return {
+      point: snapped.point,
+      kind: snapped.kind,
+      depth: snapped.depth,
+      express_id: snapped.express_id,
+    };
+  }
+  if (!surface) return null;
+  return {
+    point: surface,
+    kind: "surface",
+    depth: 0,
+    express_id: needId ? pickElementAt(clientX, clientY) : null,
+  };
+}
+
+// -------------------------------------------------------------- snap preview
+// What the click would do, shown before the click. Every pass through here
+// renders the scene once into a 1x1 buffer, so it is rate limited by what
+// that actually costs on this model rather than by a number picked in advance.
+const snapGroup = new THREE.Group();
+snapGroup.name = "snap-preview";
+scene.add(snapGroup);
+let snapPreview = null;
+let previewLine = null;
+let snapPreviewAt = 0;
+let snapPreviewCost = 8;
+let snapPreviewBusy = false;
+// Bumped whenever the preview is taken down, so a probe still in flight when
+// the pointer leaves or the camera moves cannot put the glyph back.
+let snapPreviewGen = 0;
+
+function clearSnapPreview() {
+  snapPreviewGen++;
+  if (snapPreview) snapPreview.visible = false;
+  if (previewLine) previewLine.visible = false;
+  $("snap-hint").hidden = true;
+  invalidate();
+}
+
+/**
+ * What the click would do, shown before the click: the point it would land
+ * on, the rubber band from the anchor, and the live length beside the cursor.
+ */
+async function showSnapPreview(clientX, clientY) {
+  const now = performance.now();
+  // One probe in flight at a time, and never more often than the last one
+  // took: the readback no longer blocks, so what is left to pace is the 1x1
+  // render itself rather than a stall picked in advance.
+  if (snapPreviewBusy || now - snapPreviewAt < Math.max(16, snapPreviewCost * 2)) return;
+  snapPreviewAt = now;
+  snapPreviewBusy = true;
+  const generation = snapPreviewGen;
+  let hit = null;
+  try {
+    hit = await measurePointAsync(clientX, clientY);
+  } finally {
+    snapPreviewBusy = false;
+  }
+  snapPreviewCost = performance.now() - now;
+  if (generation !== snapPreviewGen) return;
+  if (!hit) {
+    clearSnapPreview();
+    return;
+  }
+  const anchor = pending.length ? pending[pending.length - 1].point : null;
+  const point = constrainedMeasurePoint(anchor, hit.point);
+  if (!snapPreview) {
+    snapPreview = new THREE.Sprite(new THREE.SpriteMaterial({
+      map: snapGlyphTexture(hit.kind), depthTest: false, transparent: true,
+    }));
+    snapPreview.renderOrder = 1001;
+    snapGroup.add(snapPreview);
+  }
+  snapPreview.visible = true;
+  snapPreview.material.map = snapGlyphTexture(hit.kind);
+  snapPreview.material.color.set(hit.kind === "surface" ? 0x9fb2c4 : 0x5ad1ff);
+  const px = GLYPH_PX[hit.kind] || GLYPH_PX.surface;
+  snapPreview.userData.pxW = px;
+  snapPreview.userData.pxH = px;
+  snapPreview.position.copy(point);
+  syncMarkerScale(snapPreview);
+
+  const lockAxis = axisLock || inferredAxis;
+  if (anchor) {
+    if (!previewLine) {
+      previewLine = new THREE.Line(
+        new THREE.BufferGeometry().setFromPoints([anchor, point]),
+        new THREE.LineBasicMaterial({
+          color: MEASURE_COLOR, transparent: true, opacity: 0.9, depthTest: false,
+        }));
+      previewLine.renderOrder = 998;
+      snapGroup.add(previewLine);
+    }
+    previewLine.visible = true;
+    previewLine.material.color.set(lockAxis ? AXIS_COLORS[lockAxis] : MEASURE_COLOR);
+    previewLine.geometry.setFromPoints([anchor, point]);
+  } else if (previewLine) {
+    previewLine.visible = false;
+  }
+
+  const hint = $("snap-hint");
+  const feature = hit.kind === "surface" ? "" : hit.kind;
+  // A silhouette snap sits off the face the cursor is over, so the point is
+  // not where the pixel says it is. Say by how much rather than let the
+  // number arrive as a surprise.
+  const offSurface = hit.depth < -1e-3 ? `${formatLength(-hit.depth)} in front` : "";
+  if (anchor && measureKind !== "angle") {
+    const lock = axisLock
+      ? `${axisLock.toUpperCase()} locked`
+      : inferredAxis
+        ? `on ${inferredAxis.toUpperCase()} (Shift locks)`
+        : "";
+    hint.textContent = [formatLength(anchor.distanceTo(point)), lock, feature, offSurface]
+      .filter(Boolean).join(" · ");
+  } else {
+    hint.textContent = [feature || "surface", offSurface].filter(Boolean).join(" · ");
+  }
+  hint.style.transform = `translate(${clientX + 14}px, ${clientY + 14}px)`;
+  hint.hidden = false;
+  invalidate();
+}
+
+/**
+ * The size of one element, measured on the element's own axes.
+ *
+ * A wall at forty degrees has a thickness; the world-axis box around it does
+ * not know that and reports the diagonal instead. Length, width and thickness
+ * therefore come from the oriented box, and `size` keeps the world-axis
+ * extents for anyone who wants the footprint on the grid. Area and volume are
+ * the tessellation itself, not a box drawn round it.
+ */
+/** A scene point as {x, y, z} in the model's axes. */
+function modelCentre(point) {
+  const [x, y, z] = toModelPoint(point);
+  return { x, y, z };
+}
+
+/** A scene-space triple from measure_math back as a THREE point. */
+function toVector(triple) {
+  return new THREE.Vector3(triple[0], triple[1], triple[2]);
+}
+
+function elementDimensions(id) {
+  const rec = elements.get(id);
+  if (!rec || !Number.isFinite(rec.box[0])) return null;
+  const sized = boxExtents(rec.box, rec.obb, axisFrame);
+  return {
+    express_id: id,
+    guid: guidOf.get(id) || null,
+    size: sized.size,
+    length: sized.length,
+    width: sized.width,
+    thickness: sized.thickness,
+    diagonal: sized.diagonal,
+    box_volume: sized.box_volume,
+    // Area and volume are the tessellation itself, not a box drawn round it.
+    area: rec.area,
+    volume: rec.volume,
+    centre: modelCentre(toVector(sized.centre)),
+    method: sized.method,
+    approximate: rec.scaled === true,
+  };
+}
+
+/**
+ * Cast both ways along each world axis from a point, against element boxes.
+ *
+ * This is the clearance question: how far to the next thing above me, beside
+ * me, in front of me. The ray is tested against each element's world bounding
+ * box, which the viewer already keeps for culling, so the answer does not
+ * depend on how the geometry was batched. Hidden and isolated-away elements
+ * are skipped, and the element that owns the origin is skipped too, or every
+ * axis would report a distance of zero to itself.
+ */
+function laserFrom(origin, { maxDistance = 0, ignore = null } = {}) {
+  const span = sceneSpan();
+  const reach = maxDistance > 0 ? maxDistance : span * 2;
+  const skin = Math.max(span * 1e-5, 1e-5);
+  const boxes = [];
+  for (const [id, rec] of elements) {
+    if (id === ignore || !isElementShown(id)) continue;
+    boxes.push([id, rec.box]);
+  }
+  const axes = clearanceAxes(
+    boxes, [origin.x, origin.y, origin.z], axisFrame, reach, skin);
+  for (const axis of Object.values(axes)) {
+    for (const way of ["negative", "positive"]) {
+      const hit = axis[way];
+      if (hit) hit.guid = guidOf.get(hit.express_id) || null;
+    }
+  }
+  return {
+    origin: toModelPoint(origin),
+    reach,
+    method: "element bounding boxes",
+    axes,
+  };
+}
+
+/**
+ * Area, perimeter and flatness of a clicked outline, in the model's axes.
+ *
+ * The area is only meaningful if the points lie in a plane, so how far they
+ * miss one by travels with the answer instead of being assumed away.
+ */
+function polygonMeasure(points) {
+  const measured = polygonCore(points);
+  // A direction, so the origin shift must not come with it.
+  const normal = toVector(measured.normal).transformDirection(sceneToModel);
+  return {
+    points: points.map(toModelPoint),
+    area: measured.area,
+    perimeter: measured.perimeter,
+    flatness: measured.flatness,
+    normal: [normal.x, normal.y, normal.z],
+    centre: modelCentre(toVector(measured.centre)),
+  };
+}
+
+/** The angle at `at`, between the directions to `from` and `to`. */
+function angleMeasure(from, at, to) {
+  const measured = angleCore(from, at, to);
+  return {
+    at: toModelPoint(at),
+    from: toModelPoint(from),
+    to: toModelPoint(to),
+    degrees: measured.degrees,
+    legs: measured.legs,
+  };
+}
+
+// ------------------------------------------------------ measurement anchors
+// A rebuild renumbers every express id and re-batches every triangle, so a
+// measurement held as scene coordinates is worth nothing the moment the
+// assistant writes one property set. Each end therefore remembers the element
+// it landed on and where it sat inside that element's own box; the model-axis
+// point is the fallback for a click that landed on nothing.
+const ANCHOR_REACH_TOLERANCE = 0.01;
+const _anchorM = new THREE.Matrix4();
+
+/** Where `point` sits, told in a way a rebuilt scene can still read. */
+function anchorAt(point, expressId) {
+  const rec = expressId === null || expressId === undefined
+    ? null : elements.get(expressId);
+  const guid = rec ? guidOf.get(expressId) || null : null;
+  const anchor = { guid, world: toModelPoint(point), local: null, reach: 0 };
+  if (guid && rec.obb) {
+    _anchorM.fromArray(rec.obb.m).invert();
+    const local = point.clone().applyMatrix4(_anchorM);
+    anchor.local = [local.x, local.y, local.z];
+    anchor.reach = rec.obbReach;
+  }
+  return anchor;
+}
+
+/** The anchor a whole-element measurement hangs on: its centre, in its box. */
+function centreAnchor(dimensions) {
+  const centre = toScenePoint(
+    [dimensions.centre.x, dimensions.centre.y, dimensions.centre.z]);
+  return [anchorAt(centre, dimensions.express_id)];
+}
+
+/**
+ * Put an anchor back on the scene, and say what happened to it.
+ *
+ * An element that moved carries its dimension with it, which is the whole
+ * point. An element that is gone, or that came back a different shape, leaves
+ * the point where it was clicked and the list row says so rather than moving
+ * it somewhere nobody chose.
+ */
+function placeAnchor(anchor) {
+  if (!anchor || !Array.isArray(anchor.world)) return null;
+  const loose = (drift, id) => ({ point: toScenePoint(anchor.world), drift, id });
+  if (!anchor.guid) return loose(null, undefined);
+  const id = expressOf.get(anchor.guid);
+  if (id === undefined) return loose("gone", undefined);
+  const rec = elements.get(id);
+  if (!anchor.local || !rec || !rec.obb) return loose(null, id);
+  const reach = rec.obbReach;
+  if (Math.abs(reach - anchor.reach)
+    > Math.max(reach, anchor.reach, 1e-9) * ANCHOR_REACH_TOLERANCE) {
+    return loose("changed", id);
+  }
+  const point = new THREE.Vector3(anchor.local[0], anchor.local[1], anchor.local[2])
+    .applyMatrix4(_anchorM.fromArray(rec.obb.m));
+  return { point, drift: null, id };
+}
+
+// Replaying a carried set commits many measurements in a row, and neither the
+// server nor the browser store should ever see the half-replayed list.
+let measureQuiet = 0;
+let measuredModelKey = null;
+
+/** Which model the measurements on screen were taken on. */
+function currentModelKey() {
+  const row = currentModelRow();
+  if (row) return `${row.id}:${row.name}`;
+  return $("model-name")?.textContent || null;
+}
+
+/** Every measurement as plain data: no express ids, no scene coordinates. */
+function measurementItems() {
+  return measurements.map((m) => {
+    // No drift flag: replay recomputes it from what the anchors resolve to,
+    // so a stored one could only ever disagree with the model on screen.
+    const item = { kind: m.kind, anchors: m.anchors || [], label: m.label || "" };
+    if (m.kind === "distance") {
+      item.axis = m.axis || null;
+      item.ends = m.ends || null;
+    } else if (m.kind === "dimensions") {
+      item.data = m.data;
+    } else if (m.kind === "laser") {
+      item.reach = m.data.reach;
+    }
+    return item;
   });
 }
 
-function commitMeasurement(from, to) {
-  const geometry = new THREE.BufferGeometry().setFromPoints([from, to]);
-  const line = new THREE.Line(
-    geometry,
-    new THREE.LineBasicMaterial({ color: 0xffb454, depthTest: false }));
-  line.renderOrder = 998;
-  measureGroup.add(line);
+// Measurements used to be the only viewer state with no persistence at all.
+// They live beside the saved views, keyed by the model they were taken on.
+function saveMeasurements() {
+  const items = measurementItems();
+  if (items.length) uiState.measurements = { model: measuredModelKey, items };
+  else delete uiState.measurements;
+  saveUi();
+}
+
+/** The one place every commit, delete and clear reports through. */
+function publishMeasurements() {
+  if (measureQuiet) return;
+  measuredModelKey = measurements.length ? currentModelKey() : null;
+  saveMeasurements();
+  sendMeasurements();
+}
+
+/**
+ * The measurements a rebuild should carry over.
+ *
+ * On the first build of the session nothing is on screen yet, so the browser's
+ * own copy is what survives F5. A set taken on another model is not carried:
+ * its GlobalIds mean nothing here and its fallback points would land in space.
+ */
+function measurementCarry() {
+  const key = currentModelKey();
+  if (measurements.length) {
+    // Carry unless both keys are known and disagree: a model this tab could
+    // not name is not evidence that it is a different one.
+    const known = measuredModelKey !== null && key !== null;
+    return !known || measuredModelKey === key ? measurementItems() : [];
+  }
+  const saved = uiState.measurements;
+  if (!isPlainObject(saved) || !Array.isArray(saved.items)) return [];
+  return saved.model === key ? saved.items : [];
+}
+
+function replayMeasurement(item) {
+  const placed = (item.anchors || []).map(placeAnchor).filter(Boolean);
+  const drift = placed.find((entry) => entry.drift)?.drift || null;
+  const anchors = item.anchors || [];
+  if (item.kind === "distance") {
+    if (placed.length !== 2) return;
+    addMarker(placed[0].point);
+    addMarker(placed[1].point);
+    const held = axisLock;
+    axisLock = item.axis || "";
+    inferredAxis = "";
+    commitMeasurement(
+      placed[0].point, placed[1].point, item.ends || ["surface", "surface"], anchors);
+    axisLock = held;
+  } else if (item.kind === "angle") {
+    if (placed.length !== 3) return;
+    const points = placed.map((entry) => entry.point);
+    for (const point of points) addMarker(point);
+    drawPath(points, false);
+    const measured = angleMeasure(points[0], points[1], points[2]);
+    recordMeasurement(
+      "angle", measured, "angle", `${measured.degrees.toFixed(1)}°`, points[1], anchors);
+  } else if (item.kind === "area") {
+    const points = areaOutline(placed.map((entry) => entry.point));
+    if (points.length < 3) return;
+    for (const point of points) addMarker(point);
+    drawPath(points, true);
+    const measured = polygonMeasure(points);
+    const centroid = points
+      .reduce((sum, p) => sum.add(p), new THREE.Vector3())
+      .multiplyScalar(1 / points.length);
+    recordMeasurement(
+      "area", measured, `${points.length} points`,
+      formatArea(measured.area), centroid, anchors);
+  } else if (item.kind === "dimensions") {
+    const id = placed[0] ? placed[0].id : undefined;
+    // An element still in the file is re-measured; one that is gone keeps the
+    // size it had, marked, instead of vanishing out of the report.
+    const data = (id === undefined ? null : elementDimensions(id)) || item.data;
+    if (!data) return;
+    recordMeasurement("dimensions", data, item.label || "element", "", null, anchors);
+  } else if (item.kind === "laser") {
+    if (!placed[0]) return;
+    const laser = laserFrom(placed[0].point, {
+      maxDistance: item.reach || 0,
+      ignore: placed[0].id ?? null,
+    });
+    recordMeasurement("laser", laser, item.label || "clearance", "", null, anchors);
+  } else {
+    return;
+  }
+  const last = measurements[measurements.length - 1];
+  if (last && drift) last.drift = drift;
+}
+
+/** Put a carried set back on the rebuilt scene, as one visible step. */
+function restoreMeasurements(items) {
+  measureQuiet += 1;
+  try {
+    clearMeasurements();
+    for (const item of Array.isArray(items) ? items : []) {
+      // one row that cannot be placed is not a reason to lose the rest
+      try { replayMeasurement(item); } catch { /* dropped with its row */ }
+    }
+  } finally {
+    measureQuiet -= 1;
+  }
+  renderMeasurements();
+  publishMeasurements();
+  invalidate();
+}
+
+// The MCP side reads these back (get_viewer_measurements), so the server
+// hears about every commit and clear. Everything crosses in the model's own
+// axes: the tools on the other side speak IFC, not three.js.
+const SCENE_DELTA = { x: 0, y: 1, z: 2 };
+
+function sendMeasurements() {
+  const row = currentModelRow();
+  wsSend({
+    type: "measurements",
+    items: measurements.map((m) => (
+      m.kind === "distance"
+        ? {
+            kind: "distance",
+            from: toModelPoint(m.from),
+            to: toModelPoint(m.to),
+            distance: m.distance,
+            delta: ["x", "y", "z"].map((name) => m.delta[SCENE_DELTA[axisFrame[name].axis]]),
+            axis: m.axis || null,
+            ends: m.ends || null,
+          }
+        : { kind: m.kind, ...m.data }
+    )),
+    // The hub keeps one list per client and ignores a frame from a tab showing
+    // some other model, so a second tab cannot erase the first tab's set.
+    model_id: row ? row.id : null,
+  });
+}
+
+function commitMeasurement(from, to, ends = ["surface", "surface"], anchors = null) {
+  const line = drawPath([from, to], false);
+  const distance = from.distanceTo(to);
+  const mid = from.clone().add(to).multiplyScalar(0.5);
+  const group = adoptPending(formatLength(distance), mid);
   measurements.push({
-    from, to, line,
-    distance: from.distanceTo(to),
+    kind: "distance",
+    from, to, line, group,
+    ends,
+    anchors: anchors || [anchorAt(from, null), anchorAt(to, null)],
+    axis: axisLock || inferredAxis || null,
+    distance,
     delta: [
       Math.abs(to.x - from.x), Math.abs(to.y - from.y), Math.abs(to.z - from.z),
     ],
   });
   renderMeasurements();
-  sendMeasurements();
+  publishMeasurements();
+}
+
+/** Draw a polyline through `points` into the pending bucket. */
+function drawPath(points, close) {
+  const path = close ? [...points, points[0]] : points;
+  const line = new THREE.Line(
+    new THREE.BufferGeometry().setFromPoints(path),
+    new THREE.LineBasicMaterial({ color: MEASURE_COLOR, depthTest: false }));
+  line.renderOrder = 998;
+  ensurePendingGroup().add(line);
+  return line;
+}
+
+/** Record a result, adopting any pending visuals as one deletable group. */
+function recordMeasurement(
+  kind, data, label, labelText = "", labelPoint = null, anchors = null,
+) {
+  const group = adoptPending(labelText, labelPoint);
+  measurements.push({
+    kind, data, label,
+    anchors: anchors || [],
+    group: group.children.length ? group : null,
+  });
+  if (!group.children.length) measureGroup.remove(group);
+  renderMeasurements();
+  publishMeasurements();
+  return data;
+}
+
+function deleteMeasurement(measurement) {
+  const index = measurements.indexOf(measurement);
+  if (index < 0) return;
+  if (measurement.group) {
+    measureGroup.remove(measurement.group);
+    disposeVisual(measurement.group);
+  }
+  measurements.splice(index, 1);
+  renderMeasurements();
+  publishMeasurements();
+  invalidate();
+}
+
+/** Point at a row, see the measurement; the list and the scene are one thing. */
+function emphasizeMeasurement(measurement, on) {
+  if (!measurement.group) return;
+  measurement.group.traverse((child) => {
+    if (child.userData.isLabel || !child.material || !child.material.color) return;
+    child.material.color.set(on ? EMPHASIS_COLOR : MEASURE_COLOR);
+  });
+  invalidate();
+}
+
+/** Drop the newest unclicked point, with its marker and segment. */
+function undoPendingPoint() {
+  const entry = pending.pop();
+  if (!entry) return false;
+  for (const visual of [entry.marker, entry.line]) {
+    if (visual) {
+      visual.parent?.remove(visual);
+      disposeVisual(visual);
+    }
+  }
+  clearSnapPreview();
+  renderMeasurements();
+  invalidate();
+  return true;
+}
+
+function clearPending() {
+  while (undoPendingPoint()) { /* each pop removes its own visuals */ }
 }
 
 function clearMeasurements() {
   for (const child of [...measureGroup.children]) {
     measureGroup.remove(child);
-    if (child.geometry) child.geometry.dispose();
-    if (child.material) child.material.dispose();
+    disposeVisual(child);
   }
+  pendingGroup = null;
   measurements.length = 0;
-  pendingPoint = null;
+  pending.length = 0;
   renderMeasurements();
-  sendMeasurements();
+  publishMeasurements();
   invalidate();
 }
 
 function renderMeasurements() {
+  if (measureQuiet) return;
   const card = $("measure-card");
   const list = $("measure-list");
   if (!card || !list) return;
@@ -2040,47 +4397,196 @@ function renderMeasurements() {
   for (let i = measurements.length - 1; i >= 0; i--) {
     const m = measurements[i];
     const row = el("li", "measure-row");
-    row.appendChild(el("span", "measure-dist", formatLength(m.distance)));
-    // three.js is Y-up while IFC is Z-up, so report the model's own axes
-    row.appendChild(el("span", "measure-delta",
-      `X ${formatLength(m.delta[0])} · Y ${formatLength(m.delta[2])} · Z ${formatLength(m.delta[1])}`));
+    row.addEventListener("mouseenter", () => emphasizeMeasurement(m, true));
+    row.addEventListener("mouseleave", () => emphasizeMeasurement(m, false));
+    const drop = el("button", "measure-drop", "×");
+    drop.title = "Remove this measurement";
+    drop.setAttribute("aria-label", "Remove this measurement");
+    drop.addEventListener("click", () => deleteMeasurement(m));
+    row.appendChild(drop);
+    if (m.kind === "dimensions") {
+      const d = m.data;
+      row.appendChild(el("span", "measure-dist", formatLength(d.thickness)));
+      row.appendChild(el("span", "measure-delta",
+        `${m.label || "element"} · ${formatLength(d.length)} × ${formatLength(d.width)}`
+        + ` × ${formatLength(d.thickness)}`
+        + (d.volume > 0 ? ` · ${formatVolume(d.volume)}` : "")));
+    } else if (m.kind === "angle") {
+      row.appendChild(el("span", "measure-dist", `${m.data.degrees.toFixed(1)}°`));
+      row.appendChild(el("span", "measure-delta",
+        `legs ${formatLength(m.data.legs[0])} · ${formatLength(m.data.legs[1])}`));
+    } else if (m.kind === "area") {
+      row.appendChild(el("span", "measure-dist", formatArea(m.data.area)));
+      row.appendChild(el("span", "measure-delta",
+        `${m.data.points.length} points · perimeter ${formatLength(m.data.perimeter)}`
+        + (m.data.flatness > m.data.perimeter * 0.002
+          ? ` · off-plane ${formatLength(m.data.flatness)}` : "")));
+    } else if (m.kind === "laser") {
+      const parts = ["x", "y", "z"].map((axis) => {
+        const value = m.data.axes[axis];
+        return `${axis.toUpperCase()} ${value.span == null ? "-" : formatLength(value.span)}`;
+      });
+      row.appendChild(el("span", "measure-dist", "clearance"));
+      row.appendChild(el("span", "measure-delta", parts.join(" · ")));
+    } else {
+      row.appendChild(el("span", "measure-dist", formatLength(m.distance)));
+      // three.js is Y-up while IFC is Z-up, so report the model's own axes
+      const snapped = (m.ends || []).filter((end) => end && end !== "surface");
+      row.appendChild(el("span", "measure-delta",
+        (m.axis ? `${m.axis.toUpperCase()} locked · ` : "")
+        + (snapped.length ? `${snapped.join("/")} · ` : "")
+        + `X ${formatLength(m.delta[SCENE_DELTA[axisFrame.x.axis]])}`
+        + ` · Y ${formatLength(m.delta[SCENE_DELTA[axisFrame.y.axis]])}`
+        + ` · Z ${formatLength(m.delta[SCENE_DELTA[axisFrame.z.axis]])}`));
+    }
+    // A carried measurement whose element did not come back sits where it was
+    // clicked, which is a guess. Say so rather than let it read as measured.
+    if (m.drift) {
+      row.appendChild(el("span", "measure-drift",
+        m.drift === "gone"
+          ? "element gone · point kept where it was taken"
+          : "element changed shape · point kept where it was taken"));
+    }
     list.appendChild(row);
   }
   card.hidden = !measurements.length && !measureMode;
   const hint = $("measure-hint");
   if (hint) {
     hint.hidden = !measureMode;
-    hint.textContent = pendingPoint
-      ? "click the second point"
-      : "click a surface to start a measurement";
+    const snap = snapEnabled
+      ? (lastSnapKind && lastSnapKind !== "surface" ? `snapped to ${lastSnapKind}` : "snap on")
+      : "snap off (S)";
+    hint.textContent = measureHint(snap);
   }
   invalidate();
 }
 
-function setMeasureMode(on) {
+/** What to do next, in the words of whichever tool is running. */
+const MEASURE_BUTTONS = {
+  distance: $("tool-measure"),
+  angle: $("tool-measure-angle"),
+  area: $("tool-measure-area"),
+};
+
+/** The one place snapping turns on and off, so the key and the switch agree. */
+function setSnap(on) {
+  snapEnabled = on === true;
+  lastSnapKind = "";
+  const box = $("tool-snap");
+  if (box) box.checked = snapEnabled;
+  clearSnapPreview();
+  renderMeasurements();
+}
+
+function measureHint(snap) {
+  if (measureKind === "angle") {
+    if (!pending.length) return `${snap} · click one end of the angle`;
+    if (pending.length === 1) return `${snap} · click the corner the angle sits at`;
+    return `${snap} · click the other end`;
+  }
+  if (measureKind === "area") {
+    if (pending.length < 3) {
+      return `${snap} · click the outline, ${3 - pending.length} more before it closes`;
+    }
+    return `${snap} · ${pending.length} points · Enter or double-click to close`;
+  }
+  if (!pending.length) return `${snap} · click to start, or Alt-click an element for its size`;
+  return axisLock
+    ? `${snap} · locked to ${axisLock.toUpperCase()}`
+    : `${snap} · click the second point; X, Y or Z locks an axis`;
+}
+
+function setMeasureMode(on, kind) {
   measureMode = on;
-  pendingPoint = null;
+  if (kind) measureKind = kind;
+  clearPending();
+  if (!on) axisLock = "";
+  clearSnapPreview();
   canvas.classList.toggle("is-measuring", on);
-  const button = $("tool-measure");
-  if (button) {
-    button.setAttribute("aria-pressed", String(on));
-    button.classList.toggle("is-active", on);
+  for (const [name, button] of Object.entries(MEASURE_BUTTONS)) {
+    const active = on && measureKind === name;
+    button.setAttribute("aria-pressed", String(active));
+    button.classList.toggle("is-active", active);
   }
   renderMeasurements();
 }
 
+/** An outline with repeated points collapsed, including the closing one. */
+function areaOutline(points) {
+  return outlinePoints(points, AREA_MIN_EDGE_SQ);
+}
+
+/** Close an area outline early, on Enter or a double-click. */
+function finishArea() {
+  if (measureKind !== "area" || pending.length < 3) return false;
+  // A zero-length edge adds nothing to the area and everything to the
+  // perimeter, the flatness and the point count the report shows.
+  // areaOutline keeps the point objects it was handed, so the element each
+  // surviving corner was clicked on is still reachable by identity.
+  const owner = new Map(pending.map((entry) => [entry.point, entry.express_id]));
+  const points = areaOutline(pending.map((entry) => entry.point));
+  if (points.length < 3) return false;
+  drawPath(points, true);
+  const centroid = points
+    .reduce((sum, p) => sum.add(p), new THREE.Vector3())
+    .multiplyScalar(1 / points.length);
+  const measured = polygonMeasure(points);
+  recordMeasurement(
+    "area", measured, `${points.length} points`, formatArea(measured.area), centroid,
+    points.map((point) => anchorAt(point, owner.get(point) ?? null)));
+  pending.length = 0;
+  return true;
+}
+
+/** One anchor per pending click, each naming the element it landed on. */
+function pendingAnchors() {
+  return pending.map((entry) => anchorAt(entry.point, entry.express_id));
+}
+
 function handleMeasureClick(clientX, clientY) {
-  const point = surfacePointAt(clientX, clientY);
-  if (!point) return;
-  if (!pendingPoint) {
-    pendingPoint = point;
-    addMarker(point);
+  const hit = measurePointAt(clientX, clientY);
+  if (!hit) return;
+  lastSnapKind = hit.kind;
+  // The click lands exactly where the preview said it would: the same lock
+  // and the same axis inference decide both.
+  const anchor = pending.length ? pending[pending.length - 1].point : null;
+  const point = constrainedMeasurePoint(anchor, hit.point);
+  // measurePointAt already resolved which element is under the cursor; keeping
+  // it is what lets the measurement survive the next rebuild.
+  const entry = {
+    point, kind: hit.kind, express_id: hit.express_id,
+    marker: addMarker(point), line: null,
+  };
+  pending.push(entry);
+
+  const wanted = MEASURE_KINDS[measureKind];
+  if (!wanted || pending.length < wanted) {
+    if (measureKind === "area" && pending.length > 1) {
+      entry.line = drawPath([pending[pending.length - 2].point, point], false);
+    }
     renderMeasurements();
     return;
   }
-  addMarker(point);
-  commitMeasurement(pendingPoint, point);
-  pendingPoint = null;
+  if (measureKind === "angle") {
+    const [a, b, c] = pending.map((item) => item.point);
+    drawPath([a, b, c], false);
+    const measured = angleMeasure(a, b, c);
+    // the tag sits a step inside the corner, along the angle's bisector
+    const bisector = a.clone().sub(b).normalize()
+      .add(c.clone().sub(b).normalize());
+    const offset = bisector.lengthSq() > 1e-9
+      ? bisector.normalize().multiplyScalar(worldPerPixel(b) * 34)
+      : new THREE.Vector3();
+    recordMeasurement(
+      "angle", measured, "angle",
+      `${measured.degrees.toFixed(1)}°`, b.clone().add(offset), pendingAnchors());
+  } else {
+    commitMeasurement(
+      pending[0].point, pending[1].point, [pending[0].kind, pending[1].kind],
+      pendingAnchors());
+  }
+  pending.length = 0;
+  clearSnapPreview();
 }
 
 // ---------------------------------------------------------------- properties
@@ -2217,6 +4723,19 @@ function wsSend(frame) {
   if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(frame));
 }
 
+// buildScene disposes the model and then awaits the parse for seconds, and
+// through that window expressOf is empty: every id-addressed command reports
+// "None of those elements are in this model" and a screenshot returns an empty
+// viewport as evidence. The hub holds commands while this says "rebuilding".
+let sceneState = "ready";
+
+function sendSceneState(state) {
+  sceneState = state;
+  try {
+    wsSend({ type: "scene_state", state, model_id: currentModelRow()?.id ?? null });
+  } catch { /* a build must never fail because the socket did */ }
+}
+
 function scheduleReload() {
   // Bursts of edits collapse into one refetch (2 s debounce).
   clearTimeout(reloadTimer);
@@ -2239,6 +4758,8 @@ function connect() {
     wsAttempts = 0;
     setConnectionState(true, "Live");
     wsSend({ type: "hello", token });
+    // a tab that reconnects mid-rebuild would otherwise be taken for ready
+    sendSceneState(sceneState);
   });
 
   ws.addEventListener("message", (event) => {
@@ -2320,6 +4841,26 @@ function handleFrame(frame) {
     case "screenshot_request":
       handleScreenshot(frame);
       break;
+    case "command": {
+      let ok = true;
+      let result = null;
+      let error = null;
+      try {
+        result = runViewerCommand(frame);
+      } catch (err) {
+        ok = false;
+        error = commandFailure(err);
+      }
+      wsSend({
+        type: "command_result",
+        id: frame.id,
+        action: frame.action || "",
+        ok,
+        result,
+        error,
+      });
+      break;
+    }
     case "ping":
       wsSend({ type: "pong" });
       break;
@@ -2392,43 +4933,70 @@ function renderLegend() {
 }
 
 // ---------------------------------------------------------------- screenshots
+function captureViewerEvidence(options = {}) {
+  const row = currentModelRow();
+  if (options.modelId && options.modelId !== row?.id) {
+    throw new Error("Evidence request does not match the currently viewed model");
+  }
+  if (options.view && options.view !== "current") {
+    setView(options.view, fitTargetIds(options.fit));
+  } else if (options.fit) {
+    fitTo(fitTargetIds(options.fit));
+  }
+  ensureFullResolution();
+  controls.update();
+  renderNow();
+
+  const source = renderer.domElement;
+  const maxSize = Math.max(64, Math.min(2048, options.maxSize || 800));
+  const scale = Math.min(1, maxSize / Math.max(source.width, source.height));
+  const width = Math.max(1, Math.round(source.width * scale));
+  const height = Math.max(1, Math.round(source.height * scale));
+  const target = document.createElement("canvas");
+  target.width = width;
+  target.height = height;
+  target.getContext("2d").drawImage(source, 0, 0, width, height);
+
+  const mime = options.format === "png" ? "image/png" : "image/jpeg";
+  const dataUrl = target.toDataURL(mime, (options.quality || 85) / 100);
+  return {
+    kind: "viewer-screenshot",
+    modelId: row?.id ?? null,
+    modelName: row?.name || "",
+    selectionGuids: selectedGuids(),
+    capturedAt: new Date().toISOString(),
+    camera: {
+      position: camera.position.toArray(),
+      target: controls.target.toArray(),
+    },
+    mime,
+    dataUrl,
+    width,
+    height,
+  };
+}
+
 function handleScreenshot(frame) {
   const modelId = currentModelRow()?.id ?? null;
   try {
     if (frame.model_id !== modelId) {
       throw new Error("Screenshot request does not match the currently viewed model");
     }
-    if (frame.view && frame.view !== "current") {
-      setView(frame.view, fitTargetIds(frame.fit));
-    } else if (frame.fit) {
-      const ids = fitTargetIds(frame.fit);
-      fitTo(ids); // fit "all" passes null and frames everything visible
-    }
-    // Render explicitly in this task so the buffer is fresh when read.
-    ensureFullResolution();
-    controls.update();
-    renderNow();
-
-    const source = renderer.domElement;
-    const maxSize = Math.max(64, Math.min(2048, frame.max_size || 800));
-    const scale = Math.min(1, maxSize / Math.max(source.width, source.height));
-    const w = Math.max(1, Math.round(source.width * scale));
-    const h = Math.max(1, Math.round(source.height * scale));
-
-    const target = document.createElement("canvas");
-    target.width = w;
-    target.height = h;
-    target.getContext("2d").drawImage(source, 0, 0, w, h);
-
-    const mime = frame.format === "png" ? "image/png" : "image/jpeg";
-    const dataUrl = target.toDataURL(mime, (frame.quality || 85) / 100);
+    const evidence = captureViewerEvidence({
+      modelId,
+      view: frame.view,
+      fit: frame.fit,
+      maxSize: frame.max_size,
+      format: frame.format,
+      quality: frame.quality,
+    });
     wsSend({
       type: "screenshot_response",
       id: frame.id,
       model_id: modelId,
-      data_b64: dataUrl.slice(dataUrl.indexOf(",") + 1),
-      width: w,
-      height: h,
+      data_b64: evidence.dataUrl.slice(evidence.dataUrl.indexOf(",") + 1),
+      width: evidence.width,
+      height: evidence.height,
     });
   } catch (err) {
     console.error("[ifc-console] screenshot failed", err);
@@ -2447,6 +5015,7 @@ function setMode(mode) {
   // A colored status dot (drawn in CSS) carries the meaning; the text stays clean.
   chip.textContent = mode;
   chip.dataset.mode = mode;
+  scheduleViewerContext("mode");
 }
 
 // The console can hold more than one model; the picker appears only then.
@@ -2485,6 +5054,7 @@ function renderModelPicker(rows) {
     }
   }
   select.value = wanted;
+  scheduleViewerContext("models");
 }
 
 function currentModelRow() {
@@ -2506,6 +5076,9 @@ function setModelInfo(status) {
     schema.textContent = (row && row.schema) || status.schema || "";
     schema.hidden = !schema.textContent;
     if (status.mode) setMode(status.mode);
+    // The unit belongs to the model on screen, not to the console's active
+    // one, so a pinned second model labels its own numbers.
+    setFileUnits((row && row.units) || status.units || null);
     $("dirty").hidden = !status.dirty;
     if (status.highlight) applyHighlightFrame(status.highlight);
     if (status.color_theme) applyColorThemeFrame(status.color_theme);
@@ -2520,6 +5093,7 @@ function setModelInfo(status) {
     ? `${status.model} · ifc-console viewer` : "ifc-console viewer";
   // the chat header names the open file and the mode; keep it in step
   chatPanel?.refresh();
+  scheduleViewerContext("status");
 }
 
 async function refreshStatus() {
@@ -2533,13 +5107,20 @@ async function refreshStatus() {
 // Camera framing lives on the F key and the model auto-fits on load; view
 // presets and fits are still driven by the assistant over the websocket.
 // Switching model reloads the scene; the active model is the default view.
-$("model-select").addEventListener("change", (e) => {
-  const picked = e.target.value;
+function selectViewerModel(picked) {
+  if (!modelRows.some((row) => row.id === picked)) return false;
   const active = (modelRows.find((m) => m.active) || {}).id;
   viewModelId = picked === active ? null : picked;
   currentEtag = null;  // a different model, not a newer revision of this one
+  setFileUnits((currentModelRow() || {}).units || null);
   clearProperties();
   loadModel();
+  scheduleViewerContext("model");
+  return true;
+}
+
+$("model-select").addEventListener("change", (e) => {
+  selectViewerModel(e.target.value);
 });
 
 $("btn-clear-hl").addEventListener("click", () => {
@@ -2553,28 +5134,52 @@ $("legend-clear").addEventListener("click", () => {
 function updateToolButtons() {
   const none = selection.size === 0;
   $("tool-isolate").disabled = none;
+  $("tool-focus-sel").disabled = none;
   $("tool-hide").disabled = none;
   $("tool-fit-sel").disabled = none;
 }
 
+/**
+ * What is not on screen, and why, where the person looking at it can see it.
+ *
+ * The only indicator lived inside the View tools popover, so a search Isolate
+ * or an assistant command could take two thirds of the model away with nothing
+ * on screen to say so and no visible way back. The footer carries it with the
+ * controls that undo it, beside the highlight chip that set the precedent.
+ */
 function updateVisibilityInfo() {
+  // A ghost is on screen, so it is not one of the missing; it is counted as
+  // its own thing rather than reported twice under two names.
+  const gone = hiddenCount - ghostCount;
   $("tool-hidden-info").textContent =
-    hiddenCount ? `${hiddenCount} of ${elements.size} elements hidden` : "";
+    gone ? `${gone} of ${elements.size} elements hidden` : "";
   $("tool-show-all").disabled = hiddenCount === 0;
+  // Before a model lands there is nothing to be missing from, and the section
+  // sliders have no real range to name a cut height in.
+  const parts = [];
+  if (elements.size) {
+    const isolated = userIsolateSet || isolateSet;
+    if (isolated) parts.push(`isolated to ${isolated.size}`);
+    if (ghostCount) parts.push(`${ghostCount} ghosted`);
+    if (gone) parts.push(`${gone} of ${elements.size} hidden`);
+    for (const [name, cut] of Object.entries(sectionState().axes)) {
+      if (cut.on) parts.push(`${name.toUpperCase()} cut at ${formatLength(cut.at)}`);
+    }
+    if (isOrtho()) parts.push("orthographic");
+  }
+  $("vis-info-text").textContent = parts.join(" · ");
+  $("vis-show-all").hidden = hiddenCount === 0;
+  $("vis-clear-section").hidden = !parts.length || !sectionActive();
 }
 
-$("tool-isolate").addEventListener("click", () => {
-  if (!selection.size) return;
-  userIsolateSet = new Set(selection);
-  applyVisibility();
-});
-$("tool-hide").addEventListener("click", () => {
-  if (!selection.size) return;
-  for (const id of selection) hiddenManual.add(id);
-  setSelection([], false);
-  applyVisibility();
-});
-$("tool-show-all").addEventListener("click", () => {
+/**
+ * Everything on screen again, whoever took it off.
+ *
+ * isElementShown gates on four sets, so releasing two of them leaves elements
+ * hidden while the count says nothing is. The button and the command have to
+ * mean the same thing or the assistant reports a restore it did not perform.
+ */
+function showEverything() {
   userIsolateSet = null;
   isolateSet = null;
   hiddenManual.clear();
@@ -2583,11 +5188,103 @@ $("tool-show-all").addEventListener("click", () => {
     box.checked = true;
   }
   applyVisibility();
+  updateToolButtons();
+  dropFocusActive();
+}
+
+/**
+ * Release whichever gate is hiding each of `ids`, and say how many that was.
+ *
+ * Isolation grows to admit them rather than being dropped: the caller asked to
+ * show these elements, not to throw away the view around them. The caller
+ * applies the result, so one command pays for one visibility pass.
+ */
+function unhide(ids) {
+  const hidden = ids.filter((id) => !isElementShown(id));
+  for (const id of hidden) {
+    hiddenManual.delete(id);
+    // the branch checkbox stays as the user left it; its next toggle re-syncs
+    hiddenByTree.delete(id);
+    if (isolateSet) isolateSet.add(id);
+    if (userIsolateSet) userIsolateSet.add(id);
+  }
+  return hidden.length;
+}
+
+/**
+ * Isolate the selection as a named tab, so it is one click from undone.
+ *
+ * Assigning userIsolateSet directly left no trace of what had been isolated or
+ * how to get back; a focus tab is the control the agent's own focus command
+ * already gets, and the user could close its tabs but never make one.
+ */
+function focusSelection(fit) {
+  if (!selection.size) return;
+  const guids = selectedGuids();
+  if (guids.length) {
+    openFocusTab(guids, null, fit);
+    return;
+  }
+  // geometry with no GlobalId cannot be named, so it isolates without a tab
+  userIsolateSet = new Set(selection);
+  applyVisibility();
+  updateToolButtons();
+  dropFocusActive();
+  if (fit) fitTo([...selection]);
+}
+
+$("tool-isolate").addEventListener("click", () => focusSelection(false));
+$("tool-focus-sel").addEventListener("click", () => focusSelection(true));
+$("tool-hide").addEventListener("click", () => {
+  if (!selection.size) return;
+  for (const id of selection) hiddenManual.add(id);
+  setSelection([], false);
+  applyVisibility();
 });
+$("tool-show-all").addEventListener("click", showEverything);
 $("tool-fit-sel").addEventListener("click", () => {
   if (selection.size) fitTo([...selection]);
 });
 $("tool-fit-all").addEventListener("click", () => fitTo(null));
+
+// The measurement controls, beside the tool they belong to. Each one reports
+// through the same command path the assistant uses, so a value produced from
+// this popover and one produced from an answer are the same measurement.
+$("tool-snap").addEventListener("change", (e) => setSnap(e.target.checked));
+$("tool-ghost").addEventListener("change", (e) => setGhostContext(e.target.checked));
+$("measure-unit").addEventListener("change", (e) => setLengthUnit(e.target.value));
+$("measure-decimals").addEventListener("change", (e) => setLengthDecimals(e.target.value));
+$("tool-measure-element").addEventListener("click", () => {
+  if (!selection.size) {
+    setMeasureMode(true);
+    return;
+  }
+  let measured = 0;
+  for (const id of selection) {
+    const dimensions = elementDimensions(id);
+    if (!dimensions) continue;
+    recordMeasurement(
+      "dimensions", dimensions, dimensions.guid || `#${id}`,
+      "", null, centreAnchor(dimensions));
+    measured += 1;
+  }
+  if (measured) $("measure-card").hidden = false;
+});
+$("tool-measure-laser").addEventListener("click", () => {
+  const id = selection.size ? [...selection][0] : null;
+  const dimensions = id === null ? null : elementDimensions(id);
+  if (!dimensions) {
+    setMeasureMode(true);
+    return;
+  }
+  const centre = toScenePoint(
+    [dimensions.centre.x, dimensions.centre.y, dimensions.centre.z]);
+  recordMeasurement(
+    "laser", laserFrom(centre, { ignore: id }), "clearance",
+    "", null, [anchorAt(centre, id)]);
+  $("measure-card").hidden = false;
+});
+$("tool-measure-clear").addEventListener("click", () => clearMeasurements());
 for (const btn of document.querySelectorAll("#tools-panel [data-view]")) {
   btn.addEventListener("click", () => setView(btn.dataset.view, null));
 }
@@ -2644,17 +5341,63 @@ for (const flip of document.querySelectorAll(".section-flip")) {
     saveSection();
   });
 }
-$("tool-section-clear").addEventListener("click", () => {
+/**
+ * The slice depth, held in metres and typed in whatever the reader chose.
+ *
+ * The field used to be metres whatever the file was drawn in, so a
+ * millimetre-authored project needed 0.1 typed in to mean 100.
+ */
+function setSliceDepth(metres, { sync = true } = {}) {
+  sliceDepth = Math.max(0, metres) || 0;
+  if (sync) syncSliceInput();
+}
+
+function syncSliceInput() {
+  const input = $("section-depth");
+  if (!input) return;
+  const unit = unitOf(activeLengthUnit());
+  // A number field cannot take 3'-3", so the imperial slice is decimal feet.
+  const label = unit.imperial ? "ft" : unit.label;
+  input.value = String(Number((sliceDepth * unit.perMetre).toFixed(3)));
+  input.step = String(Number((0.1 * unit.perMetre).toPrecision(2)));
+  input.setAttribute("aria-label", `Section slice depth in ${label}`);
+  const note = $("section-depth-unit");
+  if (note) note.textContent = label;
+}
+
+$("section-depth").addEventListener("input", (e) => {
+  setSliceDepth((Number(e.target.value) || 0) / perMetre(), { sync: false });
+  updateClipping();
+});
+$("section-depth").addEventListener("change", () => {
+  uiState.slice = sliceDepth;
+  saveUi();
+});
+$("tool-ortho").addEventListener("click", () => {
+  setProjection(isOrtho() ? "perspective" : "orthographic");
+});
+/** Every cut off again, from the popover or from the footer chip. */
+function clearSections() {
   for (const axis of AXES) {
     section[axis].on = false;
     syncSectionRow(axis);
   }
   updateClipping();
   saveSection();
-});
+}
+
+$("tool-section-clear").addEventListener("click", clearSections);
+$("vis-show-all").addEventListener("click", showEverything);
+$("vis-clear-section").addEventListener("click", clearSections);
 
 // -- measurement controls
-$("tool-measure").addEventListener("click", () => setMeasureMode(!measureMode));
+for (const [kind, button] of Object.entries(MEASURE_BUTTONS)) {
+  // Clicking the tool that is already running turns measuring off; clicking
+  // another switches to it without a stop in between.
+  button.addEventListener("click", () => {
+    setMeasureMode(!(measureMode && measureKind === kind), kind);
+  });
+}
 $("measure-clear").addEventListener("click", () => {
   clearMeasurements();
   setMeasureMode(false);
@@ -2758,8 +5501,16 @@ function renderSearch(payload) {
   isolate.addEventListener("click", () => {
     const targets = searchIds();
     if (!targets.length) return;
+    // a tab named after the query, so the result set is one click from undone
+    const guids = targets.map((id) => guidOf.get(id)).filter(Boolean);
+    if (guids.length) {
+      openFocusTab(guids, $("search-input").value.trim(), false);
+      return;
+    }
     userIsolateSet = new Set(targets);
     applyVisibility();
+    updateToolButtons();
+    dropFocusActive();
   });
 
   markSearchSelection();
@@ -2845,6 +5596,96 @@ function refreshSearch() {
   else resetSearchResults();
 }
 
+// ---------------------------------------------------------------- focus tabs
+// One named tab per element under analysis, in a strip under the topbar. Tabs
+// only ever drive userIsolateSet; picking All or closing the active tab hands
+// the viewport back to the whole model.
+const MAX_FOCUS_TABS = 12;
+
+function focusTabIndex(name) {
+  return focusTabs.findIndex((tab) => tab.name === name);
+}
+
+function applyFocusTab(name, fit = true) {
+  activeFocusName = null;
+  let ids = null;
+  if (name !== null) {
+    const tab = focusTabs[focusTabIndex(name)];
+    if (!tab) throw new Error(`No focus tab named ${name}`);
+    ids = tab.guids.map((guid) => expressOf.get(guid)).filter((id) => id !== undefined);
+    if (!ids.length) throw new Error("None of that tab's elements are in this model");
+    activeFocusName = name;
+  }
+  userIsolateSet = ids ? new Set(ids) : null;
+  applyVisibility();
+  updateToolButtons();
+  renderFocusTabs();
+  if (fit) fitTo(ids);
+}
+
+function openFocusTab(guids, name, fit = true) {
+  const label = String(name || "").trim()
+    || `${guids[0].slice(0, 8)}${guids.length > 1 ? ` +${guids.length - 1}` : ""}`;
+  const existing = focusTabIndex(label);
+  const tab = { name: label, guids: [...guids] };
+  if (existing >= 0) focusTabs[existing] = tab;
+  else {
+    focusTabs.push(tab);
+    if (focusTabs.length > MAX_FOCUS_TABS) focusTabs.shift();
+  }
+  applyFocusTab(label, fit);
+  return tab;
+}
+
+function closeFocusTab(name) {
+  const index = focusTabIndex(name);
+  if (index < 0) return false;
+  focusTabs.splice(index, 1);
+  if (activeFocusName === name) applyFocusTab(null, false);
+  else renderFocusTabs();
+  return true;
+}
+
+function dropFocusActive() {
+  // Isolation changed hands (manual isolate, show all, restored view): the
+  // tabs stay, but none of them is what is on screen now.
+  if (activeFocusName === null) {
+    renderFocusTabs();
+    return;
+  }
+  activeFocusName = null;
+  renderFocusTabs();
+}
+
+function renderFocusTabs() {
+  const strip = $("focus-tabs");
+  if (!strip) return;
+  strip.textContent = "";
+  strip.hidden = !focusTabs.length;
+  scheduleViewerContext("focus");
+  if (!focusTabs.length) return;
+  const all = el("button", `focus-tab${activeFocusName === null ? " active" : ""}`, "All");
+  all.title = "Show the whole model";
+  all.addEventListener("click", () => applyFocusTab(null));
+  strip.appendChild(all);
+  for (const tab of focusTabs) {
+    const active = activeFocusName === tab.name;
+    const btn = el("button", `focus-tab${active ? " active" : ""}`, tab.name);
+    btn.title = `Focus ${tab.name}`;
+    btn.setAttribute("role", "tab");
+    btn.setAttribute("aria-selected", active ? "true" : "false");
+    btn.addEventListener("click", () => applyFocusTab(tab.name));
+    const close = el("span", "focus-tab-close", "×");
+    close.title = `Close ${tab.name}`;
+    close.addEventListener("click", (event) => {
+      event.stopPropagation();
+      closeFocusTab(tab.name);
+    });
+    btn.appendChild(close);
+    strip.appendChild(btn);
+  }
+}
+
 // ---------------------------------------------------------------- saved views
 // Camera poses live in localStorage next to the panel layout: they belong to
 // this browser, not to the model, and survive reloads and model edits.
@@ -2861,12 +5702,54 @@ function captureView(name) {
     target: controls.target.toArray(),
     near: camera.near,
     far: camera.far,
+    projection: isOrtho() ? "orthographic" : "perspective",
+    zoom: camera.zoom,
+    // What was on screen is part of what the view was about.
+    selection: selectedGuids(),
+    isolated: userIsolateSet ? [...userIsolateSet].map((id) => guidOf.get(id)).filter(Boolean) : null,
+    section: AXES.map((axis) => ({ ...section[axis] })),
+    slice: sliceDepth,
+    // The dimensions taken in a view are part of what the view was about, and
+    // they only mean anything on the model they were taken on.
+    model: currentModelKey(),
+    measurements: measurementItems(),
   };
 }
 
 function restoreView(view) {
+  if (view.projection) setProjection(view.projection);
   camera.position.fromArray(view.pos);
   controls.target.fromArray(view.target);
+  if (typeof view.zoom === "number" && view.zoom > 0) camera.zoom = view.zoom;
+  if (Array.isArray(view.selection)) {
+    const ids = view.selection.map((guid) => expressOf.get(guid))
+      .filter((id) => id !== undefined);
+    setSelection(ids, false);
+  }
+  if (view.isolated === null || Array.isArray(view.isolated)) {
+    const ids = (view.isolated || []).map((guid) => expressOf.get(guid))
+      .filter((id) => id !== undefined);
+    userIsolateSet = ids.length ? new Set(ids) : null;
+    applyVisibility();
+    updateToolButtons();
+    dropFocusActive();
+  }
+  if (Array.isArray(view.section)) {
+    AXES.forEach((axis, index) => {
+      const saved = view.section[index];
+      if (saved) Object.assign(section[axis], saved);
+      syncSectionRow(axis);
+    });
+    if (typeof view.slice === "number") setSliceDepth(view.slice);
+    updateClipping();
+  }
+  // A view saved with dimensions on this model brings them back; one saved
+  // without any, or on another model, leaves what is on screen alone rather
+  // than replacing it with points nothing here can place.
+  if (Array.isArray(view.measurements) && view.measurements.length
+    && view.model === currentModelKey()) {
+    restoreMeasurements(view.measurements);
+  }
   if (typeof view.near === "number") camera.near = view.near;
   if (typeof view.far === "number") camera.far = view.far;
   camera.updateProjectionMatrix();
@@ -2949,6 +5832,12 @@ function saveUi() {
     // Storage can be unavailable in private mode or full.
   }
 }
+setThemePreference(uiState.themePreference || "system", { persist: false });
+// The remembered reading choices, before anything is drawn with a number on it.
+lengthUnitChoice = LENGTH_UNITS[uiState.lengthUnit] ? uiState.lengthUnit : "file";
+lengthDecimals = Number.isInteger(uiState.lengthDecimals) ? uiState.lengthDecimals : null;
+edgesWanted = uiState.edges !== false;
+ghostContext = uiState.ghost !== false;
 
 function applySceneSettings() {
   grid.visible = uiState.grid === true;
@@ -2967,18 +5856,27 @@ if (uiState.section) {
     section[axis].flip = saved.flip === true;
   }
 }
+if (typeof uiState.slice === "number" && uiState.slice > 0) setSliceDepth(uiState.slice);
 for (const axis of AXES) syncSectionRow(axis);
+syncSliceInput();
+
+function effectiveViewerWidth() {
+  const dock = document.getElementById("chat-dock");
+  const chatWidth = dock && !dock.hidden ? dock.getBoundingClientRect().width : 0;
+  return window.innerWidth - chatWidth;
+}
 
 function syncPanelScrim() {
-  const compact = window.innerWidth <= 620;
+  const compact = effectiveViewerWidth() <= 620;
   const sidePanelOpen = !$("tree-panel").classList.contains("collapsed")
     || !$("props-panel").classList.contains("collapsed");
   $("panel-scrim").hidden = !compact || !sidePanelOpen;
 }
 
 function closeOtherCompactPanel(openKey) {
-  if (window.innerWidth > 620 || uiState[openKey] !== true) return;
-  if (typeof chatDock !== "undefined" && !chatDock.hidden) setChat(false);
+  if (effectiveViewerWidth() > 620 || uiState[openKey] !== true) return;
+  const dock = document.getElementById("chat-dock");
+  if (dock && !dock.hidden) setChat(false);
   if (openKey === "treeOpen" && uiState.propsOpen === true) {
     uiState.propsOpen = false;
     applyPropsPanel();
@@ -2988,10 +5886,20 @@ function closeOtherCompactPanel(openKey) {
   }
 }
 
-function initSidePanel(panelId, splitId, btnId, widthKey, openKey, side, openByDefault) {
+function initSidePanel(
+  panelId,
+  splitId,
+  tabId,
+  closeId,
+  widthKey,
+  openKey,
+  side,
+  openByDefault,
+) {
   const panel = $(panelId);
   const splitter = $(splitId);
-  const btn = $(btnId);
+  const tab = $(tabId);
+  const close = $(closeId);
   const clampW = (w) => {
     // Keep a useful canvas visible when both side panels are open.
     const max = Math.max(
@@ -3013,9 +5921,16 @@ function initSidePanel(panelId, splitId, btnId, widthKey, openKey, side, openByD
   };
   const apply = () => {
     const open = isOpen();
+    const chatDockElement = document.getElementById("chat-dock");
+    const chatCoversLeftTab = panelId === "tree-panel"
+      && window.innerWidth <= 1040
+      && chatDockElement
+      && !chatDockElement.hidden;
     panel.classList.toggle("collapsed", !open);
+    panel.inert = !open;
     splitter.classList.toggle("collapsed", !open);
-    btn.setAttribute("aria-pressed", String(open));
+    tab.hidden = open || chatCoversLeftTab;
+    tab.setAttribute("aria-expanded", String(open));
     if (uiState[widthKey]) setWidth(uiState[widthKey]);
     else {
       panel.style.width = "";
@@ -3027,6 +5942,17 @@ function initSidePanel(panelId, splitId, btnId, widthKey, openKey, side, openByD
       splitter.setAttribute("aria-valuetext", `${value} pixels`);
     }
     syncPanelScrim();
+    scheduleViewerContext("panels");
+  };
+  const setOpen = (open, { focus = true } = {}) => {
+    uiState[openKey] = Boolean(open);
+    if (open) closeOtherCompactPanel(openKey);
+    saveUi();
+    apply();
+    if (focus) {
+      if (open) close.focus({ preventScroll: true });
+      else tab.focus({ preventScroll: true });
+    }
   };
   splitter.addEventListener("pointerdown", (e) => {
     e.preventDefault();
@@ -3071,37 +5997,45 @@ function initSidePanel(panelId, splitId, btnId, widthKey, openKey, side, openByD
     saveUi();
     resize();
   });
-  btn.addEventListener("click", () => {
-    uiState[openKey] = !isOpen();
-    closeOtherCompactPanel(openKey);
-    saveUi();
-    apply();
-  });
+  tab.addEventListener("click", () => setOpen(true));
+  close.addEventListener("click", () => setOpen(false));
   window.addEventListener("resize", apply);
   apply();
-  return apply;
+  return { apply, isOpen, setOpen };
 }
 
-const applyTreePanel =
+const treePanelController =
   initSidePanel(
     "tree-panel",
     "split-tree",
-    "btn-panel-tree",
+    "tree-panel-tab",
+    "tree-panel-close",
     "treeWidth",
     "treeOpen",
     "left",
     window.innerWidth > 620,
   );
-const applyPropsPanel =
-  initSidePanel("props-panel", "split-props", "btn-panel-props", "propsWidth", "propsOpen", "right", false);
+const propsPanelController = initSidePanel(
+  "props-panel",
+  "split-props",
+  "props-panel-tab",
+  "props-panel-close",
+  "propsWidth",
+  "propsOpen",
+  "right",
+  false,
+);
+const applyTreePanel = treePanelController.apply;
+const applyPropsPanel = propsPanelController.apply;
 
 $("panel-scrim").addEventListener("click", () => {
+  const restore = propsPanelController.isOpen() ? $("props-panel-tab") : $("tree-panel-tab");
   uiState.treeOpen = false;
   uiState.propsOpen = false;
   saveUi();
   applyTreePanel();
   applyPropsPanel();
-  $("btn-panel-tree").focus();
+  restore.focus({ preventScroll: true });
 });
 
 const POPOVERS = [
@@ -3109,12 +6043,18 @@ const POPOVERS = [
   ["btn-help", "help-panel"],
   ["btn-tools", "tools-panel"],
 ];
+function setPopoverOpen(btnId, panelId, open) {
+  const button = $(btnId);
+  $(panelId).hidden = !open;
+  button.setAttribute("aria-expanded", String(open));
+  if (panelId === "tools-panel") button.hidden = open;
+}
+
 function closePopovers(exceptId, restoreFocus = false) {
   for (const [btnId, panelId] of POPOVERS) {
     if (panelId === exceptId) continue;
     const wasOpen = !$(panelId).hidden;
-    $(panelId).hidden = true;
-    $(btnId).setAttribute("aria-expanded", "false");
+    setPopoverOpen(btnId, panelId, false);
     if (restoreFocus && wasOpen) $(btnId).focus();
   }
 }
@@ -3124,8 +6064,7 @@ function togglePopover(btnId, panelId) {
   const panel = $(panelId);
   const open = panel.hidden;
   if (open) closePopovers(panelId);
-  panel.hidden = !open;
-  button.setAttribute("aria-expanded", String(open));
+  setPopoverOpen(btnId, panelId, open);
   if (open) {
     panel.querySelector("button:not(:disabled), input:not(:disabled), select:not(:disabled)")?.focus();
   }
@@ -3138,12 +6077,29 @@ for (const [btnId, panelId] of POPOVERS) {
   });
   $(panelId).addEventListener("click", (e) => e.stopPropagation());
 }
+$("tools-panel-close").addEventListener("click", () => closePopovers(null, true));
 document.addEventListener("click", () => closePopovers());
 
 const gridBox = $("set-grid");
 const axesBox = $("set-axes");
+const edgesBox = $("set-edges");
+const themeSelect = $("set-theme");
 gridBox.checked = uiState.grid === true;
 axesBox.checked = uiState.axes === true;
+$("tool-ghost").checked = ghostContext;
+syncEdgeSwitch();
+syncUnitControls();
+edgesBox.addEventListener("change", () => {
+  edgesWanted = edgesBox.checked;
+  uiState.edges = edgesWanted;
+  saveUi();
+  syncEdgeVisibility();
+  invalidate();
+});
+themeSelect.value = themePreference;
+themeSelect.addEventListener("change", () => {
+  setThemePreference(themeSelect.value);
+});
 gridBox.addEventListener("change", () => {
   uiState.grid = gridBox.checked;
   saveUi();
@@ -3170,21 +6126,392 @@ $("set-reset-layout").addEventListener("click", () => {
 applySceneSettings();
 renderSavedViews();
 
+/**
+ * Run one viewer command and return its result, or throw with a reason.
+ *
+ * The panel reaches this through a DOM event and the server through the
+ * socket. Both get the same behaviour because there is only one of it.
+ */
+function runViewerCommand(command) {
+  {
+    let result = null;
+    if (command.action === "get-context") {
+      result = viewerContext("request");
+    } else if (command.action === "set-theme") {
+      setThemePreference(command.theme);
+      result = viewerContext("theme").theme;
+    } else if (command.action === "set-model") {
+      if (!selectViewerModel(command.modelId || command.model_id)) {
+        throw new Error("The requested model is not attached");
+      }
+      result = viewerContext("model").model;
+    } else if (command.action === "set-panel") {
+      const panel = command.panel === "tree" || command.panel === "model"
+        ? treePanelController
+        : command.panel === "properties" ? propsPanelController : null;
+      if (!panel) throw new Error("Unknown viewer panel");
+      panel.setOpen(command.open !== false, { focus: false });
+      result = viewerContext("panels").panels;
+    } else if (command.action === "set-selection") {
+      // The panel speaks GlobalIds; only this module knows the express ids
+      // they map to in the scene currently on screen.
+      const guids = Array.isArray(command.guids) ? command.guids : [];
+      const ids = guids.map((guid) => expressOf.get(guid)).filter((id) => id !== undefined);
+      if (guids.length && !ids.length) throw new Error("None of those elements are in this model");
+      // An empty list means select nothing, which additive would otherwise
+      // turn into a no-op that reports the old selection as the new one.
+      setSelection(ids, ids.length > 0 && command.additive === true);
+      // fitTo works off the boxes it was handed whether or not the elements are
+      // on screen, so fitting to a hidden one flew the camera into empty space.
+      // Bring it back rather than aim at nothing; a caller that asked not to
+      // move the view has not asked to change what is visible either.
+      const wantsFit = command.fit !== false && ids.length > 0;
+      const unhidden = wantsFit ? unhide(ids) : 0;
+      if (unhidden) {
+        applyVisibility();
+        updateToolButtons();
+      }
+      if (wantsFit) fitTo(ids);
+      result = { ...viewerContext("selection").selection, matched: ids.length, unhidden };
+    } else if (command.action === "clear-selection") {
+      setSelection([], false);
+      result = viewerContext("selection").selection;
+    } else if (command.action === "focus-selection") {
+      if (!selection.size) throw new Error("Nothing is selected");
+      fitTo([...selection]);
+      result = viewerContext("selection").selection;
+    } else if (command.action === "isolate") {
+      // Showing one thing is how you say "this one" about a model with a
+      // hundred thousand parts in it.
+      const guids = Array.isArray(command.guids) ? command.guids : [];
+      const ids = guids.length
+        ? guids.map((guid) => expressOf.get(guid)).filter((id) => id !== undefined)
+        : [...selection];
+      if (!ids.length) {
+        throw new Error(
+          guids.length
+            ? "None of those elements are in this model"
+            : "Nothing is selected to isolate",
+        );
+      }
+      userIsolateSet = new Set(ids);
+      // An element the tree or an earlier highlight is hiding would isolate to
+      // an empty screen, and the count would still claim it worked.
+      const unhidden = unhide(ids);
+      // Ghosting is a property of the view, not of this call, so it is only
+      // touched when the caller says so.
+      if (command.ghost !== undefined) setGhostContext(command.ghost !== false);
+      applyVisibility();
+      updateToolButtons();
+      dropFocusActive();
+      if (command.fit !== false) fitTo(ids);
+      result = {
+        isolated: ids.length,
+        requested: guids.length || selection.size,
+        unhidden,
+        ghosted: ghostCount,
+      };
+    } else if (command.action === "show-all") {
+      showEverything();
+      // Read back rather than assert: the caller is told what the screen shows,
+      // not what this branch meant to do to it.
+      result = {
+        isolated: userIsolateSet ? userIsolateSet.size : 0,
+        hidden: hiddenCount,
+      };
+    } else if (command.action === "hide") {
+      // The complement of isolate: take some elements out of the way.
+      const guids = Array.isArray(command.guids) && command.guids.length
+        ? command.guids
+        : selectedGuids();
+      const ids = guids.map((guid) => expressOf.get(guid)).filter((id) => id !== undefined);
+      if (!ids.length) {
+        throw new Error(
+          guids.length
+            ? "None of those elements are in this model"
+            : "Pass guids, or select elements to hide",
+        );
+      }
+      for (const id of ids) hiddenManual.add(id);
+      setSelection([...selection].filter((id) => !hiddenManual.has(id)), false);
+      applyVisibility();
+      updateToolButtons();
+      result = { hidden: ids.length, total_hidden: hiddenManual.size };
+    } else if (command.action === "focus") {
+      // A named analysis view: the element alone on screen, in its own tab.
+      const guids = Array.isArray(command.guids) && command.guids.length
+        ? command.guids
+        : selectedGuids();
+      if (!guids.length) throw new Error("Pass guids, or select an element to focus");
+      const known = guids.filter((guid) => expressOf.has(guid));
+      if (!known.length) throw new Error("None of those elements are in this model");
+      const tab = openFocusTab(known, command.name, command.fit !== false);
+      result = {
+        focused: known.length,
+        tab: tab.name,
+        tabs: focusTabs.map((item) => item.name),
+      };
+    } else if (command.action === "unfocus") {
+      const name = String(command.name || "").trim();
+      if (name) {
+        if (!closeFocusTab(name)) throw new Error(`No focus tab named ${name}`);
+      } else {
+        focusTabs.length = 0;
+        applyFocusTab(null, false);
+      }
+      result = { tabs: focusTabs.map((item) => item.name), active: activeFocusName };
+    } else if (command.action === "set-view") {
+      const view = String(command.view || "");
+      if (!VIEW_DIRECTIONS[view]) {
+        throw new Error(
+          `Unknown view ${view || "(none)"}; use one of ${Object.keys(VIEW_DIRECTIONS).join(", ")}`,
+        );
+      }
+      setView(view, command.selection === true && selection.size ? [...selection] : null);
+      result = { view };
+    } else if (command.action === "set-camera") {
+      result = applyCameraCommand(command);
+    } else if (command.action === "fit") {
+      result = fitCommand(command);
+    } else if (command.action === "measure-element") {
+      // The size question, answered without anyone clicking anything.
+      const guids = Array.isArray(command.guids)
+        ? command.guids
+        : command.guid ? [command.guid] : [];
+      const ids = guids.length
+        ? guids.map((guid) => expressOf.get(guid)).filter((id) => id !== undefined)
+        : [...selection];
+      if (!ids.length) throw new Error("Name an element, or select one first");
+      const sized = ids.map((id) => elementDimensions(id)).filter(Boolean);
+      if (!sized.length) throw new Error("Those elements have no geometry in this view");
+      for (const item of sized) {
+        recordMeasurement(
+          "dimensions", item, item.guid || "element", "", null, centreAnchor(item));
+      }
+      result = { measured: sized.length, elements: sized };
+    } else if (command.action === "measure-laser") {
+      // Clearance: what is above, beside and in front of this point.
+      let origin = null;
+      let laserSource = null;
+      if (Array.isArray(command.point) && command.point.length === 3) {
+        // callers speak the model's axes; the scene is Y-up
+        origin = toScenePoint(command.point);
+      } else {
+        const guid = command.guid || (selection.size ? guidOf.get([...selection][0]) : null);
+        const id = guid ? expressOf.get(guid) : null;
+        const centre = id === undefined || id === null ? null : elementDimensions(id);
+        if (!centre) throw new Error("Give a point, or select an element to shoot from");
+        laserSource = id;
+        origin = toScenePoint([centre.centre.x, centre.centre.y, centre.centre.z]);
+      }
+      const laser = laserFrom(origin, {
+        maxDistance: Number(command.maxDistance) || 0,
+        ignore: laserSource,
+      });
+      recordMeasurement(
+        "laser", laser, "clearance", "", null, [anchorAt(origin, laserSource)]);
+      result = laser;
+    } else if (command.action === "measure-points") {
+      const from = command.from;
+      const to = command.to;
+      if (!Array.isArray(from) || !Array.isArray(to) || from.length !== 3 || to.length !== 3) {
+        throw new Error("measure-points needs from and to as [x, y, z] in model axes");
+      }
+      const a = toScenePoint(from);
+      const b = toScenePoint(to);
+      const locked = command.axis ? constrainToAxis(a, b, String(command.axis).toLowerCase()) : b;
+      addMarker(a);
+      addMarker(locked);
+      axisLock = command.axis ? String(command.axis).toLowerCase() : "";
+      inferredAxis = "";
+      commitMeasurement(a, locked);
+      axisLock = "";
+      const last = measurements[measurements.length - 1];
+      result = {
+        distance: last.distance,
+        delta: { x: last.delta[0], y: last.delta[2], z: last.delta[1] },
+      };
+    } else if (command.action === "measure-angle") {
+      // Three points in the model's axes: an end, the corner, the other end.
+      const points = ["from", "at", "to"].map((key) => {
+        const raw = command[key];
+        if (!Array.isArray(raw) || raw.length !== 3) {
+          throw new Error("measure-angle needs from, at and to as [x, y, z] in model axes");
+        }
+        return toScenePoint(raw);
+      });
+      for (const point of points) addMarker(point);
+      drawPath(points, false);
+      const measuredAngle = angleMeasure(points[0], points[1], points[2]);
+      result = recordMeasurement(
+        "angle", measuredAngle, "angle",
+        `${measuredAngle.degrees.toFixed(1)}°`, points[1],
+        points.map((point) => anchorAt(point, null)));
+    } else if (command.action === "measure-area") {
+      const raw = Array.isArray(command.points) ? command.points : [];
+      if (raw.length < 3) throw new Error("measure-area needs at least three points");
+      const points = areaOutline(raw.map((entry) => {
+        if (!Array.isArray(entry) || entry.length !== 3) {
+          throw new Error("every point must be [x, y, z] in model axes");
+        }
+        return toScenePoint(entry);
+      }));
+      if (points.length < 3) {
+        throw new Error("measure-area needs at least three distinct points");
+      }
+      for (const point of points) addMarker(point);
+      drawPath(points, true);
+      const measuredArea = polygonMeasure(points);
+      const areaCentre = points
+        .reduce((sum, p) => sum.add(p), new THREE.Vector3())
+        .multiplyScalar(1 / points.length);
+      result = recordMeasurement(
+        "area", measuredArea, `${points.length} points`,
+        formatArea(measuredArea.area), areaCentre,
+        points.map((point) => anchorAt(point, null)));
+    } else if (command.action === "set-projection") {
+      result = { projection: setProjection(command.projection ?? command.kind ?? "perspective") };
+    } else if (command.action === "set-section") {
+      // Axes arrive in the model's own names, and positions as real heights
+      // rather than as a fraction of a bounding box nobody can see.
+      if (command.clear === true) {
+        for (const axis of AXES) section[axis].on = false;
+      }
+      const axes = isPlainObject(command.axes) ? command.axes : {};
+      for (const [rawName, value] of Object.entries(axes)) {
+        const name = String(rawName).toLowerCase();
+        const frame = axisFrame[name];
+        if (!frame) throw new Error(`Unknown section axis ${rawName}; use x, y or z`);
+        const axis = frame.axis;
+        const state = section[axis];
+        if (value === false || value === null) {
+          state.on = false;
+          continue;
+        }
+        const spec = isPlainObject(value) ? value : {};
+        const [low, high] = axisRange(axis);
+        if (typeof spec.at === "number") {
+          const scenePosition = toSceneAxis(axis, spec.at);
+          state.t = Math.min(1, Math.max(0, (scenePosition - low) / Math.max(high - low, 1e-9)));
+        }
+        if (spec.keep === "above" || spec.keep === "below") {
+          const below = spec.keep === "below";
+          state.flip = frame.sign < 0 ? below : !below;
+        }
+        state.on = spec.on !== false;
+      }
+      if (typeof command.slice === "number") setSliceDepth(command.slice);
+      for (const axis of AXES) syncSectionRow(axis);
+      updateClipping();
+      saveSection();
+      result = sectionState();
+    } else if (command.action === "save-view") {
+      const name = String(command.name || "").trim();
+      if (!name) throw new Error("save-view needs a name");
+      const views = savedViews();
+      const found = views.findIndex((view) => view.name === name);
+      if (found >= 0) views[found] = captureView(name);
+      else {
+        views.push(captureView(name));
+        if (views.length > MAX_SAVED_VIEWS) views.shift();
+      }
+      saveUi();
+      renderSavedViews();
+      result = { name, saved: views.length };
+    } else if (command.action === "restore-view") {
+      const name = String(command.name || "").trim();
+      const view = savedViews().find((entry) => entry.name === name);
+      if (!view) throw new Error(`No saved view called ${name || "(none)"}`);
+      restoreView(view);
+      result = { name, projection: view.projection || "perspective" };
+    } else if (command.action === "list-views") {
+      result = {
+        views: savedViews().map((view) => ({
+          name: view.name,
+          projection: view.projection || "perspective",
+          selection: Array.isArray(view.selection) ? view.selection.length : 0,
+        })),
+      };
+    } else if (command.action === "clear-measurements") {
+      clearMeasurements();
+      result = { measurements: 0 };
+    } else if (command.action === "capture-evidence") {
+      result = captureViewerEvidence({
+        modelId: command.modelId || command.model_id,
+        view: command.view,
+        fit: command.fit,
+        maxSize: command.maxSize || command.max_size,
+        format: command.format,
+        quality: command.quality,
+      });
+    } else {
+      throw new Error("Unknown viewer command");
+    }
+    return result;
+  }
+}
+
+/** Where a thrown viewer error came from, since nobody sees the console. */
+function commandFailure(error) {
+  const where = String(error?.stack || "").split(String.fromCharCode(10))[1]?.trim();
+  return where ? `${error} (${where})` : String(error);
+}
+
+document.addEventListener(VIEWER_COMMAND_EVENT, (event) => {
+  const command = isPlainObject(event.detail) ? event.detail : {};
+  try {
+    sendViewerResult(command, true, runViewerCommand(command));
+  } catch (error) {
+    sendViewerResult(command, false, null, commandFailure(error));
+  }
+});
+
 // ---------------------------------------------------------------- chat dock
 // The panel is a separate module and only loaded when asked for, so a viewer
 // session that never opens the chat pays nothing for it.
 const chatDock = $("chat-dock");
 const chatResize = $("chat-dock-resize");
 const chatBtn = $("btn-chat");
-const CHAT_DOCK_MIN_WIDTH = 300;
-const CHAT_DOCK_DEFAULT_WIDTH = 480;
+const CHAT_DOCK_MIN_WIDTH = 520;
+const CHAT_DOCK_DEFAULT_WIDTH = 720;
+const CHAT_CANVAS_MIN_WIDTH = 420;
+const CHAT_DOCK_RESIZE_WIDTH = 5;
+const CHAT_DOCK_OVERLAY_WIDTH = 1040;
 let chatPanel = null;
 let chatLoadPromise = null;
 let chatDesiredOpen = false;
 let chatRequestVersion = 0;
 
+function visiblePanelFootprint(panelId, splitterId) {
+  const panel = $(panelId);
+  if (panel.classList.contains("collapsed")) return 0;
+  return panel.getBoundingClientRect().width
+    + $(splitterId).getBoundingClientRect().width;
+}
+
+function availableChatDockWidth() {
+  const layoutWidth = $("layout").getBoundingClientRect().width || window.innerWidth;
+  return Math.floor(
+    layoutWidth
+      - visiblePanelFootprint("tree-panel", "split-tree")
+      - visiblePanelFootprint("props-panel", "split-props")
+      - CHAT_CANVAS_MIN_WIDTH
+      - CHAT_DOCK_RESIZE_WIDTH,
+  );
+}
+
 function chatDockMaxWidth() {
-  return Math.max(CHAT_DOCK_MIN_WIDTH, Math.round(window.innerWidth * 0.6));
+  const viewportCap = Math.round(window.innerWidth * 0.68);
+  // Below this breakpoint the dock overlays the viewer and therefore does not
+  // consume a canvas flex track. On desktop, account for every visible viewer
+  // panel before allowing the chat to grow.
+  if (window.innerWidth <= CHAT_DOCK_OVERLAY_WIDTH) {
+    return Math.max(CHAT_DOCK_MIN_WIDTH, viewportCap);
+  }
+  return Math.max(
+    CHAT_DOCK_MIN_WIDTH,
+    Math.min(viewportCap, availableChatDockWidth()),
+  );
 }
 
 function currentChatWidth() {
@@ -3210,7 +6537,7 @@ function setChatWidth(width) {
 }
 
 function applyChatWidthForViewport() {
-  if (window.innerWidth <= 900) {
+  if (window.innerWidth <= CHAT_DOCK_OVERLAY_WIDTH) {
     chatDock.style.width = "";
     syncChatResizeAria();
   } else if (uiState.chatWidth) {
@@ -3220,38 +6547,56 @@ function applyChatWidthForViewport() {
   }
 }
 
+function setChatPanelVisible(visible) {
+  if (chatPanel && typeof chatPanel.setVisible === "function") {
+    chatPanel.setVisible(Boolean(visible));
+  }
+}
+
 function applyChatChrome(open) {
+  // Let the panel dismiss transient UI while it can still measure its host.
+  if (!open) setChatPanelVisible(false);
   chatDock.hidden = !open;
   chatResize.hidden = !open;
   chatBtn.setAttribute("aria-pressed", String(open));
   applyChatWidthForViewport();
+  applyTreePanel();
+  if (open) setChatPanelVisible(true);
 }
 
-function closePanelsForChat() {
+function closePanelsForChat(force = false) {
   let changed = false;
-  if (window.innerWidth < 900 && $("btn-panel-tree").getAttribute("aria-pressed") === "true") {
-    uiState.treeOpen = false;
-    changed = true;
-  }
-  if (window.innerWidth < 1500 && $("btn-panel-props").getAttribute("aria-pressed") === "true") {
+  const propsOpen = propsPanelController.isOpen();
+  if (
+    propsOpen
+    && (force || availableChatDockWidth() < CHAT_DOCK_MIN_WIDTH)
+  ) {
     uiState.propsOpen = false;
+    applyPropsPanel();
     changed = true;
   }
-  if (changed) {
+
+  const treeOpen = treePanelController.isOpen();
+  if (
+    treeOpen
+    && (force || availableChatDockWidth() < CHAT_DOCK_MIN_WIDTH)
+  ) {
+    uiState.treeOpen = false;
     applyTreePanel();
-    applyPropsPanel();
+    changed = true;
   }
+  return changed;
 }
 
 async function setChat(open) {
   const requestVersion = ++chatRequestVersion;
   chatDesiredOpen = Boolean(open);
   uiState.chatOpen = chatDesiredOpen;
-  applyChatChrome(chatDesiredOpen);
   // three panels plus the 3D view do not fit a normal window; the properties
   // panel is the one the chat replaces, so fold it away rather than letterbox
   // the model.
-  if (chatDesiredOpen) closePanelsForChat();
+  if (chatDesiredOpen) closePanelsForChat(true);
+  applyChatChrome(chatDesiredOpen);
   saveUi();
   resize();
   if (!chatDesiredOpen) return;
@@ -3270,6 +6615,9 @@ async function setChat(open) {
         })
         .finally(() => { chatLoadPromise = null; });
       await chatLoadPromise;
+      // Opening and closing can race the lazy import. Reconcile the mounted
+      // panel with the latest request before the stale caller returns.
+      setChatPanelVisible(chatDesiredOpen);
     }
   } catch (error) {
     console.error("[ifc-console] chat module failed", error);
@@ -3293,32 +6641,35 @@ async function setChat(open) {
 }
 
 function reconcileCompactLayout() {
+  let changed = chatDesiredOpen ? closePanelsForChat() : false;
   applyChatWidthForViewport();
   if (window.innerWidth > 620) {
+    if (changed) saveUi();
     syncPanelScrim();
     return;
   }
-  const treeOpen = $("btn-panel-tree").getAttribute("aria-pressed") === "true";
-  const propsOpen = $("btn-panel-props").getAttribute("aria-pressed") === "true";
-  let changed = false;
+  const treeOpen = treePanelController.isOpen();
+  const propsOpen = propsPanelController.isOpen();
+  let compactChanged = false;
   if (chatDesiredOpen) {
     if (treeOpen) {
       uiState.treeOpen = false;
-      changed = true;
+      compactChanged = true;
     }
     if (propsOpen) {
       uiState.propsOpen = false;
-      changed = true;
+      compactChanged = true;
     }
   } else if (treeOpen && propsOpen) {
     uiState.propsOpen = false;
-    changed = true;
+    compactChanged = true;
   }
-  if (changed) {
-    saveUi();
+  if (compactChanged) {
     applyTreePanel();
     applyPropsPanel();
+    changed = true;
   }
+  if (changed) saveUi();
   syncPanelScrim();
 }
 
@@ -3337,7 +6688,7 @@ chatResize.addEventListener("pointerdown", (e) => {
   const startX = e.clientX;
   const startWidth = chatDock.getBoundingClientRect().width;
   const move = (ev) => {
-    setChatWidth(startWidth - (ev.clientX - startX));
+    setChatWidth(startWidth + (ev.clientX - startX));
     resize();
   };
   const up = () => {
@@ -3361,11 +6712,24 @@ chatResize.addEventListener("keydown", (event) => {
   }
   if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
   event.preventDefault();
-  const movement = event.key === "ArrowLeft" ? 16 : -16;
+  const movement = event.key === "ArrowLeft" ? -16 : 16;
   setChatWidth(currentChatWidth() + movement);
   saveUi();
   resize();
 });
+
+// Side-panel toggles and drags change the chat's safe maximum without a
+// viewport resize. Re-clamp before paint so they cannot squeeze away the 3D
+// canvas or leave the dock wider than its current workspace permits.
+const chatLayoutObserver = new ResizeObserver(() => {
+  if (!chatDesiredOpen) return;
+  const changed = closePanelsForChat();
+  applyChatWidthForViewport();
+  if (changed) saveUi();
+  resize();
+});
+chatLayoutObserver.observe($("tree-panel"));
+chatLayoutObserver.observe($("props-panel"));
 
 if (uiState.chatOpen || queryParams.get("chat") === "1") setChat(true);
 window.addEventListener("resize", reconcileCompactLayout);
@@ -3373,9 +6737,17 @@ reconcileCompactLayout();
 
 window.addEventListener("keydown", (e) => {
   if (e.key === "Escape") {
-    // an active tool owns Escape first, then the popovers
-    if (measureMode) setMeasureMode(false);
-    else {
+    // an active tool owns Escape first, then the popovers; inside the tool,
+    // the pending points and the axis lock go before the mode itself
+    if (measureMode) {
+      if (pending.length || axisLock) {
+        clearPending();
+        axisLock = "";
+        renderMeasurements();
+      } else {
+        setMeasureMode(false);
+      }
+    } else {
       const trigger = POPOVERS.find(([, panelId]) => !$(panelId).hidden)?.[0];
       closePopovers();
       if (trigger) $(trigger).focus();
@@ -3383,17 +6755,23 @@ window.addEventListener("keydown", (e) => {
     return;
   }
   if (e.ctrlKey || e.metaKey || e.altKey) return;
-  const shortcutSurface = e.target === document.body
-    || e.target === canvas
-    || e.target.closest?.(".tree-label, .search-hit");
-  if (!shortcutSurface) return;
+  if (!isShortcutSurface(e.target)) return;
   const key = e.key.toLowerCase();
-  if (key === "m") {
+  if (key === "m" || key === "a" || key === "r") {
     e.preventDefault();
-    setMeasureMode(!measureMode);
+    const kind = key === "m" ? "distance" : key === "a" ? "angle" : "area";
+    setMeasureMode(!(measureMode && measureKind === kind), kind);
+  } else if (key === "enter" && measureMode) {
+    e.preventDefault();
+    if (finishArea()) renderMeasurements();
+  } else if (key === "p") {
+    e.preventDefault();
+    setProjection(isOrtho() ? "perspective" : "orthographic");
   } else if (key === "f") {
     e.preventDefault();
-    fitTo(null);
+    // Shift focuses instead: the selection alone, in a tab that names it
+    if (e.shiftKey) focusSelection(true);
+    else fitTo(null);
   } else if (key === "c") {
     e.preventDefault();
     if (!chatBtn.hidden) setChat(chatDock.hidden);

@@ -18,10 +18,75 @@ MEASUREMENT = {
 }
 
 
+DIMENSIONS = {
+    "kind": "dimensions",
+    "guid": "3vB2YO$MX4xv5uCqZZG05x",
+    "length": 4.0,
+    "width": 3.0,
+    "thickness": 0.3,
+    "area": 33.84,
+    "volume": 3.6,
+    "method": "oriented bounding box",
+    "centre": {"x": 2.5, "y": 0.12, "z": 1.5},
+}
+LASER = {
+    "kind": "laser",
+    "method": "element bounding boxes",
+    "origin": [2.5, 0.12, 1.5],
+    "axes": {
+        "x": {"span": 1.0, "negative": {"distance": 0.5, "guid": "a"},
+              "positive": {"distance": 0.5, "guid": "b"}},
+        "y": {"span": None},
+        "z": {"span": None},
+    },
+}
+ANGLE = {"kind": "angle", "degrees": 90.0, "at": [0.0, 0.0, 0.0], "legs": [1.0, 1.0]}
+AREA = {
+    "kind": "area",
+    "area": 3.0,
+    "perimeter": 8.0,
+    "flatness": 0.0,
+    "points": [[0.0, 0.0, 0.0], [3.0, 0.0, 0.0], [3.0, 1.0, 0.0], [0.0, 1.0, 0.0]],
+}
+
+
 class TestCleaning:
     def test_valid_items_survive_rounding(self):
         cleaned = _clean_measurements([MEASUREMENT])
         assert cleaned == [MEASUREMENT]
+
+    def test_every_kind_the_viewer_can_measure_arrives(self):
+        """A size measured in the viewer used to be sent and then dropped
+        here, so the assistant that asked for it was told nothing had been
+        measured."""
+        cleaned = _clean_measurements([DIMENSIONS, LASER, ANGLE, AREA])
+        assert [item["kind"] for item in cleaned] == ["dimensions", "laser", "angle", "area"]
+        assert cleaned[0]["thickness"] == 0.3
+        assert cleaned[0]["volume"] == 3.6
+        assert cleaned[1]["axes"]["x"]["span"] == 1.0
+        assert cleaned[1]["axes"]["x"]["negative"]["guid"] == "a"
+        assert cleaned[2]["degrees"] == 90.0
+        assert cleaned[3]["points"][2] == [3.0, 1.0, 0.0]
+
+    def test_an_untagged_item_is_still_a_distance(self):
+        """The only shape there used to be."""
+        assert _clean_measurements([MEASUREMENT])[0]["distance"] == 0.2
+
+    def test_a_kind_missing_its_own_fields_drops(self):
+        cleaned = _clean_measurements(
+            [
+                {"kind": "angle", "at": [0, 0, 0]},           # no degrees
+                {"kind": "area", "area": 2.0, "points": [[0, 0, 0]]},  # not a polygon
+                {"kind": "laser", "axes": "sideways"},
+                {"kind": "dimensions", "guid": "x"},          # no numbers at all
+                ANGLE,
+            ]
+        )
+        assert [item["kind"] for item in cleaned] == ["angle"]
+
+    def test_snapped_ends_travel_with_a_distance(self):
+        cleaned = _clean_measurements([{**MEASUREMENT, "ends": ["corner", "surface"]}])
+        assert cleaned[0]["ends"] == ["corner", "surface"]
 
     def test_garbage_is_dropped_not_fatal(self):
         cleaned = _clean_measurements(

@@ -42,6 +42,9 @@ _SEARCH_TERM_MAX = 4096
 _GUID_MAX = 128
 _HELLO_FRAME_MAX = 16_384
 _WS_FRAME_MAX = 13_000_000
+# A slow serialize is slow, not stuck, so it must not spend the model worker's
+# timeout budget and poison the session; the tab is told to ask again instead.
+_SERIALIZE_TIMEOUT = 300.0
 
 # The SPA makes zero non-localhost requests; the CSP makes that a guarantee.
 # script-src needs 'unsafe-eval': web-ifc's embind glue builds its invoker
@@ -109,11 +112,25 @@ def build_viewer_routes(core: AppCore) -> list[Any]:
         )
 
     @core.model_lifecycle_operation
+    async def _pinned_model(request) -> tuple[Any, str, str | None]:
+        """Resolve the requested model and snapshot its ETag under the lock.
+
+        Serializing a large model takes seconds to minutes and this lock gates
+        every query tool, every save and the viewer's own element and search
+        routes, so it is released before that work starts.
+        """
+        session = _requested_session(request)
+        if session is None:
+            return None, "", "MODEL_NOT_FOUND"
+        if not session.loaded:
+            return None, "", "NO_MODEL_LOADED"
+        return session, core.viewer_hub.model_etag(session) or "", None
+
     async def model_ifc(request) -> Response:
         if not core.viewer.enabled:
             return _disabled_response()
-        session = _requested_session(request)
-        if session is None:
+        session, etag, problem = await _pinned_model(request)
+        if problem == "MODEL_NOT_FOUND":
             return JSONResponse(
                 {
                     "error": "MODEL_NOT_FOUND",
@@ -121,7 +138,7 @@ def build_viewer_routes(core: AppCore) -> list[Any]:
                 },
                 status_code=404,
             )
-        if not session.loaded:
+        if problem is not None:
             return JSONResponse(
                 {"error": "NO_MODEL_LOADED", "hint": "open a model in the terminal"},
                 status_code=404,
@@ -129,7 +146,6 @@ def build_viewer_routes(core: AppCore) -> list[Any]:
         max_mb = core.settings.viewer.max_model_mb
         if session.size_bytes > max_mb * 1_048_576:
             return _model_too_large(session.size_bytes, max_mb)
-        etag = core.viewer_hub.model_etag(session) or ""
         if request.headers.get("if-none-match") == etag:
             return Response(status_code=304, headers={"ETag": etag})
         headers = {"ETag": etag, "Cache-Control": "no-cache"}
@@ -143,19 +159,31 @@ def build_viewer_routes(core: AppCore) -> list[Any]:
             return FileResponse(session.path, media_type="application/x-step", headers=headers)
         data = core.viewer_hub.cached_model_bytes(etag)
         if data is None:
-            # Single-flight: N tabs opening at once must not each queue a full
-            # serialization onto the single model worker.
-            async with core.viewer_hub.model_bytes_lock:
-                data = core.viewer_hub.cached_model_bytes(etag)
-                if data is None:
-                    # Serialization runs on the model worker: the file object is
-                    # not thread-safe and edits must not interleave with it.
-                    data = await session.run(
-                        lambda: session.ifc.to_string().encode("utf-8"), timeout=600
-                    )
-                    if len(data) > max_mb * 1_048_576:
-                        return _model_too_large(len(data), max_mb, serialized=True)
-                    core.viewer_hub.cache_model_bytes(etag, data)
+            job = core.viewer_hub.model_bytes_job(etag, session)
+            try:
+                # shield, not cancel: another tab may be waiting on this job.
+                data = await asyncio.wait_for(asyncio.shield(job), timeout=_SERIALIZE_TIMEOUT)
+            except asyncio.TimeoutError:
+                return JSONResponse(
+                    {
+                        "error": "MODEL_BUSY",
+                        "message": f"the model is still being serialized after "
+                        f"{_SERIALIZE_TIMEOUT:.0f}s",
+                        "hint": "the viewer can retry; the bytes are cached once it finishes",
+                    },
+                    status_code=503,
+                )
+            except ToolError as exc:
+                return _tool_error_response(exc, status=503)
+            except RuntimeError:
+                # The model was detached while we serialized; its worker is gone.
+                return JSONResponse(
+                    {
+                        "error": "MODEL_NOT_FOUND",
+                        "hint": "the model was detached; reload the viewer",
+                    },
+                    status_code=404,
+                )
         if len(data) > max_mb * 1_048_576:
             return _model_too_large(len(data), max_mb, serialized=True)
         return Response(data, media_type="application/x-step", headers=headers)
@@ -240,6 +268,20 @@ def build_viewer_routes(core: AppCore) -> list[Any]:
             return _tool_error_response(exc, status=503)
         return JSONResponse(payload)
 
+    async def _status_with_units(client: Any) -> None:
+        """Resend status once the file's length unit is known.
+
+        The tab cannot label a measurement without it, but reading it belongs
+        to the model worker, so it follows the handshake instead of delaying it
+        behind whatever that worker is already doing.
+        """
+        hub = core.viewer_hub
+        await hub.refresh_units()
+        try:
+            await client.send(hub.status_payload())
+        except Exception:
+            log.debug("viewer client %s closed before its units arrived", client.id)
+
     async def ws_endpoint(websocket: WebSocket) -> None:
         if not core.viewer.enabled:
             await websocket.close(code=4404)
@@ -247,6 +289,7 @@ def build_viewer_routes(core: AppCore) -> list[Any]:
         await websocket.accept()
         hub = core.viewer_hub
         client = None
+        units_task: asyncio.Task | None = None
         try:
             # Browsers cannot attach an Authorization header to a WS upgrade,
             # so the first frame MUST be a hello carrying the session token;
@@ -271,6 +314,7 @@ def build_viewer_routes(core: AppCore) -> list[Any]:
                 return
             client = hub.register(websocket)
             await client.send(hub.status_payload())
+            units_task = asyncio.ensure_future(_status_with_units(client))
             while True:
                 raw = await websocket.receive_text()
                 if len(raw) > _WS_FRAME_MAX:
@@ -287,6 +331,8 @@ def build_viewer_routes(core: AppCore) -> list[Any]:
         except Exception:
             log.exception("viewer websocket failed")
         finally:
+            if units_task is not None:
+                units_task.cancel()
             if client is not None:
                 hub.unregister(client)
 

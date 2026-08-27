@@ -75,8 +75,11 @@ model open in this console and on the documents this project has indexed.
 
 Pick the smallest capable path for the question in front of you:
 - A fact about the model: resolve it with the query tools and answer.
-- A quantity or dimension: look for a measurement recipe first, then measure
-  with an explicit method and report the method beside the number.
+- A quantity or dimension: check for a saved skill and a measurement recipe
+  first, then measure with an explicit method and report the method beside the
+  number. To measure everything about one element (profile width, height,
+  plate thicknesses, length), use analyze_element_geometry and, when the
+  viewer is on, focus the element so the user sees what you measured.
 - A question about company practice: search the project documents and cite the
   document and page. Read drawings, scans, and photographs as pixels when the
   layout matters.
@@ -102,20 +105,28 @@ Work in this order:
    get_project_reference_image and PDF drawings, diagrams, or scans with
    get_project_document_page, so you inspect the actual pixels. An
    uncalibrated image is evidence of condition, never a source of dimensions.
-3. Choose the method. get_measurement_recipe(class, property, type_name)
-   before anything else; when a recipe matches, use its suggested_arguments and
-   cite its source document and page. When none matches, search the project
-   corpus for the company procedure, choose a method yourself, and say in the
-   report that no recipe matched.
-4. Measure. One measure_elements call with all GlobalIds beats many single
-   calls. When a recipe carries a tolerance, cross-check flagged values with
-   method='geometry_extent' and report any disagreement rather than picking a
-   winner silently.
-5. Verify visually when the geometry is complex: highlight the elements, apply
-   a color theme for on-spec, deviating, and low-confidence groups, and read a
-   viewer screenshot. get_viewer_measurements returns distances the user
-   measured by hand.
-6. Write only when asked, and only as a proposal. Fill in method and source on
+3. Choose the method. Your session context lists the saved skills; load a
+   matching one with get_agent_skill, and call get_measurement_recipe(class,
+   property, type_name) before picking a method yourself. A matching skill or
+   recipe beats rediscovering the method, and both are cited. When none
+   matches, search the project corpus for the company procedure, choose a
+   method yourself, and say in the report that no recipe matched.
+4. Measure. For one element's full picture (profile width, height, flange and
+   web thickness, length), analyze_element_geometry merges exact profile
+   parameters with measured mesh sections and names the source of every value.
+   For one metric across many elements, one measure_elements call with all
+   GlobalIds beats many single calls. When a recipe carries a tolerance,
+   cross-check flagged values with method='geometry_extent' and report any
+   disagreement rather than picking a winner silently.
+5. Verify visually when the geometry is complex: focus the element in a viewer
+   tab (control_viewer action='focus'), highlight or color-theme groups, and
+   read a viewer screenshot. get_viewer_measurements returns distances the
+   user measured by hand.
+6. Deliver. When the user wants the results to keep, write an
+   export_measurement_report and give the path. After solving a novel
+   measurement well, offer to save the procedure with save_agent_skill so the
+   next run starts from it.
+7. Write only when asked, and only as a proposal. Fill in method and source on
    every proposal call, report the ChangeSet id, and say that approval and
    commit are the user's.
 
@@ -169,7 +180,10 @@ GENERAL = AgentPreset(
         "writing standing instructions, or build a preset of your own."
     ),
     role=GENERAL_ROLE,
-    blocks=tuple(name for name in BLOCK_NAMES if name != "code"),
+    # Every block, code included. Without it the assistant has to give up on
+    # anything the structured tools do not already answer, and the session
+    # mode is what decides whether a run may change the model anyway.
+    blocks=BLOCK_NAMES,
     starters=(
         "What is in this model?",
         "Measure the interior wall thickness and cite the manual",
@@ -223,13 +237,14 @@ MEASUREMENT = AgentPreset(
         "ifc-context",
         "documents",
         "measurements",
+        "skills",
         "viewer",
         "property-proposals",
         "ai-audit",
     ),
     starters=(
         "Measure the thickness of all interior walls",
-        "Which walls deviate from the recipe tolerance?",
+        "Analyze the selected element and report every dimension",
         "Read the manual and measure what it defines",
         "Propose the measured thickness as an AI-marked property",
     ),
@@ -329,6 +344,10 @@ class PresetPack:
 
     def __init__(self, preset: AgentPreset) -> None:
         self.preset = preset
+        self.declared_limits = AgentLimits(
+            max_tool_rounds=preset.max_tool_rounds,
+            max_tool_calls=preset.max_tool_calls,
+        )
         self.info = preset.info()
 
     async def compose(
@@ -377,11 +396,7 @@ class PresetPack:
             model=model,
             tools=composition.tools,
             instructions=composition.instructions,
-            limits=limits
-            or AgentLimits(
-                max_tool_rounds=self.preset.max_tool_rounds,
-                max_tool_calls=self.preset.max_tool_calls,
-            ),
+            limits=limits or self.declared_limits,
             **kwargs,
         )
 

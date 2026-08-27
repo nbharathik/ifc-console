@@ -13,7 +13,8 @@ pip install ifc-console
 pip install "ifc-console[viewer]"
 ```
 
-LangChain is deliberately not an IFC Console dependency or extra.
+LangChain remains application-owned. LangGraph orchestration is available only
+through the optional `graph` extra; a normal install stays framework-neutral.
 
 | interface | use it for |
 | --------- | ---------- |
@@ -118,6 +119,47 @@ Put `langchain` and the integration for your model provider in the agent
 application's `pyproject.toml`; do not add them to IFC Console. Use LangChain's
 async `ainvoke`/`astream` APIs so the model session and tools stay on one event
 loop. Structured IFC envelopes are retained as tool-message artifacts.
+
+For a checkpointed outer workflow without replacing the built-in agent loop,
+install the graph extra:
+
+```bash
+pip install "ifc-console[graph]"
+```
+
+`create_langgraph_workflow()` receives a synchronous builder callback. Graph
+nodes return `graph_update()` values, and the adapter emits the same
+`AgentEvent` stream as the built-in agent:
+
+```python
+from ifc_console.integrations.langgraph import (
+    create_langgraph_workflow,
+    graph_update,
+)
+
+async def inspect(state):
+    result = await reviewer.run(state["prompt"])
+    return graph_update(final_text=result.text)
+
+def configure(builder, start, end):
+    builder.add_node("inspect", inspect)
+    builder.add_edge(start, "inspect")
+    builder.add_edge("inspect", end)
+
+workflow = create_langgraph_workflow(configure, checkpointer=checkpointer)
+async for event in workflow.stream("Inspect the selected walls", thread_id="review-1"):
+    render(event)
+```
+
+The caller owns the checkpointer lifecycle. Use an in-memory saver only for
+tests, an async SQLite saver for a local single-user application, and a hosted
+database saver for multi-user deployments. Keep runtimes, credentials, IFC
+handles, and inline image bytes outside checkpoint state; store artifact and
+change-set references instead. Approval interrupts use
+`graph_approval_interrupt()` and resume through `workflow.resume()` on the same
+thread ID. LangGraph's async interrupt context requires Python 3.11 or newer;
+other async graph workflows remain available on Python 3.10. Host policy and
+revision checks still authorize the eventual tool call or commit.
 
 ## A focused property agent
 

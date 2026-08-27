@@ -6,15 +6,66 @@
  */
 
 const STORAGE_VERSION = 1;
+export const HISTORY_STORAGE_NAME = "ifc-console-chat-history-v3";
+export const LEGACY_HISTORY_STORAGE_NAMES = Object.freeze([
+  "ifc-console-chat-history-v1",
+  "ifc-console-chat-history-v2",
+]);
 const DEFAULT_LIMIT = 40;
 const TURN_LIMIT = 80;
 const TEXT_LIMIT = 100_000;
+const BLOCK_LIMIT = 6000;
+const BLOCK_COUNT = 60;
+const REQUEST_TURN_LIMIT = 60;
+const REQUEST_TEXT_LIMIT = 180_000;
+const REQUEST_TURN_TEXT_LIMIT = 100_000;
 
 const plain = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
 
+// A stored block is what the panel drew, not what the provider sent, so a
+// reopened conversation still shows which tools ran and what they returned.
+function cleanBlock(value) {
+  if (!plain(value)) return null;
+  if (value.kind === "tool") {
+    return {
+      kind: "tool",
+      name: String(value.name || "tool").slice(0, 120),
+      stage: Number.isInteger(value.stage) ? value.stage : -1,
+      state: ["ok", "bad", "running"].includes(value.state) ? value.state : "ok",
+      summary: String(value.summary || "").slice(0, 300),
+      ms: Number.isFinite(value.ms) ? value.ms : null,
+      args: String(value.args || "").slice(0, BLOCK_LIMIT),
+      preview: String(value.preview || "").slice(0, BLOCK_LIMIT),
+      detail: String(value.detail || "").slice(0, 400),
+    };
+  }
+  if (value.kind === "proposal") {
+    return plain(value.proposal) ? { kind: "proposal", proposal: value.proposal } : null;
+  }
+  // Who approved which write is the audit trail of an AI-authored change, so
+  // it outlives the run that asked. The request id is deliberately not kept:
+  // it answers a future the console has already resolved.
+  if (value.kind === "approval") {
+    return {
+      kind: "approval",
+      name: String(value.name || "tool").slice(0, 120),
+      capabilities: Array.isArray(value.capabilities)
+        ? value.capabilities.slice(0, 12).map((item) => String(item).slice(0, 80))
+        : [],
+      state: ["approved", "denied", "waiting"].includes(value.state) ? value.state : "denied",
+      decidedBy: String(value.decidedBy || "").slice(0, 120),
+      reason: String(value.reason || "").slice(0, 400),
+      args: String(value.args || "").slice(0, BLOCK_LIMIT),
+    };
+  }
+  if (value.kind !== "text" && value.kind !== "reasoning") return null;
+  if (typeof value.text !== "string" || !value.text.trim()) return null;
+  return { kind: value.kind, text: value.text.slice(0, BLOCK_LIMIT) };
+}
+
 function cleanTurn(value) {
   if (!plain(value) || !["user", "assistant"].includes(value.role)) return null;
-  if (typeof value.text !== "string" || !value.text.trim()) return null;
+  const text = typeof value.text === "string" ? value.text.slice(0, TEXT_LIMIT) : "";
   const attachments = Array.isArray(value.attachments)
     ? value.attachments.slice(0, 8).map((item) => ({
         name: String(item?.name || "attachment").slice(0, 300),
@@ -22,7 +73,15 @@ function cleanTurn(value) {
         media: item?.media === "image" ? "image" : "document",
       }))
     : [];
-  return { role: value.role, text: value.text.slice(0, TEXT_LIMIT), attachments };
+  const blocks = Array.isArray(value.blocks)
+    ? value.blocks.slice(-BLOCK_COUNT).map(cleanBlock).filter(Boolean)
+    : [];
+  const status = ["complete", "stopped", "error"].includes(value.status)
+    ? value.status
+    : "complete";
+  const error = typeof value.error === "string" ? value.error.slice(0, 1000) : "";
+  if (!text.trim() && !blocks.length && !error) return null;
+  return { role: value.role, text, attachments, blocks, status, error };
 }
 
 function cleanRecord(value) {
@@ -32,6 +91,7 @@ function cleanRecord(value) {
     : [];
   return {
     id: value.id.slice(0, 100),
+    scope: typeof value.scope === "string" ? value.scope.slice(0, 160) : "",
     agent: typeof value.agent === "string" ? value.agent.slice(0, 100) : "",
     agent_title: typeof value.agent_title === "string" ? value.agent_title.slice(0, 100) : "Chat",
     title: typeof value.title === "string" ? value.title.slice(0, 100) : "New conversation",
@@ -47,23 +107,24 @@ export function conversationId() {
 }
 
 export class ChatHistoryStore {
-  constructor(storage, name = "ifc-console-chat-history-v2", limit = DEFAULT_LIMIT) {
+  constructor(storage, name = HISTORY_STORAGE_NAME, limit = DEFAULT_LIMIT, scope = "") {
     this.storage = storage;
     this.name = name;
     this.limit = limit;
+    this.scope = String(scope || "").slice(0, 160);
+  }
+
+  setScope(scope) {
+    this.scope = String(scope || "").slice(0, 160);
+    return this;
   }
 
   list() {
-    try {
-      const payload = JSON.parse(this.storage.getItem(this.name) || "{}");
-      if (!plain(payload) || payload.version !== STORAGE_VERSION || !Array.isArray(payload.items)) {
-        return [];
-      }
-      return payload.items.map(cleanRecord).filter(Boolean)
-        .sort((left, right) => right.updated_at - left.updated_at);
-    } catch {
-      return [];
-    }
+    return this.all().filter((record) => record.scope === this.scope);
+  }
+
+  all() {
+    return this._all();
   }
 
   get(id) {
@@ -77,7 +138,9 @@ export class ChatHistoryStore {
   save(record) {
     const safe = cleanRecord(record);
     if (!safe || !safe.turns.length) return null;
-    const items = [safe, ...this.list().filter((item) => item.id !== safe.id)]
+    safe.scope = this.scope;
+    const payload = this._all();
+    const items = [safe, ...payload.filter((item) => item.id !== safe.id)]
       .slice(0, this.limit);
     try {
       this.storage.setItem(this.name, JSON.stringify({ version: STORAGE_VERSION, items }));
@@ -88,7 +151,7 @@ export class ChatHistoryStore {
   }
 
   remove(id) {
-    const current = this.list();
+    const current = this._all();
     const removed = current.find((item) => item.id === id) || null;
     const items = current.filter((item) => item.id !== id);
     try {
@@ -99,14 +162,176 @@ export class ChatHistoryStore {
     return removed;
   }
 
-  clear() {
+  _all() {
+    try {
+      const payload = JSON.parse(this.storage.getItem(this.name) || "{}");
+      if (!plain(payload) || payload.version !== STORAGE_VERSION || !Array.isArray(payload.items)) {
+        return [];
+      }
+      return payload.items.map(cleanRecord).filter(Boolean)
+        .sort((left, right) => right.updated_at - left.updated_at);
+    } catch {
+      return [];
+    }
+  }
+
+  clear({ includeLegacy = false } = {}) {
     try {
       this.storage.removeItem(this.name);
+      if (includeLegacy) this.discardLegacy();
       return true;
     } catch {
       return false;
     }
   }
+
+  discardLegacy() {
+    let complete = true;
+    for (const name of LEGACY_HISTORY_STORAGE_NAMES) {
+      if (name === this.name) continue;
+      try {
+        this.storage.removeItem(name);
+      } catch {
+        complete = false;
+      }
+    }
+    return complete;
+  }
+}
+
+// Plain chat sends its visible transcript on every request. Bound that payload
+// independently of the local archive so a long-lived tab cannot eventually
+// exceed the server's transcript limit. The newest turns win; a single very
+// large message is clipped with an explicit marker instead of disappearing.
+export function boundedChatTurns(
+  source,
+  {
+    maxTurns = REQUEST_TURN_LIMIT,
+    maxChars = REQUEST_TEXT_LIMIT,
+    maxTurnChars = REQUEST_TURN_TEXT_LIMIT,
+  } = {},
+) {
+  if (!Array.isArray(source) || maxTurns < 1 || maxChars < 1 || maxTurnChars < 1) return [];
+  const clip = (value, limit) => {
+    if (value.length <= limit) return value;
+    const marker = "\n\n[message truncated by the chat panel]";
+    const room = Math.max(0, limit - marker.length);
+    return value.slice(0, room) + marker.slice(0, limit - room);
+  };
+  const selected = [];
+  let remaining = maxChars;
+  for (let index = source.length - 1; index >= 0 && selected.length < maxTurns; index -= 1) {
+    const turn = source[index];
+    if (!plain(turn) || !["user", "assistant"].includes(turn.role)) continue;
+    const text = clip(typeof turn.text === "string" ? turn.text : "", maxTurnChars);
+    if (!text && !selected.length) continue;
+    if (text.length <= remaining) {
+      selected.push({ role: turn.role, text });
+      remaining -= text.length;
+      continue;
+    }
+    if (!selected.length) {
+      selected.push({ role: turn.role, text: clip(text, remaining) });
+    }
+    break;
+  }
+  selected.reverse();
+  while (selected[0]?.role === "assistant" && selected.some((turn) => turn.role === "user")) {
+    selected.shift();
+  }
+  return selected;
+}
+
+/* What a person is actually being asked to allow.
+ *
+ * The reviewer used to approve an IFC write by reading the tool's raw JSON.
+ * These are the fields that decide whether a change is right, in the order a
+ * reader wants them; anything unrecognised stays in the arguments fold.
+ * Pure, so the live card and the exported transcript say the same thing.
+ */
+const APPROVAL_FIELDS = Object.freeze([
+  ["Intent", ["description", "intent", "purpose"]],
+  ["Property", ["property", "property_name", "name", "quantity"]],
+  ["Value", ["value", "measured_value", "new_value"]],
+  ["Unit", ["unit", "units"]],
+  ["Property set", ["pset", "pset_name", "property_set"]],
+  ["Classification", ["classification", "system", "reference"]],
+  ["Method", ["method"]],
+  ["Confidence", ["confidence"]],
+]);
+
+const APPROVAL_TARGET_KEYS = Object.freeze([
+  "global_ids",
+  "globalids",
+  "guids",
+  "elements",
+  "element_ids",
+]);
+
+function approvalTarget(args) {
+  for (const key of APPROVAL_TARGET_KEYS) {
+    const value = args[key];
+    if (Array.isArray(value)) return `${value.length} element${value.length === 1 ? "" : "s"}`;
+    if (typeof value === "string" && value.trim()) return value.trim().slice(0, 120);
+  }
+  if (Number.isFinite(args.element_count)) {
+    return `${args.element_count} element${args.element_count === 1 ? "" : "s"}`;
+  }
+  const selector = args.selector ?? args.query;
+  return typeof selector === "string" && selector.trim() ? selector.trim().slice(0, 120) : "";
+}
+
+const scalar = (value) =>
+  value !== null && value !== undefined && value !== "" && !plain(value) && !Array.isArray(value);
+
+export function approvalDigest(block) {
+  const name = String(block?.name || "tool");
+  let args = {};
+  try {
+    const parsed = JSON.parse(String(block?.args || "{}"));
+    if (plain(parsed)) args = parsed;
+  } catch {
+    args = {};
+  }
+  const facts = [];
+  for (const [label, keys] of APPROVAL_FIELDS) {
+    const key = keys.find((candidate) => scalar(args[candidate]));
+    if (!key) continue;
+    facts.push({ label, value: String(args[key]).slice(0, 240) });
+  }
+  const target = approvalTarget(args);
+  if (target) facts.push({ label: "Targets", value: target });
+  const property = [args.property, args.property_name, args.quantity].find(scalar);
+  const value = [args.value, args.measured_value, args.new_value].find(scalar);
+  const unit = scalar(args.unit) ? ` ${args.unit}` : "";
+  const headline = property !== undefined && value !== undefined
+    ? `Set ${property} to ${value}${unit}${target ? ` on ${target}` : ""}`
+    : `Run ${name}${target ? ` on ${target}` : ""}`;
+  return { name, headline, facts };
+}
+
+/* The last few turns of the outgoing conversation, as plain text.
+ *
+ * Switching assistant used to throw the transcript away, so escalating a
+ * question to a specialist meant retyping its whole setup. The slice goes into
+ * the composer where it can be read and edited, never silently into a prompt.
+ */
+export function carrySlice(source, { count = 3, chars = 400, label = "the previous assistant" } = {}) {
+  const rows = (Array.isArray(source) ? source : [])
+    .filter((turn) =>
+      plain(turn)
+      && ["user", "assistant"].includes(turn.role)
+      && typeof turn.text === "string"
+      && turn.text.trim())
+    .slice(-Math.max(1, count));
+  if (!rows.length) return "";
+  const lines = [`Context carried from ${label}:`];
+  for (const turn of rows) {
+    const text = turn.text.trim().replace(/\s+/g, " ");
+    const clipped = text.length > chars ? `${text.slice(0, chars - 3)}...` : text;
+    lines.push(`${turn.role === "user" ? "Asked" : "Answered"}: ${clipped}`);
+  }
+  return lines.join("\n");
 }
 
 export function transcriptMarkdown(record, model = "") {
@@ -125,7 +350,17 @@ export function transcriptMarkdown(record, model = "") {
     if (turn.attachments?.length) {
       lines.push(`Attachments: ${turn.attachments.map((item) => `\`${item.name}\``).join(", ")}`, "");
     }
-    lines.push(turn.text, "");
+    if (turn.text) lines.push(turn.text, "");
+    else if (turn.blocks.length) lines.push("_[Tool and evidence output; see the panel transcript.]_", "");
+    // An exported transcript is the audit record, so it names every gated call
+    // and how it was answered, not just what the assistant wrote afterwards.
+    for (const block of turn.blocks) {
+      if (block.kind !== "approval") continue;
+      const digest = approvalDigest(block);
+      const who = block.decidedBy ? ` (${block.decidedBy})` : "";
+      lines.push(`_Approval: \`${block.name}\` ${block.state}${who}. ${digest.headline}._`, "");
+    }
+    if (turn.error) lines.push(`_Error: ${turn.error}_`, "");
   }
   return lines.join("\n");
 }

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -429,10 +430,12 @@ async def test_documented_mapping_plugin_projects_to_mcp(tmp_path) -> None:
         mcp = build_mcp(core)
         tools = {tool.name for tool in await mcp.list_tools()}
         result = await mcp.call_tool("example_status", {})
-        structured = result[1]
         assert "example_status" in tools
-        assert structured["ok"] is True
-        assert structured["data"] == {"status": "ready"}
+        # A plugin that declares no data shape publishes no output schema, so
+        # the envelope arrives in the text block every tool always carries.
+        payload = json.loads(result[0].text)
+        assert payload["ok"] is True
+        assert payload["data"] == {"status": "ready"}
     finally:
         await core.ashutdown()
 

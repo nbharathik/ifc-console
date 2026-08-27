@@ -286,6 +286,75 @@ def build_chat_routes(core: AppCore) -> list[Route]:
             core.chat.keys[provider or core.chat.provider] = api_key.strip()
         return JSONResponse({"ok": True, "provider": core.chat.provider, "model": core.chat.model})
 
+    async def session_mode(request) -> JSONResponse:
+        """Change the human-owned session mode from the local chat surface."""
+        if not core.chat.enabled:
+            return _disabled()
+        body, error = await _json_object(request)
+        if error is not None:
+            return error
+        assert body is not None
+        # Two axes, either of which may be sent on its own: what the
+        # assistant may touch, and whether it asks first.
+        mode = body.get("mode")
+        autonomy = body.get("autonomy")
+        if mode is not None and mode not in {"ask", "edit"}:
+            return JSONResponse({"error": "mode must be ask or edit"}, status_code=400)
+        if autonomy is not None and autonomy not in {"approval", "auto"}:
+            return JSONResponse(
+                {"error": "autonomy must be approval or auto"}, status_code=400
+            )
+        if mode is None and autonomy is None:
+            return JSONResponse({"error": "mode or autonomy is required"}, status_code=400)
+        from ifc_console.policy.modes import Mode
+
+        if mode == "edit" and core.policy.mode is not Mode.EDIT:
+            if body.get("confirmed") is not True:
+                return JSONResponse(
+                    {"error": "edit mode requires explicit confirmation"}, status_code=409
+                )
+        if autonomy == "auto" and not core.ai_autonomy:
+            if body.get("confirmed") is not True:
+                return JSONResponse(
+                    {"error": "auto autonomy requires explicit confirmation"},
+                    status_code=409,
+                )
+        if mode is not None:
+            core.set_mode(Mode(mode), by="chat-panel")
+        if autonomy is not None:
+            core.set_ai_autonomy(autonomy == "auto", by="chat-panel")
+        return JSONResponse(
+            {
+                "ok": True,
+                "mode": core.policy.mode.value,
+                "ai_autonomy": core.ai_autonomy,
+                # Never true for an assistant: saving is the user's alone.
+                "ai_save_allowed": core.policy.allow_ai_save,
+                "dirty": core.session.dirty,
+            }
+        )
+
+    async def session_save(request) -> JSONResponse:
+        """Write the in-memory model to its file, on the user's say-so.
+
+        The assistant has no route to this. It is reachable only from a
+        control the person operating the console clicked.
+        """
+        if not core.chat.enabled:
+            return _disabled()
+        session = core.session
+        if not session.loaded or session.path is None:
+            return JSONResponse({"error": "no model is open"}, status_code=409)
+        if not session.dirty:
+            return JSONResponse({"ok": True, "saved": False, "dirty": False})
+        try:
+            await core.save_model(by="chat-panel")
+        except Exception as exc:  # surfaced to the person who pressed save
+            return JSONResponse({"error": str(exc)}, status_code=500)
+        return JSONResponse(
+            {"ok": True, "saved": True, "dirty": core.session.dirty, "path": str(session.path)}
+        )
+
     async def stream(request) -> Response:
         if not core.chat.enabled:
             return _disabled()
@@ -366,5 +435,7 @@ def build_chat_routes(core: AppCore) -> list[Route]:
         Route("/api/chat/credentials", credentials, methods=["GET", "POST"]),
         Route("/api/chat/models", models, methods=["POST"]),
         Route("/api/chat/select", remember, methods=["POST"]),
+        Route("/api/session/mode", session_mode, methods=["POST"]),
+        Route("/api/session/save", session_save, methods=["POST"]),
         Route("/api/chat/stream", stream, methods=["POST"]),
     ]

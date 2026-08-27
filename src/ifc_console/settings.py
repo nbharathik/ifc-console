@@ -119,6 +119,9 @@ class ChatSettings(BaseModel):
     # Covers the wait for the first token, not just the connect: a local model
     # prefilling a long prompt can be quiet for a while.
     timeout_s: int = Field(default=300, ge=10, le=3600)
+    # Budget for a whole run (every tool round together), which outlives any
+    # single provider call.
+    run_timeout_s: int = Field(default=1800, ge=10, le=86_400)
 
 
 class KnowledgeSettings(BaseModel):

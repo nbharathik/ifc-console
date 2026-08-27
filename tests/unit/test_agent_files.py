@@ -94,6 +94,28 @@ def test_only_indexed_managed_images_can_ride_with_a_prompt(tmp_path: Path) -> N
     assert prompt_images[0].media_type == "image/png"
 
 
+def test_turn_upload_is_hidden_from_library_but_can_ride_its_message(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    references = AgentReferenceStore(project)
+    image = references.save_turn_upload(
+        "question.png", b"\x89PNG\r\n\x1a\nturn pixels"
+    )
+    knowledge = ProjectKnowledge(project)
+    try:
+        knowledge.ingest([image])
+        relative = image.relative_to(project).as_posix()
+        assert "/.turns/" in relative
+        assert references.entries(knowledge.sources()) == []
+        assert references.library_entries(knowledge.sources()) == []
+        prompt_images = references.prompt_images([relative], knowledge.sources())
+    finally:
+        knowledge.close()
+
+    assert len(prompt_images) == 1
+    assert prompt_images[0].media_type == "image/png"
+
+
 @pytest.mark.asyncio
 async def test_indexed_pdf_page_is_available_as_sdk_vision(tmp_path: Path) -> None:
     import pymupdf

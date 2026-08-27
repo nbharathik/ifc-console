@@ -7,6 +7,9 @@ from the iterator are SI metres regardless of the file's length unit.
 
 from __future__ import annotations
 
+import threading
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from typing import Any
 
 import numpy as np
@@ -24,21 +27,39 @@ NON_PHYSICAL = (
     "IfcSpatialZone",
 )
 
+# A room has a solid to measure even though it is not a physical element;
+# these classes have none, so a derived takeoff always skips them.
+NON_MEASURABLE = (
+    "IfcOpeningElement",
+    "IfcAnnotation",
+    "IfcGrid",
+    "IfcVirtualElement",
+)
+
 # Triangles per element above this are dropped: an element that dense is a
 # rendering mesh, not something anyone measures or clashes by hand.
 MAX_TRIANGLES = 20_000
 _EPS = 1e-9
 
 
-def is_non_physical(element: Any, cache: dict[str, bool]) -> bool:
+def _class_hit(element: Any, classes: tuple[str, ...], cache: dict[str, bool]) -> bool:
     name = element.is_a()
     hit = cache.get(name)
     if hit is None:
         # is_a(cls) matches subtypes; an exact name test misses IFC4 cases
         # like IfcOpeningStandardCase. Verdicts are cached per class name.
-        hit = any(element.is_a(cls) for cls in NON_PHYSICAL)
+        hit = any(element.is_a(cls) for cls in classes)
         cache[name] = hit
     return hit
+
+
+def is_non_physical(element: Any, cache: dict[str, bool]) -> bool:
+    return _class_hit(element, NON_PHYSICAL, cache)
+
+
+def is_non_measurable(element: Any, cache: dict[str, bool]) -> bool:
+    """True when the class has no solid to measure, spaces excluded."""
+    return _class_hit(element, NON_MEASURABLE, cache)
 
 
 def selected(ifc: Any, selector: str) -> list[Any]:
@@ -62,8 +83,19 @@ def resolve_targets(
     global_ids: list[str] | None = None,
     physical_only: bool = True,
     max_elements: int = 1000,
+    offset: int = 0,
 ) -> list[Any]:
-    """Resolve exactly one of selector or global_ids to elements."""
+    """Resolve exactly one of selector or global_ids to elements.
+
+    offset skips the first N of the deterministic order, so a caller can walk a
+    match one page at a time instead of only capping it.
+    """
+    if offset < 0:
+        raise ToolError(
+            "INVALID_INPUT",
+            f"offset {offset} is negative",
+            "offset counts elements to skip; the first page is offset=0.",
+        )
     if (selector is None) == (not global_ids):
         raise ToolError(
             "INVALID_INPUT",
@@ -93,7 +125,16 @@ def resolve_targets(
             elements = [e for e in elements if not is_non_physical(e, verdict)]
         # filter_elements returns a set; keep results reproducible
         elements.sort(key=lambda e: e.id())
+    matched = len(elements)
+    if offset:
+        elements = elements[offset:]
     if not elements:
+        if matched:
+            raise ToolError(
+                "NO_MATCH",
+                f"offset {offset} is past the {matched} matched elements",
+                "The last page is the one that comes back short; start again at offset=0.",
+            )
         raise ToolError(
             "NO_MATCH",
             f"selector {selector!r} matched no measurable elements",
@@ -103,14 +144,53 @@ def resolve_targets(
     if len(elements) > max_elements:
         raise ToolError(
             "TOO_MANY_ELEMENTS",
-            f"matched {len(elements)} elements, over the {max_elements} cap",
-            "Narrow the selector, or raise max_elements if you accept the cost.",
+            f"matched {matched} elements, {len(elements)} over the {max_elements} cap",
+            "Narrow the selector, raise max_elements if you accept the cost, or "
+            "walk the match with offset.",
         )
     return elements
 
 
+# Set by the caller that owns a mesh cache; thread-local because each model
+# session tessellates on its own worker thread.
+_provider = threading.local()
+
+MeshProvider = Callable[[Any, list[Any]], dict[int, tuple[np.ndarray, np.ndarray]]]
+
+
+@contextmanager
+def mesh_provider(provider: MeshProvider) -> Iterator[None]:
+    """Serve element_meshes from `provider` inside the block.
+
+    The slot is cleared while the provider runs, so a cache that tessellates
+    its misses through element_meshes reaches the real work, not itself.
+    """
+    previous = getattr(_provider, "fn", None)
+    _provider.fn = provider
+    try:
+        yield
+    finally:
+        _provider.fn = previous
+
+
 def element_meshes(ifc: Any, elements: list[Any]) -> dict[int, tuple[np.ndarray, np.ndarray]]:
-    """World-space (vertices, triangle indices) per element id, geometry only."""
+    """World-space (vertices, triangle indices) per element id, geometry only.
+
+    Served by the installed mesh provider when there is one, so probing an
+    element and then measuring it tessellates once.
+    """
+    provider = getattr(_provider, "fn", None)
+    if provider is None:
+        return _tessellate(ifc, elements)
+    _provider.fn = None
+    try:
+        return provider(ifc, elements)
+    finally:
+        _provider.fn = provider
+
+
+def _tessellate(ifc: Any, elements: list[Any]) -> dict[int, tuple[np.ndarray, np.ndarray]]:
+    """One iterator run: the real work behind element_meshes."""
     import multiprocessing
 
     import ifcopenshell.geom as geom
@@ -123,7 +203,9 @@ def element_meshes(ifc: Any, elements: list[Any]) -> dict[int, tuple[np.ndarray,
     settings.set("use-world-coords", True)
     out: dict[int, tuple[np.ndarray, np.ndarray]] = {}
     try:
-        cpus = max(1, min(multiprocessing.cpu_count() - 1, 8))
+        # Spinning up the worker threads costs more than it saves on a small
+        # set, and a probe is usually a handful of elements.
+        cpus = 1 if len(elements) < 32 else max(1, min(multiprocessing.cpu_count() - 1, 8))
     except NotImplementedError:
         cpus = 1
 
@@ -184,7 +266,10 @@ def _triangle_cross(verts: np.ndarray, faces: np.ndarray) -> np.ndarray:
 
 def mesh_volume(verts: np.ndarray, faces: np.ndarray) -> float:
     """Signed-tetrahedron volume of a closed mesh, in cubic metres."""
-    tris = verts[faces]
+    # The sum is translation invariant, so centre first: on a georeferenced
+    # file the raw terms reach 1e18 while the answer is ~1e0 and float64
+    # cancellation eats every significant digit.
+    tris = (verts - verts.mean(axis=0))[faces]
     signed = np.einsum("ij,ij->i", tris[:, 0], np.cross(tris[:, 1], tris[:, 2]))
     return abs(float(signed.sum())) / 6.0
 
@@ -199,6 +284,30 @@ def footprint_area(verts: np.ndarray, faces: np.ndarray) -> float:
     """
     cross = _triangle_cross(verts, faces)
     return float(np.abs(cross[:, 2]).sum()) / 4.0
+
+
+def surface_areas(
+    verts: np.ndarray, faces: np.ndarray, rotation: np.ndarray | None = None
+) -> dict[str, float]:
+    """Mesh area split by dominant face normal, in square metres.
+
+    The buckets partition the mesh, so they sum to surface_area. The split is
+    taken in the element's frame when a rotation is given, so a wall on a skew
+    grid reports one side area instead of two halves.
+    """
+    cross = _triangle_cross(verts, faces)
+    if rotation is not None:
+        cross = cross @ rotation
+    areas = np.linalg.norm(cross, axis=1) / 2.0
+    axis = np.argmax(np.abs(cross), axis=1)
+    up = cross[:, 2] > 0.0
+    return {
+        "surface_area": float(areas.sum()),
+        "top_area": float(areas[(axis == 2) & up].sum()),
+        "bottom_area": float(areas[(axis == 2) & ~up].sum()),
+        "side_area_x": float(areas[axis == 0].sum()),
+        "side_area_y": float(areas[axis == 1].sum()),
+    }
 
 
 def probe_element(element: Any, mesh: tuple[np.ndarray, np.ndarray]) -> dict[str, Any]:
@@ -244,6 +353,7 @@ def probe_element(element: Any, mesh: tuple[np.ndarray, np.ndarray]) -> dict[str
         },
         "placement_aligned": aligned,
         "footprint_area": round(footprint_area(verts, faces), 6),
+        **{name: round(value, 6) for name, value in surface_areas(verts, faces, rotation).items()},
         "volume": round(volume, 6),
         "centroid": [round(v, 6) for v in centroid.tolist()],
         "triangles": int(len(faces)),
@@ -261,6 +371,7 @@ def probe_elements(
     global_ids: list[str] | None = None,
     physical_only: bool = True,
     max_elements: int = 500,
+    offset: int = 0,
 ) -> dict[str, Any]:
     """Geometry records for a selector- or id-defined element set."""
     from ifc_console.ifc.units import unit_info
@@ -271,6 +382,7 @@ def probe_elements(
         global_ids=global_ids,
         physical_only=physical_only,
         max_elements=max_elements,
+        offset=offset,
     )
     meshes = element_meshes(ifc, elements)
     records = []
@@ -362,16 +474,20 @@ def points_to_triangles_distance(points: np.ndarray, tris: np.ndarray) -> float:
 
 __all__ = [
     "MAX_TRIANGLES",
+    "NON_MEASURABLE",
     "NON_PHYSICAL",
     "element_meshes",
     "footprint_area",
+    "is_non_measurable",
     "is_non_physical",
     "local_rotation",
     "mesh_boxes",
+    "mesh_provider",
     "mesh_volume",
     "points_to_triangles_distance",
     "probe_element",
     "probe_elements",
     "resolve_targets",
     "selected",
+    "surface_areas",
 ]

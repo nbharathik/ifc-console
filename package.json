@@ -1,0 +1,11 @@
+{
+  "name": "ifc-console-workspace",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "uv run --frozen ifc-console dev --open chat",
+    "harness": "uv run --frozen ifc-console dev --open none",
+    "check": "uv run --frozen ifc-console dev --fresh --check",
+    "test": "uv run --frozen --no-sync pytest -q tests/unit/test_ui_modules.py tests/unit/test_viewer_assets.py tests/unit/test_devkit.py"
+  }
+}

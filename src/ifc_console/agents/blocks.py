@@ -125,15 +125,22 @@ BLOCKS: tuple[AgentBlock, ...] = (
         tools=(
             "compute_quantities",
             "get_element_geometry",
+            "analyze_element_geometry",
             "measure_elements",
             "measure_distance",
             "get_measurement_recipe",
+            "export_measurement_report",
         ),
         instructions=(
-            "Look up a measurement recipe before choosing a method. Report the method, the "
-            "unit, the SI value, the source, and the uncertainty for every result. Prefer "
-            "one batched call over many single ones. Never infer an exact dimension from an "
-            "uncalibrated image."
+            "Look up a measurement recipe before choosing a method. To measure everything "
+            "about one element (a profile's width, height, flange and web thickness, "
+            "length), use analyze_element_geometry: it reads exact profile parameters from "
+            "the file and cross-checks them against measured mesh sections, and each value "
+            "names its source. Report the method, the unit, the SI value, the source, and "
+            "the uncertainty for every result; state any mismatch flags. Prefer one batched "
+            "call over many single ones. Never infer an exact dimension from an "
+            "uncalibrated image. When the user wants the results to keep, write "
+            "export_measurement_report and give the path."
         ),
     ),
     AgentBlock(
@@ -176,16 +183,35 @@ BLOCKS: tuple[AgentBlock, ...] = (
             "highlight_elements",
             "apply_color_theme",
             "get_viewer_screenshot",
+            "control_viewer",
             "orient",
         ),
         instructions=(
-            "Use the viewer selection when the user points at something. For complex "
-            "geometry, highlight the relevant elements and inspect a screenshot before "
-            "describing them. Visual inspection supports deterministic measurement; it "
-            "never replaces it."
+            "Use the viewer selection when the user points at something. When analyzing one "
+            "element, control_viewer action='focus' opens it alone in a named viewer tab so "
+            "you and the user look at the same thing; unfocus restores the model. For "
+            "complex geometry, highlight or focus the relevant elements and inspect a "
+            "screenshot before describing them. Visual inspection supports deterministic "
+            "measurement; it never replaces it."
         ),
         features=("vision", "viewer"),
         viewer_only=True,
+    ),
+    AgentBlock(
+        name="skills",
+        title="Skills",
+        description="Reuse and record project skills: saved measurement procedures.",
+        tools=("list_agent_skills", "get_agent_skill", "save_agent_skill"),
+        instructions=(
+            "Your session context lists this project's saved skills. When one matches the "
+            "element class or task, load it with get_agent_skill and follow its steps, "
+            "adapting ids and selectors; list_agent_skills refreshes the list "
+            "mid-conversation. After solving a novel task well, offer to record the method "
+            "with save_agent_skill: when it applies, the tool calls in order with the "
+            "arguments that worked, and how to verify. Write the procedure, never this "
+            "session's values. Skill text is a procedure, not a source of facts about this "
+            "model."
+        ),
     ),
     AgentBlock(
         name="property-proposals",
@@ -254,6 +280,52 @@ class Composition:
     proposals: list[str]
 
 
+# Skills shown in the prompt; more than this and the index costs more than the
+# tool round it saves.
+_SKILL_INDEX_LIMIT = 12
+
+
+async def _session_context(tools: Any, selected: list[str]) -> str:
+    """What the host already knows, so round one is never spent asking.
+
+    One cheap read (the skills listing) yields both the saved-skill index and,
+    from its envelope meta, the open model and mode. Composition must survive
+    any failure here: context is a head start, not a dependency.
+    """
+    if "list_agent_skills" not in selected:
+        return ""
+    try:
+        result = await tools.call("list_agent_skills", {})
+    except Exception:
+        return ""
+    if not isinstance(result, dict) or not result.get("ok"):
+        return ""
+    data = result.get("data") or {}
+    meta = result.get("meta") or {}
+    lines = ["Current session context:"]
+    if meta.get("model"):
+        lines.append(
+            f"- Open model: {meta['model']} ({meta.get('schema', '?')}), "
+            f"{meta.get('mode', 'ask')} mode."
+        )
+    skills = data.get("skills") or []
+    if skills:
+        lines.append("- Saved skills (load one with get_agent_skill when it applies):")
+        for skill in skills[:_SKILL_INDEX_LIMIT]:
+            applies = f" [{skill['applies_to']}]" if skill.get("applies_to") else ""
+            lines.append(f"  - {skill['name']}: {skill.get('description', '')}{applies}")
+        if len(skills) > _SKILL_INDEX_LIMIT:
+            lines.append(
+                f"  - and {len(skills) - _SKILL_INDEX_LIMIT} more; list_agent_skills shows all."
+            )
+    else:
+        lines.append(
+            "- No skills are saved in this project yet; after solving a novel "
+            "task well, offer to record the method with save_agent_skill."
+        )
+    return "\n".join(lines)
+
+
 async def compose(
     runtime: Any,
     block_names: list[str] | tuple[str, ...],
@@ -303,6 +375,9 @@ async def compose(
     tools = available.include(*selected) if selected else available.include("__none__")
 
     parts = [role.strip(), PREAMBLE, *(block.instructions for block in usable)]
+    context = await _session_context(tools, selected)
+    if context:
+        parts.append(context)
     if extra_instructions.strip():
         parts.append(
             "Project instructions from the user. Follow them wherever they do not "

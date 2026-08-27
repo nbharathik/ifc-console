@@ -21,71 +21,76 @@
       </svg>
       <span class="brand-name">ifc-console</span>
     </span>
-    <span id="model-name" aria-label="Current model"></span>
-    <!-- Only shown once a second model is attached in the console. -->
-    <select id="model-select" aria-label="Model to view" hidden></select>
-    <span id="schema" class="meta" hidden></span>
-    <span id="mode" class="meta mode">...</span>
-    <span id="dirty" class="meta warn" hidden>Unsaved</span>
-    <span id="live" class="connection off" role="status" aria-live="polite"
-          aria-label="Server disconnected" title="Server connection">
-      <span class="connection-mark" aria-hidden="true"></span>
-      <span class="connection-label">Offline</span>
+    <span class="topbar-context">
+      <span id="model-name" aria-label="Current model"></span>
+      <!-- Only shown once a second model is attached in the console. -->
+      <select id="model-select" aria-label="Model to view" hidden></select>
+      <span id="schema" class="meta" hidden></span>
+    </span>
+    <span class="topbar-state">
+      <span id="mode" class="meta mode">...</span>
+      <span id="dirty" class="meta warn" hidden>Unsaved</span>
+      <span id="live" class="connection off" role="status" aria-live="polite"
+            aria-label="Server disconnected" title="Server connection">
+        <span class="connection-mark" aria-hidden="true"></span>
+        <span class="connection-label">Offline</span>
+      </span>
     </span>
     <span class="spacer"></span>
-    <button id="btn-clear-hl" class="text-action" hidden
-            title="Clear highlights placed by the assistant">
-      <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
-        <path d="m4 4 8 8m0-8-8 8" stroke="currentColor" stroke-width="1.4"
-              stroke-linecap="square"/>
-      </svg>
-      Clear highlights
-    </button>
-    <span class="toolbar-sep"></span>
-    <span class="seg" role="group" aria-label="Panels">
-      <button id="btn-panel-tree" class="seg-btn" aria-pressed="true"
-              aria-controls="tree-panel" aria-label="Toggle model tree"
-              title="Toggle the spatial tree panel">
+    <span class="topbar-actions">
+      <button id="btn-clear-hl" class="text-action" hidden
+              title="Clear highlights placed by the assistant">
         <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
-          <rect x="2" y="3" width="12" height="10" rx=".75" stroke="currentColor" stroke-width="1.4"/>
-          <path d="M6 3.5V12.5" stroke="currentColor" stroke-width="1.4"/>
+          <path d="m4 4 8 8m0-8-8 8" stroke="currentColor" stroke-width="1.4"
+                stroke-linecap="square"/>
+        </svg>
+        Clear highlights
+      </button>
+      <button id="btn-chat" class="icon-btn" aria-pressed="false"
+              aria-controls="chat-dock" aria-label="Toggle the chat panel"
+              title="Chat about this model (C)">
+        <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
+          <path d="M2.4 3.2h11.2v7.2H6.8L3.6 13v-2.6H2.4z" stroke="currentColor"
+                stroke-width="1.4" stroke-linejoin="miter"/>
+          <path d="M5 6.2h6M5 8.2h3.6" stroke="currentColor" stroke-width="1.2"
+                stroke-linecap="square"/>
         </svg>
       </button>
-      <button id="btn-panel-props" class="seg-btn" aria-pressed="false"
-              aria-controls="props-panel" aria-label="Toggle properties"
-              title="Toggle the properties panel">
-        <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
-          <rect x="2" y="3" width="12" height="10" rx=".75" stroke="currentColor" stroke-width="1.4"/>
-          <path d="M10 3.5V12.5" stroke="currentColor" stroke-width="1.4"/>
+      <button id="btn-settings" class="icon-btn" aria-expanded="false"
+              aria-controls="settings-panel" aria-label="Viewer settings"
+              title="Viewer settings">
+        <!-- a cog, not the sliders mark: that one reads as a theme switch -->
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"
+             stroke-linecap="square" aria-hidden="true">
+          <circle cx="8" cy="8" r="4.6"/>
+          <circle cx="8" cy="8" r="1.7"/>
+          <path d="M8 1.6v1.8M8 12.6v1.8M14.4 8h-1.8M3.4 8H1.6M12.53 3.47 11.25 4.75M4.75 11.25l-1.28 1.28M12.53 12.53 11.25 11.25M4.75 4.75 3.47 3.47"/>
         </svg>
       </button>
     </span>
-    <button id="btn-chat" class="icon-btn" aria-pressed="false"
-            aria-controls="chat-dock" aria-label="Toggle the chat panel"
-            title="Chat about this model (C)">
-      <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
-        <path d="M2.4 3.2h11.2v7.2H6.8L3.6 13v-2.6H2.4z" stroke="currentColor"
-              stroke-width="1.4" stroke-linejoin="miter"/>
-        <path d="M5 6.2h6M5 8.2h3.6" stroke="currentColor" stroke-width="1.2"
-              stroke-linecap="square"/>
-      </svg>
-    </button>
-    <button id="btn-settings" class="icon-btn" aria-expanded="false"
-            aria-controls="settings-panel" aria-label="Viewer settings"
-            title="Viewer settings">
-      <!-- a cog, not the sliders mark: that one reads as a theme switch -->
-      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"
-           stroke-linecap="square" aria-hidden="true">
-        <circle cx="8" cy="8" r="4.6"/>
-        <circle cx="8" cy="8" r="1.7"/>
-        <path d="M8 1.6v1.8M8 12.6v1.8M14.4 8h-1.8M3.4 8H1.6M12.53 3.47 11.25 4.75M4.75 11.25l-1.28 1.28M12.53 12.53 11.25 11.25M4.75 4.75 3.47 3.47"/>
-      </svg>
-    </button>
   </header>
 
+  <!-- Focus tabs: one tab per element under analysis, All restores the model. -->
+  <div id="focus-tabs" role="tablist" aria-label="Focused elements" hidden></div>
+
   <main id="layout">
+    <aside id="chat-dock" hidden></aside>
+    <div id="chat-dock-resize" role="separator" aria-orientation="vertical"
+         aria-label="Resize the assistant workspace" aria-controls="chat-dock" tabindex="0"
+         title="Drag or use arrow keys to resize; Home resets" hidden></div>
+
     <aside id="tree-panel" aria-labelledby="tree-panel-title">
-      <div id="tree-panel-title" class="panel-title">Model tree</div>
+      <div class="panel-title">
+        <span id="tree-panel-title">Model</span>
+        <button id="tree-panel-close" class="panel-close" type="button"
+                aria-controls="tree-panel" aria-label="Close model panel"
+                title="Close model panel">
+          <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
+            <path d="M4.5 4.5 11.5 11.5M11.5 4.5 4.5 11.5" stroke="currentColor"
+                  stroke-width="1.35" stroke-linecap="square"/>
+          </svg>
+        </button>
+      </div>
       <div class="panel-search">
         <input id="search-input" type="search" autocomplete="off" spellcheck="false"
                placeholder="Search name or IfcWall"
@@ -111,9 +116,9 @@
          title="Drag or use arrow keys to resize; Home resets"></div>
 
     <section id="canvas-wrap" aria-label="Model viewport">
-      <p id="viewport-help" class="sr-only">Arrow keys pan the model. F fits the model. M measures distance. G toggles the grid. Question mark opens all controls.</p>
+      <p id="viewport-help" class="sr-only">Arrow keys pan the model. F fits the model. M measures distance. G toggles the grid. Control or Shift and click adds an element to the selection. Double-click orbits around that point. Question mark opens all controls.</p>
       <canvas id="canvas" tabindex="0" aria-label="Interactive 3D model viewport"
-              aria-describedby="viewport-help"></canvas>
+              aria-describedby="viewport-help" data-viewer-context="viewport"></canvas>
       <div id="overlay" class="overlay" data-state="loading"
            role="status" aria-live="polite" aria-atomic="true" aria-busy="true">
         <div class="overlay-card loading-card">
@@ -121,6 +126,25 @@
           <div class="progress-track"><div class="loading-bar indeterminate"></div></div>
         </div>
       </div>
+
+      <button id="tree-panel-tab" class="panel-edge-tab panel-edge-tab-left" type="button"
+              aria-controls="tree-panel" aria-expanded="false"
+              aria-label="Open model panel" title="Open model panel" hidden>
+        <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
+          <rect x="2.25" y="3" width="11.5" height="10" rx="1" stroke="currentColor"
+                stroke-width="1.25"/>
+          <path d="M6 3.5v9" stroke="currentColor" stroke-width="1.25"/>
+        </svg>
+      </button>
+      <button id="props-panel-tab" class="panel-edge-tab panel-edge-tab-right" type="button"
+              aria-controls="props-panel" aria-expanded="false"
+              aria-label="Open properties panel" title="Open properties panel" hidden>
+        <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
+          <rect x="2.25" y="3" width="11.5" height="10" rx="1" stroke="currentColor"
+                stroke-width="1.25"/>
+          <path d="M10 3.5v9" stroke="currentColor" stroke-width="1.25"/>
+        </svg>
+      </button>
 
       <button id="btn-tools" class="icon-btn" aria-expanded="false"
               aria-controls="tools-panel" aria-label="View tools"
@@ -134,31 +158,63 @@
       </button>
 
       <div id="tools-panel" class="popover" role="dialog" aria-label="View tools" hidden>
+        <div class="popover-head">
+          <div class="popover-heading">View tools</div>
+          <button id="tools-panel-close" class="popover-close" type="button"
+                  aria-controls="tools-panel" aria-label="Close view tools"
+                  title="Close view tools">
+            <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
+              <path d="M4.5 4.5 11.5 11.5M11.5 4.5 4.5 11.5" stroke="currentColor"
+                    stroke-width="1.35" stroke-linecap="square"/>
+            </svg>
+          </button>
+        </div>
+        <div class="tool-section">
         <div class="popover-title">Visibility</div>
         <div class="tool-list">
           <button id="tool-isolate" class="tool-btn"
                   title="Show only the selected elements">Isolate selection</button>
+          <button id="tool-focus-sel" class="tool-btn"
+                  title="Isolate the selection in its own named tab and frame it">
+            Focus selection <kbd>Shift+F</kbd></button>
           <button id="tool-hide" class="tool-btn"
                   title="Hide the selected elements">Hide selection</button>
           <button id="tool-show-all" class="tool-btn"
                   title="Reset isolation and hidden elements">Show all</button>
+          <label class="switch-row tool-switch">
+            <span class="switch-text">
+              <span class="switch-label">Ghost context</span>
+              <small>Isolation fades the rest instead of deleting it.</small>
+            </span>
+            <input type="checkbox" id="tool-ghost" class="switch" checked>
+          </label>
         </div>
+        </div>
+        <div class="tool-section">
         <div class="popover-title">Camera</div>
         <div class="tool-list">
           <button id="tool-fit-sel" class="tool-btn"
                   title="Frame the selected elements">Zoom to selection</button>
           <button id="tool-fit-all" class="tool-btn"
                   title="Frame the whole model">Fit model <kbd>F</kbd></button>
+          <button id="tool-ortho" class="tool-btn" aria-pressed="false"
+                  title="Parallel projection: equal lengths read equal anywhere in the frame">
+            Orthographic <kbd>P</kbd></button>
         </div>
+        </div>
+        <div class="tool-section">
         <div class="popover-title">Views</div>
         <div class="tool-views">
           <button data-view="top">Top</button>
+          <button data-view="bottom">Bottom</button>
           <button data-view="front">Front</button>
           <button data-view="back">Back</button>
           <button data-view="left">Left</button>
           <button data-view="right">Right</button>
           <button data-view="iso">Iso</button>
         </div>
+        </div>
+        <div class="tool-section">
         <div class="popover-title">Saved views</div>
         <div id="saved-views" class="saved-views"></div>
         <div class="save-view-row">
@@ -167,6 +223,8 @@
           <button id="tool-save-view" class="tool-btn"
                   title="Store the current camera position">Save</button>
         </div>
+        </div>
+        <div class="tool-section">
         <div class="popover-title">Section</div>
         <div id="section-rows" class="section-rows">
           <!-- one row per axis; the slider only appears once the axis is cut -->
@@ -198,18 +256,84 @@
             <button class="section-flip" data-axis="y" title="Flip the cut side" hidden>⇄</button>
           </div>
         </div>
+        <label class="select-row section-depth-row" for="section-depth">
+          <span class="switch-text">
+            <span class="switch-label">Slice (<span id="section-depth-unit">m</span>)</span>
+            <small>Keep this much beyond each cut. 0 keeps everything.</small>
+          </span>
+          <input id="section-depth" type="number" min="0" step="0.1" value="0"
+                 inputmode="decimal" aria-label="Section slice depth in m">
+        </label>
         <div class="tool-list">
           <button id="tool-section-clear" class="tool-btn" hidden
                   title="Turn every section plane off">Clear sections</button>
         </div>
+        </div>
+        <div class="tool-section">
         <div class="popover-title">Measure</div>
         <div class="tool-list">
           <button id="tool-measure" class="tool-btn" aria-pressed="false"
                   title="Measure between two points on the model">
-            Measure distance <kbd>M</kbd></button>
+            Distance <kbd>M</kbd></button>
+          <button id="tool-measure-angle" class="tool-btn" aria-pressed="false"
+                  title="Three clicks: one end, the corner, the other end">
+            Angle <kbd>A</kbd></button>
+          <button id="tool-measure-area" class="tool-btn" aria-pressed="false"
+                  title="Click an outline, then Enter or double-click to close it">
+            Area <kbd>R</kbd></button>
+          <button id="tool-measure-element" class="tool-btn"
+                  title="Length, width, thickness and diagonal of the selected elements">
+            Size of selection</button>
+          <button id="tool-measure-laser" class="tool-btn"
+                  title="Distance to the nearest element each way along X, Y and Z">
+            Clearance around selection</button>
+          <label class="switch-row tool-switch">
+            <span class="switch-text">
+              <span class="switch-label">Snap to corners <kbd>S</kbd></span>
+              <small>Corners, edge midpoints and face centres.</small>
+            </span>
+            <input type="checkbox" id="tool-snap" class="switch" checked>
+          </label>
+          <!-- Geometry is metres whatever the file says; only the label moves. -->
+          <label class="select-row" for="measure-unit">
+            <span class="switch-text">
+              <span class="switch-label">Units</span>
+              <small>Every length, area and cut on screen.</small>
+            </span>
+            <select id="measure-unit" aria-label="Length unit">
+              <option value="file">File</option>
+              <option value="mm">Millimetres</option>
+              <option value="cm">Centimetres</option>
+              <option value="m">Metres</option>
+              <option value="ft">Feet and inches</option>
+            </select>
+          </label>
+          <label class="select-row" for="measure-decimals">
+            <span class="switch-text">
+              <span class="switch-label">Precision</span>
+              <small>Fixed, so a column of numbers lines up.</small>
+            </span>
+            <select id="measure-decimals" aria-label="Length precision">
+              <option value="auto">Default</option>
+              <option value="0">0 (1/1")</option>
+              <option value="1">1 (1/2")</option>
+              <option value="2">2 (1/4")</option>
+              <option value="3">3 (1/8")</option>
+              <option value="4">4 (1/16")</option>
+            </select>
+          </label>
+          <button id="tool-measure-clear" class="tool-btn"
+                  title="Remove every measurement">Clear measurements</button>
         </div>
+        </div>
+        <p class="tool-note">
+          Press <kbd>X</kbd>, <kbd>Y</kbd> or <kbd>Z</kbd> while measuring to lock that
+          axis; press again to release. Alt-click an element for its size.
+        </p>
         <div id="tool-hidden-info" class="tool-note"></div>
       </div>
+
+      <div id="snap-hint" aria-hidden="true" hidden></div>
 
       <div id="measure-card" hidden>
         <div id="measure-head">
@@ -242,6 +366,18 @@
 
       <div id="settings-panel" class="popover" role="dialog"
            aria-label="Viewer settings" hidden>
+        <div class="popover-title">Appearance</div>
+        <label class="select-row" for="set-theme">
+          <span class="switch-text">
+            <span class="switch-label">Theme</span>
+            <small>Follow the workspace or choose this viewer only.</small>
+          </span>
+          <select id="set-theme" aria-label="Viewer theme">
+            <option value="system">System</option>
+            <option value="dark">Dark</option>
+            <option value="light">Light</option>
+          </select>
+        </label>
         <div class="popover-title">Display</div>
         <label class="switch-row">
           <span class="switch-text">
@@ -257,13 +393,20 @@
           </span>
           <input type="checkbox" id="set-axes" class="switch">
         </label>
+        <label class="switch-row">
+          <span class="switch-text">
+            <span class="switch-label">Silhouette edges</span>
+            <small id="set-edges-note">Creases and outlines, drawn over the surfaces.</small>
+          </span>
+          <input type="checkbox" id="set-edges" class="switch" checked>
+        </label>
         <div class="popover-title">Workspace</div>
         <div class="tool-list">
           <button id="set-reset-layout" class="tool-btn"
                   title="Reopen both side panels and forget their widths">
             Reset panel layout</button>
         </div>
-        <p class="tool-note">The theme follows the console: <kbd>/theme</kbd></p>
+        <p class="tool-note">System follows the active console workspace.</p>
       </div>
 
       <div id="help-panel" class="popover" role="dialog"
@@ -274,10 +417,14 @@
           <tr><td>right-drag</td><td>pan</td></tr>
           <tr><td>scroll</td><td>zoom</td></tr>
           <tr><td>click</td><td>select</td></tr>
-          <tr><td>ctrl+click</td><td>add to selection</td></tr>
+          <tr><td>ctrl/shift+click</td><td>add or remove from the selection</td></tr>
+          <tr><td>double-click</td><td>orbit around that point</td></tr>
           <tr><td><kbd>F</kbd></td><td>fit the whole model</td></tr>
+          <tr><td><kbd>Shift</kbd>+<kbd>F</kbd></td><td>focus the selection in its own tab</td></tr>
           <tr><td><kbd>G</kbd></td><td>toggle the ground grid</td></tr>
           <tr><td><kbd>M</kbd></td><td>measure between two points</td></tr>
+          <tr><td><kbd>X</kbd> <kbd>Y</kbd> <kbd>Z</kbd></td><td>lock a measurement to one axis</td></tr>
+          <tr><td>alt+click</td><td>measure the size of one element</td></tr>
           <tr><td>arrow keys</td><td>pan when the viewport is focused</td></tr>
           <tr><td><kbd>?</kbd></td><td>open or close this controls guide</td></tr>
           <tr><td><kbd>Esc</kbd></td><td>leave the active tool</td></tr>
@@ -294,20 +441,37 @@
          aria-label="Resize properties" aria-controls="props-panel" tabindex="0"
          title="Drag or use arrow keys to resize; Home resets"></div>
     <aside id="props-panel" aria-labelledby="props-panel-title">
-      <div id="props-panel-title" class="panel-title">Properties</div>
+      <div class="panel-title">
+        <span id="props-panel-title">Properties</span>
+        <button id="props-panel-close" class="panel-close" type="button"
+                aria-controls="props-panel" aria-label="Close properties panel"
+                title="Close properties panel">
+          <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
+            <path d="M4.5 4.5 11.5 11.5M11.5 4.5 4.5 11.5" stroke="currentColor"
+                  stroke-width="1.35" stroke-linecap="square"/>
+          </svg>
+        </button>
+      </div>
       <div class="panel-body">
         <div id="props"><p class="hint">Select an element to inspect its IFC data.</p></div>
       </div>
     </aside>
-    <div id="chat-dock-resize" role="separator" aria-orientation="vertical"
-         aria-label="Resize the chat panel" aria-controls="chat-dock" tabindex="0"
-         title="Drag or use arrow keys to resize; Home resets" hidden></div>
-    <aside id="chat-dock" hidden></aside>
   </main>
 
   <footer id="statusbar">
-    <span id="sel-info" role="status" aria-live="polite" aria-atomic="true">No selection</span>
+    <span id="sel-info" role="status" aria-live="polite" aria-atomic="true"
+          data-viewer-context="selection" data-selection-count="0"
+          title="The current selection is available to the assistant">No selection</span>
     <span id="hl-info" role="status" aria-live="polite" aria-atomic="true"></span>
+    <!-- Hidden, isolated, cut and projected: the states the popover used to
+         keep to itself, with the controls that undo them. -->
+    <span id="vis-info">
+      <span id="vis-info-text" role="status" aria-live="polite" aria-atomic="true"></span>
+      <button id="vis-show-all" class="status-action" type="button" hidden
+              title="Show every element again">Show all</button>
+      <button id="vis-clear-section" class="status-action" type="button" hidden
+              title="Turn every section plane off">Clear cuts</button>
+    </span>
     <span class="spacer"></span>
     <span id="stats"></span>
     <button id="btn-help" class="icon-btn" aria-expanded="false"

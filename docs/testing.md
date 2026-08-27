@@ -3,6 +3,22 @@
 Three layers, none of which needs an API key, a paid model, or a browser you
 have to click through.
 
+From a source checkout, the root `package.json` provides dependency-free
+shortcuts after `uv sync --extra dev`:
+
+```bash
+npm run dev       # real viewer + chat in exactly one tab
+npm run harness   # same server, print the URLs and open no tab
+npm run check     # rebuild, run the offline HTTP/SSE checklist, then exit
+npm test          # panel modules, markup contracts, and devkit unit tests
+```
+
+There is no npm install or second frontend server. The harness serves the real
+workspace assets with cache revalidation, so a browser refresh picks up CSS and
+JavaScript edits. `npm test` can run against the existing environment while the
+harness stays up. `npm run check` resets only its disposable temp project, so
+repeated checks start from the same server-side state.
+
 ## 1. `ifc-console dev --check`
 
 ```bash
@@ -24,10 +40,10 @@ Useful flags:
 
 | Flag | Effect |
 | --- | --- |
-| `--fresh` | Delete and rebuild the demo project first |
+| `--fresh` | Delete and rebuild the default temporary demo project only |
 | `--json` | Machine-readable results for CI |
 | `--keep` | Keep serving after the checks so you can look at the panel |
-| `--project DIR` | Use a specific directory instead of the temp one |
+| `--project DIR` | Use a specific directory instead of the temp one; cannot be combined with `--fresh` |
 | `--file model.ifc` | Use your own IFC instead of the generated demo |
 | `--port N` | Serve somewhere other than 8393 |
 
@@ -49,7 +65,7 @@ measure, then propose a marked value. It contacts nothing, costs nothing, and
 is registered only under `dev` or `IFC_CONSOLE_DEV=1`, so a normal run cannot
 reach it.
 
-## 2. `node --test tests/ui`
+## 2. Panel module tests
 
 The panel's pure logic lives in ES modules with no DOM dependency:
 
@@ -59,11 +75,12 @@ The panel's pure logic lives in ES modules with no DOM dependency:
 - `chat_sidebar.js` - assistant grouping and conversation bucketing
 - `chat_workspace.js` - the agent workspace model
 
-```bash
-node --test tests/ui/*.test.mjs
-```
+Run `npm test` from the repository root. The pytest wrapper enumerates every
+`tests/ui/*.test.mjs` file explicitly, which works across supported Node
+versions and shells.
 
-No npm install, no browser, no dependencies. `pytest` runs the same suite via
+The quoted glob works on Windows as well as macOS and Linux. No npm install,
+browser, or dependencies are needed. `pytest` runs the same suite via
 `tests/unit/test_ui_modules.py`, which skips when Node is absent and fails when
 a pure panel module has no test.
 

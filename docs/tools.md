@@ -87,10 +87,22 @@ result limit, and a `corpus` (`builtin`, `project`, or `all`). See
 | `compute_quantities` | selector, grouping, quantity names, `source` | stored `Qto_*` totals in model units; `source="derived"` fills missing values from geometry |
 | `detect_clashes` | two selectors, tolerance, precision, optional model IDs | overlap or clearance pairs |
 | `get_element_geometry` | selector or GlobalIds | per-element mesh geometry in SI metres: bounding box, placement-axis extents, footprint, volume, confidence |
+| `analyze_element_geometry` | selector or GlobalIds, stations, `include_outline` | the full probe for a few elements: exact profile parameters from the IFC definition plus measured mesh cross sections (width, height, wall thickness distribution, perimeter, area), merged into `dimensions` with a named source per value |
 | `measure_elements` | selector or GlobalIds, method, method params | one metric per element by an explicit method (`stored_qto`, `layer_sum`, `geometry_extent`), in file units and SI |
 | `measure_distance` | two selectors or GlobalId lists | centroid distance, bounding-box gap, and closest-surface distance of the nearest pair |
 | `get_georeferencing` | none | CRS, map conversion, and north directions |
 | `export_csv` | selector, path, fields, properties | audited CSV report inside an allowed directory |
+| `export_measurement_report` | selector or GlobalIds, path, title, notes | audited markdown measurement report, registered as an artifact |
+
+`analyze_element_geometry` is the "measure everything about this object" tool.
+It reads parameterized profiles (I, U, Z, C, T, L, rectangle, circle, hollow
+variants) and arbitrary profile outlines from the file, slices the triangle
+mesh across the element's long axis, and reports both sides: agreement is the
+cross-check, disagreement over 5% raises a `mismatch:*` flag, and a wall-style
+element whose extrusion axis is not its long axis is flagged
+`profile_plane_differs` instead of being force-compared. Thickness comes as a
+distribution (median and quartiles) plus a two-group split when flange and web
+plates differ, matching the `t_f`/`t_w` convention of profile drawings.
 
 Clash precision choices:
 
@@ -100,6 +112,73 @@ Clash precision choices:
 
 Openings, spaces, grids, annotations, and virtual elements are skipped unless
 `physical_only=false`. Cross-model checks use `model` and `other_model`.
+
+## Model insight
+
+Whole-model questions rather than per-element ones. All three are reads and work
+in `ask` mode.
+
+| tool | key inputs | result |
+| ---- | ---------- | ------ |
+| `compare_models` | `other_model`, optional selector and tolerances | what changed between two open revisions, grouped by change kind and class |
+| `query_spatial` | relation, target GlobalId or box, candidate selector | elements standing in a geometric relation to that target |
+| `check_model_health` | optional `checks`, `max_findings`, `max_elements` | data-quality findings grouped by check, with severities and GlobalIds |
+
+### `compare_models`
+
+`model` is the older baseline, `other_model` the newer revision, so a reported
+move is where the element went. Attach the second file first:
+
+```text
+attach path=... -> list_models -> compare_models other_model=<model_id>
+```
+
+Elements are paired by GlobalId. When the two files barely share ids, which is
+what happens when an exporter regenerates them, the diff falls back to matching
+on class, type, and name and reports `matcher="signature"` with a note. Change
+kinds are `added`, `removed`, `moved`, `geometry_changed`, `property_changed`,
+`type_changed`, and `container_changed`; one element can be in several at once.
+Positions and volumes come from the triangle meshes in SI metres, so a move is a
+real move rather than an edited placement, and `move_tolerance` (metres) and
+`volume_tolerance` (a fraction) set what counts. Property comparison uses each
+element's own property sets, not the values it inherits from its type, so a type
+swap is reported once instead of once per property. `global_ids` groups the
+change set per kind, ready for `apply_color_theme`.
+
+### `query_spatial`
+
+Answers containment that the selector's `location=` facet cannot, because most
+exporters contain elements in the storey rather than the space:
+
+| relation | question | method |
+| -------- | -------- | ------ |
+| `inside` | what is in this space or room | point-in-solid on the candidate's centroid and box corners |
+| `crosses` | what this duct or pipe passes through | sampled solid occupancy, with `enclosed` marking what only sits inside |
+| `above`, `below` | what sits directly over or under it | plan overlap of bounding boxes, nearest gap first |
+| `within_distance` | what is within N metres | closest-point surface distance |
+| `within_box` | what falls inside these bounds | bounding-box containment, exact bounds or the target's own box |
+
+Every result names the `method` it used and a `confidence`. Point-in-solid tests
+are unreliable on meshes that are not closed, so the `target` block reports
+`watertight` and the result drops to low confidence when it is false. `distance`
+is the reach for `within_distance` and the gap cap for `above` and `below`.
+
+### `check_model_health`
+
+Checks, in report order: `duplicate_global_ids`, `orphaned_elements`,
+`degenerate_solids`, `placement_outliers`, `duplicate_placements`,
+`model_extent`, `empty_storeys`, `unused_types`. Each finding carries a
+severity, a count, examples, and `global_ids` for `highlight_elements`.
+
+This is not `validate_model`. That one runs the schema: attribute types,
+cardinality, uniqueness, and where-rules. A file can satisfy all of it and still
+have elements in no spatial container, representations with no solid, a beam
+forty kilometres from site, the same wall modelled twice, or an extent that
+contradicts its declared length unit.
+
+The four geometry checks tessellate the model. Above `max_elements` they are
+skipped and say so in `checks`, rather than silently sampling. Pass `checks` to
+run only the cheap ones.
 
 ## Jobs and artifacts
 
@@ -189,20 +268,48 @@ attached IDS alias.
 Paths must stay inside the launch directory, model directory, or an explicitly
 allowed root.
 
-## Viewer tools
+## Skill tools
 
-These tools exist only while the optional viewer is enabled and a browser tab
-is connected.
+Skills are reusable procedures saved as markdown in
+`.ifc-console/agents/skills/`, one file per skill with a small front-matter
+header (`name`, `description`, `applies_to`). Agents check them at the start
+of a task and follow the one that matches instead of rediscovering a method;
+after solving a novel task, an agent can offer to record the method. The
+files are plain markdown, so they can also be written and reviewed by hand,
+and they appear in the panel's Skills tab.
 
 | tool | use |
 | ---- | --- |
+| `list_agent_skills` | the saved skills with descriptions and applicability |
+| `get_agent_skill` | one skill's full markdown procedure |
+| `save_agent_skill` | record a new skill, or update one with `overwrite=true` |
+
+`save_agent_skill` carries the `file:write` capability, so agent surfaces ask
+the user for approval before a skill lands on disk.
+
+## Viewer tools
+
+These tools exist only while the optional viewer is enabled and a browser tab
+is connected. One launcher is always registered so an agent can get there
+itself:
+
+| tool | use |
+| ---- | --- |
+| `open_viewer` | always on: enable the viewer and open it in the local browser, so the tools below appear |
 | `get_viewer_selection` | read the user's selected elements |
-| `get_viewer_measurements` | read the distances the user measured with the M tool |
+| `get_viewer_measurements` | read every measurement taken, by the user or by you |
 | `highlight_elements` | color, isolate, clear, or frame up to 500 elements |
 | `apply_color_theme` | paint labeled groups and show a legend |
 | `get_viewer_screenshot` | capture a preset or current view as JPEG or PNG |
+| `control_viewer` | section, orient, select, isolate, hide, focus tabs, measure, and save viewpoints |
 
-All viewer tools are visual and allowed in either mode. See [3D viewer](viewer.md).
+All viewer tools are visual and allowed in either mode. `control_viewer`
+measures against the geometry on screen, which answers questions the schema
+does not: a rotated wall's real thickness, the clear distance between two
+elements, the area inside an outline. Its `focus` action opens elements alone
+in a named tab under the viewer's top bar, so one object can be analyzed with
+the user watching the same thing; `unfocus` closes tabs. See
+[3D viewer](viewer.md).
 
 ## Error codes
 
@@ -237,7 +344,7 @@ Every failure includes a `hint`. The table groups codes with the same recovery.
 | `TRANSACTION_INTERRUPTED` / `TRANSACTION_RECOVERY_REQUIRED` / `TRANSACTION_JOURNAL_BUSY` / `TRANSACTION_JOURNAL_CORRUPT` / `TRANSACTION_JOURNAL_INVALID` | transaction stopped or its journal needs recovery |
 | `UNSAVED_CHANGES` | operation would discard dirty model state |
 | `VALIDATION_FAILED` | validation could not complete |
-| `VIEWER_ERROR` / `VIEWER_NOT_CONNECTED` / `VIEWER_TIMEOUT` | viewer is unavailable or failed to answer |
+| `VIEWER_BUSY` / `VIEWER_ERROR` / `VIEWER_NOT_CONNECTED` / `VIEWER_TIMEOUT` / `VIEWER_UNAVAILABLE` | viewer is reloading the model, unavailable, off this transport, or failed to answer |
 | `WORKFLOW_CANCELLED` / `WORKFLOW_NOT_FOUND` / `WORKFLOW_NOT_RESUMABLE` / `WORKFLOW_DEPENDENCY_FAILED` / `WORKFLOW_STEP_FAILED` / `WORKFLOW_SUPERVISOR_FAILED` / `WORKFLOW_INPUT_EMPTY` / `WORKFLOW_INPUT_LIMIT` / `WORKFLOW_INTERRUPTED` / `WORKFLOW_TIMEOUT` / `WORKFLOW_MANIFEST_INVALID` / `WORKFLOW_MANIFEST_TOO_LARGE` / `WORKFLOW_PATH_INVALID` / `WORKFLOW_SERVICE_CLOSED` / `WORKFLOW_STORE_CORRUPT` / `WORKFLOW_STORE_FAILED` / `WORKFLOW_SOURCE_CHANGED` | workflow is invalid, stale, unavailable, or failed |
 | `WORKSPACE_BUDGET` / `WORKSPACE_DISABLED` | workspace indexing is disabled or over budget |
 

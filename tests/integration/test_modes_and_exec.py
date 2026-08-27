@@ -83,6 +83,42 @@ async def test_edit_mode_runs_without_prompt(harness_factory, work_model) -> Non
     assert "only the user" in out["data"]["note"]
 
 
+async def test_cancelled_mutation_still_marks_the_model_dirty(
+    harness_factory, work_model, monkeypatch
+) -> None:
+    """Stopping a run does not stop the worker; a clean flag would lose the edit."""
+    import asyncio
+    import threading
+
+    from ifc_console.session import executor
+
+    h = await harness_factory(model=work_model, mode=Mode.EDIT)
+    session = h.core.session
+    running, release = threading.Event(), threading.Event()
+    original_run = executor.run
+
+    def blocking_run(*args, **kwargs):
+        running.set()
+        release.wait(10)
+        return original_run(*args, **kwargs)
+
+    monkeypatch.setattr(executor, "run", blocking_run)
+    call = asyncio.create_task(
+        h.core.tool_functions["execute_ifc_code"](
+            code="ifc_api.run('root.create_entity', ifc, ifc_class='IfcWall')"
+        )
+    )
+    await asyncio.to_thread(running.wait, 10)
+    call.cancel()
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await call
+    await session.run(lambda: None, timeout=30)  # let the worker finish the edit
+
+    assert session.dirty is True
+    assert session.ifc.by_type("IfcWall")
+
+
 async def test_mode_switch_applies_live(ask_harness) -> None:
     """The user flips the mode in their terminal; the next call obeys it."""
     code = "ifc_api.run('root.create_entity', ifc, ifc_class='IfcWall')"

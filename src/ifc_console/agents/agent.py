@@ -8,6 +8,7 @@ import json
 import time
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
+from contextvars import ContextVar
 from typing import Any
 
 from pydantic import BaseModel, ValidationError
@@ -19,7 +20,9 @@ from ifc_console.agents.models import (
     AgentLimits,
     AgentMessage,
     AgentModel,
+    AgentProgress,
     AgentRunResult,
+    AgentStopReason,
     AgentToolCallRecord,
     AgentUsage,
     ApprovalHandler,
@@ -32,6 +35,50 @@ from ifc_console.toolsets import ToolCall, ToolMiddleware, Toolset
 
 class AgentRunError(RuntimeError):
     """A run ended without a valid assistant result."""
+
+
+_WRAP_UP_NOTE = (
+    "The tool budget for this run is spent. Answer now from what the "
+    "transcript already contains and say what you could not finish."
+)
+# the run already cost its whole budget; the closing answer gets a short leash
+_WRAP_UP_TIMEOUT_S = 120.0
+# How often a still-running tool reports that it is still running. Long enough
+# not to spam the transcript, short enough that no reader thinks it hung.
+_HEARTBEAT_S = 2.0
+# Marks the follow-up user message that carries a tool's images. Consumers that
+# count real conversation turns have to be able to skip it.
+IMAGE_TURN_PREFIX = "[image content from "
+
+_ProgressSink = Callable[[int, int | None, str], None]
+_PROGRESS: ContextVar[_ProgressSink | None] = ContextVar(
+    "ifc_console_agent_progress", default=None
+)
+_RESULT_BUDGET: ContextVar[int | None] = ContextVar(
+    "ifc_console_agent_result_budget", default=None
+)
+
+
+def report_progress(done: int, total: int | None = None, note: str = "") -> None:
+    """Report progress from inside a running tool, if a run is listening.
+
+    Safe to call from anywhere, including a worker thread: outside an agent run
+    it does nothing.
+    """
+    sink = _PROGRESS.get()
+    if sink is None:
+        return
+    sink(max(0, int(done)), None if total is None else max(0, int(total)), str(note)[:120])
+
+
+def current_result_budget() -> int | None:
+    """How many characters of this tool's result the caller will keep.
+
+    A tool that pages its own output should page to this, not to the global
+    limit: everything past it is serialized, scanned, and then discarded, and
+    the discarded part is the part the model asked for.
+    """
+    return _RESULT_BUDGET.get()
 
 
 def _id(prefix: str) -> str:
@@ -48,9 +95,33 @@ def _summary(result: Mapping[str, Any]) -> str:
 
 
 def _tool_text(result: Mapping[str, Any], limit: int) -> str:
+    """The envelope as JSON, clipping `data` rather than the whole string.
+
+    A blind cut from the end drops `meta` and, for a failure, the error code
+    and hint: exactly the part the model needs in order to recover.
+    """
     text = json.dumps(result, default=str, ensure_ascii=False)
     if len(text) <= limit:
         return text
+    skeleton = {key: value for key, value in result.items() if key != "data"}
+    skeleton["truncation"] = {
+        "of_chars": len(text),
+        "note": "the result did not fit this run's budget; ask again for less",
+    }
+    head = json.dumps({**skeleton, "data": ""}, default=str, ensure_ascii=False)
+    source = json.dumps(result.get("data"), default=str, ensure_ascii=False)
+    keep = limit - len(head)
+    # re-encoding the kept slice escapes some of it, so converge on a fit
+    for _ in range(4):
+        if keep <= 0:
+            break
+        clipped = json.dumps(
+            {**skeleton, "data": source[:keep]}, default=str, ensure_ascii=False
+        )
+        overflow = len(clipped) - limit
+        if overflow <= 0:
+            return clipped
+        keep -= overflow
     suffix = "...[truncated; narrow the request]"
     return text[: max(0, limit - len(suffix))] + suffix
 
@@ -109,6 +180,69 @@ def _timeout_tool_result() -> dict[str, Any]:
     }
 
 
+def _failed_tool_result(exc: BaseException) -> dict[str, Any]:
+    return {
+        "ok": False,
+        "error": {
+            "code": "TOOL_FAILED",
+            "message": f"the tool raised {type(exc).__name__}",
+            "hint": "Try another approach or a narrower request.",
+        },
+        "meta": {},
+    }
+
+
+def _aborted_tool_result() -> dict[str, Any]:
+    return {
+        "ok": False,
+        "error": {
+            "code": "RUN_ABORTED",
+            "message": "the run ended before this tool call returned",
+            "hint": "Ask again if the answer still needs it.",
+        },
+        "meta": {},
+    }
+
+
+def _sealed(history: list[AgentMessage]) -> list[AgentMessage]:
+    """History with an envelope for every tool call the run left unanswered.
+
+    Saving an unanswered call poisons the thread: both provider adapters emit
+    the call with no result, so every later message in it is rejected.
+    """
+    for index in range(len(history) - 1, -1, -1):
+        message = history[index]
+        if message.role != "assistant":
+            continue
+        if not message.tool_calls:
+            return history
+        answered = {
+            str(later.tool_call_id or "")
+            for later in history[index + 1 :]
+            if later.role == "tool"
+        }
+        missing = [
+            call
+            for call in message.tool_calls
+            if str(call.get("id") or "") not in answered
+        ]
+        if not missing:
+            return history
+        return [
+            *history,
+            *(
+                AgentMessage(
+                    role="tool",
+                    tool_call_id=str(call.get("id") or ""),
+                    name=str(call.get("name") or ""),
+                    text=json.dumps(_aborted_tool_result(), ensure_ascii=False),
+                )
+                for call in missing
+            ),
+        ]
+    return history
+
+
 def _parse_structured(text: str, response_model: type[BaseModel]) -> BaseModel:
     """The final text as a validated response_model instance, or ValueError."""
     body = text.strip()
@@ -131,6 +265,26 @@ def _parse_structured(text: str, response_model: type[BaseModel]) -> BaseModel:
         first = exc.errors(include_url=False)[0]
         where = ".".join(str(part) for part in first.get("loc", ()))
         raise ValueError(f"{where or 'answer'}: {first.get('msg')}") from exc
+
+
+def _queue_sink(
+    loop: asyncio.AbstractEventLoop,
+    updates: asyncio.Queue[tuple[str, AgentProgress]],
+    call_id: str,
+    started: float,
+) -> _ProgressSink:
+    """A progress sink for one call, callable from a tool's worker thread."""
+
+    def report(done: int, total: int | None, note: str) -> None:
+        progress = AgentProgress(
+            done=done,
+            total=total,
+            note=note,
+            elapsed_s=round(max(0.0, time.monotonic() - started), 2),
+        )
+        loop.call_soon_threadsafe(updates.put_nowait, (call_id, progress))
+
+    return report
 
 
 def _add_usage(total: AgentUsage, current: AgentUsage) -> AgentUsage:
@@ -243,7 +397,14 @@ class Agent:
         thread_id: str | None = None,
         options: Mapping[str, Any] | None = None,
         images: Sequence[AgentImage | Mapping[str, str]] | None = None,
+        approval_handler: ApprovalHandler | None = None,
     ) -> AsyncIterator[AgentEvent]:
+        """Stream one run.
+
+        ``approval_handler`` overrides the agent's own for this run only, so a
+        host serving several conversations from one agent never has to mutate
+        shared state that a concurrent run is already using.
+        """
         if not prompt.strip():
             raise ValueError("prompt must not be empty")
         attached = tuple(AgentImage.model_validate(image) for image in images or ())
@@ -259,6 +420,7 @@ class Agent:
                     thread_id=selected_thread,
                     options=dict(options or {}),
                     images=attached,
+                    approval_handler=approval_handler,
                 ):
                     yield event
         finally:
@@ -277,15 +439,21 @@ class Agent:
         thread_id: str,
         options: Mapping[str, Any],
         images: tuple[AgentImage, ...] = (),
+        approval_handler: ApprovalHandler | None = None,
     ) -> AsyncIterator[AgentEvent]:
         run_id = _id("run")
+        decider = approval_handler or self.approval_handler
         deadline = time.monotonic() + self.limits.timeout_s
         history = list(await self.thread_store.load(thread_id))
         history.append(AgentMessage(role="user", text=prompt, images=images))
         await self.thread_store.save(thread_id, history)
         records: list[AgentToolCallRecord] = []
         answer_parts: list[str] = []
+        # answer text that no saved assistant message carries yet; a stopped
+        # run has to be able to persist exactly this much and no more
+        uncommitted: list[str] = []
         usage = AgentUsage()
+        stopped_reason: AgentStopReason = "round_budget"
         yield AgentEvent(type="run_started", run_id=run_id, thread_id=thread_id)
 
         try:
@@ -310,6 +478,7 @@ class Agent:
                             text = str(event.get("text") or "")
                             round_text.append(text)
                             answer_parts.append(text)
+                            uncommitted.append(text)
                             yield AgentEvent(
                                 type="text_delta",
                                 run_id=run_id,
@@ -350,6 +519,7 @@ class Agent:
 
                 if not calls:
                     history.append(AgentMessage(role="assistant", text="".join(round_text)))
+                    uncommitted.clear()
                     await self.thread_store.save(thread_id, history)
                     result = AgentRunResult(
                         run_id=run_id,
@@ -374,6 +544,7 @@ class Agent:
                         tool_calls=tuple(calls),
                     )
                 )
+                uncommitted.clear()
                 budget_exhausted = False
                 deadline_exhausted = False
                 # image-bearing results attach after the whole round: a user
@@ -390,17 +561,35 @@ class Agent:
                             tool_name=name,
                             arguments=arguments,
                         )
+                    results: list[Any] = []
+                    called = {entry[0]: entry[1] for entry in parallel}
                     try:
-                        results = await _before_deadline(
-                            deadline,
-                            lambda batch=parallel: asyncio.gather(
-                                *(self._execute_tool(item[3]) for item in batch),
-                                return_exceptions=True,
-                            ),
-                        )
+                        async with contextlib.aclosing(
+                            self._execute_batch(
+                                [(entry[0], entry[3]) for entry in parallel], deadline
+                            )
+                        ) as batch:
+                            async for kind, item in batch:
+                                if kind == "progress":
+                                    yield AgentEvent(
+                                        type="tool_progress",
+                                        run_id=run_id,
+                                        thread_id=thread_id,
+                                        tool_call_id=item[0],
+                                        tool_name=called.get(item[0], ""),
+                                        progress=item[1],
+                                    )
+                                else:
+                                    results = list(item)
                     except TimeoutError:
                         deadline_exhausted = True
                         results = [_timeout_tool_result() for _ in parallel]
+                    # a child failure becomes that call's envelope: re-raising
+                    # here would leave the round's other calls unanswered
+                    results = [
+                        _failed_tool_result(item) if isinstance(item, Exception) else item
+                        for item in results
+                    ]
                     for raised in results:
                         if isinstance(raised, BaseException):
                             raise raised
@@ -440,7 +629,7 @@ class Agent:
                         history.append(
                             AgentMessage(
                                 role="user",
-                                text=f"[image content from {name}]",
+                                text=f"{IMAGE_TURN_PREFIX}{name}]",
                                 images=tool_images,
                             )
                         )
@@ -503,6 +692,7 @@ class Agent:
                         }
                     else:
                         tool_call = ToolCall(id=call_id, name=name, arguments=arguments)
+                        run_the_tool = True
                         try:
                             definition = self.tools.require(name)
                         except KeyError:
@@ -517,9 +707,7 @@ class Agent:
                                 arguments=arguments,
                                 required_capabilities=definition.required_capabilities,
                             )
-                            decision_task = asyncio.create_task(
-                                self.approval_handler.request(request)
-                            )
+                            decision_task = asyncio.create_task(decider.request(request))
                             await asyncio.sleep(0)
                             try:
                                 yield AgentEvent(
@@ -531,19 +719,26 @@ class Agent:
                                     arguments=arguments,
                                     approval=request,
                                 )
+                                asked_at = time.monotonic()
                                 try:
-                                    decision = await _before_deadline(
-                                        deadline, lambda task=decision_task: task
+                                    decision = await asyncio.wait_for(
+                                        decision_task,
+                                        timeout=self.limits.approval_timeout_s,
                                     )
-                                except TimeoutError:
+                                except asyncio.TimeoutError:
                                     decision = None
                                     deadline_exhausted = True
+                                finally:
+                                    # whoever was deciding is not the run
+                                    # working, so give the time back
+                                    deadline += time.monotonic() - asked_at
                             finally:
                                 if not decision_task.done():
                                     decision_task.cancel()
                                     with contextlib.suppress(asyncio.CancelledError):
                                         await decision_task
                             if decision is None:
+                                run_the_tool = False
                                 tool_result = _timeout_tool_result()
                             else:
                                 yield AgentEvent(
@@ -555,6 +750,7 @@ class Agent:
                                     decision=decision,
                                 )
                             if decision is not None and not decision.approved:
+                                run_the_tool = False
                                 tool_result = {
                                     "ok": False,
                                     "error": {
@@ -565,21 +761,25 @@ class Agent:
                                     },
                                     "meta": {},
                                 }
-                            elif decision is not None:
-                                try:
-                                    tool_result = await _before_deadline(
-                                        deadline,
-                                        lambda call=tool_call: self._execute_tool(call),
-                                    )
-                                except TimeoutError:
-                                    deadline_exhausted = True
-                                    tool_result = _timeout_tool_result()
-                        else:
+                        if run_the_tool:
                             try:
-                                tool_result = await _before_deadline(
-                                    deadline,
-                                    lambda call=tool_call: self._execute_tool(call),
-                                )
+                                async with contextlib.aclosing(
+                                    self._execute_batch([(call_id, tool_call)], deadline)
+                                ) as batch:
+                                    async for kind, item in batch:
+                                        if kind == "progress":
+                                            yield AgentEvent(
+                                                type="tool_progress",
+                                                run_id=run_id,
+                                                thread_id=thread_id,
+                                                tool_call_id=call_id,
+                                                tool_name=name,
+                                                progress=item[1],
+                                            )
+                                        elif isinstance(item[0], BaseException):
+                                            raise item[0]
+                                        else:
+                                            tool_result = item[0]
                             except TimeoutError:
                                 deadline_exhausted = True
                                 tool_result = _timeout_tool_result()
@@ -617,7 +817,7 @@ class Agent:
                     history.append(
                         AgentMessage(
                             role="user",
-                            text=f"[image content from {name}]",
+                            text=f"{IMAGE_TURN_PREFIX}{name}]",
                             images=tool_images,
                         )
                     )
@@ -625,9 +825,54 @@ class Agent:
                 if deadline_exhausted:
                     raise TimeoutError("agent run exceeded its timeout")
                 if budget_exhausted:
-                    raise AgentRunError(f"stopped after {self.limits.max_tool_calls} tool calls")
-            raise AgentRunError(f"stopped after {self.limits.max_tool_rounds} tool rounds")
+                    stopped_reason = "tool_budget"
+                    break
+
+            wrap_up: list[str] = []
+            async for event in self._wrap_up(
+                run_id=run_id,
+                thread_id=thread_id,
+                history=history,
+                options=options,
+            ):
+                if event.type == "text_delta":
+                    wrap_up.append(event.text or "")
+                    answer_parts.append(event.text or "")
+                    uncommitted.append(event.text or "")
+                elif event.type == "usage" and event.usage is not None:
+                    usage = _add_usage(usage, event.usage)
+                yield event
+            history.append(AgentMessage(role="assistant", text="".join(wrap_up)))
+            uncommitted.clear()
+            await self.thread_store.save(thread_id, history)
+            yield AgentEvent(
+                type="run_completed",
+                run_id=run_id,
+                thread_id=thread_id,
+                run_result=AgentRunResult(
+                    run_id=run_id,
+                    thread_id=thread_id,
+                    text="".join(answer_parts).strip(),
+                    messages=tuple(history),
+                    tool_calls=tuple(records),
+                    usage=usage,
+                    stopped_reason=stopped_reason,
+                ),
+            )
+            return
+        except asyncio.CancelledError:
+            # Stop is the common way a run ends, and the tools it already ran
+            # had real effects. Saving here is what keeps the thread, the audit
+            # log, and the transcript on screen telling the same story.
+            history = _sealed(history)
+            partial = "".join(uncommitted).strip()
+            if partial:
+                history.append(AgentMessage(role="assistant", text=partial))
+            with contextlib.suppress(Exception):
+                await self.thread_store.save(thread_id, history)
+            raise
         except (AgentRunError, TimeoutError) as exc:
+            history = _sealed(history)
             await self.thread_store.save(thread_id, history)
             yield AgentEvent(
                 type="run_failed",
@@ -636,6 +881,7 @@ class Agent:
                 text=str(exc),
             )
         except Exception as exc:
+            history = _sealed(history)
             await self.thread_store.save(thread_id, history)
             yield AgentEvent(
                 type="run_failed",
@@ -643,6 +889,66 @@ class Agent:
                 thread_id=thread_id,
                 text=f"agent dependency failed with {type(exc).__name__}",
             )
+
+    async def _wrap_up(
+        self,
+        *,
+        run_id: str,
+        thread_id: str,
+        history: Sequence[AgentMessage],
+        options: Mapping[str, Any],
+    ) -> AsyncIterator[AgentEvent]:
+        """One tool-free round so a run that spent its budget still answers.
+
+        The loop already told the model to answer with what it has; without a
+        round in which to do that, every paid round is thrown away.
+        """
+        deadline = time.monotonic() + min(self.limits.timeout_s, _WRAP_UP_TIMEOUT_S)
+        stream = self.model.stream(
+            messages=history,
+            tools=(),
+            system="\n\n".join(
+                part for part in (self.instructions, _WRAP_UP_NOTE) if part
+            ),
+            options={**self.model_options, **dict(options)},
+        )
+        try:
+            while True:
+                try:
+                    event = await _before_deadline(deadline, stream.__anext__)
+                except StopAsyncIteration:
+                    break
+                kind = event.get("type")
+                if kind == "content":
+                    yield AgentEvent(
+                        type="text_delta",
+                        run_id=run_id,
+                        thread_id=thread_id,
+                        text=str(event.get("text") or ""),
+                    )
+                elif kind == "reasoning":
+                    yield AgentEvent(
+                        type="reasoning_delta",
+                        run_id=run_id,
+                        thread_id=thread_id,
+                        text=str(event.get("text") or ""),
+                    )
+                elif kind == "usage":
+                    yield AgentEvent(
+                        type="usage",
+                        run_id=run_id,
+                        thread_id=thread_id,
+                        usage=AgentUsage(
+                            input_tokens=event.get("in"),
+                            output_tokens=event.get("out"),
+                        ),
+                    )
+                elif kind == "error":
+                    raise AgentRunError(str(event.get("text") or "model provider failed"))
+        finally:
+            close_stream = getattr(stream, "aclose", None)
+            if close_stream is not None:
+                await _before_deadline(deadline, close_stream)
 
     def _parallel_batch(
         self, calls: list[dict[str, Any]], round_index: int
@@ -681,6 +987,65 @@ class Agent:
             batch.append((call_id, name, arguments, ToolCall(id=call_id, name=name, arguments=arguments)))
         return batch
 
+    async def _execute_batch(
+        self, calls: Sequence[tuple[str, ToolCall]], deadline: float
+    ) -> AsyncIterator[tuple[str, Any]]:
+        """Run tool calls concurrently, narrating them until they land.
+
+        Yields ``("progress", (call_id, AgentProgress))`` any number of times
+        and then ``("results", [envelope | BaseException, ...])`` exactly once,
+        so a caller that only wants the results can ignore the rest.
+        """
+        loop = asyncio.get_running_loop()
+        updates: asyncio.Queue[tuple[str, AgentProgress]] = asyncio.Queue()
+        started = time.monotonic()
+        running: list[asyncio.Task[dict[str, Any]]] = []
+        budget = _RESULT_BUDGET.set(self.limits.max_tool_result_chars)
+        try:
+            for call_id, call in calls:
+                # the sink has to be in the context BEFORE the task copies it
+                token = _PROGRESS.set(_queue_sink(loop, updates, call_id, started))
+                try:
+                    running.append(asyncio.create_task(self._execute_tool(call)))
+                finally:
+                    _PROGRESS.reset(token)
+        finally:
+            _RESULT_BUDGET.reset(budget)
+        pending = asyncio.gather(*running, return_exceptions=True)
+        waiting: asyncio.Future[tuple[str, AgentProgress]] | None = None
+        try:
+            while True:
+                if pending.done():
+                    while not updates.empty():
+                        yield "progress", updates.get_nowait()
+                    yield "results", pending.result()
+                    return
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError("agent run exceeded its timeout")
+                if waiting is None:
+                    waiting = asyncio.ensure_future(updates.get())
+                done, _ = await asyncio.wait(
+                    {pending, waiting},
+                    timeout=min(remaining, _HEARTBEAT_S),
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if waiting in done:
+                    yield "progress", waiting.result()
+                    waiting = None
+                elif pending not in done:
+                    # nothing to report, but silence is what reads as a hang
+                    elapsed = round(time.monotonic() - started, 2)
+                    for call_id, _call in calls:
+                        yield "progress", (call_id, AgentProgress(elapsed_s=elapsed))
+        finally:
+            if waiting is not None and not waiting.done():
+                waiting.cancel()
+            if not pending.done():
+                pending.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await pending
+
     async def _execute_tool(self, call: ToolCall) -> dict[str, Any]:
         async def terminal(next_call: ToolCall) -> dict[str, Any]:
             return await self.tools.call(next_call.name, next_call.arguments)
@@ -701,4 +1066,10 @@ class Agent:
         return await call_next(call)
 
 
-__all__ = ["Agent", "AgentRunError"]
+__all__ = [
+    "IMAGE_TURN_PREFIX",
+    "Agent",
+    "AgentRunError",
+    "current_result_budget",
+    "report_progress",
+]

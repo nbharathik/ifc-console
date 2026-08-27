@@ -60,8 +60,26 @@ def _validate_subset(values: list[str] | None, allowed: tuple[str, ...], param: 
         )
 
 
+def _dotted_properties(properties: list[str] | None) -> list[str]:
+    """Validated Pset_Name.Property columns, de-duplicated in the order given."""
+    props = list(dict.fromkeys(properties or []))
+    for dotted in props:
+        pset, dot, prop = dotted.partition(".")
+        if not (dot and pset and prop):
+            raise ToolError(
+                "INVALID_INPUT",
+                f"property column {dotted!r} is not in 'Pset_Name.Property' form.",
+                "Use the dotted form, e.g. Pset_WallCommon.FireRating. "
+                "get_element(global_ids=[...], include=['psets']) shows the psets "
+                "an element carries.",
+            )
+    return props
+
+
 def register(mcp: OperationRegistry, core: AppCore) -> None:
-    limit_ = core.settings.exec.output_char_limit
+    def limit_() -> int:
+        # read per call; the user can change output_char_limit mid-session
+        return core.settings.exec.output_char_limit
 
     @mcp.tool(
         annotations=QUERY_ANN,
@@ -96,7 +114,7 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
                 "url": core.viewer_public_url if core.viewer.enabled else None,
             },
         }
-        return ok(data, core.session_meta(), char_limit=limit_)
+        return ok(data, core.session_meta(), char_limit=limit_())
 
     @mcp.tool(
         annotations=QUERY_ANN,
@@ -136,9 +154,9 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
             (info, tree), cached = await core.cached_read("orient", job)
             data["project"] = info
             data["spatial_tree"] = tree
-            return ok(data, core.session_meta(), char_limit=limit_, cached=cached)
+            return ok(data, core.session_meta(), char_limit=limit_(), cached=cached)
         data["hint"] = "no model loaded; call list_ifc_files then open_ifc_file"
-        return ok(data, core.session_meta(), char_limit=limit_)
+        return ok(data, core.session_meta(), char_limit=limit_())
 
     @mcp.tool(
         annotations=QUERY_ANN,
@@ -210,7 +228,7 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
                 'properties=["Pset_DoorCommon.FireRating"])',
             ],
         }
-        return ok(data, core.session_meta(), char_limit=limit_)
+        return ok(data, core.session_meta(), char_limit=limit_())
 
     @mcp.tool(
         annotations=QUERY_ANN,
@@ -232,7 +250,9 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
             lambda: build_project_info(s.ifc, s.path),
             session=s,
         )
-        return ok(data, core.session_meta(), char_limit=limit_, cached=cached, **read_meta(core, s))
+        return ok(
+            data, core.session_meta(), char_limit=limit_(), cached=cached, **read_meta(core, s)
+        )
 
     @mcp.tool(
         annotations=QUERY_ANN,
@@ -262,7 +282,7 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
         return ok(
             {"tree": tree},
             core.session_meta(),
-            char_limit=limit_,
+            char_limit=limit_(),
             cached=cached,
             **read_meta(core, s),
         )
@@ -275,7 +295,8 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
             "model write selector syntax. A name, partial name, class, type name, or "
             "GlobalId is accepted. Bare IFC classes and expressions containing '=' "
             "use IfcOpenShell selector syntax; other input is a case-insensitive text "
-            "search. Use get_viewer_selection instead when the human points at the 3D view."
+            "search. Paginate with limit/offset. Use get_viewer_selection instead when "
+            "the human points at the 3D view."
         ),
     )
     @enveloped(core, "search_elements")
@@ -283,22 +304,25 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
     async def search_elements(
         term: Annotated[str, Field(min_length=1, max_length=500)],
         limit: Annotated[int, Field(ge=1, le=500)] = 50,
+        offset: Annotated[int, Field(ge=0)] = 0,
         model: Annotated[str | None, Field(description=MODEL_ARG)] = None,
     ) -> Envelope:
         s = core.resolve_session(model)
 
         def job() -> tuple[list[dict[str, Any]], str, int]:
             matches, mode = search_model_elements(s.ifc, term)
-            rows = [element_row(item, DEFAULT_FIELDS) for item in matches[:limit]]
+            page = matches[offset : offset + limit]
+            rows = [element_row(item, DEFAULT_FIELDS) for item in page]
             return rows, mode, len(matches)
 
         rows, mode, total = await s.run(job, timeout=120)
         return ok(
             {"query": term, "mode": mode, "results": rows},
             core.session_meta(),
-            char_limit=limit_,
+            char_limit=limit_(),
             total=total,
             returned=len(rows),
+            offset=offset,
             **read_meta(core, s),
         )
 
@@ -307,12 +331,15 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
         data_model=QueryElementsData,
         description=(
             "[QUERY] Find elements with the IfcOpenShell selector syntax and return "
-            "one summary row each. Examples: `IfcWall` (all walls); `IfcWall, IfcSlab` "
-            "(both); `IfcWall, material=concrete`; "
-            "`IfcWall, Pset_WallCommon.FireRating=F30`; `IfcElement, Name=/W.*1/` "
-            "(regex). Paginate with limit/offset; then use get_element or get_psets "
-            "on interesting GlobalIds. On syntax errors the response includes a "
-            "cheat-sheet."
+            "one summary row each. It can filter AND project: `properties` adds any "
+            "named property as a column, which is far cheaper than get_psets. "
+            "Examples: `IfcWall` (all walls); `IfcWall, IfcSlab` (both); "
+            "`IfcWall, material=concrete`; `IfcWall, Pset_WallCommon.FireRating=F30`; "
+            "`IfcElement, Name=/W.*1/` (regex); "
+            "query_elements(query='IfcDoor', fields=[], "
+            "properties=['Pset_DoorCommon.FireRating']) for one property across every "
+            "door. Paginate with limit/offset; then use get_element on interesting "
+            "GlobalIds. On syntax errors the response includes a cheat-sheet."
         ),
     )
     @enveloped(core, "query_elements")
@@ -325,7 +352,16 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
             list[str] | None,
             Field(
                 description="Extra columns beyond global_id+class. "
-                f"Allowed: {list(ALLOWED_FIELDS)}. Default: {list(DEFAULT_FIELDS)}."
+                f"Allowed: {list(ALLOWED_FIELDS)}. Default: {list(DEFAULT_FIELDS)}. "
+                "Pass [] for the smallest row (global_id + class only)."
+            ),
+        ] = None,
+        properties: Annotated[
+            list[str] | None,
+            Field(
+                max_length=20,
+                description="Dotted Pset_Name.Property columns, e.g. "
+                "['Pset_WallCommon.FireRating']. Missing values come back as null.",
             ),
         ] = None,
         order_by: Literal["class", "name", "storey"] = "class",
@@ -333,18 +369,33 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
     ) -> Envelope:
         s = core.resolve_session(model)
         _validate_subset(fields, ALLOWED_FIELDS, "fields")
-        use_fields = tuple(fields) if fields else DEFAULT_FIELDS
-        rows, total = await s.run(
-            lambda: run_query(
+        use_fields = tuple(fields) if fields is not None else DEFAULT_FIELDS
+        props = _dotted_properties(properties)
+
+        def job() -> tuple[list[dict[str, Any]], int]:
+            rows, total = run_query(
                 s.ifc,
                 query,
                 limit=limit,
                 offset=offset,
                 fields=use_fields,
                 order_by=order_by,
-            ),
-            timeout=120,
-        )
+            )
+            if props:
+                import ifcopenshell.util.element as element_util
+
+                for row in rows:
+                    gid = row.get("global_id")
+                    try:
+                        psets = element_util.get_psets(s.ifc.by_guid(gid)) if gid else {}
+                    except Exception:
+                        psets = {}
+                    for dotted in props:
+                        pset, _, prop = dotted.partition(".")
+                        row[dotted] = psets.get(pset, {}).get(prop)
+            return rows, total
+
+        rows, total = await s.run(job, timeout=120)
         data: dict[str, Any] = {"rows": rows}
         if not total:
             # An empty result and a misspelled class look identical; say which.
@@ -359,7 +410,7 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
         return ok(
             data,
             core.session_meta(),
-            char_limit=limit_,
+            char_limit=limit_(),
             total=total,
             returned=len(rows),
             offset=offset,
@@ -383,14 +434,14 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
             list[str] | None,
             Field(
                 description=f"Sections to include. Allowed: {list(INCLUDE_ALLOWED)}. "
-                f"Default: {list(INCLUDE_DEFAULT)}."
+                f"Default: {list(INCLUDE_DEFAULT)}. Pass [] for global_id + class only."
             ),
         ] = None,
         model: Annotated[str | None, Field(description=MODEL_ARG)] = None,
     ) -> Envelope:
         s = core.resolve_session(model)
         _validate_subset(include, INCLUDE_ALLOWED, "include")
-        use_include = tuple(include) if include else INCLUDE_DEFAULT
+        use_include = tuple(include) if include is not None else INCLUDE_DEFAULT
 
         def job() -> tuple[list[dict], list[str]]:
             found, missing = [], []
@@ -409,7 +460,7 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
         return ok(
             {"elements": elements, "missing": missing},
             core.session_meta(),
-            char_limit=limit_,
+            char_limit=limit_(),
             returned=len(elements),
             **read_meta(core, s),
         )
@@ -467,7 +518,7 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
         return ok(
             {"results": results},
             core.session_meta(),
-            char_limit=limit_,
+            char_limit=limit_(),
             returned=len(results),
             **read_meta(core, s),
         )
@@ -518,4 +569,4 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
             data["property_set"] = build_pset_docs(target, pset)
         if property:
             data["property_lookup"] = find_property(target, property)
-        return ok(data, core.session_meta(), char_limit=limit_)
+        return ok(data, core.session_meta(), char_limit=limit_())

@@ -10,11 +10,19 @@ import json
 import logging
 import re
 from collections.abc import Callable, Iterable
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Annotated, Any
 from urllib.parse import urlsplit
 
+from pydantic import AliasChoices, Field
+
 from ifc_console import __version__
-from ifc_console.core.operations import OperationImage, OperationRegistry, OperationSpec
+from ifc_console.core.operations import (
+    OperationImage,
+    OperationRegistry,
+    OperationSpec,
+    argument_aliases,
+    strip_auto_titles,
+)
 from ifc_console.core.results import Envelope
 from ifc_console.http_identity import IDENTITY_PATH, identity_proof, valid_identity_nonce
 from ifc_console.mcp.compat import Image, MCPServer, ToolAnnotations
@@ -80,18 +88,45 @@ stays the norm):
   is disabled, execute_ifc_code may mutate memory but cannot serialize an IFC.
   Adding a folder to the allowed roots is the user's job (/workspace <dir>).
 
-Selector examples for query_elements: `IfcWall` or `IfcWall, IfcSlab` or
-`IfcWall, material=concrete` or `IfcWall, Pset_WallCommon.FireRating=F30` or
-`IfcElement, Name=/W.*/`.
+Selectors. One grammar picks the element set for every tool that takes one:
+query_elements calls it `query`, measure_elements, compute_quantities,
+get_element_geometry, analyze_element_geometry and export_csv call it
+`selector`, search_elements calls it `term`. Those three names are
+interchangeable, so pass whichever you reach for. detect_clashes and
+measure_distance compare two sets, `set_a` and `set_b`.
+  IfcWall                                  a class, subclasses included
+  IfcWall + IfcDoor                        union; IfcElement, !IfcWall excludes
+  1fTRrSB3LEdQg16mMfXa_p                   one element, by bare GlobalId
+  IfcWall, Name=/W.*1/                     regex; *= contains, != negates
+  IfcWall, Pset_WallCommon.FireRating=F30  property; > >= < <= compare numbers
+  IfcWall, material=concrete                also type=, classification=, group=
+  IfcElement, classification=NULL          NULL, TRUE and FALSE are literals
+  IfcElement, location="Level 1"           any container above the element
+  IfcElement, query:"storey.Name"="Level 2"  any key path
+  IfcElement, query:z>2                    origin height in metres
+A bare value may not contain a space or a dot, so quote it; a dotted key
+path must be quoted too or the filter silently matches nothing. The
+selector_help prompt holds the full grammar.
 
-The 3D viewer is disabled by default. When the user enables it, four extra tools join
+Bulk results put their list under a tool-specific key (`rows`, `elements`,
+`results`). What is constant: `meta.total` and `meta.returned` say how much
+matched and how much came back, and a result that did not fit carries
+`data.truncation` with the offset to resume from.
+
+The 3D viewer is disabled by default. When the user enables it, six extra tools join
 the tool list: get_viewer_selection (what the user click-selected, their way
 of saying "this wall"), highlight_elements (your way of pointing for them),
 apply_color_theme (paint elements by any grouping you compute, with a
-legend), and get_viewer_screenshot (see the scene; use highlight or theme
-plus screenshot to verify visual claims). If those tools are absent or report
-VIEWER_NOT_CONNECTED, the user can start the viewer by typing /viewer in the
-ifc-console terminal; do not retry without it.
+legend), get_viewer_screenshot (see the scene; use highlight or theme
+plus screenshot to verify visual claims), get_viewer_measurements (every
+measurement taken, by them or by you), and control_viewer (operate the
+viewport: section it, orient it, isolate, measure, save a viewpoint). Measuring
+through control_viewer uses the geometry on screen, so it answers what the
+schema cannot: a rotated wall's real thickness, the clear distance between two
+elements, the area inside an outline. Its coordinates are metres in the model's
+own axes. If those tools are absent or report VIEWER_NOT_CONNECTED, the user
+can start the viewer by typing /viewer in the ifc-console terminal; do not
+retry without it.
 
 Never attempt OS, network, or file-system access from execute_ifc_code; that
 class of code is blocked unless the user explicitly enables it.
@@ -118,15 +153,57 @@ def _mcp_value(value: Any) -> Any:
     return value
 
 
+def _aliased_parameters(signature: inspect.Signature) -> list[inspect.Parameter]:
+    """Accept the other tools' name for the same argument.
+
+    FastMCP validates arguments against this signature before any ifc-console
+    code runs, so the aliases have to live here. AliasChoices keeps the
+    canonical name as the published property, so the schema is unchanged.
+    """
+    names = set(signature.parameters)
+    parameters = []
+    for name, parameter in signature.parameters.items():
+        aliases = argument_aliases(name, names)
+        if aliases and parameter.annotation is not inspect.Parameter.empty:
+            parameter = parameter.replace(
+                annotation=Annotated[
+                    parameter.annotation,
+                    Field(validation_alias=AliasChoices(name, *aliases)),
+                ]
+            )
+        parameters.append(parameter)
+    return parameters
+
+
 def _projected_handler(spec: OperationSpec, service: OperationService) -> Callable:
     @functools.wraps(spec.handler)
     async def projected(*args: Any, **kwargs: Any) -> Any:
         bound = inspect.signature(spec.handler).bind(*args, **kwargs)
         return _mcp_value(await service.call(spec.name, dict(bound.arguments)))
 
-    signature = inspect.signature(spec.handler, eval_str=True).replace(return_annotation=Envelope)
-    projected.__signature__ = signature  # type: ignore[attr-defined]
+    signature = inspect.signature(spec.handler, eval_str=True)
+    projected.__signature__ = signature.replace(  # type: ignore[attr-defined]
+        parameters=_aliased_parameters(signature),
+        return_annotation=spec.envelope_model or Envelope,
+    )
     return projected
+
+
+def _trim_wire_schema(mcp: MCPServer, name: str) -> None:
+    """FastMCP builds the published schemas itself, so its copies need the same
+    title trimming the SDK definition gets; the two must stay identical."""
+    manager = getattr(mcp, "_tool_manager", None)
+    tool = getattr(manager, "_tools", {}).get(name) if manager is not None else None
+    if tool is None:
+        return
+    with contextlib.suppress(Exception):
+        parameters = strip_auto_titles(tool.parameters)
+        parameters.pop("title", None)  # always "<name>Arguments"; the tool name says it
+        tool.parameters = parameters
+    with contextlib.suppress(Exception):
+        metadata = tool.fn_metadata
+        if metadata.output_schema is not None:
+            metadata.output_schema = strip_auto_titles(metadata.output_schema)
 
 
 def register_mcp_operations(
@@ -143,8 +220,12 @@ def register_mcp_operations(
             name=spec.name,
             description=spec.description,
             annotations=annotations,
-            structured_output=spec.structured_output,
+            # Only a declared data shape is worth publishing: an output schema
+            # also makes FastMCP send every result twice, as text and as
+            # structured content.
+            structured_output=spec.output_schema is not None,
         )(_projected_handler(spec, service))
+        _trim_wire_schema(mcp, spec.name)
 
 
 def build_mcp(core: AppCore) -> MCPServer:
@@ -481,9 +562,14 @@ def build_http_app(
                 "models": core.viewer_hub.model_rows(),
                 "schema": s.schema,
                 "mode": core.policy.mode.value,
+                # Two independent controls: what the assistant may touch,
+                # and whether it stops to ask before touching it.
+                "ai_autonomy": core.ai_autonomy,
+                "ai_save_allowed": core.policy.allow_ai_save,
                 "theme": "light" if core.ui_theme == "light" else "dark",
                 "dirty": s.dirty,
                 "fingerprint": s.fingerprint,
+                "project_scope": core.viewer_hub.project_scope(),
                 "etag": core.viewer_hub.model_etag(),
                 "selection": list(core.viewer_hub.selection),
                 "viewer": {

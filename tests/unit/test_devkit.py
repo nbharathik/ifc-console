@@ -152,6 +152,47 @@ class TestScenario:
         }
 
 
+class TestDevCommandSafety:
+    def test_fresh_never_deletes_an_explicit_project(self, tmp_path: Path, capsys):
+        from ifc_console.cli import main
+
+        project = tmp_path / "real-project"
+        project.mkdir()
+        sentinel = project / "keep-me.txt"
+        sentinel.write_text("important", encoding="utf-8")
+
+        code = main(["dev", "--project", str(project), "--fresh", "--check"])
+
+        assert code == 3
+        assert sentinel.read_text(encoding="utf-8") == "important"
+        assert "--fresh only resets the disposable temporary demo" in capsys.readouterr().err
+
+    def test_fresh_stops_when_the_temporary_project_cannot_be_removed(
+        self, tmp_path: Path, monkeypatch, capsys
+    ):
+        import shutil
+        import tempfile
+
+        from ifc_console import cli
+        from ifc_console.devkit import serve
+
+        project = tmp_path / "ifc-console-dev-project"
+        project.mkdir()
+        monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
+
+        def locked(_path):
+            raise PermissionError("locked by another process")
+
+        def must_not_build(*_args, **_kwargs):
+            raise AssertionError("the harness started after an incomplete reset")
+
+        monkeypatch.setattr(shutil, "rmtree", locked)
+        monkeypatch.setattr(serve, "build_dev_core", must_not_build)
+
+        assert cli.main(["dev", "--fresh", "--check"]) == 2
+        assert "could not reset the temporary dev project" in capsys.readouterr().err
+
+
 class TestCheckReporting:
     def test_a_run_fails_when_any_check_fails(self):
         run = CheckRun()

@@ -1,11 +1,16 @@
-"""measure_elements and measure_distance: methods, units, flags."""
+"""measure_elements and measure_distance: methods, units, flags.
+
+Also covers the markdown report built from the same geometry probe.
+"""
 
 from __future__ import annotations
 
 import pytest
 
 from ifc_console.ifc.measure import measure_distance, measure_elements
+from ifc_console.ifc.profile import analyze_elements
 from ifc_console.ifc.quantities import compute_quantities
+from ifc_console.ifc.report import element_section
 from ifc_console.mcp.envelope import ToolError
 
 
@@ -109,6 +114,28 @@ class TestGeometryExtent:
         )
         assert report["elements"][0]["value"] == pytest.approx(200.0, rel=0.05)
 
+    def test_surface_area_axis_reports_squared_units(self, ifc4):
+        report = measure_elements(
+            ifc4,
+            selector="IfcWall, Name=Wall-1",
+            method="geometry_extent",
+            metric="surface",
+            axis="surface_area",
+        )
+        record = report["elements"][0]
+        # a 5 x 0.2 x 3 m box: 2*(5*3) + 2*(5*0.2) + 2*(0.2*3)
+        assert record["value_si"] == pytest.approx(33.2, rel=0.01)
+        assert record["si_unit"] == "METRE^2"
+        assert record["unit"] == "MILLIMETRE^2"
+        assert record["value"] == pytest.approx(33.2e6, rel=0.01)
+        assert record["flags"] == []
+
+    def test_area_buckets_measure_one_face_group(self, ifc4):
+        report = measure_elements(
+            ifc4, selector="IfcWall, Name=Wall-1", method="geometry_extent", axis="top_area"
+        )
+        assert report["elements"][0]["value_si"] == pytest.approx(1.0, rel=0.01)
+
     def test_bad_axis_is_a_clear_error(self, ifc4):
         with pytest.raises(ToolError) as excinfo:
             measure_elements(ifc4, selector="IfcWall", method="geometry_extent", axis="diagonal")
@@ -146,6 +173,14 @@ class TestMeasureDistance:
                 ifc4, global_ids_a=[wall.GlobalId], global_ids_b=[wall.GlobalId]
             )
         assert excinfo.value.code == "INVALID_INPUT"
+
+
+class TestMeasurementReport:
+    def test_the_bounding_box_block_prints_the_surface_areas(self, ifc4):
+        analysis = analyze_elements(ifc4, selector="IfcWall, Name=Wall-1")
+        lines = element_section({"analysis": analysis["elements"][0]}, analysis["units"], 1)
+
+        assert "- Surface area: 33.2 m^2 (top 1, bottom 1, sides x 1.2, y 30)" in lines
 
 
 class TestDerivedQuantities:

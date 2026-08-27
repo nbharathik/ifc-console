@@ -47,10 +47,12 @@ class IfcToolProfile(str, Enum):
 
 _INSPECT_TOOLS = frozenset(
     {
+        "analyze_element_geometry",
         "apply_color_theme",
         "compute_quantities",
         "describe_capabilities",
         "detect_clashes",
+        "get_agent_skill",
         "get_api_docs",
         "get_element",
         "get_element_geometry",
@@ -66,6 +68,7 @@ _INSPECT_TOOLS = frozenset(
         "get_viewer_screenshot",
         "get_viewer_selection",
         "highlight_elements",
+        "list_agent_skills",
         "list_models",
         "measure_distance",
         "measure_elements",
@@ -293,6 +296,8 @@ class Toolset:
         lines = []
         for definition in self.definitions:
             text = " ".join(definition.description.split())
+            if text.startswith("["):  # drop the [QUERY]/[VIEW]/[ARTIFACT] tag
+                _, _, text = text.partition("] ")
             sentence = text.split(". ")[0].rstrip(".")
             if len(sentence) > 160:
                 sentence = sentence[:157] + "..."
@@ -369,6 +374,24 @@ class Toolset:
         rejected = self.include(*patterns, tags=tags, capabilities=capabilities)
         names = set(rejected.names)
         return Toolset(binding for name, binding in self._bindings.items() if name not in names)
+
+    def requiring_approval(self, predicate: Callable[[ToolDefinition], bool]) -> Toolset:
+        """The same tools, with `requires_approval` recomputed.
+
+        A host that asks the user about protected calls decides what counts as
+        protected: capability alone cannot know whether this session wants to
+        be consulted about running code.
+        """
+        return Toolset(
+            _Binding(
+                binding.definition.model_copy(
+                    update={"requires_approval": bool(predicate(binding.definition))}
+                ),
+                binding.source,
+                binding.native_name,
+            )
+            for binding in self._bindings.values()
+        )
 
     def require(self, name: str) -> ToolDefinition:
         binding = self._bindings.get(name)

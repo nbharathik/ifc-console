@@ -153,7 +153,9 @@ def test_tools_are_provider_neutral_schemas(wb: Workbench):
     assert one["input_schema"]["type"] == "object"
     assert "query" in one["input_schema"]["properties"]
     assert one["description"]
-    assert one["output_schema"]["title"] == "Envelope"
+    # A bulk result publishes no output schema (it would be identical for every
+    # such tool), but the shape it returns is still declared on data_schema.
+    assert one["output_schema"] is None
     assert "rows" in one["data_schema"]["properties"]
 
 

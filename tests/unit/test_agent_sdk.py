@@ -17,6 +17,8 @@ from ifc_console.agents import (
     JsonThreadStore,
     ThreadStoreError,
 )
+from ifc_console.agents import agent as agent_module
+from ifc_console.agents.agent import report_progress
 from ifc_console.toolsets import FunctionToolSource, ToolDefinition, Toolset
 
 
@@ -36,7 +38,9 @@ class ScriptedModel:
         options: Mapping[str, Any],
     ) -> AsyncIterator[Mapping[str, Any]]:
         assert system
-        assert tools
+        # the budget wrap-up round is deliberately tool free, so an empty
+        # toolset is valid; None would still be a caller bug
+        assert tools is not None
         assert messages
         for event in next(self.rounds):
             yield event
@@ -213,7 +217,14 @@ async def test_agent_tool_budget_leaves_no_dangling_tool_calls():
         {"id": f"sum-{index}", "name": "company__add", "arguments": '{"left": 1, "right": 1}'}
         for index in range(3)
     ]
-    model = ScriptedModel([[{"type": "tool_calls", "calls": calls}]])
+    # The second round is the wrap-up: a run that spends its budget still gets
+    # one tool-free round to answer, rather than throwing away what it paid for.
+    model = ScriptedModel(
+        [
+            [{"type": "tool_calls", "calls": calls}],
+            [{"type": "content", "text": "Two of the sums did not fit the budget."}],
+        ]
+    )
     store = InMemoryThreadStore()
     agent = Agent(
         name="bounded",
@@ -226,8 +237,10 @@ async def test_agent_tool_budget_leaves_no_dangling_tool_calls():
 
     events = [event async for event in agent.stream("Add", thread_id="thread-2")]
 
-    assert events[-1].type == "run_failed"
-    assert "1 tool calls" in (events[-1].text or "")
+    assert events[-1].type == "run_completed"
+    result = events[-1].run_result
+    assert result.stopped_reason == "tool_budget"
+    assert "did not fit the budget" in result.text
     finished = [event for event in events if event.type == "tool_call_finished"]
     assert [event.result["error"]["code"] for event in finished[1:]] == [
         "LIMIT_REACHED",
@@ -322,13 +335,16 @@ async def test_agent_timeout_cancels_a_pending_approval():
             ]
         ]
     )
+    # A decision that never arrives is bounded by approval_timeout_s, not by the
+    # run deadline, but the safety property is the same: an approval that timed
+    # out must never let the protected tool run.
     agent = Agent(
         name="publisher",
         model=model,
         tools=tools,
         instructions="Publish with approval.",
         approval_handler=CallbackApprovalHandler(delayed_approval),
-        limits=AgentLimits(timeout_s=0.03),
+        limits=AgentLimits(approval_timeout_s=0.03),
     )
 
     events = [event async for event in agent.stream("Publish")]
@@ -337,6 +353,271 @@ async def test_agent_timeout_cancels_a_pending_approval():
     finished = next(event for event in events if event.type == "tool_call_finished")
     assert finished.result["error"]["code"] == "TIMEOUT"
     assert executed is False
+
+
+@pytest.mark.asyncio
+async def test_time_spent_waiting_for_a_human_is_not_charged_to_the_run():
+    """A person thinking about an approval must not fail the run under them."""
+    source = FunctionToolSource(namespace="company")
+    executed = False
+
+    @source.tool(requires_approval=True)
+    async def publish() -> dict:
+        nonlocal executed
+        executed = True
+        return {"published": True}
+
+    async def slow_human(_request):
+        await asyncio.sleep(0.25)
+        return True
+
+    tools = await Toolset.build(source)
+    model = ScriptedModel(
+        [
+            [
+                {
+                    "type": "tool_calls",
+                    "calls": [
+                        {"id": "publish-1", "name": "company__publish", "arguments": "{}"}
+                    ],
+                }
+            ],
+            [{"type": "content", "text": "Published."}],
+        ]
+    )
+    agent = Agent(
+        name="publisher",
+        model=model,
+        tools=tools,
+        instructions="Publish with approval.",
+        approval_handler=CallbackApprovalHandler(slow_human),
+        # a deadline far shorter than the deliberation it must not count
+        limits=AgentLimits(timeout_s=0.15, approval_timeout_s=5.0),
+    )
+
+    events = [event async for event in agent.stream("Publish")]
+
+    assert events[-1].type == "run_completed"
+    assert executed is True
+
+
+@pytest.mark.asyncio
+async def test_a_running_tool_reports_progress_instead_of_looking_hung():
+    source = FunctionToolSource(namespace="company")
+
+    @source.tool()
+    async def scan() -> dict:
+        for step in (1, 2, 3):
+            report_progress(step, 3, "reading elements")
+            await asyncio.sleep(0.01)
+        return {"scanned": 3}
+
+    tools = await Toolset.build(source)
+    model = ScriptedModel(
+        [
+            [
+                {
+                    "type": "tool_calls",
+                    "calls": [{"id": "scan-1", "name": "company__scan", "arguments": "{}"}],
+                }
+            ],
+            [{"type": "content", "text": "Scanned."}],
+        ]
+    )
+    agent = Agent(name="scanner", model=model, tools=tools, instructions="Scan.")
+
+    events = [event async for event in agent.stream("Scan")]
+
+    progress = [event for event in events if event.type == "tool_progress"]
+    assert progress, "a tool that reports progress must reach the caller"
+    assert progress[0].tool_call_id == "scan-1"
+    assert progress[0].tool_name == "company__scan"
+    assert [event.progress.done for event in progress][-1] == 3
+    assert progress[0].progress.total == 3
+    assert progress[0].progress.note == "reading elements"
+    kinds = [event.type for event in events]
+    assert kinds.index("tool_call_started") < kinds.index("tool_progress")
+    assert kinds.index("tool_progress") < kinds.index("tool_call_finished")
+
+
+@pytest.mark.asyncio
+async def test_a_silent_tool_still_says_it_is_alive(monkeypatch):
+    """Silence is what reads as a hang, so an idle tool gets a heartbeat."""
+    monkeypatch.setattr(agent_module, "_HEARTBEAT_S", 0.01)
+    source = FunctionToolSource(namespace="company")
+
+    @source.tool()
+    async def quiet() -> dict:
+        await asyncio.sleep(0.05)
+        return {"ok": True}
+
+    tools = await Toolset.build(source)
+    model = ScriptedModel(
+        [
+            [
+                {
+                    "type": "tool_calls",
+                    "calls": [{"id": "q-1", "name": "company__quiet", "arguments": "{}"}],
+                }
+            ],
+            [{"type": "content", "text": "Done."}],
+        ]
+    )
+    agent = Agent(name="quiet-runner", model=model, tools=tools, instructions="Wait.")
+
+    events = [event async for event in agent.stream("Wait")]
+
+    progress = [event for event in events if event.type == "tool_progress"]
+    assert progress, "a slow silent tool must still report that it is running"
+    assert progress[-1].progress.elapsed_s > 0
+    assert events[-1].type == "run_completed"
+
+
+@pytest.mark.asyncio
+async def test_a_stopped_run_saves_the_tools_that_actually_ran():
+    """Stop, and the thread has to record what happened, side effects and all."""
+    source = FunctionToolSource(namespace="company")
+    started = asyncio.Event()
+
+    @source.tool()
+    async def slow() -> dict:
+        started.set()
+        await asyncio.sleep(30)
+        return {"done": True}
+
+    tools = await Toolset.build(source)
+    model = ScriptedModel(
+        [
+            [
+                {"type": "content", "text": "Looking now. "},
+                {
+                    "type": "tool_calls",
+                    "calls": [{"id": "slow-1", "name": "company__slow", "arguments": "{}"}],
+                },
+            ]
+        ]
+    )
+    store = InMemoryThreadStore()
+    agent = Agent(
+        name="stoppable",
+        model=model,
+        tools=tools,
+        instructions="Look.",
+        thread_store=store,
+    )
+
+    async def consume() -> None:
+        async for _event in agent.stream("Look", thread_id="stopped-thread"):
+            pass
+
+    running = asyncio.create_task(consume())
+    await asyncio.wait_for(started.wait(), timeout=5)
+    running.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await running
+
+    saved = await store.load("stopped-thread")
+    assert [message.role for message in saved] == ["user", "assistant", "tool"]
+    assert saved[1].text == "Looking now. "
+    aborted = json.loads(saved[-1].text)
+    assert aborted["error"]["code"] == "RUN_ABORTED"
+    assert saved[-1].tool_call_id == "slow-1"
+
+
+@pytest.mark.asyncio
+async def test_a_stopped_run_keeps_the_answer_it_had_already_written():
+    class StallingModel:
+        provider_id = "test"
+        model_id = "stalling"
+
+        async def stream(self, **_kwargs):
+            yield {"type": "content", "text": "Half an answ"}
+            await asyncio.sleep(30)
+            yield {"type": "content", "text": "er."}
+
+    store = InMemoryThreadStore()
+    agent = Agent(
+        name="stoppable",
+        model=StallingModel(),
+        tools=Toolset(),
+        instructions="Answer.",
+        thread_store=store,
+    )
+    seen: list[str] = []
+
+    async def consume() -> None:
+        async for event in agent.stream("Answer", thread_id="partial-thread"):
+            if event.type == "text_delta":
+                seen.append(event.text or "")
+
+    running = asyncio.create_task(consume())
+    for _ in range(200):
+        await asyncio.sleep(0.01)
+        if seen:
+            break
+    running.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await running
+
+    saved = await store.load("partial-thread")
+    assert [message.role for message in saved] == ["user", "assistant"]
+    assert saved[-1].text == "Half an answ"
+
+
+@pytest.mark.asyncio
+async def test_a_tool_can_see_the_budget_its_result_will_be_held_to():
+    """One budget, decided once: paging to it beats being clipped by it."""
+    from ifc_console.agents.agent import current_result_budget
+
+    source = FunctionToolSource(namespace="company")
+    seen: list[int | None] = []
+
+    @source.tool()
+    async def report() -> dict:
+        seen.append(current_result_budget())
+        return {"ok": True}
+
+    tools = await Toolset.build(source)
+    model = ScriptedModel(
+        [
+            [
+                {
+                    "type": "tool_calls",
+                    "calls": [{"id": "r-1", "name": "company__report", "arguments": "{}"}],
+                }
+            ],
+            [{"type": "content", "text": "Reported."}],
+        ]
+    )
+    agent = Agent(
+        name="budgeted",
+        model=model,
+        tools=tools,
+        instructions="Report.",
+        limits=AgentLimits(max_tool_result_chars=4321),
+    )
+
+    await agent.run("Report")
+
+    assert seen == [4321]
+    assert current_result_budget() is None
+
+
+def test_a_clipped_tool_result_keeps_its_error_code_and_meta():
+    envelope = {
+        "ok": False,
+        "error": {"code": "TOO_MANY_ELEMENTS", "message": "x" * 400, "hint": "narrow it"},
+        "meta": {"returned": 0, "total": 9000},
+        "data": {"rows": ["y" * 200 for _ in range(50)]},
+    }
+
+    text = agent_module._tool_text(envelope, 1000)
+
+    assert len(text) <= 1000
+    clipped = json.loads(text)
+    assert clipped["error"]["code"] == "TOO_MANY_ELEMENTS"
+    assert clipped["meta"]["total"] == 9000
+    assert clipped["truncation"]["of_chars"] > 600
 
 
 @pytest.mark.asyncio
@@ -388,6 +669,36 @@ async def test_agent_pairs_started_and_finished_events_for_invalid_arguments():
     assert kinds.index("tool_call_started") < kinds.index("tool_call_finished")
     finished = next(event for event in events if event.type == "tool_call_finished")
     assert finished.result["error"]["code"] == "INVALID_INPUT"
+    assert events[-1].type == "run_completed"
+
+
+@pytest.mark.asyncio
+async def test_a_nameless_tool_call_is_answered_rather_than_fatal():
+    """Anthropic emits one when a tool block arrives without its header."""
+    source = FunctionToolSource(namespace="company")
+
+    @source.tool()
+    async def noop() -> dict:
+        return {}
+
+    tools = await Toolset.build(source)
+    model = ScriptedModel(
+        [
+            [{"type": "tool_calls", "calls": [{"id": "", "name": "", "arguments": "{}"}]}],
+            [{"type": "content", "text": "Recovered."}],
+        ]
+    )
+    agent = Agent(
+        name="resilient",
+        model=model,
+        tools=tools,
+        instructions="Recover from bad calls.",
+    )
+
+    events = [event async for event in agent.stream("Try it")]
+
+    finished = next(event for event in events if event.type == "tool_call_finished")
+    assert finished.result["error"]["code"] == "TOOL_NOT_FOUND"
     assert events[-1].type == "run_completed"
 
 
@@ -456,13 +767,18 @@ async def test_specialist_agent_composes_as_a_namespaced_tool():
         tools=Toolset(),
         instructions="Review fire-safety properties.",
     )
+    forwarded: list[Any] = []
     source = AgentToolSource(
         specialist,
         namespace="specialists",
         name="review_fire",
         description="Review IFC fire-safety properties.",
+        on_event=forwarded.append,
+        parent_thread="panel-abc",
+        parent_run_id="run-1",
     )
     tools = await Toolset.build(source)
+    definition = tools.require("specialists__review_fire")
 
     result = await tools.call(
         "specialists__review_fire",
@@ -471,4 +787,89 @@ async def test_specialist_agent_composes_as_a_namespaced_tool():
 
     assert result["ok"] is True
     assert result["data"]["text"] == "Fire review complete."
-    assert result["data"]["thread_id"].startswith("thread_")
+    # the child's thread is derived from its parent's, never model-supplied
+    assert "thread_id" not in definition.input_schema["properties"]
+    assert result["data"]["thread_id"] == "panel-abc::sub::review_fire"
+    # every child event reaches the host, tagged with where it came from
+    assert [event.type for event in forwarded] == [
+        "run_started",
+        "text_delta",
+        "run_completed",
+    ]
+    assert {event.depth for event in forwarded} == {1}
+    assert {event.parent_run_id for event in forwarded} == {"run-1"}
+
+
+@pytest.mark.asyncio
+async def test_a_specialist_with_nobody_watching_can_never_block_on_approval():
+    """The deadlock the audit warned about: no sink means no approval wait."""
+    source = FunctionToolSource(namespace="risky")
+    executed = False
+
+    @source.tool(requires_approval=True)
+    async def publish() -> dict:
+        nonlocal executed
+        executed = True
+        return {"published": True}
+
+    never = asyncio.Event()
+
+    async def hangs_forever(_request):
+        await never.wait()
+        return True
+
+    specialist = Agent(
+        name="publisher",
+        model=ScriptedModel(
+            [
+                [
+                    {
+                        "type": "tool_calls",
+                        "calls": [
+                            {"id": "pub-1", "name": "risky__publish", "arguments": "{}"}
+                        ],
+                    }
+                ],
+                [{"type": "content", "text": "Nothing was published."}],
+            ]
+        ),
+        tools=await Toolset.build(source),
+        instructions="Publish only with approval.",
+        approval_handler=CallbackApprovalHandler(hangs_forever),
+    )
+    delegated = AgentToolSource(
+        specialist,
+        name="publish_for_me",
+        description="Ask the specialist to publish.",
+    )
+    tools = await Toolset.build(delegated)
+
+    result = await asyncio.wait_for(
+        tools.call("agents__publish_for_me", {"prompt": "Publish it."}), timeout=5
+    )
+
+    assert result["ok"] is True
+    assert executed is False
+
+
+@pytest.mark.asyncio
+async def test_a_delegated_agent_may_not_delegate_again():
+    specialist = Agent(
+        name="fire-specialist",
+        model=AnswerModel(),
+        tools=Toolset(),
+        instructions="Review fire-safety properties.",
+    )
+    source = AgentToolSource(
+        specialist,
+        name="review_fire",
+        description="Review IFC fire-safety properties.",
+        on_event=lambda _event: None,
+        depth=1,
+    )
+    tools = await Toolset.build(source)
+
+    result = await tools.call("agents__review_fire", {"prompt": "Review again."})
+
+    assert result["ok"] is False
+    assert result["error"]["code"] == "DELEGATION_DEPTH"

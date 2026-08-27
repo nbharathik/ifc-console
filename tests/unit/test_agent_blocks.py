@@ -132,3 +132,42 @@ class TestComposition:
             )
         names = list(composition.tools.names)
         assert names.count("compute_quantities") == 1
+
+    async def test_saved_skills_are_indexed_into_the_prompt(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """Round one must not be spent listing what the host already knows."""
+        from ifc_console.agents.skills import AgentSkillStore
+
+        monkeypatch.setenv("IFC_CONSOLE_HOME", str(tmp_path / "home"))
+        AgentSkillStore(tmp_path).save(
+            "sheet-pile-profile",
+            "Steps here.",
+            description="Measure a sheet pile profile",
+            applies_to="IfcMember",
+        )
+        async with await self._runtime(tmp_path) as runtime:
+            composition = await compose(
+                runtime, ["skills"], role="R", extra_instructions="Answer briefly."
+            )
+        text = composition.instructions
+        assert "Current session context:" in text
+        assert "sheet-pile-profile: Measure a sheet pile profile [IfcMember]" in text
+        # host context sits above the user's own words
+        assert text.index("Current session context:") < text.index("Answer briefly.")
+
+    async def test_an_empty_project_says_so_instead_of_costing_a_round(
+        self, tmp_path: Path, monkeypatch
+    ):
+        monkeypatch.setenv("IFC_CONSOLE_HOME", str(tmp_path / "home"))
+        async with await self._runtime(tmp_path) as runtime:
+            composition = await compose(runtime, ["skills"], role="R")
+        assert "No skills are saved in this project yet" in composition.instructions
+
+    async def test_no_skills_block_means_no_context_probe(
+        self, tmp_path: Path, monkeypatch
+    ):
+        monkeypatch.setenv("IFC_CONSOLE_HOME", str(tmp_path / "home"))
+        async with await self._runtime(tmp_path) as runtime:
+            composition = await compose(runtime, ["ifc-context"], role="R")
+        assert "Current session context:" not in composition.instructions

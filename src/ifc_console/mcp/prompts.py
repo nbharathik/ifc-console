@@ -15,6 +15,49 @@ from ifc_console.mcp.compat import MCPServer
 if TYPE_CHECKING:
     from ifc_console.app import AppCore
 
+# Everything below is verified against the pinned ifcopenshell grammar by
+# tests/integration/test_resources_prompts.py. The facets past the basic
+# cheat sheet answer most spatial, classification and system questions in
+# one line, and are the difference between a selector and hand-written code.
+SELECTOR_EXTRAS = """
+Quoting, the mistake that costs the most rounds:
+  A bare value may not contain a space or a dot. Quote it, or use a regex.
+  IfcWall, Name="Basic Wall:Interior"      quoted value
+  IfcElement, query:z>"2.5"                quoted number
+
+Set algebra:
+  IfcWall + IfcDoor                        union of two groups
+  IfcElement, !IfcWall                     everything except walls
+  1fTRrSB3LEdQg16mMfXa_p                   one element, by bare GlobalId
+
+Comparisons: = != > >= < <= *= (contains) !*= (does not contain).
+Specials: NULL, TRUE, FALSE. Commas AND facets together, except bare
+classes, which union.
+
+Facets the basic sheet omits:
+  IfcElement, classification=/EF_25/       classification code or name
+  IfcElement, classification=NULL          everything unclassified
+  IfcElement, location="Level 1"           any container above it
+  IfcElement, parent="Wall-01"             its direct parent only
+  IfcElement, group="Fire Compartment 3"   IfcGroup, IfcZone or IfcSystem
+  IfcWall, Name*=Corridor                  substring match
+  IfcWall, /Pset_.*Common/.FireRating=F30  regex on the property set name
+  IfcWall, Qto_WallBaseQuantities.NetVolume>0   numeric quantity comparison
+
+Key paths, for anything the facets do not name. A dotted key MUST be quoted
+or the filter silently matches nothing:
+  IfcElement, query:"storey.Name"="Level 2"
+  IfcElement, query:"space.Name"="Office 101"
+  IfcElement, query:"system.Name"="SUP-01"
+  IfcElement, query:"type.Name"=NULL       occurrences with no type
+  IfcElement, query:class=IfcWall
+  IfcElement, query:predefined_type=LOADBEARING
+  IfcElement, query:z>2                    origin height in metres
+  IfcElement, query:easting>0              also northing, elevation
+"""
+
+SELECTOR_GUIDE = SYNTAX_HELP + "\n" + SELECTOR_EXTRAS
+
 
 def register(mcp: MCPServer, core: AppCore) -> None:
     @mcp.prompt(description="Audit the loaded model end to end and report what is wrong.")
@@ -62,10 +105,11 @@ def register(mcp: MCPServer, core: AppCore) -> None:
         return (
             "Find unclassified elements:\n"
             "1. query_elements(query='IfcElement, classification=NULL', "
-            "limit=100).\n"
-            "2. If that selector errors on this model, fall back to "
-            "execute_ifc_code: walk by_class('IfcElement') and keep those "
-            "without HasAssociations of type IfcRelAssociatesClassification.\n"
+            "limit=100). The selector grammar answers this natively; do not "
+            "write code for it.\n"
+            "2. query_elements(query='IfcElement, classification=/./', limit=1) "
+            "for the other side of the count, so the report says how much of "
+            "the model is classified rather than only what is missing.\n"
             "3. Group the result by class, report counts, and list the first "
             "few GlobalIds per class. Color them by class with "
             "apply_color_theme when the viewer is connected."
@@ -86,8 +130,13 @@ def register(mcp: MCPServer, core: AppCore) -> None:
     @mcp.prompt(description="The selector syntax cheat sheet for query_elements.")
     def selector_help() -> str:
         return (
-            "Selector syntax for query_elements and compute_quantities:\n"
-            + SYNTAX_HELP
+            "Selector syntax. Every tool that takes a set of elements speaks "
+            "it: query_elements (`query`), measure_elements, compute_quantities, "
+            "get_element_geometry, analyze_element_geometry, export_csv "
+            "(`selector`), detect_clashes and measure_distance (`set_a`, "
+            "`set_b`). Those argument names are interchangeable, so `selector`, "
+            "`query` and `term` are all accepted wherever one of them is.\n\n"
+            + SELECTOR_GUIDE
             + "\nAnswer the user's next element-finding question by composing "
             "one of these selectors and running query_elements."
         )

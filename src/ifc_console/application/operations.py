@@ -492,8 +492,11 @@ def build_operations(core: AppCore) -> OperationService:
         tools_analysis,
         tools_exec,
         tools_files,
+        tools_insight,
         tools_knowledge,
         tools_query,
+        tools_skills,
+        tools_viewer,
         tools_workspace,
     )
     from ifc_console.operations import changes, jobs
@@ -502,9 +505,13 @@ def build_operations(core: AppCore) -> OperationService:
     tools_query.register(registry, core)
     tools_knowledge.register(registry, core)
     tools_analysis.register(registry, core)
+    tools_insight.register(registry, core)
     tools_exec.register(registry, core)
     tools_files.register(registry, core)
     tools_workspace.register(registry, core)
+    tools_skills.register(registry, core)
+    # always on: it is how an MCP client turns the gated viewer tools on
+    tools_viewer.register_launcher(registry, core)
     jobs.register(registry, core)
     changes.register(registry, core)
     core.plugins.load_configured(core, registry)

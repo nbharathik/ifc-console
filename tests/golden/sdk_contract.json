@@ -1,6 +1,6 @@
 {
   "aliases": {
-    "AgentEventType": "Literal['run_started', 'text_delta', 'reasoning_delta', 'tool_call_started', 'approval_requested', 'approval_resolved', 'tool_call_finished', 'usage', 'run_completed', 'run_failed']",
+    "AgentEventType": "Literal['run_started', 'text_delta', 'reasoning_delta', 'tool_call_started', 'tool_progress', 'approval_requested', 'approval_resolved', 'tool_call_finished', 'usage', 'run_completed', 'run_failed']",
     "AgentRole": "Literal['user', 'assistant', 'tool']",
     "Authority": "Literal['tool', 'caller', 'worker']",
     "IfcScalar": "str | int | float | bool | None"
@@ -349,6 +349,12 @@
             "default": "None",
             "kind": "KEYWORD_ONLY",
             "name": "images"
+          },
+          {
+            "annotation": "ApprovalHandler | None",
+            "default": "None",
+            "kind": "KEYWORD_ONLY",
+            "name": "approval_handler"
           }
         ],
         "returns": "AsyncIterator[AgentEvent]"
@@ -575,7 +581,7 @@
         "parameters": [
           {
             "annotation": "str",
-            "kind": "POSITIONAL_OR_KEYWORD",
+            "kind": "POSITIONAL_ONLY",
             "name": "name",
             "required": true
           },
@@ -593,7 +599,7 @@
         "parameters": [
           {
             "annotation": "str",
-            "kind": "POSITIONAL_OR_KEYWORD",
+            "kind": "POSITIONAL_ONLY",
             "name": "name",
             "required": true
           },
@@ -1930,7 +1936,7 @@
         "parameters": [
           {
             "annotation": "str",
-            "kind": "POSITIONAL_OR_KEYWORD",
+            "kind": "POSITIONAL_ONLY",
             "name": "name",
             "required": true
           },
@@ -2343,7 +2349,7 @@
         "parameters": [
           {
             "annotation": "str",
-            "kind": "POSITIONAL_OR_KEYWORD",
+            "kind": "POSITIONAL_ONLY",
             "name": "name",
             "required": true
           },
@@ -2907,6 +2913,18 @@
         ],
         "returns": "ToolDefinition"
       },
+      "requiring_approval": {
+        "async": false,
+        "parameters": [
+          {
+            "annotation": "Callable[[ToolDefinition], bool]",
+            "kind": "POSITIONAL_OR_KEYWORD",
+            "name": "predicate",
+            "required": true
+          }
+        ],
+        "returns": "Toolset"
+      },
       "schemas": {
         "async": false,
         "parameters": [],
@@ -3099,7 +3117,7 @@
         "parameters": [
           {
             "annotation": "str",
-            "kind": "POSITIONAL_OR_KEYWORD",
+            "kind": "POSITIONAL_ONLY",
             "name": "name",
             "required": true
           },
@@ -3117,7 +3135,7 @@
         "parameters": [
           {
             "annotation": "str",
-            "kind": "POSITIONAL_OR_KEYWORD",
+            "kind": "POSITIONAL_ONLY",
             "name": "name",
             "required": true
           },
@@ -4645,6 +4663,43 @@
           "title": "AgentMessage",
           "type": "object"
         },
+        "AgentProgress": {
+          "description": "How far a still-running tool call has got.\n\nA ten-second tool is indistinguishable from a hang unless it says so, and\n``elapsed_s`` alone already tells the reader the run is alive.",
+          "properties": {
+            "done": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Done",
+              "type": "integer"
+            },
+            "elapsed_s": {
+              "default": 0.0,
+              "minimum": 0,
+              "title": "Elapsed S",
+              "type": "number"
+            },
+            "note": {
+              "default": "",
+              "title": "Note",
+              "type": "string"
+            },
+            "total": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Total"
+            }
+          },
+          "title": "AgentProgress",
+          "type": "object"
+        },
         "AgentRunResult": {
           "properties": {
             "data": {
@@ -4673,6 +4728,22 @@
             "run_id": {
               "title": "Run Id",
               "type": "string"
+            },
+            "stopped_reason": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "tool_budget",
+                    "round_budget"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Stopped Reason"
             },
             "text": {
               "title": "Text",
@@ -4892,6 +4963,35 @@
           ],
           "default": null
         },
+        "depth": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Depth",
+          "type": "integer"
+        },
+        "parent_run_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Parent Run Id"
+        },
+        "progress": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AgentProgress"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "result": {
           "anyOf": [
             {
@@ -4966,6 +5066,7 @@
             "text_delta",
             "reasoning_delta",
             "tool_call_started",
+            "tool_progress",
             "approval_requested",
             "approval_resolved",
             "tool_call_finished",
@@ -5020,6 +5121,13 @@
     "AgentLimits": {
       "description": "Hard limits for one run.",
       "properties": {
+        "approval_timeout_s": {
+          "default": 3600.0,
+          "exclusiveMinimum": 0,
+          "maximum": 86400,
+          "title": "Approval Timeout S",
+          "type": "number"
+        },
         "max_tool_calls": {
           "default": 32,
           "maximum": 1000,
@@ -5331,6 +5439,22 @@
         "run_id": {
           "title": "Run Id",
           "type": "string"
+        },
+        "stopped_reason": {
+          "anyOf": [
+            {
+              "enum": [
+                "tool_budget",
+                "round_budget"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Stopped Reason"
         },
         "text": {
           "title": "Text",

@@ -52,3 +52,44 @@ test("an unterminated code fence still renders", () => {
   assert.match(out, /<pre>/);
   assert.match(out, /print\(1\)/);
 });
+
+test("a wrapped bullet stays one list item", () => {
+  const html = md("- Every card above is a real tool call this run made; open one\n  to see its arguments and what came back.\n- Nothing changed.");
+  assert.equal((html.match(/<li>/g) || []).length, 2);
+  assert.match(html, /open one to see its arguments/);
+  assert.equal(html.includes("</ul>"), true);
+});
+
+test("an indented list still renders as a list", () => {
+  const html = md("  - one\n  - two");
+  assert.equal((html.match(/<li>/g) || []).length, 2);
+});
+
+test("headings keep their level instead of all becoming h3", () => {
+  assert.match(md("# Title"), /<h3>Title<\/h3>/);
+  assert.match(md("## Section"), /<h4>Section<\/h4>/);
+  assert.match(md("#### Deep"), /<h6>Deep<\/h6>/);
+});
+
+test("a blockquote is quoted, not escaped into the text", () => {
+  const html = md("> the manual says 240 mm");
+  assert.match(html, /<blockquote>the manual says 240 mm<\/blockquote>/);
+});
+
+test("GlobalIds become viewer chips, bare or backticked, and nothing else does", () => {
+  const guid = "2O2Fr$t4X7Zf8NOew3FL9r";
+  const bare = md(`Wall ${guid} is thicker.`);
+  assert.match(bare, /<button type="button" class="chat-guid" data-guid="2O2Fr\$t4X7Zf8NOew3FL9r"/);
+  assert.ok(!bare.includes("<button" + "><button"), "no nested chips");
+  const coded = md("Wall `" + guid + "` is thicker.");
+  assert.match(coded, /class="chat-guid"/);
+  assert.ok(!coded.includes("<code>"), "the code span became the chip");
+  // a chip renders once even when the same id appears twice
+  const twice = md(`${guid} and again ${guid}.`);
+  assert.equal((twice.match(/chat-guid/g) || []).length, 2);
+  // 22-char words that are not GUIDs stay text: wrong first char, wrong charset
+  assert.ok(!md("word 9O2Fr$t4X7Zf8NOew3FL9r here").includes("chat-guid"));
+  assert.ok(!md("word ABCDEFGHIJKLMNOPQRSTUV here").includes("chat-guid"));
+  // ids inside fenced code blocks stay code
+  assert.ok(!md("```\n" + guid + "\n```").includes("chat-guid"));
+});

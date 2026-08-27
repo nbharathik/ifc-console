@@ -2,7 +2,9 @@
  * fallback when workers are unavailable).
  *
  * Streams web-ifc output as table-of-arrays chunks built for zero-copy
- * postMessage transfer. Geometry is deduplicated: each unique geometry
+ * postMessage transfer. One `coordination` message carries the matrix web-ifc
+ * applied, which is the only way back from the viewport's coordinates to the
+ * file's own. Geometry is deduplicated: each unique geometry
  * (keyed by its expressID) crosses the wire exactly once as de-interleaved
  * positions/normals/indices plus a local AABB; placements reference it with
  * a float64 matrix and a color. The viewer bakes or instances on its side.
@@ -126,7 +128,8 @@ function circleSegments(byteLength) {
 }
 
 /* Parse `buffer` with the given IfcAPI instance and emit(message, transfers?):
- * progress* / chunk* -> maps -> tree -> done. Throws on open failure. */
+ * progress* / chunk* -> coordination -> maps -> tree -> done. Throws on open
+ * failure. */
 export async function parseModel(api, buffer, emit) {
   const modelID = api.OpenModel(buffer, {
     COORDINATE_TO_ORIGIN: true,
@@ -192,6 +195,16 @@ export async function parseModel(api, buffer, emit) {
       if (builder.full) builder.flush(emit);
     });
     builder.flush(emit);
+
+    // The frame web-ifc put the model in. Without it every coordinate the
+    // viewer reports is in the viewport's terms rather than the file's.
+    let coordination = null;
+    try {
+      coordination = Array.from(api.GetCoordinationMatrix(modelID));
+    } catch {
+      coordination = null;
+    }
+    emit({ type: "coordination", matrix: coordination });
 
     // Spatial tree first: its node ids join the product ids for one combined
     // GlobalId + Name pass, a single GetLine per entity.

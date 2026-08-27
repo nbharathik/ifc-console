@@ -124,6 +124,8 @@ def _stream_summary(text: str) -> dict[str, Any]:
     kinds: dict[str, int] = {}
     answer = []
     tools: list[str] = []
+    calls: list[dict[str, Any]] = []
+    results: list[dict[str, Any]] = []
     errors: list[str] = []
     proposals: list[dict[str, Any]] = []
     for event in sse_events(text):
@@ -131,8 +133,11 @@ def _stream_summary(text: str) -> dict[str, Any]:
         kinds[kind] = kinds.get(kind, 0) + 1
         if kind == "content":
             answer.append(str(event.get("text") or ""))
+        elif kind == "tool_call":
+            calls.append(event)
         elif kind == "tool_result":
             tools.append(f"{event.get('name')}{'' if event.get('ok') else ' (failed)'}")
+            results.append(event)
         elif kind == "proposal":
             proposals.append(event)
         elif kind == "error":
@@ -141,6 +146,8 @@ def _stream_summary(text: str) -> dict[str, Any]:
         "kinds": kinds,
         "answer": "".join(answer),
         "tools": tools,
+        "calls": calls,
+        "results": results,
         "errors": errors,
         "proposals": proposals,
     }
@@ -233,8 +240,31 @@ def run_checks(base_url: str, token: str, *, model_id: str = "rehearsal-tools") 
         )
         run.add(f"workspace: {agent_name}", ok, detail)
 
+    plain_code, plain_ws = client.request("/api/agents/workspace?agent=")
+    plain_ok = (
+        plain_code == 200
+        and isinstance(plain_ws, dict)
+        and bool(plain_ws.get("plain"))
+        and bool(plain_ws.get("tools"))
+        and bool(plain_ws.get("stages"))
+    )
+    run.add(
+        "workspace: plain chat",
+        plain_ok,
+        f"{len(plain_ws.get('tools', []))} tools" if isinstance(plain_ws, dict) else f"HTTP {plain_code}",
+    )
+
     ws_404, _ = client.request("/api/agents/workspace?agent=nope")
     run.add("workspace rejects an unknown agent", ws_404 == 404, f"HTTP {ws_404}")
+
+    skills_code, skills_ws = client.request("/api/agents/workspace?agent=measurement")
+    skills = skills_ws.get("skills", []) if isinstance(skills_ws, dict) else []
+    run.add(
+        "skills listed and indexed into the prompt",
+        skills_code == 200
+        and any(row.get("name") == "wall-thickness-check" for row in skills),
+        f"{len(skills)} skill(s): " + ", ".join(row.get("name", "?") for row in skills[:4]),
+    )
 
     files_code, files_payload = client.request("/api/agents/files?agent=measurement")
     files = files_payload.get("files", []) if isinstance(files_payload, dict) else []
@@ -296,6 +326,73 @@ def run_checks(base_url: str, token: str, *, model_id: str = "rehearsal-tools") 
         custom_code == 201 and bool(custom_name),
         str(custom_name or custom),
     )
+
+    _approval_results: dict[bool, dict[str, Any]] = {}
+
+    def approval_check(decision: bool) -> dict[str, Any]:
+        """Run something protected, answer the question it stops on.
+
+        Streamed incrementally on purpose: the server is blocked until the
+        decision is posted, so a reader that waits for the whole body first
+        would wait forever.
+        """
+        import threading
+
+        client.request(
+            "/api/session/mode",
+            method="POST",
+            json_body={"mode": "edit", "autonomy": "approval", "confirmed": True},
+        )
+        request = urllib.request.Request(
+            f"{base_url}/api/agents/stream",
+            data=json.dumps(
+                {
+                    "provider": "rehearsal",
+                    "model": model_id,
+                    "prompt": "Measure the interior wall thickness and propose writing it back.",
+                    "agent": "measurement",
+                }
+            ).encode("utf-8"),
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+            method="POST",
+        )
+        counts = {"asked": 0, "decided": 0, "proposals": 0, "done": False}
+        try:
+            with urllib.request.urlopen(request, timeout=TIMEOUT) as response:  # noqa: S310
+                for raw in response:
+                    line = raw.decode("utf-8", "replace").strip()
+                    if not line.startswith("data: "):
+                        continue
+                    try:
+                        payload = json.loads(line[6:])
+                    except json.JSONDecodeError:
+                        continue
+                    kind = payload.get("type")
+                    if kind == "approval":
+                        counts["asked"] += 1
+                        threading.Thread(
+                            target=client.request,
+                            args=("/api/agents/approve",),
+                            kwargs={
+                                "method": "POST",
+                                "json_body": {
+                                    "request_id": payload.get("request_id"),
+                                    "approved": decision,
+                                },
+                            },
+                            daemon=True,
+                        ).start()
+                    elif kind == "approval_decided":
+                        counts["decided"] += 1
+                    elif kind == "proposal":
+                        counts["proposals"] += 1
+                    elif kind == "done":
+                        counts["done"] = True
+                        break
+        except OSError:
+            pass
+        _approval_results[decision] = counts
+        return counts
 
     def stream_check(
         label: str,
@@ -370,6 +467,13 @@ def run_checks(base_url: str, token: str, *, model_id: str = "rehearsal-tools") 
         "get_project_document_page" in {name.split(" ")[0] for name in docs["tools"]},
         "the agent rendered a PDF page as an image",
     )
+    # From here the runs are expected to complete unattended, so the session
+    # is put in auto. The approval path gets its own checks below.
+    client.request(
+        "/api/session/mode",
+        method="POST",
+        json_body={"mode": "ask", "autonomy": "auto", "confirmed": True},
+    )
     measure = stream_check(
         "measurement agent stream",
         "measurement",
@@ -393,6 +497,76 @@ def run_checks(base_url: str, token: str, *, model_id: str = "rehearsal-tools") 
         bool(measure["kinds"].get("usage")),
         f"{measure['kinds'].get('usage', 0)} usage events",
     )
+
+    for decision, label in ((True, "approved"), (False, "denied")):
+        outcome = approval_check(decision)
+        run.add(
+            f"a protected call can be {label}",
+            outcome["asked"] == 1 and outcome["done"] and outcome["decided"] == 1,
+            (
+                f"asked {outcome['asked']}, decided {outcome['decided']}, "
+                f"finished {outcome['done']}, proposals {outcome['proposals']}"
+            ),
+        )
+    run.add(
+        "a denied call produces no proposal",
+        _approval_results[False]["proposals"] == 0
+        and _approval_results[True]["proposals"] >= 1,
+        (
+            f"approved -> {_approval_results[True]['proposals']} proposal(s), "
+            f"denied -> {_approval_results[False]['proposals']}"
+        ),
+    )
+    client.request(
+        "/api/session/mode",
+        method="POST",
+        json_body={"mode": "ask", "autonomy": "auto", "confirmed": True},
+    )
+
+    # The panel prints the call arguments and the returned envelope beside each
+    # tool, so a run whose events carry neither would render empty cards.
+    with_args = [call for call in measure["calls"] if str(call.get("arguments") or "").strip("{} \n")]
+    with_preview = [row for row in measure["results"] if str(row.get("preview") or "").strip()]
+    run.add(
+        "tool calls carry their arguments",
+        bool(with_args),
+        f"{len(with_args)}/{len(measure['calls'])} calls have arguments",
+    )
+    run.add(
+        "tool results carry a readable preview",
+        len(with_preview) == len(measure["results"]) and bool(with_preview),
+        f"{len(with_preview)}/{len(measure['results'])} results have a preview",
+    )
+    oversized = [
+        row for row in measure["results"] if len(str(row.get("preview") or "")) > 4000
+    ]
+    run.add(
+        "tool previews stay small enough to render",
+        not oversized,
+        "no preview over 4000 chars" if not oversized else f"{len(oversized)} oversized previews",
+    )
+    # The panel opens a failed card and prints the console's message in it, so
+    # a failure has to arrive with more than the word "failed".
+    failure_code, failure_text = client.request(
+        "/api/agents/stream",
+        method="POST",
+        json_body={
+            "provider": "rehearsal",
+            "model": model_id,
+            "prompt": "Please rehearse a tool failure so the panel can show one.",
+            "agent": "general",
+        },
+        stream=True,
+    )
+    failure = _stream_summary(failure_text if isinstance(failure_text, str) else "")
+    bad = [row for row in failure["results"] if not row.get("ok")]
+    run.add(
+        "a failed tool explains itself",
+        failure_code == 200 and bool(bad) and all(row.get("detail") for row in bad),
+        f"{len(bad)} failed call(s)"
+        + (f", first: {bad[0].get('summary')}: {bad[0].get('detail', '')[:60]}" if bad else ""),
+    )
+
     if attachment:
         attached = stream_check(
             "image attachment reaches the agent",

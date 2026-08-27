@@ -18,6 +18,15 @@ from ifc_console.ifc.units import file_to_si, si_to_file, unit_info
 
 METHODS = ("stored_qto", "layer_sum", "geometry_extent")
 AXES = ("local_x", "local_y", "local_z", "world_x", "world_y", "world_z")
+# The same probe carries mesh areas, so geometry_extent names them through the
+# axis argument rather than growing a second selector.
+AREA_AXES = ("surface_area", "top_area", "bottom_area", "side_area_x", "side_area_y")
+GEOMETRY_AXES = AXES + AREA_AXES
+
+# Read in the element's own frame; without a placement they come out world aligned.
+_FRAME_DEPENDENT = frozenset(
+    {"local_x", "local_y", "local_z", "top_area", "bottom_area", "side_area_x", "side_area_y"}
+)
 
 # quantity entity class -> power of the length unit
 _QUANTITY_POWERS = {
@@ -172,31 +181,35 @@ def _geometry_extent(
     length_unit: str | None,
     factor: float,
 ) -> dict[str, Any]:
+    power = 2 if axis in AREA_AXES else 1
     if mesh is None:
         return {
             "value": None,
-            "unit": length_unit,
-            "power": 1,
+            "unit": _unit_label(length_unit, power),
+            "power": power,
             "inputs": {"axis": axis},
             "flags": ["no_geometry"],
         }
     probe = geometry.probe_element(element, mesh)
-    if axis.startswith("world_"):
+    if axis in AREA_AXES:
+        value_si = probe[axis]
+    elif axis.startswith("world_"):
         index = "xyz".index(axis[-1])
         low = probe["aabb"]["min"][index]
         high = probe["aabb"]["max"][index]
-        extent_si = high - low
+        value_si = high - low
     else:
-        extent_si = probe["local_extents"][axis[-1]]
+        value_si = probe["local_extents"][axis[-1]]
     flags = []
-    if axis.startswith("local_") and not probe["placement_aligned"]:
+    if axis in _FRAME_DEPENDENT and not probe["placement_aligned"]:
         flags.append("no_placement")
-    if probe["confidence"] != "high":
+    # the prismatic check judges extents as dimensions; a mesh area is measured
+    if axis in AXES and probe["confidence"] != "high":
         flags.append("low_confidence")
     return {
-        "value": round(si_to_file(float(extent_si), factor), 6),
-        "unit": length_unit,
-        "power": 1,
+        "value": round(si_to_file(float(value_si), factor, power), 6),
+        "unit": _unit_label(length_unit, power),
+        "power": power,
         "inputs": {
             "axis": axis,
             "local_extents_si": probe["local_extents"],
@@ -228,7 +241,7 @@ def measure_elements(
             "INVALID_INPUT",
             f"method must be one of {', '.join(METHODS)}",
             "Use stored_qto for quantity sets, layer_sum for material layers, "
-            "or geometry_extent for mesh dimensions.",
+            "or geometry_extent for mesh dimensions and areas.",
         )
     if method == "stored_qto" and not quantity:
         raise ToolError(
@@ -236,11 +249,12 @@ def measure_elements(
             "method stored_qto needs a quantity name",
             "Pass quantity='Width' (get_psets shows the stored names).",
         )
-    if axis not in AXES:
+    if axis not in GEOMETRY_AXES:
         raise ToolError(
             "INVALID_INPUT",
-            f"axis must be one of {', '.join(AXES)}",
-            "local_y is the thickness axis of a placement-aligned wall.",
+            f"axis must be one of {', '.join(GEOMETRY_AXES)}",
+            "local_y is the thickness axis of a placement-aligned wall; "
+            "surface_area and the top/bottom/side buckets report areas.",
         )
 
     elements = geometry.resolve_targets(
@@ -424,4 +438,11 @@ def measure_distance(
     }
 
 
-__all__ = ["AXES", "METHODS", "measure_distance", "measure_elements"]
+__all__ = [
+    "AREA_AXES",
+    "AXES",
+    "GEOMETRY_AXES",
+    "METHODS",
+    "measure_distance",
+    "measure_elements",
+]

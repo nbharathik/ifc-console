@@ -16,6 +16,40 @@ uv run ruff check src tests packages scripts
 Standard src-layout package (`src/ifc_console/`), hatchling build, uv-managed.
 Python 3.10 through 3.14.
 
+## Browser panel harness
+
+The root npm scripts are dependency-free command shortcuts around the Python
+dev harness; they do not add a second frontend build or require `npm install`.
+
+```bash
+npm run dev       # serve the generated IFC scenario and open one viewer + chat tab
+npm run harness   # serve it without opening a browser; use one of the printed URLs
+npm run check     # rebuild and exercise the real routes and agent streams headlessly
+npm test          # panel logic, DOM contracts, and devkit unit tests
+```
+
+`npm test` reuses the synced environment without rewriting its console entry
+point, so it remains safe to run while `npm run harness` is serving the viewer.
+
+The viewer UI remains source-owned browser ESM. Its chat event boundary uses
+AI SDK-compatible message and stream shapes, while the visual primitives use
+native dialog, details, select, and switch controls. The panel itself consumes
+that boundary: `chat_ai_sdk.js` owns request building, SSE framing, and the
+proposal wire shape, so there is one implementation to keep correct rather
+than a panel copy beside an embedder copy. Anything the panel serves through
+`/chat` or `/viewer` runs under `style-src 'self'`, so component sizing and
+state travel as attributes and classes; a `style` attribute is dropped without
+breaking the page, which makes it an expensive bug to notice.
+
+Vercel AI SDK is a state and transport library, not a component theme.
+Adopting literal AI Elements or shadcn React components would therefore be a
+deliberate React, TypeScript, and Tailwind build migration rather than a
+styling-only dependency.
+
+The rehearsal provider uses no API key and makes no network requests. For a
+custom model or port, call the underlying command directly, for example
+`uv run --frozen ifc-console dev --open none --port 8394 --file path/to/model.ifc`.
+
 ## Tests
 
 ```bash

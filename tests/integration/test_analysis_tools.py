@@ -116,6 +116,164 @@ async def test_export_csv_in_ask_mode(harness_factory, work_model: Path, tmp_pat
     assert "artifact_write" in events
 
 
+async def test_analyze_element_geometry_reads_profile_and_mesh(
+    harness_factory, work_model: Path
+):
+    h = await harness_factory(model=work_model)
+    out = await h.call("analyze_element_geometry", selector="IfcWall, Name=Wall-1")
+    assert out["ok"] is True
+    record = out["data"]["elements"][0]
+    dims = record["dimensions"]
+    # profile plane: the wall's plan footprint, in file units (mm)
+    assert dims["width"]["file"] == pytest.approx(5000.0, rel=1e-3)
+    assert dims["width"]["source"] == "profile_curve"
+    assert dims["length"]["file"] == pytest.approx(3000.0, rel=1e-3)
+    assert dims["length"]["source"] == "extrusion_depth"
+    # the mesh cuts across the run, a different plane, and says so
+    assert "profile_plane_differs" in record["flags"]
+    cut = record["cross_section"]
+    assert cut["width"] == pytest.approx(3.0, rel=1e-2)
+    assert cut["height"] == pytest.approx(0.2, rel=1e-2)
+    assert cut["thickness"]["median"] == pytest.approx(0.2, rel=1e-2)
+    warm = await h.call("analyze_element_geometry", selector="IfcWall, Name=Wall-1")
+    assert warm["meta"]["cached"] is True
+
+
+async def test_geometry_tools_tessellate_an_element_once(
+    harness_factory, work_model: Path, monkeypatch
+):
+    """A probe followed by a measurement of the same wall pays for the mesh once."""
+    from ifc_console.ifc import geometry
+
+    h = await harness_factory(model=work_model)
+    real = geometry._tessellate
+    calls: list[list[int]] = []
+
+    def counting(ifc, elements):
+        calls.append(sorted(e.id() for e in elements))
+        return real(ifc, elements)
+
+    monkeypatch.setattr(geometry, "_tessellate", counting)
+
+    probed = await h.call("get_element_geometry", selector="IfcWall, Name=Wall-1")
+    assert probed["ok"] is True
+    gid = probed["data"]["elements"][0]["global_id"]
+    assert len(calls) == 1
+
+    measured = await h.call(
+        "measure_elements", method="geometry_extent", global_ids=[gid], axis="local_y"
+    )
+    assert measured["ok"] is True
+    assert measured["data"]["elements"][0]["value"] == pytest.approx(200.0, rel=1e-2)
+    assert len(calls) == 1  # served from the mesh cache
+
+
+async def test_mesh_cache_never_serves_a_mutated_model(
+    harness_factory, work_model: Path, monkeypatch
+):
+    from ifc_console.ifc import geometry
+
+    h = await harness_factory(model=work_model)
+    real = geometry._tessellate
+    calls: list[list[int]] = []
+
+    def counting(ifc, elements):
+        calls.append(sorted(e.id() for e in elements))
+        return real(ifc, elements)
+
+    monkeypatch.setattr(geometry, "_tessellate", counting)
+    await h.call("get_element_geometry", selector="IfcWall, Name=Wall-1")
+    h.core.session.mark_dirty()
+    await h.call("get_element_geometry", selector="IfcWall, Name=Wall-1")
+    assert len(calls) == 2
+
+
+async def test_geometry_tools_page_with_offset(harness_factory, work_model: Path):
+    h = await harness_factory(model=work_model)
+    every = await h.call("get_element_geometry", selector="IfcWall")
+    assert every["data"]["returned"] == 3
+
+    page = await h.call("get_element_geometry", selector="IfcWall", offset=2)
+    assert page["ok"] is True
+    assert page["data"]["returned"] == 1
+    assert page["meta"]["offset"] == 2
+    last = every["data"]["elements"][2]["global_id"]
+    assert page["data"]["elements"][0]["global_id"] == last
+
+    measured = await h.call(
+        "measure_elements", method="stored_qto", quantity="Width", selector="IfcWall", offset=2
+    )
+    assert measured["ok"] is True
+    assert measured["data"]["summary"]["count"] == 1
+    assert measured["data"]["elements"][0]["global_id"] == last
+
+    analyzed = await h.call("analyze_element_geometry", selector="IfcWall", offset=2)
+    assert analyzed["ok"] is True
+    assert analyzed["data"]["matched"] == 1
+    assert analyzed["data"]["selector"] == "IfcWall"
+    assert analyzed["data"]["elements"][0]["global_id"] == last
+
+    past = await h.call("get_element_geometry", selector="IfcWall", offset=9)
+    assert past["ok"] is False
+    assert past["error"]["code"] == "NO_MATCH"
+
+
+async def test_export_csv_empty_fields_means_no_extra_columns(
+    harness_factory, work_model: Path, tmp_path: Path
+):
+    h = await harness_factory(model=work_model)
+    target = tmp_path / "bare.csv"
+    out = await h.call("export_csv", selector="IfcWall", path=str(target), fields=[])
+    assert out["ok"] is True
+    assert out["data"]["columns"] == ["global_id", "class"]
+
+
+async def test_export_csv_property_hint_names_a_real_tool(
+    harness_factory, work_model: Path, tmp_path: Path
+):
+    h = await harness_factory(model=work_model)
+    out = await h.call(
+        "export_csv",
+        selector="IfcWall",
+        path=str(tmp_path / "walls.csv"),
+        properties=["FireRating"],
+    )
+    assert out["ok"] is False
+    assert out["error"]["code"] == "INVALID_INPUT"
+    assert "get_element_details" not in out["error"]["hint"]
+    assert "get_element " in out["error"]["hint"]
+
+
+async def test_export_measurement_report_writes_and_registers(
+    harness_factory, work_model: Path, tmp_path: Path
+):
+    h = await harness_factory(model=work_model)
+    target = tmp_path / "wall-report.md"
+    out = await h.call(
+        "export_measurement_report",
+        selector="IfcWall, Name=Wall-1",
+        path=str(target),
+        title="Wall 1 measurement",
+        notes="fixture check",
+    )
+    assert out["ok"] is True
+    assert out["data"]["elements"] == 1
+    assert out["data"]["artifact_id"].startswith("sha256:")
+    text = target.read_text(encoding="utf-8")
+    assert "# Wall 1 measurement" in text
+    assert "| Width (b) | 5000" in text
+    assert "MILLIMETRE" in text
+    listed = await h.call("list_artifacts")
+    kinds = [row["kind"] for row in listed["data"]["artifacts"]]
+    assert "measurement-report" in kinds
+
+    again = await h.call(
+        "export_measurement_report", selector="IfcWall", path=str(target)
+    )
+    assert again["ok"] is False
+    assert again["error"]["code"] == "FILE_EXISTS"
+
+
 async def test_export_csv_refuses_overwrite_and_bad_paths(
     harness_factory, work_model: Path, tmp_path: Path
 ):

@@ -149,8 +149,16 @@ def _call(index: int, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
 
 
 # ----------------------------------------------------------------- round logic
-def _round_one(available: set[str]) -> list[dict[str, Any]]:
+# A run where every tool succeeds never exercises the panel's failure path,
+# which is where a reader most needs the console's own message. Asking for one
+# is explicit, so a normal rehearsal is unaffected.
+_FAILURE_REQUEST = re.compile(r"rehearse a tool failure", re.IGNORECASE)
+
+
+def _round_one(available: set[str], prompt: str = "") -> list[dict[str, Any]]:
     """Scope the work: what model is open, what evidence exists, what elements."""
+    if _FAILURE_REQUEST.search(prompt) and "query_elements" in available:
+        return [_call(1, "query_elements", {"query": "NotAnIfcClass", "limit": 10})]
     wanted = [
         ("get_ifc_project_info", {}),
         ("list_project_documents", {}),
@@ -256,7 +264,7 @@ It exists so the panel can be exercised without a provider key.
 print("rehearsal")
 ```
 
-- The chips above are the real tool calls this run made.
+- Every card above is a real tool call; open one for its arguments and result.
 - Nothing in the IFC file changed; any proposal is a preview only.
 """
 
@@ -288,7 +296,7 @@ def rehearsal_stream(
     if available and model != "rehearsal-fast":
         calls: list[dict[str, Any]] = []
         if not results:
-            calls = _round_one(available)
+            calls = _round_one(available, prompt)
             note = "Scoping the model and the project evidence.\n\n"
         elif not (already & {"get_project_document_page", "measure_elements", "search_ifc_knowledge"}):
             calls = _round_two(available, results)

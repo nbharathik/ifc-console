@@ -2,17 +2,115 @@
 
 from __future__ import annotations
 
+import functools
 import inspect
+import json
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass
-from typing import Annotated, Any, get_type_hints
+from typing import Annotated, Any, get_args, get_origin, get_type_hints
 
-from pydantic import BaseModel, ConfigDict, Field, create_model
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, create_model
 
 from ifc_console.core.capabilities import Capability, normalize_capabilities
 from ifc_console.core.results import Envelope
 
 OperationHandler = Callable[..., Awaitable[Any]]
+
+# The same concept is spelled differently across the surface: query_elements
+# takes `query`, measure_elements takes `selector`, search_elements takes
+# `term`. Renaming any of them breaks callers, so the other spellings are
+# accepted instead. AliasChoices keeps the canonical name in the published
+# schema, so this costs nothing to advertise and saves a wasted round.
+ARGUMENT_ALIASES: dict[str, tuple[str, ...]] = {
+    "query": ("selector", "term"),
+    "selector": ("query", "term"),
+    "term": ("query", "selector"),
+    "global_ids": ("guids", "ids"),
+    "guids": ("global_ids", "ids"),
+    "path": ("file_path",),
+    "output_path": ("path", "file_path"),
+    "ids_path": ("path", "file_path"),
+    "limit": ("max_results",),
+    "model": ("model_id",),
+    "model_id": ("model",),
+}
+
+
+def argument_aliases(name: str, taken: Iterable[str]) -> tuple[str, ...]:
+    """Alternative spellings accepted for one argument of one operation.
+
+    An alias that is already a parameter of the same operation would be
+    ambiguous, so it is dropped rather than guessed at.
+    """
+    reserved = set(taken)
+    return tuple(alias for alias in ARGUMENT_ALIASES.get(name, ()) if alias not in reserved)
+
+
+def _auto_title(key: str) -> str:
+    return key.replace("_", " ").title().strip()
+
+
+def strip_auto_titles(schema: Any) -> Any:
+    """Drop the titles Pydantic derives from field names.
+
+    Every one of them restates the key it sits under, so across a full tool
+    listing they are thousands of characters that tell a model nothing.
+    Titles someone wrote by hand differ from the derived form and stay.
+    """
+    if isinstance(schema, list):
+        return [strip_auto_titles(item) for item in schema]
+    if not isinstance(schema, dict):
+        return schema
+    out = {key: strip_auto_titles(value) for key, value in schema.items()}
+    properties = out.get("properties")
+    if out.get("type") == "object" and isinstance(properties, dict):
+        for key, sub in properties.items():
+            if isinstance(sub, dict) and sub.get("title") in (_auto_title(key), key):
+                sub.pop("title")
+    return out
+
+
+# An output schema is paid for on every listing, so it has to be cheaper than
+# the shape it explains. Past this the deeply nested job and change-set models
+# cost more context than a caller saves by reading them.
+MAX_OUTPUT_SCHEMA_CHARS = 2_500
+
+
+def _has_list(annotation: Any) -> bool:
+    if annotation is list or get_origin(annotation) is list:
+        return True
+    return any(_has_list(argument) for argument in get_args(annotation))
+
+
+def _is_bulk(model: type[BaseModel]) -> bool:
+    """Does this payload grow with the model?
+
+    Declaring an output schema also makes the transport send the result twice,
+    as text and as structured content. A one-off schema never repays that on a
+    payload measured in thousands of characters per call.
+    """
+    return any(_has_list(field.annotation) for field in model.model_fields.values())
+
+
+class _DescribedEnvelope(Envelope):
+    # Handlers return a plain Envelope, so the specialization has to accept one.
+    model_config = ConfigDict(from_attributes=True)
+
+
+@functools.cache
+def _envelope_for(data_model: type[BaseModel]) -> type[Envelope]:
+    """An Envelope whose `data` documents one tool's payload shape.
+
+    The permissive mapping stays first in the union on purpose: a paged or
+    truncated payload carries an extra `truncation` key and must survive the
+    round trip intact. The declared model is documentation for the caller,
+    not a filter on the way out.
+    """
+    return create_model(
+        f"{data_model.__name__}Envelope",
+        __base__=_DescribedEnvelope,
+        data=(dict[str, Any] | data_model | None, None),
+    )
 
 
 class OperationAnnotations(BaseModel):
@@ -47,6 +145,7 @@ class OperationDefinition(BaseModel):
 def _argument_model(fn: OperationHandler) -> type[BaseModel]:
     signature = inspect.signature(fn)
     hints = get_type_hints(fn, include_extras=True)
+    names = set(signature.parameters)
     fields: dict[str, Any] = {}
     for name, parameter in signature.parameters.items():
         if parameter.kind in (parameter.VAR_POSITIONAL, parameter.VAR_KEYWORD):
@@ -59,6 +158,12 @@ def _argument_model(fn: OperationHandler) -> type[BaseModel]:
         field_name = f"{name}_" if hasattr(BaseModel, name) else name
         if field_name != name:
             annotation = Annotated[annotation, Field(alias=name)]
+        else:
+            aliases = argument_aliases(name, names)
+            if aliases:
+                annotation = Annotated[
+                    annotation, Field(validation_alias=AliasChoices(name, *aliases))
+                ]
         fields[field_name] = (annotation, default)
     return create_model(
         f"{fn.__name__}Arguments",
@@ -80,20 +185,42 @@ class OperationSpec:
 
     @property
     def input_schema(self) -> dict[str, Any]:
-        schema = self.argument_model.model_json_schema()
+        schema = strip_auto_titles(self.argument_model.model_json_schema())
         # FastMCP omits this keyword from the public tool schema. Keep the SDK
         # definition byte-compatible while the application validator still
         # rejects unknown arguments through the model's extra="forbid" rule.
         schema.pop("additionalProperties", None)
+        schema.pop("title", None)  # always "<name>Arguments"; the tool name says it
         return schema
 
     @property
+    def envelope_model(self) -> type[Envelope] | None:
+        """The Envelope specialization this operation returns, if it declared one."""
+        if self.output_schema is None:
+            return None
+        return _envelope_for(self.data_model)  # type: ignore[arg-type]
+
+    @property
     def output_schema(self) -> dict[str, Any] | None:
-        return Envelope.model_json_schema() if self.structured_output else None
+        """The result contract, or None when the operation never declared one.
+
+        A bare Envelope schema is identical for every tool, so publishing it
+        costs a client thousands of characters and teaches it nothing. A tool
+        publishes one only when it declared a data shape that is small and
+        bounded; the rest publish nothing, which also stops their results
+        crossing the wire twice. `data_schema` still carries every declared
+        shape for callers that want it off the listing path.
+        """
+        if not self.structured_output or self.data_model is None:
+            return None
+        if _is_bulk(self.data_model):
+            return None
+        schema = strip_auto_titles(_envelope_for(self.data_model).model_json_schema())
+        return schema if len(json.dumps(schema)) <= MAX_OUTPUT_SCHEMA_CHARS else None
 
     @property
     def data_schema(self) -> dict[str, Any] | None:
-        return self.data_model.model_json_schema() if self.data_model else None
+        return strip_auto_titles(self.data_model.model_json_schema()) if self.data_model else None
 
     @property
     def inputSchema(self) -> dict[str, Any]:
@@ -236,9 +363,24 @@ _CAPABILITY_GROUPS: tuple[tuple[frozenset[str], tuple[Capability, ...]], ...] = 
     ),
     (
         frozenset(
-            {"detect_clashes", "get_element_geometry", "measure_elements", "measure_distance"}
+            {
+                "detect_clashes",
+                "get_element_geometry",
+                "measure_elements",
+                "measure_distance",
+                "analyze_element_geometry",
+            }
         ),
         (Capability.MODEL_READ, Capability.GEOMETRY),
+    ),
+    (
+        frozenset({"export_measurement_report"}),
+        (
+            Capability.MODEL_READ,
+            Capability.GEOMETRY,
+            Capability.FILE_WRITE,
+            Capability.ARTIFACT_WRITE,
+        ),
     ),
     (
         frozenset(

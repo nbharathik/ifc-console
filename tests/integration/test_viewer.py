@@ -302,6 +302,7 @@ async def test_api_status_shape(viewer_core):
     assert payload["mode"] == "ask"
     assert payload["viewer"]["enabled"] is True
     assert payload["etag"] == viewer_core.viewer_hub.model_etag()
+    assert payload["project_scope"] == viewer_core.viewer_hub.project_scope()
 
 
 # ------------------------------------------------------------------- WebSocket
@@ -321,6 +322,12 @@ async def test_ws_handshake_status_and_selection(viewer_core):
         status = ws.receive_json()
         assert status["type"] == "status"
         assert status["model"] == "work.ifc"
+        # the tab cannot label a measurement without the file's own unit, and
+        # reading it belongs to the model worker, so it follows the handshake
+        units = ws.receive_json()
+        assert units["type"] == "status"
+        assert units["units"]["length_unit"]
+        assert units["units"]["to_si_factor"] > 0
         ws.send_text(json.dumps({"type": "selection", "guids": ["g-1"]}))
         await _wait_for(lambda: viewer_core.viewer_hub.selection == ["g-1"])
         assert viewer_core.viewer.connected == 1
@@ -388,6 +395,48 @@ async def test_get_viewer_selection_roundtrip(harness_factory, work_model: Path)
     assert out["data"]["elements"][0]["class"] == "IfcWall"
     assert out["data"]["missing"] == ["bogus-guid"]
     assert out["data"]["selected_at"] is not None
+
+
+async def test_get_viewer_selection_reports_what_the_viewport_is_doing(
+    harness_factory, work_model: Path
+):
+    """Without this the agent re-isolates what the user already isolated, and
+    answers 'which walls are visible' from the file rather than the screen."""
+    h = await harness_factory(model=work_model)
+    h.core.enable_viewer()
+    ws = _attach_fake_tab(h.core)
+    await h.core.viewer_hub.handle_frame(
+        ws.client,
+        {
+            "type": "viewer_state",
+            "state": {
+                "camera": {"projection": "orthographic"},
+                "view": "top",
+                "visibility": {"hidden": 412, "total": 14400},
+            },
+        },
+    )
+    out = await h.call("get_viewer_selection")
+    assert out["ok"] is True
+    assert "412 of 14400 elements hidden" in out["data"]["viewport"]
+
+
+async def test_get_viewer_measurements_names_the_model_they_belong_to(
+    harness_factory, work_model: Path
+):
+    h = await harness_factory(model=work_model)
+    h.core.enable_viewer()
+    ws = _attach_fake_tab(h.core)
+    await h.core.viewer_hub.handle_frame(
+        ws.client,
+        {
+            "type": "measurements",
+            "items": [{"from": [0.0, 0.0, 0.0], "to": [2.5, 0.0, 0.0], "distance": 2.5}],
+        },
+    )
+    out = await h.call("get_viewer_measurements")
+    assert out["ok"] is True
+    assert out["data"]["model_id"] == h.core.models.active_id
 
 
 async def test_get_viewer_selection_empty(harness_factory, work_model: Path):
@@ -604,6 +653,86 @@ async def test_closed_tab_leaves_no_stale_selection(harness_factory, work_model:
     assert out["data"]["guids"] == guids[:1]
 
 
+async def test_a_second_tab_does_not_erase_what_the_first_one_shows(
+    harness_factory, work_model: Path
+):
+    """Opening a second viewer tab used to make the assistant answer 'nothing
+    is selected' and report no measurements while the first tab still showed
+    the user's picks and dimensions."""
+    h = await harness_factory(model=work_model)
+    h.core.enable_viewer()
+    hub = h.core.viewer_hub
+    model_id = h.core.models.active_id
+    guids = await h.core.session.run(
+        lambda: [w.GlobalId for w in h.core.session.ifc.by_type("IfcWall")]
+    )
+    measurement = {"from": [0.0, 0.0, 0.0], "to": [2.5, 0.0, 0.0], "distance": 2.5}
+
+    first = _attach_fake_tab(h.core)
+    await hub.handle_frame(
+        first.client, {"type": "selection", "guids": guids[:1], "model_id": model_id}
+    )
+    await hub.handle_frame(
+        first.client,
+        {"type": "measurements", "items": [measurement], "model_id": model_id},
+    )
+
+    # a fresh tab rebuilds its scene, which publishes both lists empty
+    second = _attach_fake_tab(h.core)
+    await hub.handle_frame(
+        second.client, {"type": "scene_state", "state": "rebuilding", "model_id": model_id}
+    )
+    await hub.handle_frame(
+        second.client, {"type": "measurements", "items": [], "model_id": model_id}
+    )
+    await hub.handle_frame(
+        second.client, {"type": "selection", "guids": [], "model_id": model_id}
+    )
+
+    selection = await h.call("get_viewer_selection")
+    assert selection["data"]["guids"] == guids[:1]
+    assert selection["data"]["tab"] == first.client.id
+
+    measured = await h.call("get_viewer_measurements")
+    assert [item["distance"] for item in measured["data"]["measurements"]] == [2.5]
+    assert measured["data"]["tab"] == first.client.id
+
+
+async def test_serializing_for_the_viewer_frees_the_model_lifecycle_lock(
+    viewer_core, monkeypatch
+):
+    """The refetch after an edit must not freeze every tool call, every
+    element click and the search box for the length of the serialization."""
+    import httpx
+
+    from ifc_console.mcp.server import build_http_app, build_mcp
+
+    serializing = asyncio.Event()
+    lock_seen_free = asyncio.Event()
+    original_run = viewer_core.session.run
+    monkeypatch.setattr(viewer_core.session, "matches_disk", lambda: False)
+
+    async def gated_serialize(fn, **kwargs):
+        serializing.set()
+        await asyncio.wait_for(lock_seen_free.wait(), timeout=5)
+        return await original_run(fn, **kwargs)
+
+    monkeypatch.setattr(viewer_core.session, "run", gated_serialize)
+    app = build_http_app(viewer_core, build_mcp(viewer_core))
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://127.0.0.1"
+    ) as ac:
+        fetch = asyncio.create_task(ac.get("/api/model.ifc", headers=_auth(viewer_core)))
+        await asyncio.wait_for(serializing.wait(), timeout=5)
+        async with viewer_core.active_session():  # blocked for the whole serialize before
+            lock_seen_free.set()
+        response = await asyncio.wait_for(fetch, timeout=10)
+
+    assert response.status_code == 200
+    assert response.content.startswith(b"ISO-10303-21")
+
+
 async def test_every_status_frame_asks_the_tab_to_resend_its_selection(
     viewer_core,
 ):
@@ -645,7 +774,11 @@ async def test_viewer_commits_complete_model_with_one_loading_state(viewer_core)
     assert "onChunk: (msg) => chunks.push(msg)" in source
     assert "decideOrigin(parsed.chunks)" in source
     # the origin must be fixed before any chunk is ingested against it
-    assert source.index("decideOrigin(parsed.chunks)") < source.index("\n    ingestChunk(chunk);")
+    # decideOrigin also yields the whole model's bounds and each placement's
+    # world box, so batching sees the finished box from the first chunk
+    assert source.index("decideOrigin(parsed.chunks)") < source.index(
+        "\n    ingestChunk(chunk, placed.layout.get(chunk)"
+    )
 
 
 async def test_static_assets_revalidate_so_upgrades_take_effect(viewer_core):
@@ -688,7 +821,10 @@ async def test_measurement_reads_depth_on_the_gpu_not_by_raycast(viewer_core):
     surface = source.split("function surfacePointAt", 1)[1].split("\nfunction ", 1)[0]
     assert "intersectObjects" not in surface, "raycasting cannot work on freed arrays"
     assert "readRenderTargetPixels" in surface
-    assert "scene.overrideMaterial = depthMaterial" in surface
+    # the depth pass itself sits in the probe every depth reader shares
+    probe = source.split("function beginDepthProbe", 1)[1].split("\nfunction ", 1)[0]
+    assert "scene.overrideMaterial = depthMaterial" in probe
+    assert "beginDepthProbe(" in surface
     # both 1x1 passes clip, so a sectioned-away face is neither pickable nor
     # measurable and the surface behind it answers instead
     for material in ("pickMaterial", "depthMaterial"):
@@ -699,7 +835,11 @@ async def test_measurement_reads_depth_on_the_gpu_not_by_raycast(viewer_core):
 
     # a model rebuild invalidates every placed measurement
     build = source.split("async function buildScene", 1)[1].split("\nfunction ", 1)[0]
-    assert "clearMeasurements()" in build
+    # A rebuild must not throw the user's dimensions away: they are carried as
+    # GlobalId anchors and replayed onto the rebuilt scene.
+    assert "measurementCarry()" in build
+    assert "restoreMeasurements(keepMeasurements)" in build
+    assert "clearMeasurements()" not in build
     assert "updateClipping()" in build
     assert 'id="tool-measure"' in shell
     assert 'id="measure-card"' in shell
@@ -710,8 +850,12 @@ async def test_escape_exits_the_active_tool_before_closing_popovers(viewer_core)
     source = (
         _static_dir() / "app.js"
     ).read_text(encoding="utf-8")
-    handler = source.split('window.addEventListener("keydown"', 1)[1].split("});", 1)[0]
-    escape = handler.split('e.key === "Escape"', 1)[1].split("return;", 1)[0]
+    # Anchor on the comment that names this handler's whole job: the file has
+    # several keydown listeners now, including the measurement axis lock, and
+    # positional slicing picked whichever happened to be declared first.
+    escape = source.split(
+        "// an active tool owns Escape first, then the popovers", 1
+    )[1].split("return;", 1)[0]
     assert "setMeasureMode(false)" in escape
     assert escape.index("setMeasureMode(false)") < escape.index("closePopovers()")
 

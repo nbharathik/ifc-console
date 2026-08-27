@@ -549,3 +549,73 @@ def test_the_newer_openai_token_cap_is_renamed_not_dropped():
 def test_a_failure_we_cannot_fix_is_not_retried():
     assert providers._relax({"model": "m"}, "HTTP 401: bad key") is None
     assert providers._relax({"model": "m"}, "HTTP 400: no such model") is None
+
+
+class TestToolEvent:
+    """What the panel is given to draw under one tool call."""
+
+    def test_a_successful_call_reports_rows_and_a_preview(self) -> None:
+        from ifc_console.chat.agent import tool_event
+
+        event = tool_event(
+            {"ok": True, "data": {"rows": [{"name": "Wall"}]}, "meta": {"returned": 1}}
+        )
+        assert event["ok"] is True
+        assert event["summary"] == "1 row(s)"
+        assert event["rows"] == 1
+        assert "Wall" in event["preview"]
+        assert event["detail"] == ""
+
+    def test_a_failure_carries_the_message_not_just_the_code(self) -> None:
+        from ifc_console.chat.agent import tool_event
+
+        event = tool_event(
+            {"ok": False, "error": {"code": "bad_selector", "message": "NotAClass is unknown"}}
+        )
+        assert event["ok"] is False
+        assert event["summary"] == "bad_selector"
+        assert event["detail"] == "NotAClass is unknown"
+        # prose, not a JSON record: a parser error is full of line breaks and
+        # they have to survive into the panel as line breaks
+        assert event["preview"].startswith("NotAClass is unknown")
+        assert "{" not in event["preview"]
+
+    def test_a_failure_keeps_the_hint_the_console_wrote(self) -> None:
+        from ifc_console.chat.agent import tool_event
+
+        event = tool_event(
+            {
+                "ok": False,
+                "error": {
+                    "code": "INVALID_QUERY",
+                    "message": "parse failed:\n\t* DOT",
+                    "hint": "Fix the query using the syntax_help examples.",
+                },
+            }
+        )
+        assert "parse failed:\n\t* DOT" in event["preview"]
+        assert "Hint: Fix the query" in event["preview"]
+
+    def test_image_bytes_never_reach_the_transcript(self) -> None:
+        from ifc_console.chat.agent import TOOL_PREVIEW_LIMIT, tool_event
+
+        event = tool_event(
+            {"ok": True, "data": {"images": [{"bytes": "A" * 50_000}], "count": 1}, "meta": {}}
+        )
+        assert "AAAA" not in event["preview"]
+        assert "1 image(s)" in event["preview"]
+        assert len(event["preview"]) <= TOOL_PREVIEW_LIMIT + 32
+
+    def test_a_huge_payload_says_what_it_left_out(self) -> None:
+        from ifc_console.chat.agent import TOOL_PREVIEW_LIMIT, tool_event
+
+        event = tool_event({"ok": True, "data": {"rows": [{"n": i} for i in range(400)]}})
+        assert len(event["preview"]) <= TOOL_PREVIEW_LIMIT + 32
+        # a preview that quietly stopped at 50 rows would read as the answer
+        assert "350 more not shown" in event["preview"] or event["preview"].endswith("truncated")
+
+    def test_a_long_string_is_cut_rather_than_pasted_whole(self) -> None:
+        from ifc_console.chat.agent import TOOL_PREVIEW_LIMIT, tool_event
+
+        event = tool_event({"ok": True, "data": {"text": "x" * 40_000}})
+        assert len(event["preview"]) <= TOOL_PREVIEW_LIMIT + 32

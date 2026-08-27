@@ -132,7 +132,10 @@ def build_parser() -> argparse.ArgumentParser:
     dev.add_argument(
         "--fresh",
         action="store_true",
-        help="Delete and rebuild the demo project before starting.",
+        help=(
+            "Delete and rebuild only the default temporary demo project before starting. "
+            "Cannot be combined with --project."
+        ),
     )
     dev.add_argument(
         "--keep",
@@ -2233,13 +2236,43 @@ def _cmd_dev(args: argparse.Namespace) -> int:
 
     from ifc_console.devkit.serve import DEFAULT_PORT, build_dev_core, run_dev, start
 
-    project = args.project or str(Path(tempfile.gettempdir()) / "ifc-console-dev-project")
+    temp_root = Path(tempfile.gettempdir()).resolve()
+    default_project = temp_root / "ifc-console-dev-project"
+    explicit_project = args.project is not None
+    project = Path(args.project).expanduser().resolve() if explicit_project else default_project
     port = args.port or DEFAULT_PORT
-    _setup_logging(_new_store(), level="warning", to_file=False)
     if args.fresh:
+        if explicit_project:
+            print(
+                "error: --fresh only resets the disposable temporary demo; "
+                "omit --project or choose a new empty --project directory",
+                file=sys.stderr,
+            )
+            return 3
         import shutil
 
-        shutil.rmtree(project, ignore_errors=True)
+        # Resolve the final target before recursively deleting it. A replaced
+        # temp child (for example a symlink) must not redirect the reset into a
+        # real project elsewhere on disk.
+        reset_target = default_project.resolve()
+        if reset_target.parent != temp_root or reset_target.name != default_project.name:
+            print(
+                "error: the temporary dev project resolves outside the temp directory; "
+                "refusing to reset it",
+                file=sys.stderr,
+            )
+            return 2
+        try:
+            shutil.rmtree(reset_target)
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            print(
+                f"error: could not reset the temporary dev project: {exc}",
+                file=sys.stderr,
+            )
+            return 2
+    _setup_logging(_new_store(), level="warning", to_file=False)
     # A browser tab is a deliberate act, not a side effect of running checks.
     open_target = args.open_target
     if open_target is None:

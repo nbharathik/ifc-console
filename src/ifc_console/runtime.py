@@ -133,7 +133,7 @@ class IfcRuntime:
             )
         return selected
 
-    async def call(self, name: str, **arguments: Any) -> dict[str, Any]:
+    async def call(self, name: str, /, **arguments: Any) -> dict[str, Any]:
         value = await self.backend.call_tool(name, arguments)
         if isinstance(value, Mapping):
             return dict(value)

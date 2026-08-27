@@ -29,6 +29,47 @@ class Recipe:
 RECIPES: list[Recipe] = [
     # ------------------------------------------------------------------ read
     Recipe(
+        slug="selector-facets",
+        title="Every selector facet, one line each",
+        summary=(
+            "The selector grammar query_elements, measure_elements and "
+            "compute_quantities share, with a worked example per facet."
+        ),
+        tags=("selector", "query", "syntax", "filter", "search"),
+        verify="read",
+        code="""
+facets = {
+    "class": "IfcWall",
+    "union": "IfcWall + IfcDoor",
+    "not class": "IfcElement, !IfcWall",
+    "one element, bare GlobalId": "1abcDefGhiJklMnoPqrStu",
+    "name regex": "IfcElement, Name=/W.*1/",
+    "name contains": "IfcWall, Name*=Corridor",
+    "quoted value": 'IfcWall, Name="Basic Wall:Interior"',
+    "property": "IfcWall, Pset_WallCommon.FireRating=F30",
+    "pset name regex": "IfcWall, /Pset_.*Common/.FireRating=F30",
+    "quantity": "IfcWall, Qto_WallBaseQuantities.NetVolume>0",
+    "type": "IfcWall, type=WAL01",
+    "material": "IfcWall, material=concrete",
+    "classified": "IfcElement, classification=/./",
+    "unclassified": "IfcElement, classification=NULL",
+    "any container above": 'IfcElement, location="Level 1"',
+    "direct parent": 'IfcElement, parent="Wall-01"',
+    "group, zone or system": 'IfcElement, group="Fire Compartment 3"',
+    "storey key path": 'IfcElement, query:"storey.Name"="Level 2"',
+    "space key path": 'IfcElement, query:"space.Name"="Office 101"',
+    "occurrences with no type": 'IfcElement, query:"type.Name"=NULL',
+    "origin above 2 m": "IfcElement, query:z>2",
+}
+{label: len(query(selector)) for label, selector in facets.items()}
+""",
+        notes=(
+            "A bare value may not contain a space or a dot, so quote it. A dotted "
+            "key path after query: must be quoted too, or the filter parses and "
+            "then silently matches nothing."
+        ),
+    ),
+    Recipe(
         slug="count-by-class",
         title="Count elements by IFC class",
         summary="How many of each class the model holds, biggest first.",

@@ -15,6 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 if TYPE_CHECKING:
     from ifc_console.agents.agent import Agent
+    from ifc_console.agents.models import AgentLimits
 
 # Declarative capabilities rendered by the first-party panel.
 KNOWN_FEATURES = ("files", "vision", "viewer", "proposals")
@@ -53,9 +54,14 @@ class AgentPackInfo(BaseModel):
 
 @runtime_checkable
 class AgentPack(Protocol):
-    """One agent the console can host in its panel."""
+    """One agent the console can host in its panel.
+
+    ``declared_limits`` is shared by the inspector and the panel runtime, so a
+    host pack must keep it aligned with the agent returned by ``build``.
+    """
 
     info: AgentPackInfo
+    declared_limits: AgentLimits
 
     async def build(
         self,

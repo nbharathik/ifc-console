@@ -60,6 +60,12 @@ validation = [
     # and `ifc-console check --ids`.
     "ifctester>=0.8",
 ]
+graph = [
+    # Opt-in durable orchestration for applications that build LangGraph
+    # workflows over IFC Console's existing agents and toolsets.
+    "langgraph>=1,<2",
+    "langgraph-checkpoint-sqlite>=3,<4",
+]
 viewer = [
     # The browser bundle is a separate wheel so the base install contains no
     # three.js, web-ifc JavaScript, or WASM. Its WebSocket transport is needed

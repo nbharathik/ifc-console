@@ -58,6 +58,7 @@ async def test_status_adds_the_resolved_console_theme_for_standalone_chat(chat_c
         "mode",
         "dirty",
         "fingerprint",
+        "project_scope",
         "etag",
         "selection",
         "viewer",
@@ -104,6 +105,47 @@ async def test_the_panel_can_remember_a_choice_for_this_run(chat_core):
     assert chat_core.chat.provider == "anthropic"
     assert chat_core.chat.model == "claude-sonnet-5"
     assert chat_core.chat.keys["anthropic"] == "sk-ant"
+
+
+async def test_the_panel_can_change_the_human_owned_session_mode(chat_core):
+    client = _client(chat_core)
+    headers = _auth(chat_core)
+
+    unconfirmed = client.post(
+        "/api/session/mode", headers=headers, json={"mode": "edit"}
+    )
+    assert unconfirmed.status_code == 409
+    assert chat_core.policy.mode.value == "ask"
+
+    editing = client.post(
+        "/api/session/mode",
+        headers=headers,
+        json={"mode": "edit", "confirmed": True},
+    )
+    assert editing.status_code == 200
+    assert editing.json() == {
+        "ok": True,
+        "mode": "edit",
+        "ai_autonomy": False,
+        # No stance grants an assistant the file. Saving is the user's alone.
+        "ai_save_allowed": False,
+        "dirty": False,
+    }
+    assert chat_core.policy.mode.value == "edit"
+
+    asking = client.post(
+        "/api/session/mode", headers=headers, json={"mode": "ask"}
+    )
+    assert asking.status_code == 200
+    assert chat_core.policy.mode.value == "ask"
+
+
+async def test_the_panel_rejects_invalid_session_modes(chat_core):
+    client = _client(chat_core)
+    response = client.post(
+        "/api/session/mode", headers=_auth(chat_core), json={"mode": "admin"}
+    )
+    assert response.status_code == 400
 
 
 async def test_keys_can_be_saved_and_deleted_without_ever_being_returned(
@@ -273,3 +315,65 @@ async def test_the_chat_page_and_assets_ship_with_the_viewer_extra(chat_core):
         assert (directory / name).is_file(), f"{name} missing from the viewer bundle"
     client = _client(chat_core)
     assert client.get("/viewer/static/chat.js").status_code == 200
+
+
+async def test_autonomy_is_independent_of_mode_and_never_grants_the_file(chat_core):
+    """The four stances the panel offers, and the one thing none of them do."""
+    client = _client(chat_core)
+    headers = _auth(chat_core)
+
+    for mode in ("ask", "edit"):
+        for autonomy in ("approval", "auto"):
+            response = client.post(
+                "/api/session/mode",
+                headers=headers,
+                json={"mode": mode, "autonomy": autonomy, "confirmed": True},
+            )
+            assert response.status_code == 200, (mode, autonomy)
+            payload = response.json()
+            assert payload["mode"] == mode
+            assert payload["ai_autonomy"] is (autonomy == "auto")
+            # the whole point: no combination lets an assistant save
+            assert payload["ai_save_allowed"] is False
+            assert chat_core.policy.allow_ai_save is False
+
+    # turning autonomy on is a decision, so it is confirmed like edit mode
+    client.post(
+        "/api/session/mode",
+        headers=headers,
+        json={"mode": "ask", "autonomy": "approval", "confirmed": True},
+    )
+    unconfirmed = client.post(
+        "/api/session/mode", headers=headers, json={"autonomy": "auto"}
+    )
+    assert unconfirmed.status_code == 409
+    assert chat_core.ai_autonomy is False
+
+    bad = client.post("/api/session/mode", headers=headers, json={"autonomy": "sometimes"})
+    assert bad.status_code == 400
+    empty = client.post("/api/session/mode", headers=headers, json={})
+    assert empty.status_code == 400
+
+
+async def test_saving_is_a_user_route_and_is_a_no_op_when_clean(chat_core):
+    client = _client(chat_core)
+    headers = _auth(chat_core)
+    response = client.post("/api/session/save", headers=headers, json={})
+    assert response.status_code == 200
+    assert response.json() == {"ok": True, "saved": False, "dirty": False}
+
+
+async def test_an_unanswered_approval_id_is_rejected(chat_core):
+    """A decision nothing is waiting for is a bug worth reporting, not a
+    silent success."""
+    client = _client(chat_core)
+    headers = _auth(chat_core)
+    response = client.post(
+        "/api/agents/approve",
+        headers=headers,
+        json={"request_id": "approval-nothing-waits-on-this", "approved": True},
+    )
+    assert response.status_code == 409
+    for body in ({"approved": True}, {"request_id": "x"}, {"request_id": "x", "approved": "yes"}):
+        assert client.post("/api/agents/approve", headers=headers, json=body).status_code == 400
+

@@ -8,6 +8,15 @@
 
 const DAY = 24 * 60 * 60 * 1000;
 
+/* The no-agent surface, listed like any other so it can be returned to. It is
+ * not a server pack, so the panel supplies it rather than /api/agents. */
+export const PLAIN_CHAT = Object.freeze({
+  name: "",
+  title: "Plain chat",
+  description: "Direct chat over the open model, with no agent around it.",
+  kind: "built-in",
+});
+
 /** Built-in assistants first, then the user's own, each in a labelled group. */
 export function agentGroups(agents, currentAgent = "") {
   const rows = Array.isArray(agents) ? agents : [];

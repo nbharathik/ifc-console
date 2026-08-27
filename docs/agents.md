@@ -323,7 +323,7 @@ agent is never a second-class citizen.
 
 | Agent | Blocks | For |
 | --- | --- | --- |
-| `general` | every block except `code` | Start here. Queries, quantities, documents, validation, and marked proposals in one place. |
+| `general` | every block, `code` included | Start here. Queries, quantities, documents, validation, generated code, and marked proposals in one place. |
 | `measurement` | context, documents, measurements, viewer, proposals, audit | Recipe-driven measurement with a stated method and a cited source. |
 | `docs` | context, documents, spatial | Answers from the project corpus, every claim cited with its page. |
 | `review` | context, spatial, validation, clash, quantities, viewer | Schema, IDS, clashes, and missing data, worst first. |
@@ -340,32 +340,74 @@ The project reference directory is:
 project/
   .ifc-console/
     agents/references/    local manuals, drawings, and images
+    agents/content-access.json  standing access for built-in agents
     agents/custom/        your own agents, as inspectable JSON
+    agents/skills/        saved measurement procedures, one markdown file each
     knowledge/            generated retrieval index and source manifest
     recipes/              reviewed measurement recipes
 ```
 
-Add files through the panel's Files tab, with `ifc-console agents files <paths>`,
-or by copying them into `agents/references/`. `list_project_documents` lets an
-agent inspect the evidence ledger; `get_project_reference_image` provides image
-pixels as native vision input; `get_project_document_page` renders a PDF page
-for native vision, so drawings, scans, and layout-dependent tables are not
-reduced to extracted text. Images attached in the panel are included directly
-with the next message.
+Add shared files in **Agent workspace > Content**, with
+`ifc-console agents files <paths>`, or by copying them into
+`agents/references/`. The Content view lets you search the library and grant
+files in bulk: **Select shown** and **Clear shown** act on the filtered set,
+and shift-click extends a range. Upload once, then select which files each
+assistant may use as standing project context. A built-in agent's selection is stored in
+`content-access.json`; a custom agent keeps the same selection in its blueprint
+as `content_paths`.
+
+No saved selection means access to all project content, which preserves the
+behavior of existing projects. A saved empty selection means no standing file
+access. The panel enforces the selection around document listing, retrieval
+search, record reads, reference images, and rendered PDF pages. Changing it
+starts a compatible new agent context, so a tighter selection cannot resume a
+thread created with broader access.
+
+`list_project_documents` lets an agent inspect its permitted evidence ledger;
+`get_project_reference_image` provides image pixels as native vision input;
+`get_project_document_page` renders a PDF page for native vision, so drawings,
+scans, and layout-dependent tables are not reduced to extracted text. A file
+attached from the composer is message context, not standing agent access. It is
+stored below the hidden `references/.turns/` area and is available only to the
+message that attaches it, without silently changing the agent's saved
+selection or appearing in the shared library. Typing `@` in the composer
+mentions a file the agent already has standing access to and attaches it to
+that message, so the model is told what to read as well as being permitted
+to read it.
 
 ## The agent workspace
 
 `GET /api/agents/workspace?agent=<name>` returns one payload describing an
 agent exactly as it would run right now: its role prompt, its blocks and which
-are available, every tool it holds with a one-line summary and its pipeline
-stage, the stages it can reach, its worked examples, what it may write, its
-limits, and the project files it can see. It is assembled from the same
-composition the agent runs with, so it cannot drift: a tool missing from the
-workspace is a tool the agent does not have.
+are available, every tool it holds with its full description, input schema,
+required capabilities, source, and pipeline stage, the stages it can reach,
+its worked examples, what it may write, its limits, and the project files it
+can see. Its `content` object carries the
+shared library, the effective access mode, and an `allowed` flag on each file;
+the compatibility `files` list contains only accessible files. The payload is
+assembled from the same composition the agent runs with, so it cannot drift: a
+tool missing from the workspace is a tool the agent does not have.
 
-The browser panel renders it as a side panel with four tabs (how it works,
-tools, files, settings), which is what keeps "what is this thing and what can
-it reach" out of the conversation.
+`agent=` with no name describes plain chat: the console's whole tool surface
+behind the stateless loop, with no blocks and no server-side thread.
+
+The browser has one **Agent workspace**, opened from the right side of the chat
+header or **Agent workspace** at the bottom of the sidebar. A single left rail
+contains **Agents**, **Pipeline**, **Capabilities**, **Tools**, **Content**,
+**Models**, and **App**. Capability, workflow, and tool rows expand only when
+their details are needed. Agent setup opens inside this same workspace. There
+are no separate inspector, settings, and builder panels to coordinate. The
+workspace is a bounded modal centred on the window, closed with its own
+control, Escape, or a click outside it.
+
+The content endpoints use the same project-local store and enforcement:
+
+| endpoint | purpose |
+| --- | --- |
+| `GET /api/agents/content` | List the shared project content library. |
+| `GET /api/agents/content?agent=<name>` | Add the selected agent's access mode and per-file `allowed` state. |
+| `POST /api/agents/content/upload?name=<file>` | Add and index a shared workspace file without granting it to a selected-only agent. |
+| `POST /api/agents/content/access` | Save `{agent, mode, paths}` where mode is `all` or `selected`. |
 
 ## Capability blocks
 
@@ -392,6 +434,14 @@ Composition degrades instead of failing: a viewer block with no viewer, or a
 validation block with no IDS engine, drops out and the agent is told in its
 prompt what it cannot do, so it never promises a capability it lacks.
 
+The `code` block is what answers a question the structured tools do not cover,
+such as measuring a wall by walking its layer set. It is not a way around the
+session gate: in ask mode a run is classified before it executes and anything
+that would change the model is refused, while a read-only run goes to a
+separate worker process against a copy of the file. In edit mode a mutating run
+executes against the live in-memory model under the capability and audit
+guards. Neither can write the IFC file: only the person at the console can.
+
 ```python
 from ifc_console.agents.blocks import compose
 
@@ -409,12 +459,17 @@ agent = Agent(name="facade", model=model, tools=composition.tools,
 
 ## Custom agents from blocks
 
-Open the visual builder with `/agent new`, or the sidebar's **Build an agent**
-in the browser panel. Choose the smallest set of blocks, write the company
-procedure as instructions, and add optional starter prompts. The resulting
-agent appears beside Documents and Measurement in `/agent`, in
+Open **Agent workspace > Agents**, then choose **New assistant** or **Edit
+agent**. `/agent new` remains available in the terminal. The compact setup flow
+keeps the essential profile, capabilities, and instructions together. Choose
+the smallest set of blocks, write the company procedure, and save. When needed,
+expand **Advanced run controls** to select an adaptive, evidence-first, or
+fast-scan strategy, set explicit tool-round and tool-call budgets, and add
+starter prompts. The footer summarizes the resulting reach before saving. The
+resulting agent appears beside Documents and Measurement in `/agent`, in
 `ifc-console agents list`, and in the panel sidebar, where it can also be
-deleted.
+deleted. Its standing content selection is edited in the workspace's Content
+view and persisted with the blueprint.
 
 Blueprints cannot name arbitrary operations, load code, approve ChangeSets, or
 change runtime policy. The selected blocks expand to a fixed allowlist at build
@@ -468,3 +523,46 @@ notes: structural layers only, per section 4.2
 `get_measurement_recipe` resolves the most specific match (type before class)
 and returns ready-to-use `measure_elements` arguments. Recipes remain
 host-authored data: agents may read them but never write them.
+
+## Skills
+
+Skills complement recipes from the other side: where a recipe pins one
+property's method as host-authored YAML, a skill records a whole worked
+procedure as markdown that agents may both read and, with approval, write.
+They live one file per skill under `.ifc-console/agents/skills/`:
+
+```markdown
+---
+name: sheet-pile-profile
+description: Measure a sheet pile's b, h, t_f, t_w and length
+applies_to: IfcMember sheet piles
+---
+
+## When to use
+The element is a thin-walled pile or profile member.
+
+## Steps
+1. get_viewer_selection, then control_viewer action='focus' on the element.
+2. analyze_element_geometry with its GlobalId; read `dimensions` and the
+   thickness pair (upper is t_f, lower is t_w on Larssen-style piles).
+3. Cross-check against the type's catalogue page if one is indexed.
+4. export_measurement_report when the user wants the result to keep.
+```
+
+The flow is deliberate. Any agent holding the skills block gets the saved
+skills indexed straight into its system prompt at composition (name,
+description, and applicability, along with the open model and mode), so
+discovering them costs no tool round; `list_agent_skills` refreshes the list
+mid-conversation, `get_agent_skill` loads the one that matches, and
+`save_agent_skill` records a new one, asking the user for approval before
+writing. Skills are procedures, not facts: agents are instructed to adapt ids
+and selectors and never to copy session values out of one. The panel shows
+them under **Agent workspace > Skills**, and the files diff cleanly in
+version control.
+
+Skills do not have to be written in the console. Draft one anywhere (any LLM,
+any editor), then bring it in with **Import .md skills** in the Skills tab,
+`POST /api/agents/skills/import?name=<file>.md`, or by copying the file into
+`agents/skills/`. The importer reads the front matter when present, derives
+the name and description from the file otherwise, and never overwrites an
+existing skill (a taken name gets a numeric suffix).

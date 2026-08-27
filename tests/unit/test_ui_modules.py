@@ -40,10 +40,12 @@ def test_every_panel_module_is_covered() -> None:
     if not static.is_dir():
         pytest.skip("the viewer package is not in this checkout")
     pure = {
+        "chat_ai_sdk.js",
         "chat_markdown.js",
         "chat_flow.js",
         "chat_history.js",
         "chat_sidebar.js",
+        "chat_studio.js",
         "chat_workspace.js",
     }
     missing = [name for name in pure if not (static / name).is_file()]

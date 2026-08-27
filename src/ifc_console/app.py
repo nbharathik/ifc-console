@@ -12,6 +12,7 @@ import os
 import secrets
 import threading
 import time
+from collections import OrderedDict
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
@@ -76,6 +77,9 @@ class AppCore:
         self.audit = AuditLog(store.sessions_dir, s.sessions.retention)
         self.recents = RecentsStore(store.recents_file, s.recents.max)
         self.backups = BackupStore(store.backups_dir, s.files.backup_retention)
+        # Whether the assistant may act on a protected call without
+        # stopping to ask. Saving the file is never on this axis.
+        self.ai_autonomy = False
         self.policy = PolicyEngine(
             mode or Mode(s.mode.default),
             allow_system_access=s.exec.allow_system_access,
@@ -168,6 +172,12 @@ class AppCore:
         # completion menu can offer prompt and resource names too.
         self.tool_catalog_names: dict[str, tuple[str, ...]] = {}
         self._read_cache: dict[tuple, Any] = {}
+        self._read_inflight: dict[tuple, asyncio.Future] = {}
+        # World-space meshes survive across tools; every IFC read is serialized
+        # on one worker, so paying for tessellation twice costs real seconds.
+        self._mesh_cache: OrderedDict[tuple, tuple] = OrderedDict()
+        self._mesh_triangles = 0
+        self._mesh_lock = threading.Lock()
         self._model_lifecycle = asyncio.Lock()
         self.ui_theme = s.tui.theme
 
@@ -350,7 +360,21 @@ class AppCore:
         cache_key = (name, id(s), s.fingerprint, s.revision, *key)
         if cache_key in self._read_cache:
             return self._read_cache[cache_key], True
-        value = await s.run(build, timeout=timeout)
+        inflight = self._read_inflight.get(cache_key)
+        if inflight is not None:
+            # Every read queues behind the same single-threaded worker, so a
+            # duplicate call would wait for the first and then repeat it.
+            return await asyncio.shield(inflight), True
+        task = asyncio.ensure_future(s.run(build, timeout=timeout))
+        self._read_inflight[cache_key] = task
+
+        def settled(finished: asyncio.Future) -> None:
+            self._read_inflight.pop(cache_key, None)
+            if not finished.cancelled():
+                finished.exception()  # retrieved even if every waiter walked away
+
+        task.add_done_callback(settled)
+        value = await asyncio.shield(task)
         if len(self._read_cache) >= 64:
             # every resident model's current revision survives the prune
             live = {(id(m), m.fingerprint, m.revision) for m in self.models.sessions.values()}
@@ -359,6 +383,53 @@ class AppCore:
                 del self._read_cache[stale]
         self._read_cache[cache_key] = value
         return value, False
+
+    # -- per-model mesh cache --------------------------------------------------
+    # Roughly 200 MB of float64 vertices; eviction is LRU on top of that.
+    MESH_CACHE_MAX_TRIANGLES = 5_000_000
+
+    def element_meshes(
+        self, elements: list[Any], *, session: ModelSession | None = None
+    ) -> dict[int, Any]:
+        """World-space meshes per element id, tessellating only the misses.
+
+        The iterator setup dominates a geometry call, so probing an element and
+        then measuring it should pay for tessellation once. Call this from the
+        model worker thread, where ifc/geometry.element_meshes is called today.
+        Keyed on the same fingerprint+revision stamp as cached_read, so a
+        mutation can never serve a stale mesh.
+        """
+        from ifc_console.ifc.geometry import element_meshes as tessellate
+
+        s = session or self.session
+        stamp = (id(s), s.fingerprint, s.revision)
+        found: dict[int, Any] = {}
+        misses: list[Any] = []
+        with self._mesh_lock:
+            for element in elements:
+                entry = self._mesh_cache.get((stamp, element.id()))
+                if entry is None:
+                    misses.append(element)
+                else:
+                    self._mesh_cache.move_to_end((stamp, element.id()))
+                    found[element.id()] = entry
+        if misses:
+            built = tessellate(s.ifc, misses)
+            found.update(built)
+            with self._mesh_lock:
+                self._store_meshes(stamp, built)
+        return found
+
+    def _store_meshes(self, stamp: tuple, built: dict[int, Any]) -> None:
+        for element_id, mesh in built.items():
+            cache_key = (stamp, element_id)
+            if cache_key in self._mesh_cache:
+                continue
+            self._mesh_cache[cache_key] = mesh
+            self._mesh_triangles += int(len(mesh[1]))
+        while self._mesh_triangles > self.MESH_CACHE_MAX_TRIANGLES and self._mesh_cache:
+            _, evicted = self._mesh_cache.popitem(last=False)
+            self._mesh_triangles -= int(len(evicted[1]))
 
     # -- allowed directories ------------------------------------------------------
     def generated_code_deny_paths(self) -> list[Path]:
@@ -736,6 +807,29 @@ class AppCore:
             return
         self.policy.set_mode(new_mode, by=by)
 
+    def set_ai_autonomy(self, allowed: bool, *, by: str) -> bool:
+        """Whether the assistant proceeds, or stops and asks, on a protected call.
+
+        Deliberately not `allow_ai_save`: an unattended assistant may work, it
+        may not decide that its work is finished. Writing the IFC file stays a
+        human action whatever this is set to.
+        """
+        allowed = bool(allowed)
+        if allowed == self.ai_autonomy:
+            return allowed
+        self.ai_autonomy = allowed
+        self.audit.record("ai_autonomy_changed", allowed=allowed, by=by)
+        self.events.emit("ai_autonomy_changed", allowed=allowed)
+        return allowed
+
+    async def save_model(self, *, by: str) -> dict[str, Any]:
+        """Persist the in-memory model. Only a human ever reaches this."""
+        session = self.session
+        result = await session.save(session.path, self.backups)
+        self.audit.record("model_saved", by=by, path=str(session.path))
+        self.events.emit("model_saved", path=str(session.path))
+        return result
+
     def set_ui_theme(self, name: str, *, persist: bool = False) -> str:
         """Record the theme choice and tell every surface (auto resolves dark).
 
@@ -791,6 +885,8 @@ class AppCore:
         self.jobs.close()
         self.sandbox.close()
         self.models.close_all()
+        self._mesh_cache.clear()
+        self._mesh_triangles = 0
         self.knowledge.close()
         if self._project_knowledge is not None:
             self._project_knowledge.close()
@@ -804,6 +900,8 @@ class AppCore:
         await self.jobs.aclose()
         self.sandbox.close()
         self.models.close_all()
+        self._mesh_cache.clear()
+        self._mesh_triangles = 0
         self.knowledge.close()
         if self._project_knowledge is not None:
             self._project_knowledge.close()

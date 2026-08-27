@@ -21,6 +21,13 @@ from ifc_console.knowledge.ingest import IMAGE_SUFFIXES, SUPPORTED_SUFFIXES
 
 MAX_REFERENCE_BYTES = 25 * 1024 * 1024
 REFERENCES_DIR = Path(".ifc-console") / "agents" / "references"
+TURN_REFERENCES_DIR = REFERENCES_DIR / ".turns"
+
+
+def is_turn_reference_path(value: str) -> bool:
+    normalized = str(value or "").replace("\\", "/").strip("/")
+    prefix = TURN_REFERENCES_DIR.as_posix().strip("/")
+    return normalized.startswith(prefix + "/")
 
 
 class AgentReferenceStore:
@@ -29,6 +36,21 @@ class AgentReferenceStore:
     def __init__(self, project_dir: str | Path) -> None:
         self.project_dir = Path(project_dir).expanduser().resolve()
         self.directory = self.project_dir / REFERENCES_DIR
+        # path -> (size, mtime_ns, digest). Listing the library hashes every
+        # managed file, and one panel request lists it more than once, so a
+        # 20 MB manual was read repeatedly to answer "what files are there".
+        self._digests: dict[str, tuple[int, int, str]] = {}
+
+    def _digest(self, path: Path) -> tuple[str, int]:
+        """The file's sha256 and size, recomputed only when it changed."""
+        stat = path.stat()
+        key = str(path)
+        cached = self._digests.get(key)
+        if cached is not None and cached[0] == stat.st_size and cached[1] == stat.st_mtime_ns:
+            return cached[2], stat.st_size
+        digest = sha256_file(path)
+        self._digests[key] = (stat.st_size, stat.st_mtime_ns, digest)
+        return digest, stat.st_size
 
     @staticmethod
     def _safe_name(name: str) -> str:
@@ -42,18 +64,18 @@ class AgentReferenceStore:
             )
         return clean
 
-    def _available_path(self, name: str) -> Path:
-        self.directory.mkdir(parents=True, exist_ok=True)
-        candidate = self.directory / name
+    def _available_path(self, name: str, *, directory: Path | None = None) -> Path:
+        parent = directory or self.directory
+        parent.mkdir(parents=True, exist_ok=True)
+        candidate = parent / name
         counter = 2
         while candidate.exists():
             source = Path(name)
-            candidate = self.directory / f"{source.stem}-{counter}{source.suffix.lower()}"
+            candidate = parent / f"{source.stem}-{counter}{source.suffix.lower()}"
             counter += 1
         return candidate
 
-    def save_upload(self, name: str, data: bytes) -> Path:
-        """Atomically store one browser upload without replacing another file."""
+    def _save_upload(self, name: str, data: bytes, *, directory: Path) -> Path:
         clean = self._safe_name(name)
         if not data:
             raise ToolError("INVALID_INPUT", "the reference file is empty.", "Choose a file.")
@@ -63,7 +85,7 @@ class AgentReferenceStore:
                 f"{clean} is larger than the 25 MB reference-file limit.",
                 "Use a smaller document or image.",
             )
-        target = self._available_path(clean)
+        target = self._available_path(clean, directory=directory)
         temporary = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
         try:
             with temporary.open("xb") as handle:
@@ -74,6 +96,18 @@ class AgentReferenceStore:
         finally:
             temporary.unlink(missing_ok=True)
         return target
+
+    def save_upload(self, name: str, data: bytes) -> Path:
+        """Atomically store one standing workspace upload."""
+        return self._save_upload(name, data, directory=self.directory)
+
+    def save_turn_upload(self, name: str, data: bytes) -> Path:
+        """Atomically store one attachment outside the standing library."""
+        return self._save_upload(
+            name,
+            data,
+            directory=self.project_dir / TURN_REFERENCES_DIR,
+        )
 
     def add(self, source: str | Path) -> Path:
         """Copy one local reference into the managed folder."""
@@ -142,8 +176,10 @@ class AgentReferenceStore:
             for entry in indexed_sources
         }
         rows: list[dict[str, Any]] = []
+        live: set[str] = set()
         for path in self.paths():
-            digest = sha256_file(path)
+            digest, size = self._digest(path)
+            live.add(str(path))
             relative = path.relative_to(self.project_dir).as_posix()
             media = "image" if path.suffix.lower() in {".png", ".jpg", ".jpeg"} else "document"
             rows.append(
@@ -151,12 +187,57 @@ class AgentReferenceStore:
                     "name": path.name,
                     "path": relative,
                     "media": media,
-                    "size_bytes": path.stat().st_size,
+                    "size_bytes": size,
                     "sha256": digest,
                     "indexed": indexed.get(relative) == digest,
                 }
             )
+        for stale in self._digests.keys() - live:
+            self._digests.pop(stale, None)
         return rows
+
+    def library_entries(
+        self, indexed_sources: list[dict[str, Any]] = ()
+    ) -> list[dict[str, Any]]:
+        """Describe managed uploads and other project-local indexed content."""
+        rows = self.entries(indexed_sources)
+        known = {str(row["path"]).replace("\\", "/") for row in rows}
+        for source in indexed_sources:
+            raw_path = str(source.get("path") or "").replace("\\", "/")
+            if not raw_path or raw_path in known:
+                continue
+            target = Path(raw_path)
+            if target.is_absolute():
+                try:
+                    relative = target.resolve().relative_to(self.project_dir).as_posix()
+                except (OSError, ValueError):
+                    continue
+            else:
+                relative = raw_path
+                target = self.project_dir / raw_path
+            if is_turn_reference_path(relative):
+                continue
+            try:
+                target = target.expanduser().resolve()
+                target.relative_to(self.project_dir)
+            except (OSError, ValueError):
+                continue
+            media = str(source.get("media") or "document")
+            rows.append(
+                {
+                    "name": Path(relative).name,
+                    "path": relative,
+                    "media": media,
+                    "size_bytes": target.stat().st_size if target.is_file() else 0,
+                    "sha256": str(source.get("sha256") or ""),
+                    "indexed": True,
+                    "managed": False,
+                }
+            )
+            known.add(relative)
+        for row in rows:
+            row.setdefault("managed", str(row["path"]).startswith(REFERENCES_DIR.as_posix()))
+        return sorted(rows, key=lambda row: str(row["name"]).casefold())
 
     def sync(self, knowledge: Any) -> dict[str, Any]:
         """Index changed files, including files copied into the folder by hand."""
@@ -227,4 +308,10 @@ class AgentReferenceStore:
         return tuple(images)
 
 
-__all__ = ["MAX_REFERENCE_BYTES", "REFERENCES_DIR", "AgentReferenceStore"]
+__all__ = [
+    "MAX_REFERENCE_BYTES",
+    "REFERENCES_DIR",
+    "TURN_REFERENCES_DIR",
+    "AgentReferenceStore",
+    "is_turn_reference_path",
+]

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -78,9 +79,11 @@ ERROR_CODES = (
     "TRANSACTION_RECOVERY_REQUIRED",
     "UNSAVED_CHANGES",
     "VALIDATION_FAILED",
+    "VIEWER_BUSY",
     "VIEWER_ERROR",
     "VIEWER_NOT_CONNECTED",
     "VIEWER_TIMEOUT",
+    "VIEWER_UNAVAILABLE",
     "WORKFLOW_CANCELLED",
     "WORKFLOW_DEPENDENCY_FAILED",
     "WORKFLOW_INPUT_EMPTY",
@@ -137,24 +140,112 @@ def _jsonable(obj: Any) -> Any:
     return json.loads(json.dumps(obj, ensure_ascii=False, default=str))
 
 
+# Bulk results carry their rows under one of these names. Paging that list
+# beats handing back a clipped string the caller can no longer parse.
+_PAGE_KEYS = ("rows", "elements", "results", "hits", "groups", "measurements", "issues")
+
+_PREVIEW_NOTE = "result truncated: refine the query, lower `limit`, or select fewer fields"
+
+
+def _render(payload: dict[str, Any], meta: dict[str, Any]) -> str:
+    return dump({"ok": True, "data": payload, "meta": meta})
+
+
+def _page_key(payload: dict[str, Any]) -> str | None:
+    """The one list worth paging, or None when the shape is not a bulk result."""
+    lists = [key for key, value in payload.items() if isinstance(value, list) and value]
+    for name in _PAGE_KEYS:
+        if name in lists:
+            return name
+    return lists[0] if len(lists) == 1 else None
+
+
+def _largest_fitting(build: Callable[[int], tuple], high: int, char_limit: int) -> tuple | None:
+    """Binary-search the biggest prefix whose rendered envelope fits.
+
+    Prefix length only ever grows the rendering, so the search is sound.
+    """
+    low, best = 0, None
+    while low <= high:
+        mid = (low + high) // 2
+        payload, meta = build(mid)
+        if len(_render(payload, meta)) <= char_limit:
+            best = (payload, meta)
+            low = mid + 1
+        else:
+            high = mid - 1
+    return best
+
+
+def _paged(
+    payload: dict[str, Any], merged: dict[str, Any], key: str, char_limit: int
+) -> tuple | None:
+    """Keep the rows that fit and say exactly where the next page starts.
+
+    `truncation` is the first key in data on purpose: consumers clip tool
+    results from the front, so the signal has to arrive before the rows.
+    """
+    items = payload[key]
+    # Only a tool that reports its offset can be resumed by one; the rest are
+    # told to ask for a smaller batch instead of a page that does not exist.
+    paginated = isinstance(merged.get("offset"), int)
+    offset = merged["offset"] if paginated else 0
+
+    def build(kept: int) -> tuple[dict[str, Any], dict[str, Any]]:
+        cut: dict[str, Any] = {"key": key, "kept": kept, "of": len(items)}
+        if paginated:
+            cut["next_offset"] = offset + kept
+            cut["retry"] = (
+                f"the result did not fit; call the same tool with offset="
+                f"{offset + kept} for the next page, or select fewer fields"
+            )
+        else:
+            cut["retry"] = "the result did not fit; ask for the remaining items in a smaller batch"
+        head = {"truncation": cut}
+        body = {k: (v[:kept] if k == key else v) for k, v in payload.items()}
+        meta = {**merged, "truncated": True}
+        if "returned" in meta:
+            meta["returned"] = kept
+        return {**head, **body}, meta
+
+    # the full list is known not to fit, and the header only adds to it
+    return _largest_fitting(build, len(items) - 1, char_limit)
+
+
+def _previewed(
+    payload: dict[str, Any], merged: dict[str, Any], char_limit: int
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Fallback for shapes with no pageable list.
+
+    The preview is sized against the finished envelope, so char_limit is a
+    ceiling rather than a floor.
+    """
+    source = dump(payload)
+    meta = {**merged, "truncated": True}
+
+    def build(kept: int) -> tuple[dict[str, Any], dict[str, Any]]:
+        head = {"truncation": {"kept_chars": kept, "of_chars": len(source), "note": _PREVIEW_NOTE}}
+        return {**head, "preview": source[:kept]}, meta
+
+    return _largest_fitting(build, len(source), char_limit) or build(0)
+
+
 def ok(
     data: dict[str, Any], meta: dict[str, Any], *, char_limit: int = 40_000, **extra_meta: Any
 ) -> Envelope:
     payload = _jsonable(data)
     merged = _jsonable({**meta, **extra_meta})
-    rendered = dump({"ok": True, "data": payload, "meta": merged})
+    rendered = _render(payload, merged)
     from ifc_console.policy.untrusted import NOTE, scan
 
     suspicious = scan(rendered)
     if suspicious:
         merged["injection_warning"] = {"note": NOTE, "excerpts": suspicious}
-        rendered = dump({"ok": True, "data": payload, "meta": merged})
+        rendered = _render(payload, merged)
     if len(rendered) > char_limit:
-        payload = {
-            "preview": rendered[:char_limit],
-            "note": "result truncated: refine the query, lower `limit`, or select fewer fields",
-        }
-        merged["truncated"] = True
+        key = _page_key(payload)
+        paged = _paged(payload, merged, key, char_limit) if key else None
+        payload, merged = paged or _previewed(payload, merged, char_limit)
     return Envelope(ok=True, data=payload, meta=merged)
 
 

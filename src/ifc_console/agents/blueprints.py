@@ -13,7 +13,7 @@ import os
 import re
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -25,6 +25,33 @@ from ifc_console.agents.packs import AgentPackInfo
 BLUEPRINTS_DIR = Path(".ifc-console") / "agents" / "custom"
 
 DEFAULT_ROLE = "You are a project-specific IFC assistant built from reviewed capability blocks."
+
+WorkflowStrategy = Literal["adaptive", "evidence-first", "fast-scan"]
+
+STRATEGY_GUIDANCE: dict[WorkflowStrategy, str] = {
+    "adaptive": (
+        "Workflow strategy: choose the shortest reliable path for the request. "
+        "Gather evidence, measure, verify, or propose only when needed."
+    ),
+    "evidence-first": (
+        "Workflow strategy: gather and cite model or document evidence before "
+        "measuring, validating, or proposing."
+    ),
+    "fast-scan": (
+        "Workflow strategy: start with broad, low-cost checks. Investigate only "
+        "the highest-impact findings unless the user asks for exhaustive work."
+    ),
+}
+
+
+class AgentWorkflow(BaseModel):
+    """Execution preferences for a custom agent."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    strategy: WorkflowStrategy = "adaptive"
+    max_tool_rounds: int = Field(default=12, ge=1, le=100, strict=True)
+    max_tool_calls: int = Field(default=48, ge=1, le=1000, strict=True)
 
 
 class AgentBlueprint(BaseModel):
@@ -38,7 +65,9 @@ class AgentBlueprint(BaseModel):
     description: str = Field(min_length=1, max_length=300)
     instructions: str = Field(min_length=1, max_length=12_000)
     blocks: tuple[str, ...] = Field(min_length=1, max_length=len(BLOCKS))
+    workflow: AgentWorkflow = Field(default_factory=AgentWorkflow)
     starters: tuple[str, ...] = Field(default=(), max_length=6)
+    content_paths: tuple[str, ...] | None = Field(default=None, max_length=500)
 
     @field_validator("blocks")
     @classmethod
@@ -55,6 +84,24 @@ class AgentBlueprint(BaseModel):
         if any(len(item) > 180 for item in cleaned):
             raise ValueError("starter prompts must be at most 180 characters")
         return tuple(dict.fromkeys(cleaned))
+
+    @field_validator("content_paths")
+    @classmethod
+    def _clean_content_paths(
+        cls, value: tuple[str, ...] | None
+    ) -> tuple[str, ...] | None:
+        if value is None:
+            return None
+        from ifc_console.agents.content import normalize_content_path
+
+        cleaned: list[str] = []
+        for raw in value:
+            path = normalize_content_path(raw)
+            if path is None:
+                raise ValueError("content paths must be project-relative paths")
+            if path not in cleaned:
+                cleaned.append(path)
+        return tuple(cleaned)
 
 
 def blueprint_name(title: str) -> str:
@@ -118,6 +165,10 @@ class BlueprintPack:
 
     def __init__(self, blueprint: AgentBlueprint) -> None:
         self.blueprint = blueprint
+        self.declared_limits = AgentLimits(
+            max_tool_rounds=blueprint.workflow.max_tool_rounds,
+            max_tool_calls=blueprint.workflow.max_tool_calls,
+        )
         self.info = AgentPackInfo(
             name=blueprint.name,
             title=blueprint.title,
@@ -129,6 +180,30 @@ class BlueprintPack:
             blocks=blueprint.blocks,
         )
 
+    async def compose(
+        self,
+        runtime: Any,
+        *,
+        viewer: bool = False,
+        instructions: str = "",
+        model_label: str = "",
+    ):
+        extra = "\n\n".join(
+            part for part in (self.blueprint.instructions.strip(), instructions.strip()) if part
+        )
+        role = "\n\n".join(
+            (DEFAULT_ROLE, STRATEGY_GUIDANCE[self.blueprint.workflow.strategy])
+        )
+        return await compose(
+            runtime,
+            self.blueprint.blocks,
+            role=role,
+            extra_instructions=extra,
+            viewer=viewer,
+            agent=self.blueprint.name,
+            model_label=model_label,
+        )
+
     async def build(
         self,
         runtime: Any,
@@ -138,16 +213,10 @@ class BlueprintPack:
         instructions: str = "",
         model_label: str = "",
     ) -> Agent:
-        extra = "\n\n".join(
-            part for part in (self.blueprint.instructions.strip(), instructions.strip()) if part
-        )
-        composition = await compose(
+        composition = await self.compose(
             runtime,
-            self.blueprint.blocks,
-            role=DEFAULT_ROLE,
-            extra_instructions=extra,
             viewer=viewer,
-            agent=self.blueprint.name,
+            instructions=instructions,
             model_label=model_label,
         )
         return Agent(
@@ -155,7 +224,7 @@ class BlueprintPack:
             model=model,
             tools=composition.tools,
             instructions=composition.instructions,
-            limits=AgentLimits(max_tool_rounds=12, max_tool_calls=48),
+            limits=self.declared_limits,
         )
 
 
@@ -166,6 +235,9 @@ __all__ = [
     "DEFAULT_ROLE",
     "AgentBlueprint",
     "AgentBlueprintStore",
+    "AgentWorkflow",
     "BlueprintPack",
+    "STRATEGY_GUIDANCE",
+    "WorkflowStrategy",
     "blueprint_name",
 ]

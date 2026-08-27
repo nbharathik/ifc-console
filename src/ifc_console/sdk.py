@@ -536,8 +536,12 @@ class AsyncWorkbench:
         """Verify the current or selected local audit hash chain."""
         return self._core.audit.verify_session(session_id)
 
-    async def call_result(self, name: str, **kwargs: Any) -> Envelope:
-        """Run one structured operation and return its typed envelope."""
+    async def call_result(self, name: str, /, **kwargs: Any) -> Envelope:
+        """Run one structured operation and return its typed envelope.
+
+        The operation name is positional-only so a tool argument that is
+        itself called `name` (skills, saved viewpoints) cannot collide.
+        """
         spec = self._core.operations.get(name)
         if spec is None:
             known = ", ".join(sorted(self._core.operations.handlers))
@@ -556,7 +560,7 @@ class AsyncWorkbench:
             return converted
         return result
 
-    async def call(self, name: str, **kwargs: Any) -> dict[str, Any]:
+    async def call(self, name: str, /, **kwargs: Any) -> dict[str, Any]:
         """Run one tool and return its envelope, errors included.
 
         This is what an agent loop should use: the envelope's error code and
@@ -564,7 +568,7 @@ class AsyncWorkbench:
         """
         return (await self.call_result(name, **kwargs)).model_dump()
 
-    async def _data(self, name: str, **kwargs: Any) -> dict[str, Any]:
+    async def _data(self, name: str, /, **kwargs: Any) -> dict[str, Any]:
         return _unwrap(await self.call(name, **kwargs))
 
     # -- reads ----------------------------------------------------------------
@@ -1360,10 +1364,10 @@ class Workbench:
     def verify_audit(self, session_id: str | None = None) -> AuditVerification:
         return self._wb.verify_audit(session_id)
 
-    def call_result(self, name: str, **kwargs: Any) -> Envelope:
+    def call_result(self, name: str, /, **kwargs: Any) -> Envelope:
         return self._run(lambda: self._wb.call_result(name, **kwargs))
 
-    def call(self, name: str, **kwargs: Any) -> dict[str, Any]:
+    def call(self, name: str, /, **kwargs: Any) -> dict[str, Any]:
         return self._run(lambda: self._wb.call(name, **kwargs))
 
     # -- reads ----------------------------------------------------------------

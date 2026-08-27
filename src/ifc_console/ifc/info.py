@@ -68,6 +68,53 @@ def _materials(ifc: Any, top: int = 20) -> list[dict[str, Any]]:
     return rows[:top]
 
 
+def _classification_coverage(ifc: Any, total: int) -> dict[str, Any]:
+    """Which classification systems are in use, and over how many products.
+
+    Occurrences inherit their type's references, so a reference on a type
+    counts for every occurrence of that type. Declared but unused systems
+    stay in the list with a zero count.
+    """
+    import ifcopenshell.util.classification as classification_util
+    import ifcopenshell.util.element as element_util
+
+    systems: dict[str, set[int]] = {}
+    with contextlib.suppress(Exception):
+        for system in ifc.by_type("IfcClassification"):
+            systems.setdefault(getattr(system, "Name", None) or "unnamed", set())
+    with contextlib.suppress(Exception):
+        for rel in ifc.by_type("IfcRelAssociatesClassification"):
+            reference = getattr(rel, "RelatingClassification", None)
+            if reference is None:
+                continue
+            source = None
+            with contextlib.suppress(Exception):
+                source = classification_util.get_classification(reference)
+            label = (
+                getattr(source, "Name", None) or getattr(reference, "Name", None) or "unnamed"
+            )
+            bucket = systems.setdefault(label, set())
+            for obj in rel.RelatedObjects or ():
+                if obj.is_a("IfcTypeObject"):
+                    with contextlib.suppress(Exception):
+                        bucket.update(occ.id() for occ in element_util.get_types(obj))
+                elif obj.is_a("IfcProduct"):
+                    bucket.add(obj.id())
+
+    classified: set[int] = set()
+    for ids in systems.values():
+        classified |= ids
+    return {
+        "systems": [
+            {"name": name, "elements": len(ids)}
+            for name, ids in sorted(systems.items(), key=lambda item: (-len(item[1]), item[0]))
+        ],
+        "classified": len(classified),
+        "total": total,
+        "coverage": round(len(classified) / total, 3) if total else 0.0,
+    }
+
+
 def build_project_info(ifc: Any, path: Path | None) -> dict[str, Any]:
     file_block: dict[str, Any] = {}
     if path is not None and path.exists():
@@ -126,5 +173,8 @@ def build_project_info(ifc: Any, path: Path | None) -> dict[str, Any]:
         "entity_counts": entity_counts,
         "materials": _materials(ifc),
         "classifications": classifications,
+        "classification_coverage": _classification_coverage(
+            ifc, entity_counts.get("total_products", 0)
+        ),
         "header": _header(ifc),
     }

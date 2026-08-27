@@ -154,10 +154,10 @@ body {
   display: flex;
   align-items: center;
   flex: none;
-  gap: 7px;
+  gap: 0;
   height: 44px;
   min-height: 44px;
-  padding: 0 10px 0 0;
+  padding: 0 8px 0 0;
   overflow: hidden;
   background: var(--chrome);
   border-bottom: 1px solid var(--line);
@@ -168,16 +168,33 @@ body {
   align-self: stretch;
   display: inline-flex;
   align-items: center;
-  gap: 8px;
-  min-width: 118px;
-  padding: 0 14px;
+  gap: 7px;
+  min-width: 108px;
+  padding: 0 12px;
   color: var(--text);
   border-right: 1px solid var(--line);
-  box-shadow: inset 2px 0 0 var(--accent);
   font-size: 12px;
   font-weight: 650;
   letter-spacing: 0.015em;
 }
+
+.topbar-context,
+.topbar-state,
+.topbar-actions {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  min-width: 0;
+  height: 100%;
+}
+
+.topbar-context {
+  gap: 6px;
+  padding: 0 9px;
+}
+
+.topbar-state { gap: 2px; }
+.topbar-actions { gap: 3px; }
 
 #brand .brand-mark {
   flex: none;
@@ -217,21 +234,12 @@ body {
 
 .spacer { flex: 1; }
 
-.toolbar-sep {
-  flex: none;
-  width: 1px;
-  height: 20px;
-  margin: 0 2px;
-  background: var(--line);
-}
-
 /* Model metadata is deliberately flat, not a row of pills. */
 .meta {
   flex: none;
   min-width: 0;
-  padding: 1px 7px;
+  padding: 1px 5px;
   color: var(--text-muted);
-  border-left: 1px solid var(--line);
   font-family: "Cascadia Mono", "SFMono-Regular", Consolas, monospace;
   font-size: 10px;
   font-weight: 600;
@@ -262,7 +270,7 @@ body {
   flex: none;
   align-items: center;
   gap: 5px;
-  margin: 0 3px;
+  margin: 0 4px;
   color: var(--ok);
   font-family: "Cascadia Mono", "SFMono-Regular", Consolas, monospace;
   font-size: 9px;
@@ -330,9 +338,9 @@ button svg {
 
 .icon-btn {
   flex: none;
-  width: 30px;
-  height: 30px;
-  min-height: 30px;
+  width: 28px;
+  height: 28px;
+  min-height: 28px;
   padding: 0;
 }
 
@@ -344,32 +352,52 @@ button svg {
   border-color: var(--accent-line);
 }
 
-.seg {
-  display: inline-flex;
-  flex: none;
-  border: 1px solid var(--line);
-  overflow: hidden;
-  border-radius: 5px;
-}
-
-.seg-btn {
-  width: 30px;
-  height: 28px;
-  min-height: 28px;
-  padding: 0;
-  border: 0;
-  border-radius: 0;
-}
-
-.seg-btn + .seg-btn { border-left: 1px solid var(--line); }
-.seg-btn:hover { border-color: var(--line); }
-
-.seg-btn[aria-pressed="true"] {
-  color: var(--accent-bright);
-  background: var(--accent-wash);
-}
-
 /* Workspace ------------------------------------------------------------- */
+/* Focus tabs ------------------------------------------------------------ */
+/* One tab per element under analysis; All restores the whole model. */
+#focus-tabs {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  background: var(--chrome);
+  border-bottom: 1px solid var(--line);
+  overflow-x: auto;
+}
+
+#focus-tabs[hidden] { display: none; }
+
+.focus-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.focus-tab:hover { background: var(--surface-hover); color: var(--text); }
+
+.focus-tab.active {
+  background: var(--accent-wash);
+  border-color: var(--accent-line);
+  color: var(--text);
+}
+
+.focus-tab-close {
+  display: inline-flex;
+  padding: 0 2px;
+  color: var(--text-quiet);
+}
+
+.focus-tab-close:hover { color: var(--danger); }
+
 #layout {
   position: relative;
   display: flex;
@@ -378,7 +406,8 @@ button svg {
   overflow: hidden;
 }
 
-aside {
+#tree-panel,
+#props-panel {
   display: flex;
   flex: none;
   flex-direction: column;
@@ -388,7 +417,8 @@ aside {
   background: var(--chrome);
 }
 
-aside.collapsed,
+#tree-panel.collapsed,
+#props-panel.collapsed,
 .splitter.collapsed { display: none; }
 
 #tree-panel { border-right: 1px solid var(--line); }
@@ -400,15 +430,33 @@ aside.collapsed,
 .panel-title {
   display: flex;
   align-items: center;
+  justify-content: space-between;
+  gap: 8px;
   flex: none;
   height: 38px;
-  padding: 0 12px;
+  padding: 0 6px 0 12px;
   color: var(--text-muted);
   border-bottom: 1px solid var(--line);
   font-size: 11px;
   font-weight: 650;
   letter-spacing: 0.04em;
   text-transform: uppercase;
+}
+
+.panel-close,
+.popover-close {
+  width: 26px;
+  height: 26px;
+  min-height: 26px;
+  padding: 0;
+  color: var(--text-quiet);
+}
+
+.panel-close:hover,
+.popover-close:hover {
+  color: var(--text);
+  background: var(--surface-hover);
+  border-color: transparent;
 }
 
 .panel-body {
@@ -470,8 +518,54 @@ aside.collapsed,
   outline: 2px solid var(--accent);
   outline-offset: -3px;
 }
+/* Clicking the model focuses the viewport so the arrow keys pan. That is not
+   a keyboard entry, so it must not draw the keyboard ring around the scene. */
+#canvas[data-quiet-focus]:focus-visible { outline: none; }
 
 #canvas.is-dragging { cursor: grabbing; }
+
+/* A closed side panel leaves one quiet hinge on the viewport edge. */
+.panel-edge-tab {
+  position: absolute;
+  top: 50%;
+  z-index: 18;
+  width: 27px;
+  height: 42px;
+  min-height: 42px;
+  padding: 0;
+  color: var(--text-quiet);
+  background: color-mix(in srgb, var(--chrome) 92%, transparent);
+  border-color: var(--line);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.16);
+  opacity: 0.76;
+  transform: translateY(-50%);
+  backdrop-filter: blur(8px);
+}
+
+.panel-edge-tab:hover,
+.panel-edge-tab:focus-visible {
+  color: var(--accent-bright);
+  background: var(--surface);
+  border-color: var(--accent-line);
+  opacity: 1;
+}
+
+.panel-edge-tab.has-context {
+  color: var(--accent-bright);
+  background: color-mix(in srgb, var(--surface) 88%, transparent);
+  border-color: var(--accent-line);
+  opacity: 0.92;
+}
+
+.panel-edge-tab-left {
+  left: -1px;
+  border-radius: 0 5px 5px 0;
+}
+
+.panel-edge-tab-right {
+  right: -1px;
+  border-radius: 5px 0 0 5px;
+}
 
 /* Loading and empty states --------------------------------------------- */
 .overlay {
@@ -595,7 +689,7 @@ aside.collapsed,
 #settings-panel { top: 10px; }
 #help-panel { bottom: 10px; }
 
-/* View tools: floating launcher next to the model tree, panel below it. */
+/* View tools: one launcher while closed, one close control while open. */
 #btn-tools {
   position: absolute;
   top: 10px;
@@ -607,10 +701,33 @@ aside.collapsed,
 }
 
 #tools-panel {
-  top: 46px;
+  top: 10px;
   left: 10px;
   right: auto;
   min-width: 196px;
+}
+
+.popover-head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  height: 38px;
+  margin: 0 -12px 2px;
+  padding: 0 6px 0 12px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--line);
+}
+
+.popover-heading {
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
 }
 
 .popover .popover-title:not(:first-child) {
@@ -715,6 +832,25 @@ button:disabled {
 }
 
 /* -- measurements */
+/* What the click would snap to, named beside the cursor. Fixed, because it
+   is placed from pointer coordinates. */
+#snap-hint {
+  position: fixed;
+  left: 0;
+  top: 0;
+  z-index: 40;
+  pointer-events: none;
+  padding: 2px 6px;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  background: var(--chrome);
+  color: var(--accent-bright);
+  font-size: 10.5px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  box-shadow: var(--shadow-pop);
+}
+
 #measure-card {
   position: absolute;
   right: 12px;
@@ -752,6 +888,7 @@ button:disabled {
 }
 
 .measure-row {
+  position: relative;
   display: flex;
   flex-direction: column;
   gap: 1px;
@@ -760,6 +897,26 @@ button:disabled {
 }
 
 .measure-row:first-child { border-top: 0; padding-top: 0; }
+
+/* Hovering a row emphasizes its measurement in 3D; the remove control only
+   appears then, so the list stays a list until someone points at it. */
+.measure-drop {
+  position: absolute;
+  top: 3px;
+  right: 0;
+  padding: 0 4px;
+  color: var(--text-quiet);
+  border: 0;
+  background: transparent;
+  font-size: 13px;
+  line-height: 1.2;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.measure-row:first-child .measure-drop { top: -1px; }
+.measure-row:hover .measure-drop { opacity: 1; }
+.measure-drop:hover { color: var(--danger); background: transparent; }
 
 .measure-dist {
   color: var(--text);
@@ -773,11 +930,56 @@ button:disabled {
   font-variant-numeric: tabular-nums;
 }
 
+/* A carried measurement whose element did not come back is a kept point, not
+   a measured one, and has to read differently from the rows around it. */
+.measure-drift {
+  color: var(--warn);
+  font-size: 10px;
+}
+
 #measure-card #measure-hint {
   margin: 0 0 4px;
 }
 
 canvas.is-measuring { cursor: crosshair; }
+
+/* The popover was six stacked sections and taller than the viewport it opens
+   over. Each section is one grid item, so two columns actually fill: the
+   whole panel reads at a glance instead of scrolling. */
+#tools-panel {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-content: start;
+  align-items: start;
+  gap: 2px 14px;
+  /* A popover is a shelf of controls, not a page: two 172px columns is what
+     the widest button in it needs, and grid would otherwise take the room. */
+  width: max-content;
+  max-width: min(400px, calc(100% - 20px));
+  max-height: min(84vh, 640px);
+  overflow-y: auto;
+}
+#tools-panel > .popover-head { grid-column: 1 / -1; }
+#tools-panel > .tool-note { grid-column: 1 / -1; margin-top: 4px; }
+.tool-section { min-width: 0; }
+.tool-section .popover-title {
+  margin: 0 0 4px;
+  padding: 8px 0 4px;
+  border-bottom: 1px solid var(--line);
+}
+#tools-panel .tool-switch { padding: 3px 0; }
+#tools-panel .tool-switch small { font-size: 9.5px; }
+/* The unit, precision and slice rows share the popover's tighter rhythm. */
+#tools-panel .select-row {
+  min-height: 30px;
+  gap: 8px;
+  padding: 3px 0;
+}
+#tools-panel .select-row small { font-size: 9.5px; }
+#tools-panel .select-row select { min-width: 96px; }
+@media (max-width: 720px) {
+  #tools-panel { grid-template-columns: minmax(0, 1fr); }
+}
 
 .popover-title {
   margin: 0 -12px 6px;
@@ -817,6 +1019,33 @@ canvas.is-measuring { cursor: crosshair; }
 }
 
 .switch-row + .switch-row { border-top: 1px solid color-mix(in srgb, var(--line) 60%, transparent); }
+
+.select-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-height: 42px;
+  padding: 4px 0 7px;
+}
+
+.select-row select {
+  flex: none;
+  min-width: 84px;
+  height: 28px;
+  padding: 2px 24px 2px 7px;
+  color: var(--text);
+  background: var(--canvas);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  font: inherit;
+  font-size: 11px;
+}
+
+.select-row select:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
 
 .switch-text {
   display: flex;
@@ -1262,16 +1491,38 @@ kbd {
 
 #sel-info,
 #hl-info,
+#vis-info-text,
 #stats {
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
-#hl-info:not(:empty)::before {
+#hl-info:not(:empty)::before,
+#vis-info-text:not(:empty)::before {
   margin-right: 10px;
   color: var(--line-strong);
   content: "|";
 }
+
+/* The state chip only takes space while something is off screen, and it
+   carries its own way back instead of pointing at a closed popover. */
+#vis-info {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  min-width: 0;
+}
+
+.status-action {
+  padding: 0 5px;
+  color: var(--accent-bright);
+  border: 0;
+  background: transparent;
+  font: inherit;
+  cursor: pointer;
+}
+
+.status-action:hover { color: var(--text); background: var(--surface-hover); }
 
 #statusbar .icon-btn {
   width: 23px;
@@ -1335,6 +1586,7 @@ kbd {
   #stats { display: none; }
   .text-action { width: 30px; padding: 0; font-size: 0; }
   .connection-label { display: none; }
+  .panel-edge-tab { z-index: 23; }
 }
 
 @media (pointer: coarse) {
@@ -1344,12 +1596,12 @@ kbd {
   .tree-row input[type="checkbox"] { width: 18px; height: 18px; }
   .tree-toggle { width: 28px; min-height: 32px; }
   .splitter { width: 12px; }
+  .panel-edge-tab { width: 34px; height: 48px; min-height: 48px; }
 }
 
 @media (forced-colors: active) {
   .tree-label.selected,
   .search-hit.selected,
-  .seg-btn[aria-pressed="true"],
   .icon-btn[aria-expanded="true"],
   .icon-btn[aria-pressed="true"] {
     color: HighlightText;

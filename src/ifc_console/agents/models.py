@@ -16,6 +16,7 @@ AgentEventType = Literal[
     "text_delta",
     "reasoning_delta",
     "tool_call_started",
+    "tool_progress",
     "approval_requested",
     "approval_resolved",
     "tool_call_finished",
@@ -23,6 +24,8 @@ AgentEventType = Literal[
     "run_completed",
     "run_failed",
 ]
+# why a run stopped calling tools while it still had more to do
+AgentStopReason = Literal["tool_budget", "round_budget"]
 
 
 def utc_now() -> datetime:
@@ -74,6 +77,9 @@ class AgentLimits(BaseModel):
     max_tool_rounds: int = Field(default=8, ge=1, le=100)
     max_tool_calls: int = Field(default=32, ge=0, le=1000)
     timeout_s: float = Field(default=600.0, gt=0, le=86_400)
+    # A human reading an approval is not the run working, so the wait has its
+    # own clock and the run deadline is credited back afterwards.
+    approval_timeout_s: float = Field(default=3600.0, gt=0, le=86_400)
     max_tool_result_chars: int = Field(default=12_000, ge=512, le=1_000_000)
     # rounds where every requested call is read-only run concurrently
     parallel_read_only: bool = True
@@ -100,6 +106,21 @@ class ApprovalDecision(BaseModel):
     approved: bool
     decided_by: str = "application"
     reason: str = ""
+
+
+class AgentProgress(BaseModel):
+    """How far a still-running tool call has got.
+
+    A ten-second tool is indistinguishable from a hang unless it says so, and
+    ``elapsed_s`` alone already tells the reader the run is alive.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    done: int = Field(default=0, ge=0)
+    total: int | None = Field(default=None, ge=0)
+    note: str = ""
+    elapsed_s: float = Field(default=0.0, ge=0)
 
 
 class AgentToolCallRecord(BaseModel):
@@ -130,6 +151,9 @@ class AgentRunResult(BaseModel):
     tool_calls: tuple[AgentToolCallRecord, ...] = ()
     usage: AgentUsage = Field(default_factory=AgentUsage)
     error: str | None = None
+    # set when the answer came from the wrap-up round rather than the model
+    # choosing to stop calling tools
+    stopped_reason: AgentStopReason | None = None
     # the validated response_model instance when Agent.run asked for one
     data: Any = None
 
@@ -149,8 +173,13 @@ class AgentEvent(BaseModel):
     result: dict[str, Any] | None = None
     approval: ApprovalRequest | None = None
     decision: ApprovalDecision | None = None
+    progress: AgentProgress | None = None
     usage: AgentUsage | None = None
     run_result: AgentRunResult | None = None
+    # 0 for the run the caller started, 1 for a delegated specialist's own
+    # events forwarded through it, and so on.
+    depth: int = Field(default=0, ge=0)
+    parent_run_id: str | None = None
     created_at: datetime = Field(default_factory=utc_now)
 
 
@@ -191,8 +220,10 @@ __all__ = [
     "AgentLimits",
     "AgentMessage",
     "AgentModel",
+    "AgentProgress",
     "AgentRole",
     "AgentRunResult",
+    "AgentStopReason",
     "AgentToolCallRecord",
     "AgentUsage",
     "ApprovalDecision",

@@ -9,6 +9,7 @@ import pytest
 from pydantic import BaseModel, Field
 
 from ifc_console.agents.agent import Agent, AgentRunError
+from ifc_console.agents.models import AgentLimits
 from ifc_console.core.operations import OperationAnnotations
 from ifc_console.testing import (
     RecordingThreadStore,
@@ -131,8 +132,6 @@ class TestParallelReadOnly:
         assert all(e.result["ok"] for e in finished)
 
     async def test_opt_out_serializes_again(self):
-        from ifc_console.agents.models import AgentLimits
-
         tools = await build_tools(delay=0.1)
         model = ScriptedAgentModel(
             [
@@ -164,6 +163,173 @@ class TestParallelReadOnly:
         outcomes = {record.name: record.ok for record in result.tool_calls}
         assert outcomes["test__measure"] is True
         assert outcomes["test__nope"] is False
+
+
+class TestSpentBudget:
+    async def test_a_spent_tool_budget_answers_instead_of_failing(self):
+        tools = await build_tools()
+        model = ScriptedAgentModel(
+            [
+                tool_call_round({"name": "test__measure", "arguments": '{"target": "a"}'}),
+                tool_call_round({"name": "test__lookup", "arguments": '{"term": "b"}'}),
+                text_round("200 mm; the lookup did not fit in the budget."),
+            ]
+        )
+        agent = agent_for(model, tools, limits=AgentLimits(max_tool_calls=1))
+
+        result = await agent.run("go")
+
+        assert result.stopped_reason == "tool_budget"
+        assert "did not fit" in result.text
+        # the wrap-up round is the one that answers, and it holds no tools
+        assert model.turns[-1]["tools"] == []
+        assert "budget for this run is spent" in model.turns[-1]["system"]
+        assert result.tool_calls[-1].result["error"]["code"] == "LIMIT_REACHED"
+
+    async def test_a_spent_round_budget_answers_instead_of_failing(self):
+        tools = await build_tools()
+        model = ScriptedAgentModel(
+            [
+                tool_call_round({"name": "test__measure", "arguments": '{"target": "a"}'}),
+                text_round("here is what I measured"),
+            ]
+        )
+        agent = agent_for(model, tools, limits=AgentLimits(max_tool_rounds=1))
+
+        result = await agent.run("go")
+
+        assert result.stopped_reason == "round_budget"
+        assert result.text == "here is what I measured"
+
+    async def test_a_failing_wrap_up_round_still_fails_the_run(self):
+        tools = await build_tools()
+        model = ScriptedAgentModel(
+            [tool_call_round({"name": "test__measure", "arguments": '{"target": "a"}'})]
+        )
+        agent = agent_for(model, tools, limits=AgentLimits(max_tool_rounds=1))
+
+        with pytest.raises(AgentRunError):
+            await agent.run("go")
+
+
+class TestApprovalDeadline:
+    @staticmethod
+    async def _approval_tools(executed: list[bool]) -> Toolset:
+        source = FunctionToolSource(namespace="test")
+
+        @source.tool(requires_approval=True)
+        async def publish() -> dict:
+            executed.append(True)
+            return ok_envelope()
+
+        return await Toolset.build(source)
+
+    async def test_waiting_for_a_decision_does_not_spend_the_run_deadline(self):
+        from ifc_console.agents.models import ApprovalDecision
+
+        executed: list[bool] = []
+
+        class SlowApprovals:
+            async def request(self, request):
+                await asyncio.sleep(0.3)
+                return ApprovalDecision(approved=True)
+
+        model = ScriptedAgentModel(
+            [tool_call_round({"name": "test__publish"}), text_round("published")]
+        )
+        agent = agent_for(
+            model,
+            await self._approval_tools(executed),
+            approval_handler=SlowApprovals(),
+            limits=AgentLimits(timeout_s=0.1),
+        )
+
+        result = await agent.run("go")
+
+        assert executed == [True]
+        assert result.text == "published"
+
+    async def test_an_unanswered_decision_times_out_on_its_own_clock(self):
+        executed: list[bool] = []
+
+        class SilentApprovals:
+            async def request(self, request):
+                await asyncio.sleep(30)
+                raise AssertionError("the approval should have timed out")
+
+        model = ScriptedAgentModel([tool_call_round({"name": "test__publish"})])
+        agent = agent_for(
+            model,
+            await self._approval_tools(executed),
+            approval_handler=SilentApprovals(),
+            limits=AgentLimits(timeout_s=30, approval_timeout_s=0.05),
+        )
+
+        events = [event async for event in agent.stream("go")]
+
+        assert executed == []
+        assert events[-1].type == "run_failed"
+        finished = next(e for e in events if e.type == "tool_call_finished")
+        assert finished.result["error"]["code"] == "TIMEOUT"
+
+
+class TestSealedHistory:
+    async def test_a_raising_approval_handler_saves_no_dangling_call(self):
+        source = FunctionToolSource(namespace="test")
+
+        @source.tool(requires_approval=True)
+        async def publish() -> dict:
+            return ok_envelope()
+
+        class BrokenApprovals:
+            async def request(self, request):
+                raise RuntimeError("the audit path is invalid")
+
+        tools = await Toolset.build(source)
+        store = RecordingThreadStore()
+        model = ScriptedAgentModel([tool_call_round({"name": "test__publish"})])
+        agent = agent_for(
+            model, tools, thread_store=store, approval_handler=BrokenApprovals()
+        )
+
+        events = [event async for event in agent.stream("go", thread_id="t-seal")]
+
+        assert events[-1].type == "run_failed"
+        saved = await store.load("t-seal")
+        asked = next(m for m in saved if m.role == "assistant" and m.tool_calls)
+        answered = [m.tool_call_id for m in saved if m.role == "tool"]
+        assert answered == [call["id"] for call in asked.tool_calls]
+        assert "RUN_ABORTED" in saved[-1].text
+
+    async def test_a_failing_parallel_call_answers_only_that_call(self):
+        tools = await build_tools()
+
+        async def explode(call, call_next):
+            if call.name == "test__lookup":
+                raise RuntimeError("middleware is broken")
+            return await call_next(call)
+
+        store = RecordingThreadStore()
+        model = ScriptedAgentModel(
+            [
+                tool_call_round(
+                    {"name": "test__measure", "arguments": '{"target": "a"}'},
+                    {"name": "test__lookup", "arguments": '{"term": "b"}'},
+                ),
+                text_round("done"),
+            ]
+        )
+        agent = agent_for(model, tools, thread_store=store, middleware=(explode,))
+
+        result = await agent.run("go", thread_id="t-parallel")
+
+        outcomes = {record.name: record.result for record in result.tool_calls}
+        assert outcomes["test__measure"]["ok"] is True
+        assert outcomes["test__lookup"]["error"]["code"] == "TOOL_FAILED"
+        saved = await store.load("t-parallel")
+        asked = next(m for m in saved if m.role == "assistant" and m.tool_calls)
+        answered = [m.tool_call_id for m in saved if m.role == "tool"]
+        assert answered == [call["id"] for call in asked.tool_calls]
 
 
 class TestDescribe:
