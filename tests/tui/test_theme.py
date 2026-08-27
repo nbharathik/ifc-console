@@ -31,7 +31,7 @@ async def test_apply_theme_switches_and_persists(core):
 
     app = IfcConsoleApp(core, autostart=False)
     async with app.run_test():
-        assert app.theme == "ifc-dark"
+        assert app.theme == "ifc-blue"
         app.apply_theme("light", persist=True)
         assert app.theme == "ifc-light"
     assert core.ui_theme == "light"
@@ -42,7 +42,7 @@ async def test_theme_command_without_textual(core):
     core.start_audit()
     console = FakeConsole(core)
     await commands.dispatch(console, "/theme")
-    assert "theme: dark" in console.text
+    assert "theme: blue" in console.text
     console.clear_log()
     await commands.dispatch(console, "/theme light")
     assert core.ui_theme == "light"
@@ -58,7 +58,7 @@ async def test_theme_change_broadcasts_to_viewer_tabs(core):
     core.enable_viewer()
     ws = FakeWS(hub=core.viewer_hub)
     ws.client = core.viewer_hub.register(ws)
-    assert core.viewer_hub.status_payload()["theme"] == "dark"
+    assert core.viewer_hub.status_payload()["theme"] == "blue"
     core.set_ui_theme("light")
     await asyncio.sleep(0)  # broadcast is scheduled on the loop
     frames = ws.frames("theme")

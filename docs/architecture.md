@@ -95,8 +95,10 @@ explicit pins, and transaction history are protected from garbage collection.
 ### Optional viewer
 
 The viewer is a separate package containing plain browser modules, Three.js,
-and web-ifc WASM. It has no CDN or Node runtime. Its HTTP routes and four MCP
-tools exist only while the viewer is enabled.
+and web-ifc WASM. It has no CDN or Node runtime. Its HTTP routes serve model
+data only while the viewer is enabled. The launcher and six viewport MCP tools
+stay registered for catalog stability; their handlers report whether the
+optional package, HTTP transport, and browser connection are ready.
 
 ## Runtime model
 

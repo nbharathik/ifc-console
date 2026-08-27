@@ -1,0 +1,66 @@
+/* The two optional dark palettes shared by viewer and chat. Default Blue is
+ * the base palette in app.css/chat.css; Light is the light override there.
+ * Every theme uses neutral structure plus one accent family. */
+
+:root[data-theme="dark"],
+.chat-root[data-theme="dark"],
+html[data-console-theme="dark"] body.chat-page {
+  color-scheme: dark;
+  /* Cool-neutral graphite: close luminance steps create hierarchy without
+   * the brown cast of a warm gray or the blue wash of the product default. */
+  --canvas: #0d0e10;
+  --chrome: #121316;
+  --surface: #181a1e;
+  --surface-hover: #202329;
+  --surface-active: #292d34;
+  --text: #f0f1f3;
+  --text-muted: #aaafb8;
+  --text-quiet: #8f959f;
+  --line: #272a30;
+  --line-strong: #3b4048;
+  --accent: #aeb4bf;
+  --accent-bright: #d9dce2;
+  --accent-wash: rgba(217, 220, 226, 0.1);
+  --accent-line: rgba(217, 220, 226, 0.36);
+  --measure: var(--accent);
+  --measure-bright: var(--accent-bright);
+  --measure-wash: var(--accent-wash);
+  --measure-line: var(--accent-line);
+  --ok: var(--accent-bright);
+  --warn: var(--accent-bright);
+  --danger: var(--accent-bright);
+  --mode-ask: var(--accent-bright);
+  --mode-edit: var(--accent-bright);
+  --shadow-pop: 0 18px 46px rgba(0, 0, 0, 0.6), 0 2px 8px rgba(0, 0, 0, 0.44);
+}
+
+:root[data-theme="modern"],
+.chat-root[data-theme="modern"],
+html[data-console-theme="modern"] body.chat-page {
+  color-scheme: dark;
+  --canvas: #080808;
+  --chrome: #0e0e0e;
+  --surface: #151515;
+  --surface-hover: #1e1e1e;
+  --surface-active: #272727;
+  --text: #f5f5f5;
+  --text-muted: #adadad;
+  --text-quiet: #8d8d8d;
+  --line: #252525;
+  --line-strong: #3a3a3a;
+  /* Smoke-grey emphasis keeps controls legible but quieter than body text. */
+  --accent: #858a92;
+  --accent-bright: #b0b4bb;
+  --accent-wash: rgba(176, 180, 187, 0.1);
+  --accent-line: rgba(176, 180, 187, 0.3);
+  --measure: var(--accent);
+  --measure-bright: var(--accent-bright);
+  --measure-wash: var(--accent-wash);
+  --measure-line: var(--accent-line);
+  --ok: var(--accent-bright);
+  --warn: var(--accent-bright);
+  --danger: var(--accent-bright);
+  --mode-ask: var(--accent-bright);
+  --mode-edit: var(--accent-bright);
+  --shadow-pop: 0 18px 48px rgba(0, 0, 0, 0.58), 0 2px 8px rgba(0, 0, 0, 0.42);
+}

@@ -425,14 +425,18 @@ citizen and no agent can widen policy by construction.
 | `quantities` | Aggregated takeoff and CSV artifacts |
 | `validation` | Schema checks and IDS conformance |
 | `clash` | Intersection and near-touch detection |
-| `viewer` | Selection, hand measurements, highlight, theme, screenshots |
+| `viewer` | Launch, selection, viewport control, measurements, highlight, theme, screenshots |
 | `property-proposals` | AI-marked, preview-only property and measurement writes |
 | `ai-audit` | Inventory of every AI-authored value already in the model |
 | `code` | Generated ifcopenshell code for what the tools do not cover |
 
-Composition degrades instead of failing: a viewer block with no viewer, or a
-validation block with no IDS engine, drops out and the agent is told in its
-prompt what it cannot do, so it never promises a capability it lacks.
+Composition degrades instead of failing. In the HTTP console, the viewer block
+is available even while the page is off: the agent holds `open_viewer` and the
+six stable viewport tools, so it can activate and use them without rebuilding
+its toolset. Runtimes with no web surface (standalone stdio and the embedded
+SDK) drop the block when their host passes `viewer=False`; unavailable optional
+engines are likewise stated in the prompt, so the agent never promises a
+capability it lacks.
 
 The `code` block is what answers a question the structured tools do not cover,
 such as measuring a wall by walking its layer set. It is not a way around the
@@ -473,9 +477,11 @@ view and persisted with the blueprint.
 
 Blueprints cannot name arbitrary operations, load code, approve ChangeSets, or
 change runtime policy. The selected blocks expand to a fixed allowlist at build
-time; viewer tools disappear when no viewer surface is available. This makes a
-blueprint useful as reusable project configuration without turning it into a
-plugin or a second security boundary.
+time. Viewer tools remain discoverable when the web surface is off so an agent
+can call `open_viewer` without rebuilding its tool catalog; their handlers still
+require a connected viewer tab. This makes a blueprint useful as reusable
+project configuration without turning it into a plugin or a second security
+boundary.
 
 ## Marking what the model wrote
 

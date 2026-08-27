@@ -1,8 +1,9 @@
 """Viewer tools: selection, highlight, screenshot, viewport control.
 
-This is the optional tool category: it is registered only while the viewer
-is enabled (AppCore._sync_viewer_tools adds and removes it as /viewer
-toggles), so sessions without the viewer expose the lean core tool set.
+The tools are registered on every interface even while the optional viewer is
+off. This stable catalog matters for MCP clients that cache ``tools/list``:
+``open_viewer`` can activate the web surface and the same connection can then
+control it without reconnecting.
 
 All of them need at least one connected browser tab; without one they return
 VIEWER_NOT_CONNECTED with a hint that tells the LLM how the user can start
@@ -12,6 +13,7 @@ are allowed in every session mode.
 
 from __future__ import annotations
 
+import asyncio
 import math
 from typing import TYPE_CHECKING, Annotated, Any, Literal
 
@@ -29,15 +31,27 @@ from ifc_console.ifc.query import DEFAULT_FIELDS, element_row
 if TYPE_CHECKING:
     from ifc_console.app import AppCore
 
-VIEW_ANN = ToolAnnotations(readOnlyHint=True, destructiveHint=False)
-LAUNCH_ANN = ToolAnnotations(readOnlyHint=False, destructiveHint=False)
+VIEW_READ_ANN = ToolAnnotations(
+    readOnlyHint=True,
+    destructiveHint=False,
+    openWorldHint=False,
+)
+VIEW_CONTROL_ANN = ToolAnnotations(
+    readOnlyHint=False,
+    destructiveHint=False,
+    openWorldHint=False,
+)
+LAUNCH_ANN = ToolAnnotations(
+    readOnlyHint=False,
+    destructiveHint=False,
+    idempotentHint=True,
+    openWorldHint=False,
+)
 
-# Registered unconditionally (register_launcher), so an MCP client can turn
-# the viewer on itself; never in TOOL_NAMES, so /viewer off keeps it.
+# The lifecycle tool is separate from the six viewport tools.
 LAUNCHER_TOOL = "open_viewer"
 
-# The names this module registers; AppCore uses them to unregister on
-# /viewer off. Keep in sync with the @mcp.tool functions below.
+# Keep in sync with the @mcp.tool functions below.
 TOOL_NAMES = (
     "get_viewer_selection",
     "get_viewer_measurements",
@@ -249,9 +263,9 @@ def _viewer_call(action: str, **kw: Any) -> tuple[str, dict]:
     if action == "show_all":
         return "show-all", {}
     if action == "focus":
-        return "focus", {"guids": guids or [], "name": kw.get("name") or ""}
+        return "focus", {"guids": guids or []}
     if action == "unfocus":
-        return "unfocus", {"name": kw.get("name") or ""}
+        return "unfocus", {}
     if action == "measure_elements":
         return "measure-element", {"guids": guids or []}
     if action == "measure_clearance":
@@ -308,9 +322,9 @@ def register_launcher(mcp: OperationRegistry, core: AppCore) -> None:
             "focus, get_viewer_screenshot, get_viewer_selection) become "
             "available. Call it when visual work is needed and "
             "get_session_status says the viewer is off; it is a no-op when "
-            "already on. The browser tab takes a moment to connect: check "
-            "get_session_status.viewer before the first viewer call, and "
-            "refresh your tool list if your client caches it."
+            "already on. By default it waits briefly for the browser tab, so "
+            "a successful ready=true result can be followed immediately by "
+            "control_viewer and get_viewer_screenshot."
         ),
     )
     @enveloped(core, LAUNCHER_TOOL)
@@ -321,11 +335,23 @@ def register_launcher(mcp: OperationRegistry, core: AppCore) -> None:
                 description="Also open the viewer in the local browser; the user can instead run /viewer."
             ),
         ] = True,
+        wait_for_connection_s: Annotated[
+            float,
+            Field(
+                ge=0,
+                le=30,
+                description=(
+                    "Wait this many seconds for the browser tab to connect before "
+                    "returning. Use 10 for an agent-driven visual workflow; use 0 "
+                    "to return immediately."
+                ),
+            ),
+        ] = 8.0,
     ) -> Envelope:
-        if core.transport == "stdio":
+        if core.transport != "http":
             raise ToolError(
                 "VIEWER_UNAVAILABLE",
-                "this session runs over stdio, which serves no web pages.",
+                f"this {core.transport} session serves no web pages.",
                 "Ask the user to run the interactive console or "
                 "`ifc-console serve --http` and connect over HTTP; the viewer "
                 "needs the HTTP surface.",
@@ -343,18 +369,38 @@ def register_launcher(mcp: OperationRegistry, core: AppCore) -> None:
 
             # the tokenized URL goes to the local browser only, never into
             # the tool result and so never into a model context
-            opened = bool(webbrowser.open(core.viewer_url))
+            try:
+                opened = bool(webbrowser.open(core.viewer_url))
+            except Exception:
+                opened = False
+        waited = 0.0
+        if wait_for_connection_s and not core.viewer_hub.connected:
+            loop = asyncio.get_running_loop()
+            started = loop.time()
+            deadline = started + wait_for_connection_s
+            while not core.viewer_hub.connected and loop.time() < deadline:
+                await asyncio.sleep(min(0.1, max(0.0, deadline - loop.time())))
+            waited = loop.time() - started
+        connected = bool(core.viewer_hub.connected)
+        model_loaded = core.session.loaded
         data = {
             "enabled": True,
-            "connected": bool(core.viewer_hub.connected),
+            "connected": connected,
+            "model_loaded": model_loaded,
+            "ready": connected and model_loaded,
             "url": core.viewer_public_url,
             "opened_browser": opened,
+            "waited_seconds": round(waited, 2),
         }
-        if not core.viewer_hub.connected:
-            data["note"] = (
-                "waiting for a browser tab to connect; if none opened, the "
-                "user can run /viewer in the ifc-console terminal"
+        if not model_loaded:
+            data["next_action"] = "call list_ifc_files/find_files, then open_ifc_file"
+        elif not connected:
+            data["next_action"] = (
+                "the browser did not connect; call open_viewer again or ask the "
+                "user to open the viewer URL printed by ifc-console"
             )
+        else:
+            data["next_action"] = "call control_viewer(action='context')"
         return ok(data, core.session_meta(), char_limit=limit_)
 
 
@@ -362,7 +408,12 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
     limit_ = core.settings.exec.output_char_limit
 
     @core.model_lifecycle_operation
-    async def _resolve_selector(action: str, selector: str, guids: list[str] | None) -> list[str]:
+    async def _resolve_selector(
+        action: str,
+        selector: str,
+        guids: list[str] | None,
+        model_id: str | None,
+    ) -> list[str]:
         """Turn a selector into GlobalIds so "isolate level 2" is one call."""
         if action not in SELECTOR_ACTIONS:
             raise ToolError(
@@ -376,8 +427,7 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
                 "pass either selector or guids, not both.",
                 "selector resolves to the ids itself; drop guids.",
             )
-        session = core.session
-        session.require_loaded()
+        session = core.resolve_session(model_id)
 
         def job() -> list[str]:
             found = []
@@ -405,10 +455,11 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
         return matched
 
     @mcp.tool(
-        annotations=VIEW_ANN,
+        annotations=VIEW_READ_ANN,
         description=(
-            "[QUERY] GlobalIds the user has click-selected in the web viewer, with "
-            "brief element info. The human's way of pointing at things - check it "
+            "[QUERY] GlobalIds the user has click-selected in every IFC tab in the web "
+            "viewer, with the current tab's brief element info. The human's way of "
+            "pointing at things - check it "
             "when the user says 'this wall' or 'the selected elements'. Requires "
             "the viewer (see get_session_status.viewer)."
         ),
@@ -448,6 +499,7 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
             "guids": guids,
             "elements": rows,
             "missing": missing,
+            "selections": hub.selection_rows(),
             "selected_at": hub.selected_at,
             # With several tabs open, say which one the user clicked in so a
             # disagreement between them is visible rather than silent.
@@ -455,19 +507,23 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
         }
         # What the user is actually looking at: a section already cutting the
         # model, or elements already hidden, otherwise gets re-done blind.
-        viewport = hub.viewport_summary()
+        viewport = hub.viewport_summary(session.model_id)
         if viewport:
             data["viewport"] = viewport
         if not guids:
-            data["note"] = "nothing is selected; ask the user to click elements in the viewer"
+            data["note"] = (
+                "the current IFC tab has no selection; use selections for the other IFC files"
+                if hub.selections
+                else "nothing is selected; ask the user to click elements in the viewer"
+            )
         extra_meta = {} if session is core.session else {"read_from": session.model_id}
         return ok(data, core.session_meta(), char_limit=limit_, **extra_meta)
 
     @mcp.tool(
-        annotations=VIEW_ANN,
+        annotations=VIEW_READ_ANN,
         description=(
             "[QUERY] Everything measured in the web viewer, by the user or by "
-            "control_viewer: distances (M), angles (A), areas (R), element "
+            "control_viewer: lengths (M), paths, angles (A), areas (R), element "
             "sizes and clearances. Each item carries its kind; lengths are "
             "metres and points are model axes (z up). The human's way of "
             "showing you a dimension - check it when the user says 'the "
@@ -479,8 +535,9 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
     async def get_viewer_measurements() -> Envelope:
         hub = core.viewer_hub
         hub.require_connected()
-        source = hub.measurement_source()
-        items, measured_at = hub.latest_measurements()
+        target_model = hub.selection_model_id or core.models.active_id
+        source = hub.measurement_source(target_model)
+        items, measured_at = hub.latest_measurements(target_model)
         data: dict = {
             "connected": hub.connected,
             "measurements": items,
@@ -501,7 +558,7 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
         return ok(data, core.session_meta(), char_limit=limit_, returned=len(items))
 
     @mcp.tool(
-        annotations=VIEW_ANN,
+        annotations=VIEW_CONTROL_ANN,
         description=(
             "[VIEW] Drive the 3D viewer and read back what it did. Cut a "
             "section, switch to orthographic, look from a named direction, "
@@ -512,9 +569,9 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
             "selector instead of ids, so 'isolate the doors on level 2' is one "
             "call. Start from action='context' to read the camera, the viewport "
             "and what is currently hidden. "
-            "focus opens the given elements alone in a named tab under the "
-            "viewer's top bar, so one object can be analyzed without the rest "
-            "of the model; unfocus closes one tab by name, or all of them. "
+            "focus isolates and frames the given elements directly; unfocus "
+            "returns from that focused view. The viewer keeps no per-object "
+            "focus-tab history; show_all remains the full visibility reset. "
             "Measuring here uses the tessellated geometry on screen, so it "
             "answers questions the schema cannot (a rotated wall's real "
             "thickness, the clear distance between two elements, the area "
@@ -570,7 +627,7 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
                 max_length=2000,
                 description=(
                     "query_elements selector standing in for guids on select, "
-                    "isolate, hide, focus and fit, resolved against the active "
+                    "isolate, hide, focus and fit, resolved against the requested "
                     "model here: selector='IfcDoor, location=Level 2' isolates a "
                     "storey's doors in one call and is not capped at 500 ids."
                 ),
@@ -673,8 +730,7 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
                 default=None,
                 max_length=80,
                 description=(
-                    "Viewpoint name for save_view and restore_view; tab name for "
-                    "focus and unfocus (use the element's Name)."
+                    "Viewpoint name for save_view and restore_view."
                 ),
             ),
         ] = None,
@@ -685,12 +741,45 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
                 description="For section: turn every existing cut off first.",
             ),
         ] = False,
+        model_id: Annotated[
+            str | None,
+            Field(
+                default=None,
+                description=(
+                    "Resident IFC model to control. Pass model_id returned by "
+                    "get_viewer_selection. When omitted, selection-based actions "
+                    "follow the model the user selected in; other actions use the "
+                    "active console model."
+                ),
+            ),
+        ] = None,
     ) -> Envelope:
         hub = core.viewer_hub
         hub.require_connected()
+        selected_ids = set(hub.selection)
+        follows_selection = bool(
+            model_id is None
+            and hub.selection_model_id
+            and (
+                (guids and set(guids).issubset(selected_ids))
+                or (
+                    not guids
+                    and selector is None
+                    and (action in {"isolate", "hide", "focus", "measure_elements", "measure_clearance"}
+                         or (action == "fit" and selection))
+                )
+            )
+        )
+        target_hint = hub.selection_model_id if follows_selection else model_id
+        target_session = (
+            core.resolve_session(target_hint)
+            if target_hint is not None or core.session.loaded
+            else None
+        )
+        target_model = target_session.model_id if target_session is not None else None
         resolved = None
         if selector is not None:
-            guids = await _resolve_selector(action, selector, guids)
+            guids = await _resolve_selector(action, selector, guids, target_model)
             resolved = len(guids)
         command, params = _viewer_call(
             action,
@@ -706,15 +795,24 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
             name=name,
             clear=clear,
         )
-        result = await hub.run_command(command, params)
-        data: dict[str, Any] = {"action": action, "result": result}
+        result = await hub.run_command(command, params, model_id=target_model)
+        data: dict[str, Any] = {
+            "action": action,
+            "model_id": target_model,
+            "result": result,
+        }
         if resolved is not None:
             data["selector"] = selector
             data["resolved"] = resolved
-        return ok(data, core.session_meta(), char_limit=limit_)
+        extra_meta = (
+            {"read_from": target_model}
+            if target_session is not None and target_session is not core.session
+            else {}
+        )
+        return ok(data, core.session_meta(), char_limit=limit_, **extra_meta)
 
     @mcp.tool(
-        annotations=VIEW_ANN,
+        annotations=VIEW_CONTROL_ANN,
         description=(
             "[VIEW] Colour-highlight elements in the web viewer (your way of "
             "pointing at things for the user). Optionally isolate (hide everything "
@@ -730,19 +828,50 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
         isolate: bool = False,
         fit: bool = True,
         clear: bool = False,
+        model_id: Annotated[
+            str | None,
+            Field(
+                default=None,
+                description="Resident IFC model, normally from get_viewer_selection.model_id.",
+            ),
+        ] = None,
     ) -> Envelope:
         hub = core.viewer_hub
         hub.require_connected()
+        selected_ids = set(hub.selection)
+        requested_ids = set(global_ids or [])
+        selected_model = (
+            hub.selection_model_id
+            if model_id is None and requested_ids and requested_ids.issubset(selected_ids)
+            else None
+        )
+        remembered_model = (
+            hub.last_highlight.get("model_id")
+            if clear and isinstance(hub.last_highlight, dict)
+            else None
+        )
+        session = core.resolve_session(model_id or selected_model or remembered_model)
+        target_model = session.model_id
         if clear:
-            await hub.send_highlight([], color=color, isolate=False, fit=False, clear=True)
+            await hub.send_highlight(
+                [],
+                color=color,
+                isolate=False,
+                fit=False,
+                clear=True,
+                model_id=target_model,
+            )
             return ok(
-                {"highlighted": 0, "missing": [], "cleared": True},
+                {
+                    "model_id": target_model,
+                    "highlighted": 0,
+                    "missing": [],
+                    "cleared": True,
+                },
                 core.session_meta(),
                 char_limit=limit_,
             )
         guids = list(dict.fromkeys(global_ids or []))  # dedupe, keep order
-        session = core.session
-        session.require_loaded()
 
         def job() -> tuple[list[str], list[str]]:
             found, missing = [], []
@@ -762,22 +891,29 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
                 {
                     "highlighted": 0,
                     "missing": missing,
-                    "note": "no valid GlobalIds for the active model; nothing "
-                    "changed in the viewer. Ids from an attached model must be "
-                    "highlighted after set_active_model.",
+                    "model_id": target_model,
+                    "note": "no valid GlobalIds for the requested model; nothing "
+                    "changed in the viewer.",
                 },
                 core.session_meta(),
                 char_limit=limit_,
             )
-        await hub.send_highlight(found, color=color, isolate=isolate, fit=fit, clear=False)
+        await hub.send_highlight(
+            found,
+            color=color,
+            isolate=isolate,
+            fit=fit,
+            clear=False,
+            model_id=target_model,
+        )
         return ok(
-            {"highlighted": len(found), "missing": missing},
+            {"model_id": target_model, "highlighted": len(found), "missing": missing},
             core.session_meta(),
             char_limit=limit_,
         )
 
     @mcp.tool(
-        annotations=VIEW_ANN,
+        annotations=VIEW_CONTROL_ANN,
         description=(
             "[VIEW] Paint viewer elements by group with a legend: you compute the "
             "grouping (by storey, type, material, a pset value, pass/fail, "
@@ -795,20 +931,38 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
         ] = None,
         title: Annotated[str, Field(max_length=80, description="Legend title.")] = "",
         clear: bool = False,
+        model_id: Annotated[
+            str | None,
+            Field(
+                default=None,
+                description="Resident IFC model, normally from get_viewer_selection.model_id.",
+            ),
+        ] = None,
     ) -> Envelope:
         hub = core.viewer_hub
         hub.require_connected()
+        remembered_model = (
+            hub.last_color_theme.get("model_id")
+            if clear and isinstance(hub.last_color_theme, dict)
+            else None
+        )
+        session = core.resolve_session(model_id or remembered_model)
+        target_model = session.model_id
         if clear:
-            await hub.send_color_theme([], title="", clear=True)
-            return ok({"cleared": True}, core.session_meta(), char_limit=limit_)
+            await hub.send_color_theme(
+                [], title="", clear=True, model_id=target_model
+            )
+            return ok(
+                {"model_id": target_model, "cleared": True},
+                core.session_meta(),
+                char_limit=limit_,
+            )
         if not groups:
             raise ToolError(
                 "INVALID_INPUT",
                 "groups is required unless clear=true.",
                 "Pass groups=[{label, global_ids, color?}] or clear=true.",
             )
-        session = core.session
-        session.require_loaded()
         wanted = [list(dict.fromkeys(g.global_ids)) for g in groups]
 
         def job() -> tuple[list[list[str]], list[str]]:
@@ -833,9 +987,9 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
                     "legend": [],
                     "painted": 0,
                     "missing": missing[:50],
-                    "note": "no valid GlobalIds for the active model; nothing was "
-                    "painted and the existing theme is unchanged. Ids from an "
-                    "attached model need set_active_model first.",
+                    "model_id": target_model,
+                    "note": "no valid GlobalIds for the requested model; nothing "
+                    "was painted and the existing theme is unchanged.",
                 },
                 core.session_meta(),
                 char_limit=limit_,
@@ -845,8 +999,14 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
             color = group.color or categorical_color(index)
             frame_groups.append({"label": group.label, "color": color, "guids": resolved[index]})
             legend.append({"label": group.label, "color": color, "count": len(resolved[index])})
-        await hub.send_color_theme(frame_groups, title=title, clear=False)
+        await hub.send_color_theme(
+            frame_groups,
+            title=title,
+            clear=False,
+            model_id=target_model,
+        )
         data: dict[str, Any] = {
+            "model_id": target_model,
             "title": title,
             "legend": legend,
             "painted": sum(len(r) for r in resolved),
@@ -857,7 +1017,7 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
         return ok(data, core.session_meta(), char_limit=limit_)
 
     @mcp.tool(
-        annotations=VIEW_ANN,
+        annotations=VIEW_READ_ANN,
         structured_output=False,
         description=(
             "[QUERY] Capture the web-viewer canvas as an image (returned inline), "
@@ -875,11 +1035,30 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
         max_size: Annotated[int, Field(ge=64, le=2048)] = 800,
         format: Literal["jpeg", "png"] = "jpeg",
         quality: Annotated[int, Field(ge=1, le=100)] = 85,
+        model_id: Annotated[
+            str | None,
+            Field(
+                default=None,
+                description="Resident IFC model, normally from get_viewer_selection.model_id.",
+            ),
+        ] = None,
     ) -> Any:
         hub = core.viewer_hub
         hub.require_connected()
+        target_hint = model_id or hub.selection_model_id
+        target_session = (
+            core.resolve_session(target_hint)
+            if target_hint is not None or core.session.loaded
+            else None
+        )
+        target_model = target_session.model_id if target_session is not None else None
         data, width, height = await hub.request_screenshot(
-            view=view, fit=fit, max_size=max_size, format=format, quality=quality
+            view=view,
+            fit=fit,
+            max_size=max_size,
+            format=format,
+            quality=quality,
+            model_id=target_model,
         )
         note = (
             f"viewer screenshot {width}x{height} {format} ({len(data)} bytes); "

@@ -5,8 +5,10 @@ Also covers the markdown report built from the same geometry probe.
 
 from __future__ import annotations
 
+import numpy as np
 import pytest
 
+from ifc_console.ifc import geometry
 from ifc_console.ifc.measure import measure_distance, measure_elements
 from ifc_console.ifc.profile import analyze_elements
 from ifc_console.ifc.quantities import compute_quantities
@@ -173,6 +175,32 @@ class TestMeasureDistance:
                 ifc4, global_ids_a=[wall.GlobalId], global_ids_b=[wall.GlobalId]
             )
         assert excinfo.value.code == "INVALID_INPUT"
+
+    def test_overlapping_boxes_do_not_force_disjoint_solids_to_zero(self, ifc4):
+        """Opposite tetrahedra share an AABB but have a real gap."""
+        walls = ifc4.by_type("IfcWall")[:2]
+        faces = np.array([[0, 2, 1], [0, 1, 3], [0, 3, 2], [1, 2, 3]])
+        first = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]], dtype=float)
+        second = 1.0 - first
+        meshes = {
+            walls[0].id(): (first, faces),
+            walls[1].id(): (second, faces[:, ::-1]),
+        }
+
+        def provider(ifc, elements):
+            return {element.id(): meshes[element.id()] for element in elements}
+
+        with geometry.mesh_provider(provider):
+            report = measure_distance(
+                ifc4,
+                global_ids_a=[walls[0].GlobalId],
+                global_ids_b=[walls[1].GlobalId],
+            )
+        assert report["aabb_overlapping"] is True
+        assert report["overlapping"] is False
+        assert report["surface_distance"]["si"] > 0.0
+        assert report["surface_distance_method"] == "symmetric_sampled_vertex_to_triangle"
+        assert "surface_distance_is_sampled_upper_bound" in report["flags"]
 
 
 class TestMeasurementReport:

@@ -114,6 +114,11 @@ Work in this order:
 4. Measure. For one element's full picture (profile width, height, flange and
    web thickness, length), analyze_element_geometry merges exact profile
    parameters with measured mesh sections and names the source of every value.
+   For a mesh-specific question, inspect_element_mesh validates the source;
+   measure_directional_extent reports an outside-to-outside projection, while
+   measure_local_thickness returns every material and void/gap interval along
+   an explicit point and direction and refuses unsafe interval pairing;
+   slice_element_mesh returns an arbitrary cut with a reconstructable frame.
    For one metric across many elements, one measure_elements call with all
    GlobalIds beats many single calls. When a recipe carries a tolerance,
    cross-check flagged values with method='geometry_extent' and report any

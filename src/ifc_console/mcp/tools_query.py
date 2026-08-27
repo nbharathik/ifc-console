@@ -163,19 +163,43 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
         description=(
             "[QUERY] Live capability map: every currently registered tool with a "
             "one-line purpose, the session mode and what it permits, viewer "
-            "state, and worked examples. The tool list changes at runtime (the "
-            "viewer category comes and goes), so this is the ground truth."
+            "readiness, transport constraints, and worked examples. This is the "
+            "ground truth for what can execute now."
         ),
     )
     @enveloped(core, "describe_capabilities")
     async def describe_capabilities() -> Envelope:
+        from ifc_console.viewer import assets as viewer_assets
+
         def purpose(description: str | None) -> str:
             text = description or ""
             if text.startswith("["):  # drop the [QUERY]/[VIEW]/[ARTIFACT] tag
                 _, _, text = text.partition("] ")
             return text.partition(". ")[0]
 
+        def availability(tool: Any, permitted: bool) -> str:
+            if not permitted:
+                return "blocked_by_policy"
+            needs_viewer = any(
+                capability.value.startswith("viewer:")
+                for capability in tool.required_capabilities
+            )
+            if not needs_viewer:
+                return "ready"
+            if core.transport != "http":
+                return "unavailable_on_transport"
+            if not viewer_installed:
+                return "viewer_extra_missing"
+            if tool.name == "open_viewer":
+                return "ready"
+            if not core.viewer.enabled:
+                return "call_open_viewer"
+            if not core.viewer.connected:
+                return "waiting_for_viewer_tab"
+            return "ready"
+
         tools = sorted(await mcp.list_tools(), key=lambda t: t.name)
+        viewer_installed = viewer_assets.available()
         listing = []
         for tool in tools:
             decision = core.policy.evaluate(list(tool.required_capabilities))
@@ -187,6 +211,7 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
                         item.value for item in tool.required_capabilities
                     ],
                     "permitted": decision.allowed,
+                    "availability": availability(tool, decision.allowed),
                 }
             )
         mode = core.policy.mode.value
@@ -214,12 +239,29 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
                 ],
             },
             "viewer": {
+                "installed": viewer_installed,
                 "enabled": core.viewer.enabled,
                 "connected": core.viewer.connected,
-                "note": "viewer tools join the tool list only while the viewer is on",
+                "transport_supported": core.transport == "http",
+                "note": (
+                    "viewer tools stay listed for MCP cache stability; call "
+                    "open_viewer to activate the browser surface"
+                ),
+            },
+            "tool_surface": {
+                "shared": True,
+                "stable_viewer_catalog": True,
+                "interfaces": ["mcp", "built-in chat", "agent runtime", "python sdk"],
+                "note": (
+                    "registered operations use the same handlers, capability policy, "
+                    "validation, envelopes, and audit trail on every interface"
+                ),
             },
             "tools": listing,
             "examples": [
+                "open_viewer(wait_for_connection_s=10)",
+                'control_viewer(action="context")',
+                'get_viewer_screenshot(view="iso", fit="all")',
                 'query_elements(query="IfcWall, Pset_WallCommon.FireRating=F30")',
                 'compute_quantities(selector="IfcSlab", aggregate_by="storey")',
                 'validate_ids(ids_path="requirements.ids")',

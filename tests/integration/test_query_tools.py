@@ -315,6 +315,33 @@ async def test_element_meshes_tessellate_each_element_once(ask_harness, monkeypa
     assert calls[-1] == [walls[0].id()]
 
 
+async def test_element_mesh_cache_separates_profiles_and_budgets(
+    ask_harness, monkeypatch
+) -> None:
+    import numpy as np
+
+    core = ask_harness.core
+    calls: list[tuple[str, int | None]] = []
+
+    def fake_tessellate(ifc, elements, *, profile="standard", max_triangles=None):
+        calls.append((profile, max_triangles))
+        return {e.id(): (np.zeros((3, 3)), np.zeros((1, 3), dtype=np.int64)) for e in elements}
+
+    monkeypatch.setattr("ifc_console.ifc.geometry.element_meshes", fake_tessellate)
+    wall = core.session.ifc.by_type("IfcWall")[0]
+
+    core.element_meshes([wall])
+    core.element_meshes([wall], profile="analysis")
+    core.element_meshes([wall], profile="analysis")
+    core.element_meshes([wall], profile="analysis", max_triangles=123_456)
+
+    assert calls == [
+        ("standard", None),
+        ("analysis", None),
+        ("analysis", 123_456),
+    ]
+
+
 async def test_cached_read_joins_an_in_flight_computation(ask_harness) -> None:
     import threading
 

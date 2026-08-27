@@ -205,13 +205,28 @@ export function applyEvent(run, event, { now = 0 } = {}) {
         state: "running",
         summary: "",
         preview: "",
+        output: null,
         detail: "",
         rows: null,
+        progress: null,
         startedAt: now,
         ms: null,
       });
       run.tools.push(block);
       touch(run, index);
+      break;
+    }
+    case "tool_progress": {
+      const entry = run.tools.find((item) => item.id === event.id);
+      if (entry) {
+        entry.progress = {
+          done: Number.isFinite(Number(event.done)) ? Number(event.done) : 0,
+          total: Number.isFinite(Number(event.total)) ? Number(event.total) : null,
+          note: String(event.note || ""),
+          elapsed: Number.isFinite(Number(event.elapsed)) ? Number(event.elapsed) : 0,
+        };
+        entry.v += 1;
+      }
       break;
     }
     case "tool_result": {
@@ -221,6 +236,7 @@ export function applyEvent(run, event, { now = 0 } = {}) {
         entry.state = event.ok ? "ok" : "bad";
         entry.summary = event.summary || (event.ok ? "ok" : "failed");
         entry.preview = event.preview || "";
+        entry.output = event.output ?? null;
         entry.detail = event.detail || "";
         entry.rows = typeof event.rows === "number" ? event.rows : null;
         entry.ms = now && entry.startedAt ? Math.max(0, Math.round(now - entry.startedAt)) : null;
@@ -351,6 +367,13 @@ export function timeline(run) {
 
 /** Pretty-print a JSON payload; anything else comes back unchanged. */
 export function pretty(text) {
+  if (text !== null && typeof text === "object") {
+    try {
+      return JSON.stringify(text, null, 1);
+    } catch {
+      return String(text);
+    }
+  }
   const source = String(text ?? "").trim();
   if (!source) return "";
   try {
@@ -376,7 +399,14 @@ export function duration(ms) {
  */
 export function toolHeadline(tool, { limit = 80 } = {}) {
   if (!tool) return "";
-  if (tool.state === "running") return "running";
+  if (tool.state === "running") {
+    const note = String(tool.progress?.note || "").replace(/\s+/g, " ").trim();
+    if (note) return note.length > limit ? `${note.slice(0, limit - 1)}...` : note;
+    if (Number.isFinite(tool.progress?.total) && tool.progress.total > 0) {
+      return `${Math.min(tool.progress.done, tool.progress.total)} / ${tool.progress.total}`;
+    }
+    return "running";
+  }
   if (tool.state !== "bad") return tool.summary || "ok";
   const code = String(tool.summary || "").replace(/\s+/g, " ").trim();
   const message = String(tool.detail || "").replace(/\s+/g, " ").trim();

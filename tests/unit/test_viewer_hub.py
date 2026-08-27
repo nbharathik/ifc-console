@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import shutil
 from pathlib import Path
 
 import pytest
@@ -120,6 +121,49 @@ async def test_selection_for_an_unknown_model_is_discarded(core, hub, work_model
     await hub.handle_frame(ws.client, {"type": "selection", "guids": ["stale"], "model_id": "gone"})
     assert hub.selection == []
     assert hub.selection_model_id is None
+
+
+async def test_one_tab_keeps_model_scoped_selections_for_every_ifc(
+    core, hub, work_model: Path, tmp_path: Path
+):
+    await core.open_model(work_model)
+    active_id = core.models.active_id
+    annex = tmp_path / "annex.ifc"
+    shutil.copy2(work_model, annex)
+    annex_id = await core.open_model(annex, attach=True, alias="annex")
+    ws = _attach(hub)
+
+    await hub.handle_frame(
+        ws.client,
+        {
+            "type": "selection",
+            "model_id": annex_id,
+            "guids": ["annex-wall"],
+            "selections": [
+                {"model_id": active_id, "guids": ["main-wall"]},
+                {"model_id": annex_id, "guids": ["annex-wall"]},
+            ],
+        },
+    )
+
+    assert hub.selection == ["annex-wall"]
+    assert hub.selections == {
+        active_id: ["main-wall"],
+        annex_id: ["annex-wall"],
+    }
+    assert [row["model_id"] for row in hub.selection_rows()] == [active_id, annex_id]
+    assert hub.status_payload()["selections"][1]["guids"] == ["annex-wall"]
+
+    await hub.handle_frame(
+        ws.client,
+        {
+            "type": "selection",
+            "model_id": active_id,
+            "guids": ["main-wall"],
+            "selections": [{"model_id": active_id, "guids": ["main-wall"]}],
+        },
+    )
+    assert hub.selections == {active_id: ["main-wall"]}
 
 
 async def test_broadcast_reaches_all_tabs(hub):
@@ -495,10 +539,12 @@ async def test_a_second_tab_does_not_erase_the_first_tabs_selection(
 
     assert hub.selection == ["first"]
     assert hub.selection_client_id == ws1.client.id
+    assert hub.selections == {model_id: ["first"]}
 
     # the tab that owns the selection may still empty it
     await hub.handle_frame(ws1.client, {"type": "selection", "guids": [], "model_id": model_id})
     assert hub.selection == []
+    assert hub.selections == {}
 
 
 async def test_a_second_tab_does_not_erase_the_first_tabs_measurements(

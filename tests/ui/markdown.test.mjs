@@ -53,6 +53,34 @@ test("an unterminated code fence still renders", () => {
   assert.match(out, /print\(1\)/);
 });
 
+test("DSML execute calls render as Python without leaking protocol markup", () => {
+  const source = [
+    '<｜DSML｜tool_calls>',
+    '<｜DSML｜invoke name="execute_ifc_code">',
+    '<｜DSML｜parameter name="code" string="true">walls = ifc.by_type("IfcWall")',
+    'print(len(walls))</｜DSML｜parameter>',
+    '<｜DSML｜parameter name="description" string="true">Count walls</｜DSML｜parameter>',
+    '</｜DSML｜invoke>',
+    '</｜DSML｜tool_calls>',
+  ].join("\n");
+  const out = md(source);
+  assert.match(out, /<pre>/);
+  assert.match(out, />python<\/span>/);
+  assert.match(out, /ifc\.by_type\(&quot;IfcWall&quot;\)/);
+  assert.equal(out.includes("DSML"), false);
+  assert.equal(out.includes("description"), false);
+});
+
+test("a streaming DSML code parameter renders before its closing tags arrive", () => {
+  const out = md(
+    '<｜DSML｜tool_calls><｜DSML｜invoke name="execute_ifc_code">' +
+    '<｜DSML｜parameter name="code" string="true">print(1)',
+  );
+  assert.match(out, /<pre>/);
+  assert.match(out, /print\(1\)/);
+  assert.equal(out.includes("DSML"), false);
+});
+
 test("a wrapped bullet stays one list item", () => {
   const html = md("- Every card above is a real tool call this run made; open one\n  to see its arguments and what came back.\n- Nothing changed.");
   assert.equal((html.match(/<li>/g) || []).length, 2);

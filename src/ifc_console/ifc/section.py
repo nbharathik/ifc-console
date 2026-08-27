@@ -325,6 +325,15 @@ def section_metrics(
         "closed": closed,
         "segments": int(len(flat)),
         "thickness": thickness,
+        # The 2D outline is centred here. Together with the two directions it
+        # can be reconstructed in world space without shipping mesh arrays.
+        "outline_frame": {
+            "origin": [
+                round(float(value), 9) for value in segments.reshape(-1, 3).mean(axis=0)
+            ],
+            "x_direction": [round(float(value), 9) for value in width_dir],
+            "y_direction": [round(float(value), 9) for value in height_dir],
+        },
     }
     if include_outline:
         outline = []

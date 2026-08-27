@@ -59,7 +59,7 @@ Type `/` to browse commands. Values for `/mode`, `/viewer`, `/connect`, and
 | `/connect [client\|all]` | show and copy client setup |
 | `/copy [client\|url\|viewer\|token]` | copy connection data |
 | `/port <n>` | move the HTTP server |
-| `/theme [dark\|light\|auto]` | change console and viewer theme |
+| `/theme [light\|dark\|modern\|blue]` | change the shared console, viewer, and chat theme |
 
 ### Help and diagnostics
 

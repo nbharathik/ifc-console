@@ -29,6 +29,8 @@ class ProviderModel:
         local_only: bool = False,
         timeout_s: float = 300.0,
         options: Mapping[str, Any] | None = None,
+        tools_supported: bool | None = None,
+        vision_supported: bool | None = None,
     ) -> None:
         try:
             self.provider = PROVIDERS[provider.lower()]
@@ -45,6 +47,8 @@ class ProviderModel:
         self.local_only = local_only
         self.timeout_s = timeout_s
         self.options = dict(options or {})
+        self.tools_supported = tools_supported
+        self.vision_supported = vision_supported
 
     async def stream(
         self,
@@ -65,14 +69,30 @@ class ProviderModel:
             )
             merged_options = {**self.options, **dict(options)}
             turns = [message.model_dump(exclude_none=True) for message in messages]
+            provider_tools = [tool.provider_schema() for tool in tools]
+            provider_system = system
+            if self.tools_supported is False:
+                provider_tools = []
+                provider_system += (
+                    "\n\nTool calling is disabled for this model. Do not claim to have "
+                    "queried, viewed, measured, or changed project data. State when "
+                    "the request requires a tool-capable model."
+                )
+            if self.vision_supported is False:
+                for turn in turns:
+                    turn.pop("images", None)
+                provider_system += (
+                    "\n\nImage input is disabled for this model. Do not claim to have "
+                    "seen screenshots or image attachments. Use text evidence only."
+                )
             async for event in astream(
                 self.provider,
                 base_url=base,
                 key=key,
                 model=self.model_id,
-                system=system,
+                system=provider_system,
                 turns=turns,
-                tools=[tool.provider_schema() for tool in tools],
+                tools=provider_tools,
                 options=merged_options,
                 timeout=self.timeout_s,
                 local_only=self.local_only,

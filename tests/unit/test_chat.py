@@ -63,6 +63,40 @@ def test_explicit_request_key_is_redacted_without_an_environment_variable(monkey
     assert key not in providers.redact(f"provider reflected {key}", (key,))
 
 
+def test_openrouter_model_capabilities_are_preserved(monkeypatch):
+    payload = {
+        "data": [
+            {
+                "id": "vision-tools",
+                "supported_parameters": ["tools", "temperature"],
+                "architecture": {"input_modalities": ["text", "image"]},
+            },
+            {
+                "id": "text-only",
+                "supported_parameters": ["temperature"],
+                "architecture": {"input_modalities": ["text"]},
+            },
+        ]
+    }
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self, _limit):
+            return json.dumps(payload).encode()
+
+    monkeypatch.setattr(providers, "_request", lambda *_args, **_kwargs: Response())
+    models = providers.list_models(PROVIDERS["openrouter"], "test-key")
+
+    assert list(models) == ["text-only", "vision-tools"]
+    assert models.details["vision-tools"] == {"tools": True, "vision": True}
+    assert models.details["text-only"] == {"tools": False, "vision": False}
+
+
 @pytest.mark.parametrize(
     "url",
     [
@@ -324,6 +358,14 @@ async def test_tools_can_be_turned_off(chat_core, monkeypatch):
     assert script.seen[0]["tools"] == []
 
 
+async def test_a_model_without_tool_support_gets_text_only_guardrails(chat_core, monkeypatch):
+    script = fake_stream([{"type": "content", "text": "text only"}])
+    await collect(chat_core, monkeypatch, script, tools_supported=False)
+
+    assert script.seen[0]["tools"] == []
+    assert "Do not claim" in script.seen[0]["system"]
+
+
 async def test_the_tool_schemas_are_the_real_ones(chat_core, monkeypatch):
     script = fake_stream([{"type": "content", "text": "ok"}])
     await collect(chat_core, monkeypatch, script)
@@ -551,6 +593,16 @@ def test_a_failure_we_cannot_fix_is_not_retried():
     assert providers._relax({"model": "m"}, "HTTP 400: no such model") is None
 
 
+def test_unsupported_tool_errors_explain_the_model_override():
+    error = providers._capability_error(
+        {"tools": [{"type": "function"}]},
+        "HTTP 400: tool calling is not supported by this model",
+    )
+    assert error is not None
+    assert "Tool calling" in str(error)
+    assert "Not supported" in str(error)
+
+
 class TestToolEvent:
     """What the panel is given to draw under one tool call."""
 
@@ -564,6 +616,8 @@ class TestToolEvent:
         assert event["summary"] == "1 row(s)"
         assert event["rows"] == 1
         assert "Wall" in event["preview"]
+        assert event["output"]["data"]["rows"] == [{"name": "Wall"}]
+        assert event["output"]["meta"]["returned"] == 1
         assert event["detail"] == ""
 
     def test_a_failure_carries_the_message_not_just_the_code(self) -> None:
@@ -603,6 +657,8 @@ class TestToolEvent:
             {"ok": True, "data": {"images": [{"bytes": "A" * 50_000}], "count": 1}, "meta": {}}
         )
         assert "AAAA" not in event["preview"]
+        assert "AAAA" not in json.dumps(event["output"])
+        assert event["output"]["data"]["images"] == "1 image(s)"
         assert "1 image(s)" in event["preview"]
         assert len(event["preview"]) <= TOOL_PREVIEW_LIMIT + 32
 
@@ -613,6 +669,7 @@ class TestToolEvent:
         assert len(event["preview"]) <= TOOL_PREVIEW_LIMIT + 32
         # a preview that quietly stopped at 50 rows would read as the answer
         assert "350 more not shown" in event["preview"] or event["preview"].endswith("truncated")
+        assert len(event["output"]["data"]["rows"]) == 400
 
     def test_a_long_string_is_cut_rather_than_pasted_whole(self) -> None:
         from ifc_console.chat.agent import TOOL_PREVIEW_LIMIT, tool_event

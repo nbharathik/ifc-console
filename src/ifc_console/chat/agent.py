@@ -85,6 +85,26 @@ def _light(value: Any, depth: int = 0) -> Any:
     return value
 
 
+def _inspectable(value: Any, depth: int = 0) -> Any:
+    """A complete panel result with binary image payloads made harmless."""
+    if depth > 12:
+        return "..."
+    if isinstance(value, Mapping):
+        return {
+            key: (
+                f"{len(item)} image(s)"
+                if key == "images" and isinstance(item, (list, tuple))
+                else _inspectable(item, depth + 1)
+            )
+            for key, item in value.items()
+        }
+    if isinstance(value, (list, tuple)):
+        return [_inspectable(item, depth + 1) for item in value]
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        return f"{len(value)} binary byte(s)"
+    return value
+
+
 def _error_text(error: Mapping[str, Any]) -> str:
     """One failure, written the way the console would say it out loud."""
     parts = [str(error.get("message") or "").strip()]
@@ -104,6 +124,9 @@ def tool_event(payload: Mapping[str, Any]) -> dict[str, Any]:
 
     The panel draws a tool where it ran, so it needs more than "ok": the row
     count, the error the console reported, and a readable slice of the data.
+    The bounded console envelope is kept as structured output as well. The
+    browser only turns that into DOM when the reader opens the call, so a
+    complete inspectable result does not make streamed rendering expensive.
     """
     ok = bool(payload.get("ok"))
     meta = payload.get("meta") if isinstance(payload.get("meta"), Mapping) else {}
@@ -127,6 +150,11 @@ def tool_event(payload: Mapping[str, Any]) -> dict[str, Any]:
         "rows": rows if isinstance(rows, int) else None,
         "detail": detail[:400],
         "preview": text,
+        # Operation envelopes have already been capped by output_char_limit.
+        # Round-trip through JSON so custom scalar types cannot break SSE.
+        "output": json.loads(
+            json.dumps(_inspectable(payload), default=str, ensure_ascii=False)
+        ),
     }
 
 
@@ -201,6 +229,7 @@ async def converse(
     api_key: str | None = None,
     system: str | None = None,
     use_tools: bool = True,
+    tools_supported: bool | None = None,
     options: dict[str, Any] | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
     """Stream one exchange, running tool calls until the model stops asking."""
@@ -218,8 +247,14 @@ async def converse(
     if not chosen:
         raise ProviderError(f"pick a model for {provider.label} first")
 
-    tools = await tool_schemas(core) if use_tools else []
+    tools = await tool_schemas(core) if use_tools and tools_supported is not False else []
     prompt = (system or "").strip() or SYSTEM_PROMPT
+    if use_tools and tools_supported is False:
+        prompt += (
+            "\n\nThis model is configured without tool calling. Do not claim to have "
+            "queried, measured, viewed, or changed the IFC model. Explain when a "
+            "request needs a tool-capable model."
+        )
     prompt = f"{prompt}\n\nSession: {json.dumps(core.session_meta(), default=str)}"
     conversation = list(turns)
     options = options or {}

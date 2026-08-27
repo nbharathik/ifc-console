@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping, Sequence
 from contextlib import AsyncExitStack
 from pathlib import Path
@@ -24,6 +25,61 @@ def _json_value(value: Any) -> Any:
     if isinstance(value, (list, tuple)):
         return [_json_value(item) for item in value]
     return value
+
+
+def _envelope_from_content(content: Sequence[Any]) -> dict[str, Any] | None:
+    """Recover an IFC Console envelope sent as one MCP text block.
+
+    MCP servers without structured output serialize the return value into
+    text.  Keeping the envelope intact makes a remote IFC Console behave like
+    a local operation source, including its stable error codes and metadata.
+    """
+    if len(content) != 1:
+        return None
+    text = getattr(content[0], "text", None)
+    if not isinstance(text, str):
+        return None
+    try:
+        payload = json.loads(text)
+    except (TypeError, ValueError):
+        return None
+    if isinstance(payload, Mapping) and isinstance(payload.get("ok"), bool):
+        return dict(payload)
+    return None
+
+
+def _content_data(content: Sequence[Any]) -> dict[str, Any]:
+    """Normalize native MCP image blocks for the internal agent vision path."""
+    blocks = [_json_value(item) for item in content]
+    images: list[dict[str, str]] = []
+    notes: list[str] = []
+    remaining: list[Any] = []
+    supported_images = {"image/png", "image/jpeg", "image/gif", "image/webp"}
+    for block in blocks:
+        if isinstance(block, Mapping):
+            block_type = block.get("type")
+            media_type = block.get("mimeType") or block.get("mime_type")
+            data = block.get("data")
+            if (
+                block_type == "image"
+                and media_type in supported_images
+                and isinstance(data, str)
+            ):
+                images.append({"media_type": str(media_type), "data": data})
+                continue
+            text = block.get("text")
+            if block_type == "text" and isinstance(text, str):
+                notes.append(text)
+                continue
+        remaining.append(block)
+    if not images:
+        return {"content": blocks}
+    data: dict[str, Any] = {"images": images}
+    if notes:
+        data["note"] = " ".join(notes)
+    if remaining:
+        data["content"] = remaining
+    return data
 
 
 class McpToolSource:
@@ -144,6 +200,17 @@ class McpToolSource:
             raw_tags = meta.get("tags")
             if isinstance(raw_tags, list):
                 tags.update(str(tag) for tag in raw_tags)
+            ifc_meta = meta.get("ifcConsole")
+            raw_capabilities = (
+                ifc_meta.get("requiredCapabilities")
+                if isinstance(ifc_meta, Mapping)
+                else meta.get("requiredCapabilities")
+            )
+            capabilities = (
+                tuple(str(capability) for capability in raw_capabilities)
+                if isinstance(raw_capabilities, (list, tuple))
+                else ()
+            )
             definitions.append(
                 ToolDefinition(
                     name=tool.name,
@@ -152,6 +219,7 @@ class McpToolSource:
                     input_schema=dict(tool.inputSchema or {}),
                     output_schema=dict(tool.outputSchema) if tool.outputSchema else None,
                     annotations=dict(annotations or {}),
+                    required_capabilities=capabilities,
                     tags=frozenset(tags),
                     requires_approval=not (
                         (annotations or {}).get("readOnlyHint") is True
@@ -167,6 +235,9 @@ class McpToolSource:
         structured = result.structuredContent
         if isinstance(structured, Mapping) and "ok" in structured:
             return dict(structured)
+        text_envelope = _envelope_from_content(result.content)
+        if text_envelope is not None:
+            return text_envelope
         if result.isError:
             text = "\n".join(
                 str(getattr(item, "text", ""))
@@ -182,11 +253,9 @@ class McpToolSource:
                 },
                 "meta": {"tool_source": self.source_id},
             }
-        data: Any
-        if structured is not None:
-            data = _json_value(structured)
-        else:
-            data = {"content": [_json_value(item) for item in result.content]}
+        data: Any = (
+            _json_value(structured) if structured is not None else _content_data(result.content)
+        )
         return {
             "ok": True,
             "data": data,

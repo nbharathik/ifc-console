@@ -153,6 +153,43 @@ class TestTessellation:
         geometry.element_meshes(ifc4, [_Element(i) for i in range(32)])
         assert seen == [max(1, min(multiprocessing.cpu_count() - 1, 8))]
 
+    def test_analysis_profile_applies_explicit_non_repairing_settings(
+        self, ifc4, monkeypatch
+    ):
+        import ifcopenshell.geom as geom
+
+        applied = {}
+
+        class _Settings:
+            def set(self, name, value):
+                applied[name] = value
+
+        class _Iterator:
+            def initialize(self):
+                return False
+
+        monkeypatch.setattr(geom, "settings", _Settings)
+        monkeypatch.setattr(geom, "iterator", lambda *args, **kwargs: _Iterator())
+
+        geometry.element_meshes(ifc4, [_Element(1)], profile="analysis")
+
+        assert applied == {
+            "use-world-coords": True,
+            "mesher-linear-deflection": 0.0005,
+            "mesher-angular-deflection": 0.25,
+            "weld-vertices": True,
+            "reorient-shells": False,
+        }
+        evidence = geometry.tessellation_evidence("analysis")
+        assert evidence["max_triangles"] == geometry.ANALYSIS_MAX_TRIANGLES
+        assert evidence["repairs_applied"] is False
+
+    @pytest.mark.parametrize("budget", [0, -1, True, 1.5])
+    def test_triangle_budget_must_be_a_positive_integer(self, budget):
+        with pytest.raises(ToolError) as excinfo:
+            geometry.tessellation_evidence("analysis", max_triangles=budget)
+        assert excinfo.value.code == "INVALID_INPUT"
+
 
 class TestMeshProvider:
     def test_probe_reads_its_meshes_from_the_provider(self, ifc4):
@@ -194,8 +231,34 @@ class TestMeshProvider:
             pass
         assert geometry.element_meshes(ifc4, ifc4.by_type("IfcWall")[:1])
 
+    def test_analysis_request_is_forwarded_to_the_provider(self, ifc4):
+        seen = []
+
+        def provider(ifc, elements, *, profile, max_triangles):
+            seen.append((profile, max_triangles, [e.id() for e in elements]))
+            return {}
+
+        wall = ifc4.by_type("IfcWall")[0]
+        with geometry.mesh_provider(provider):
+            geometry.element_meshes(
+                ifc4,
+                [wall],
+                profile="analysis",
+                max_triangles=123_456,
+            )
+        assert seen == [("analysis", 123_456, [wall.id()])]
+
 
 class TestProbe:
+    def test_open_mesh_volume_is_reported_but_not_trusted(self, ifc4):
+        wall = ifc4.by_type("IfcWall")[0]
+        vertices, faces = box_mesh([0, 0, 0], [1, 1, 1])
+        record = geometry.probe_element(wall, (vertices, faces[:-2]))
+        assert record["volume"] > 0
+        assert record["volume_reliable"] is False
+        assert record["confidence"] == "low"
+        assert record["mesh_health"]["boundary_edges"] == 4
+
     def test_wall_extents_volume_and_confidence(self, ifc4):
         report = geometry.probe_elements(ifc4, selector="IfcWall, Name=Wall-1")
         record = report["elements"][0]

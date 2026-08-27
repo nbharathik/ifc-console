@@ -160,9 +160,7 @@ def _needs_decision(definition: Any) -> bool:
     tags = set(getattr(definition, "tags", ()) or ())
     if getattr(definition, "name", "") == "execute_ifc_code":
         return True
-    if "read" in tags and not {"write", "preview", "destructive"} & tags:
-        return False
-    return True
+    return not ("read" in tags and not {"write", "preview", "destructive"} & tags)
 
 
 def _valid_panel_thread_id(value: Any) -> bool:
@@ -579,7 +577,7 @@ async def _build_thread(
         agent = await pack.build(
             panel_runtime(core),
             model=model,
-            viewer=core.viewer.enabled,
+            viewer=core.viewer_supported,
             instructions=instructions,
             model_label=model_label,
         )
@@ -587,7 +585,7 @@ async def _build_thread(
         # A pack registered by an embedding application may predate the
         # instructions parameter; its prompt simply stays fixed.
         agent = await pack.build(
-            panel_runtime(core), model=model, viewer=core.viewer.enabled
+            panel_runtime(core), model=model, viewer=core.viewer_supported
         )
     if persistent:
         from ifc_console.agents.storage import JsonThreadStore
@@ -1175,6 +1173,15 @@ def build_agent_panel_routes(core: AppCore) -> list[Route]:
             value = body.get(key)
             if isinstance(value, (int, float)) and not isinstance(value, bool):
                 options[key] = value
+        capabilities: dict[str, bool | None] = {}
+        for key in ("tools_supported", "vision_supported"):
+            value = body.get(key)
+            if value is not None and not isinstance(value, bool):
+                return JSONResponse(
+                    {"error": f"{key} must be true, false, or omitted"},
+                    status_code=400,
+                )
+            capabilities[key] = value
         model = ProviderModel(
             provider=provider.id,
             model=chosen,
@@ -1186,6 +1193,8 @@ def build_agent_panel_routes(core: AppCore) -> list[Route]:
             base_url=base_url,
             local_only=settings.local_only,
             timeout_s=float(settings.timeout_s),
+            tools_supported=capabilities["tools_supported"],
+            vision_supported=capabilities["vision_supported"],
         )
 
         state = _panel_state(core)
@@ -1207,6 +1216,8 @@ def build_agent_panel_routes(core: AppCore) -> list[Route]:
             "persistent" if persist_history else "ephemeral",
             sha256(session_instructions.encode("utf-8")).hexdigest()[:16],
             f"autonomy:{autonomy}",
+            f"tools:{capabilities['tools_supported']}",
+            f"vision:{capabilities['vision_supported']}",
         )
         requested_thread_id = (
             body.get("thread_id") if isinstance(body.get("thread_id"), str) else None
@@ -1309,22 +1320,27 @@ def build_agent_panel_routes(core: AppCore) -> list[Route]:
                 + ", ".join(attachment_paths)
                 + ". Inspect them with the document/image tools when relevant."
             )
-        # "this wall" usually means the clicked one; carrying the selection
-        # with the message saves the get_viewer_selection round that answered
-        # it, while the tool stays there for anything richer.
+        # "this wall" usually means the clicked one; carrying every IFC tab's
+        # model-scoped selection saves the get_viewer_selection round while
+        # keeping same-looking GlobalIds attributable to the right file.
         hub = core.viewer_hub
-        if (
-            hub.connected
-            and hub.selection
-            and hub.selection_model_id in (None, core.session.model_id)
-        ):
-            shown = list(hub.selection)[:10]
-            more = len(hub.selection) - len(shown)
+        selection_rows = hub.selection_rows() if hub.connected else []
+        if selection_rows:
+            selected_models = []
+            for row in selection_rows:
+                guids = list(row["guids"])
+                shown = guids[:10]
+                more = len(guids) - len(shown)
+                selected_models.append(
+                    f"{row['model']} (model_id={row['model_id']}): "
+                    + ", ".join(shown)
+                    + (f" and {more} more" if more > 0 else "")
+                )
             attachment_note += (
-                f"\n\n[Viewer context: the user has {len(hub.selection)} element(s) "
-                "selected: " + ", ".join(shown)
-                + (f" and {more} more" if more > 0 else "")
-                + ". 'This' or 'selected' in the message means these GlobalIds.]"
+                "\n\n[Viewer context: the user has selections in "
+                f"{len(selection_rows)} IFC file(s): "
+                + "; ".join(selected_models)
+                + ". 'This' or 'selected' in the message means these model-scoped GlobalIds.]"
             )
 
         async def events():

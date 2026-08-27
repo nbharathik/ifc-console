@@ -21,6 +21,7 @@ from typing import Any
 from pydantic import BaseModel, Field, ValidationError
 
 from ifc_console.sandbox.protocol import MAX_EXEC_OUTPUT_CHARS
+from ifc_console.themes import THEME_PATTERN
 
 ENV_PREFIX = "IFC_CONSOLE_"
 _MAX_SETTINGS_BYTES = 1024 * 1024
@@ -165,7 +166,7 @@ class LoggingSettings(BaseModel):
 
 
 class TuiSettings(BaseModel):
-    theme: str = Field(default="dark", pattern="^(dark|light|auto)$")
+    theme: str = Field(default="blue", pattern=THEME_PATTERN)
 
 
 class Settings(BaseModel):

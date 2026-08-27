@@ -510,7 +510,8 @@ def build_operations(core: AppCore) -> OperationService:
     tools_files.register(registry, core)
     tools_workspace.register(registry, core)
     tools_skills.register(registry, core)
-    # always on: it is how an MCP client turns the gated viewer tools on
+    # Viewer operations stay in every interface. Their handlers report live
+    # readiness, and open_viewer can activate the optional browser surface.
     tools_viewer.register_launcher(registry, core)
     jobs.register(registry, core)
     changes.register(registry, core)

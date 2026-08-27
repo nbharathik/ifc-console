@@ -146,9 +146,10 @@ def _mode_args(core: AppCore, rest: str, _files: FilesProvider | None) -> MenuSt
 def _theme_args(core: AppCore, rest: str, _files: FilesProvider | None) -> MenuState:
     current = core.ui_theme
     rows = [
-        ("dark", "the default brand theme"),
-        ("light", "for bright terminals"),
-        ("auto", "follow the app default"),
+        ("light", "bright neutral surfaces with blue accents"),
+        ("dark", "neutral black and grey"),
+        ("modern", "layered near-black with restrained indigo"),
+        ("blue", "the original blue workstation theme"),
     ]
     rows = [(v, note + (" · current" if v == current else "")) for v, note in rows]
     return _choices("theme", rest, rows, context="theme")
@@ -267,7 +268,7 @@ _SETTING_VALUES = {
     "mode.default": ("ask", "edit"),
     "sandbox.mode": ("auto", "strict", "off"),
     "logging.level": ("debug", "info", "warning", "error"),
-    "tui.theme": ("dark", "light", "auto"),
+    "tui.theme": ("light", "dark", "modern", "blue"),
 }
 
 

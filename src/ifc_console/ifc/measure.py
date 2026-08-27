@@ -399,7 +399,50 @@ def measure_distance(
     verts_a, faces_a = meshes[best_a]
     verts_b, faces_b = meshes[best_b]
     centroid = float(np.linalg.norm(verts_a.mean(axis=0) - verts_b.mean(axis=0)))
-    overlapping = gap < 0
+    aabb_overlapping = gap < 0
+    overlapping = False
+    overlap_reliable = True
+    overlap_prerequisites_met = True
+    overlap_method = "aabb_disjoint"
+    overlap_status = "excluded_by_aabb"
+    overlap_confidence = "high"
+    flags = ["nearest_pair_selected_by_aabb_lower_bound"] if len(pairs) > 1 else []
+
+    if aabb_overlapping:
+        from ifc_console.ifc.clash import _solid_overlap
+        from ifc_console.ifc.mesh_analysis import mesh_health
+
+        health_a = mesh_health(verts_a, faces_a, backend="builtin")
+        health_b = mesh_health(verts_b, faces_b, backend="builtin")
+        overlap_prerequisites_met = bool(
+            health_a["valid_volume"] and health_b["valid_volume"]
+        )
+        if overlap_prerequisites_met:
+            low = np.maximum(verts_a.min(axis=0), verts_b.min(axis=0))
+            high = np.minimum(verts_a.max(axis=0), verts_b.max(axis=0))
+            overlapping, _ = _solid_overlap(
+                verts_a[faces_a],
+                verts_b[faces_b],
+                low,
+                high,
+                min(max(surface_samples // 10, 128), 2048),
+            )
+            overlap_method = "sampled_solid_occupancy"
+            flags.append("overlap_is_sampled")
+            if overlapping:
+                overlap_status = "observed_by_sampled_occupancy"
+                overlap_confidence = "medium"
+            else:
+                overlap_status = "not_observed_by_sampled_occupancy"
+                overlap_confidence = "low"
+                overlap_reliable = False
+                flags.append("sampled_non_overlap_is_not_proof")
+        else:
+            overlap_method = "unclassified_invalid_mesh"
+            overlap_status = "unknown_invalid_mesh"
+            overlap_confidence = "low"
+            overlap_reliable = False
+            flags.append("aabb_overlap_not_a_valid_volume_overlap")
 
     if overlapping:
         surface = 0.0
@@ -415,6 +458,7 @@ def measure_distance(
             geometry.points_to_triangles_distance(sample(verts_a), verts_b[faces_b]),
             geometry.points_to_triangles_distance(sample(verts_b), verts_a[faces_a]),
         )
+        flags.append("surface_distance_is_sampled_upper_bound")
 
     def both(si_value: float) -> dict[str, float]:
         return {"si": round(si_value, 6), "file": round(si_to_file(si_value, factor), 6)}
@@ -423,9 +467,22 @@ def measure_distance(
         "a": _describe(by_id[best_a]),
         "b": _describe(by_id[best_b]),
         "overlapping": overlapping,
+        "aabb_overlapping": aabb_overlapping,
+        "overlap_reliable": overlap_reliable,
+        "overlap_prerequisites_met": overlap_prerequisites_met,
+        "overlap_method": overlap_method,
+        "overlap_status": overlap_status,
+        "overlap_confidence": overlap_confidence,
         "centroid_distance": both(centroid),
         "aabb_gap": both(max(gap, 0.0)),
         "surface_distance": both(float(surface)),
+        "surface_distance_method": (
+            "zero_from_sampled_volume_overlap"
+            if overlapping
+            else "symmetric_sampled_vertex_to_triangle"
+        ),
+        "pair_selection_method": "minimum_aabb_lower_bound",
+        "flags": flags,
         "units": units,
         "closest_pairs": [
             {

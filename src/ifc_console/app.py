@@ -230,23 +230,34 @@ class AppCore:
         """Untokenized viewer URL safe for status, audit, and event payloads."""
         return f"http://127.0.0.1:{self.port}/viewer"
 
+    @property
+    def viewer_supported(self) -> bool:
+        """Whether this runtime can serve and launch the optional web viewer."""
+        if self.transport != "http":
+            return False
+        from ifc_console.viewer import assets
+
+        return assets.available()
+
     # -- viewer lifecycle -------------------------------------------------------
     def attach_mcp(self, mcp) -> None:
         """Attach the current MCP projection of the operation registry."""
         self._mcp = mcp
 
     def _sync_viewer_tools(self) -> None:
-        """Keep operation and MCP viewer surfaces in step with viewer.enabled.
+        """Ensure the stable viewer tool surface has been registered.
 
-        FastMCP evaluates tools/list per request, so added or removed tools
-        are visible to clients on their next listing without a restart.
+        Viewer readiness is call-time state. Keeping these operations listed
+        while the browser surface is off is intentional: Codex, Claude Code,
+        and other MCP hosts commonly cache ``tools/list`` for a connection, so
+        ``open_viewer`` must be able to unlock the rest without a reconnect.
         """
         if not self._operations_registered:
             return
         from ifc_console.application.operations import register_viewer_operations
         from ifc_console.mcp import tools_viewer
 
-        if self.viewer.enabled and not self._viewer_tools_registered:
+        if not self._viewer_tools_registered:
             register_viewer_operations(self)
             if self._mcp is not None:
                 from ifc_console.mcp.server import register_mcp_operations
@@ -258,17 +269,9 @@ class AppCore:
                     names=tools_viewer.TOOL_NAMES,
                 )
             self._viewer_tools_registered = True
-        elif not self.viewer.enabled and self._viewer_tools_registered:
-            for name in tools_viewer.TOOL_NAMES:
-                self.operations.remove_tool(name)
-                if self._mcp is not None:
-                    self._mcp.remove_tool(name)
-            self._viewer_tools_registered = False
 
     def enable_viewer(self) -> bool:
-        """Turn the viewer surface on (idempotent): routes answer, viewer
-        tools join the MCP tool list. Return false when its optional bundle is
-        not installed."""
+        """Turn the viewer web surface on; tools are always discoverable."""
         if self.viewer.enabled:
             return True
         from ifc_console.viewer import assets
@@ -321,8 +324,7 @@ class AppCore:
         self.events.emit("chat_disabled")
 
     def disable_viewer(self) -> None:
-        """Turn the viewer surface off: routes 404 again and the viewer tools
-        leave the MCP tool list. Open tabs are closed by the caller (async)."""
+        """Turn the viewer web surface off. Open tabs are closed by the caller."""
         if not self.viewer.enabled:
             return
         self.viewer.enabled = False
@@ -389,7 +391,12 @@ class AppCore:
     MESH_CACHE_MAX_TRIANGLES = 5_000_000
 
     def element_meshes(
-        self, elements: list[Any], *, session: ModelSession | None = None
+        self,
+        elements: list[Any],
+        *,
+        session: ModelSession | None = None,
+        profile: Literal["standard", "analysis"] = "standard",
+        max_triangles: int | None = None,
     ) -> dict[int, Any]:
         """World-space meshes per element id, tessellating only the misses.
 
@@ -400,29 +407,53 @@ class AppCore:
         mutation can never serve a stale mesh.
         """
         from ifc_console.ifc.geometry import element_meshes as tessellate
+        from ifc_console.ifc.geometry import tessellation_evidence
 
         s = session or self.session
         stamp = (id(s), s.fingerprint, s.revision)
+        evidence = tessellation_evidence(profile, max_triangles=max_triangles)
+        budget = int(evidence["max_triangles"])
         found: dict[int, Any] = {}
         misses: list[Any] = []
         with self._mesh_lock:
             for element in elements:
-                entry = self._mesh_cache.get((stamp, element.id()))
+                cache_key = (stamp, profile, budget, element.id())
+                entry = self._mesh_cache.get(cache_key)
                 if entry is None:
                     misses.append(element)
                 else:
-                    self._mesh_cache.move_to_end((stamp, element.id()))
+                    self._mesh_cache.move_to_end(cache_key)
                     found[element.id()] = entry
         if misses:
-            built = tessellate(s.ifc, misses)
+            if profile == "standard" and max_triangles is None:
+                built = tessellate(s.ifc, misses)
+            else:
+                built = tessellate(
+                    s.ifc,
+                    misses,
+                    profile=profile,
+                    max_triangles=max_triangles,
+                )
             found.update(built)
             with self._mesh_lock:
-                self._store_meshes(stamp, built)
+                self._store_meshes(
+                    stamp,
+                    built,
+                    profile=profile,
+                    max_triangles=budget,
+                )
         return found
 
-    def _store_meshes(self, stamp: tuple, built: dict[int, Any]) -> None:
+    def _store_meshes(
+        self,
+        stamp: tuple,
+        built: dict[int, Any],
+        *,
+        profile: Literal["standard", "analysis"],
+        max_triangles: int,
+    ) -> None:
         for element_id, mesh in built.items():
-            cache_key = (stamp, element_id)
+            cache_key = (stamp, profile, max_triangles, element_id)
             if cache_key in self._mesh_cache:
                 continue
             self._mesh_cache[cache_key] = mesh
@@ -831,14 +862,17 @@ class AppCore:
         return result
 
     def set_ui_theme(self, name: str, *, persist: bool = False) -> str:
-        """Record the theme choice and tell every surface (auto resolves dark).
+        """Record the theme choice and tell every surface its resolved palette.
 
-        Returns the resolved value the viewer should render ("dark"/"light").
+        ``auto`` keeps the established Default Blue palette; named palettes pass
+        through so terminal, viewer, and chat stay visually synchronized.
         """
+        from ifc_console.themes import resolve_theme
+
         self.ui_theme = name
         if persist:
             self.store.set_user("tui.theme", name)
-        resolved = "light" if name == "light" else "dark"
+        resolved = resolve_theme(name)
         self.events.emit("theme_changed", theme=resolved)
         return resolved
 

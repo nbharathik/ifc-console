@@ -165,7 +165,9 @@ def _ai_listing(core: AppCore, tools: Sequence[Any]) -> str:
         )
     if not tools:
         lines.append("  [dim]no AI tools are currently registered[/dim]")
-    lines.append("[dim]viewer tools appear here only while the viewer is enabled[/dim]")
+    lines.append(
+        "[dim]viewer tools stay discoverable; their live state says whether a tab is ready[/dim]"
+    )
     return "\n".join(lines)
 
 

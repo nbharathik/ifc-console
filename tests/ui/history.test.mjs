@@ -4,6 +4,7 @@ import { test } from "node:test";
 import {
   ChatHistoryStore,
   HISTORY_STORAGE_NAME,
+  approvalArgumentPreview,
   approvalDigest,
   boundedChatTurns,
   carrySlice,
@@ -293,6 +294,28 @@ test("an approval for a tool with no property still says what it targets", () =>
     { label: "Intent", value: "tag the walls" },
     { label: "Targets", value: "IfcWall" },
   ]);
+});
+
+test("a code approval previews executable code instead of escaped JSON", () => {
+  const preview = approvalArgumentPreview({
+    name: "execute_ifc_code",
+    args: JSON.stringify({
+      description: "count the walls",
+      code: "walls = ifc.by_type(\"IfcWall\")\nprint(len(walls))",
+    }),
+  });
+  assert.deepEqual(preview, {
+    label: "Code",
+    text: "walls = ifc.by_type(\"IfcWall\")\nprint(len(walls))",
+    code: true,
+  });
+});
+
+test("a non-code approval keeps its complete formatted arguments", () => {
+  const preview = approvalArgumentPreview(approvalBlock());
+  assert.equal(preview.label, "Arguments");
+  assert.equal(preview.code, false);
+  assert.match(preview.text, /\"FireRating\"/);
 });
 
 test("unreadable approval arguments degrade to the tool name", () => {

@@ -16,8 +16,8 @@ from textual.app import App
 from textual.binding import Binding
 from textual.theme import Theme
 
-from ifc_console import branding
 from ifc_console.app import AppCore
+from ifc_console.themes import resolve_theme
 from ifc_console.tui.console import ConsoleScreen
 from ifc_console.tui.modals import QuitModal
 
@@ -26,36 +26,64 @@ log = logging.getLogger("ifc-console.tui")
 _SERVER_START_TIMEOUT_S = 5.0
 _SERVER_POLL_S = 0.02
 
-# Brand themes built from the grayscale kit; status hues match the viewer and
-# keep the ask/edit convention legible on both backgrounds.
+# Four restrained palettes. Each uses neutral structure plus one accent family;
+# status remains explicit in its label/icon instead of changing hue.
 THEMES = {
-    "dark": Theme(
-        name="ifc-dark",
-        primary=branding.GRAY_LIGHT,
-        secondary=branding.GRAY_MID,
-        accent=branding.GRAY_LIGHT,
-        foreground=branding.GRAY_LIGHT,
-        background=branding.BG_DARK,
-        surface="#1c1a19",
-        panel="#262322",
-        success="#72bd91",
-        warning="#d8ad64",
-        error="#df7378",
-        dark=True,
-    ),
     "light": Theme(
         name="ifc-light",
-        primary=branding.GRAY_DARK,
-        secondary=branding.GRAY_MID,
-        accent=branding.GRAY_DARK,
-        foreground=branding.GRAY_DARK,
-        background=branding.PAPER,
-        surface="#e9edf2",
-        panel="#dde3ea",
-        success="#1c7c4d",
-        warning="#9a6b1a",
-        error="#b3383f",
+        primary="#2f6fa3",
+        secondary="#596875",
+        accent="#1d5c90",
+        foreground="#1f2831",
+        background="#f5f8fb",
+        surface="#eaeff5",
+        panel="#dfe6ee",
+        success="#1d5c90",
+        warning="#1d5c90",
+        error="#1d5c90",
         dark=False,
+    ),
+    "dark": Theme(
+        name="ifc-dark",
+        primary="#d9dce2",
+        secondary="#8f959f",
+        accent="#d9dce2",
+        foreground="#f0f1f3",
+        background="#0d0e10",
+        surface="#121316",
+        panel="#181a1e",
+        success="#d9dce2",
+        warning="#d9dce2",
+        error="#d9dce2",
+        dark=True,
+    ),
+    "modern": Theme(
+        name="ifc-modern",
+        primary="#b0b4bb",
+        secondary="#8d8d8d",
+        accent="#b0b4bb",
+        foreground="#f5f5f5",
+        background="#080808",
+        surface="#0e0e0e",
+        panel="#151515",
+        success="#b0b4bb",
+        warning="#b0b4bb",
+        error="#b0b4bb",
+        dark=True,
+    ),
+    "blue": Theme(
+        name="ifc-blue",
+        primary="#9ac7eb",
+        secondary="#83909c",
+        accent="#9ac7eb",
+        foreground="#e4e9ee",
+        background="#101720",
+        surface="#171e27",
+        panel="#1c2530",
+        success="#9ac7eb",
+        warning="#9ac7eb",
+        error="#9ac7eb",
+        dark=True,
     ),
 }
 
@@ -102,8 +130,8 @@ class IfcConsoleApp(App):
         await self.push_screen(ConsoleScreen())
 
     def apply_theme(self, name: str, *, persist: bool = False) -> str:
-        """Apply dark/light/auto; auto follows the app default (dark)."""
-        resolved = "light" if name == "light" else "dark"
+        """Apply a named palette; legacy auto follows Default Blue."""
+        resolved = resolve_theme(name)
         self.theme = THEMES[resolved].name
         self.core.set_ui_theme(name, persist=persist)
         return resolved

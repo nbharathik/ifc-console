@@ -18,6 +18,7 @@ import json
 import logging
 from datetime import datetime, timezone
 from hashlib import sha256
+from math import isfinite
 from typing import TYPE_CHECKING, Any
 
 from ifc_console.core.results import ToolError
@@ -60,9 +61,12 @@ def _triple(value: Any) -> list[float] | None:
     if not isinstance(value, list) or len(value) != 3:
         return None
     try:
-        return [round(float(v), 6) for v in value]
-    except (TypeError, ValueError):
+        numbers = [float(v) for v in value]
+    except (TypeError, ValueError, OverflowError):
         return None
+    if not all(isfinite(number) for number in numbers):
+        return None
+    return [round(number, 6) for number in numbers]
 
 
 def _guid_list(value: Any) -> list[str]:
@@ -76,7 +80,11 @@ def _guid_list(value: Any) -> list[str]:
 def _number(value: Any) -> float | None:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
-    return round(float(value), 6)
+    try:
+        number = float(value)
+    except OverflowError:
+        return None
+    return round(number, 6) if isfinite(number) else None
 
 
 def _clean_distance(item: dict) -> dict | None:
@@ -86,6 +94,10 @@ def _clean_distance(item: dict) -> dict | None:
     if start is None or end is None or distance is None:
         return None
     entry = {"from": start, "to": end, "distance": distance}
+    for key in ("horizontal", "vertical", "slope_percent", "slope_angle"):
+        value = _number(item.get(key))
+        if value is not None:
+            entry[key] = value
     delta = _triple(item.get("delta"))
     if delta is not None:
         entry["delta"] = delta
@@ -168,10 +180,13 @@ def _clean_angle(item: dict) -> dict | None:
 def _clean_area(item: dict) -> dict | None:
     area = _number(item.get("area"))
     points = item.get("points")
-    if area is None or not isinstance(points, list) or len(points) < 3:
+    if area is None or not isinstance(points, list) or not 3 <= len(points) <= 200:
         return None
-    cleaned = [p for p in (_triple(point) for point in points[:200]) if p is not None]
-    if len(cleaned) < 3:
+    cleaned = [_triple(point) for point in points]
+    # Removing one bad vertex would join its neighbours while retaining the
+    # client's original area and perimeter, making the geometry disagree with
+    # the reported totals.
+    if any(point is None for point in cleaned):
         return None
     entry = {"area": area, "points": cleaned}
     for key in ("perimeter", "flatness"):
@@ -180,10 +195,42 @@ def _clean_area(item: dict) -> dict | None:
             entry[key] = value
     # The normal says which plane the area was measured in and the centre says
     # where; without them an area is a number with no place in the model.
-    for key in ("normal", "centre"):
-        vector = _triple(item.get(key))
-        if vector is not None:
-            entry[key] = vector
+    normal = _triple(item.get("normal"))
+    if normal is not None:
+        entry["normal"] = normal
+    centre = item.get("centre")
+    if isinstance(centre, dict):
+        cleaned_centre = {axis: _number(centre.get(axis)) for axis in ("x", "y", "z")}
+        if None not in cleaned_centre.values():
+            entry["centre"] = cleaned_centre
+    else:
+        cleaned_centre_list = _triple(centre)
+        if cleaned_centre_list is not None:
+            # Older clients used triples; preserve that wire shape while the
+            # current browser's named-axis object remains equally valid.
+            entry["centre"] = cleaned_centre_list
+    return entry
+
+
+def _clean_path(item: dict) -> dict | None:
+    distance = _number(item.get("distance"))
+    points = item.get("points")
+    if distance is None or not isinstance(points, list) or not 2 <= len(points) <= 200:
+        return None
+
+    # Unlike an area outline, a path's point order defines each segment. If a
+    # point is invalid, dropping just that point would silently join its two
+    # neighbours and change the measurement.
+    cleaned_points = [_triple(point) for point in points]
+    if any(point is None for point in cleaned_points):
+        return None
+    entry = {"distance": distance, "points": cleaned_points}
+
+    segments = item.get("segments")
+    if isinstance(segments, list) and len(segments) == len(cleaned_points) - 1:
+        cleaned_segments = [_number(segment) for segment in segments]
+        if None not in cleaned_segments:
+            entry["segments"] = cleaned_segments
     return entry
 
 
@@ -193,6 +240,7 @@ _MEASUREMENT_KINDS = {
     "laser": _clean_laser,
     "angle": _clean_angle,
     "area": _clean_area,
+    "path": _clean_path,
 }
 
 
@@ -200,7 +248,7 @@ def _clean_measurements(items: Any) -> list[dict]:
     """Validated user measurements from a client frame; anything odd drops.
 
     A frame carries whatever the viewer's measure card is showing, which is
-    five different shapes. An untagged item is a distance, because that is
+    several different shapes. An untagged item is a distance, because that is
     what the only shape used to be.
     """
     cleaned: list[dict] = []
@@ -306,6 +354,10 @@ def _clean_viewport_state(state: Any) -> dict | None:
         entry["view"] = state["view"][:20]
     if isinstance(state.get("model_id"), str):
         entry["model_id"] = state["model_id"][:_MAX_MODEL_ID_LENGTH]
+    elif "model_id" in state and state["model_id"] is None:
+        # Explicit null means this connected page currently has no IFC surface
+        # open. Missing keeps the legacy "active model" fallback.
+        entry["model_id"] = None
     return entry or None
 
 
@@ -350,6 +402,8 @@ class ViewerClient:
         self.last_active = next(self._activity)
         self.selection: list[str] = []
         self.selection_model_id: str | None = None
+        self.selections: dict[str, list[str]] = {}
+        self.selection_versions: dict[str, int] = {}
         self.view_model_id: str | None = None
         self.selected_at: str | None = None
         self.selection_order = 0
@@ -381,6 +435,7 @@ class ViewerHub:
         self.clients: list[ViewerClient] = []
         self.selection: list[str] = []
         self.selection_model_id: str | None = None
+        self.selections: dict[str, list[str]] = {}
         self.selected_at: str | None = None
         self._selection_client: ViewerClient | None = None
         self._selection_updates = itertools.count(1)
@@ -420,6 +475,7 @@ class ViewerHub:
     def _clear_selection(self) -> None:
         self.selection = []
         self.selection_model_id = None
+        self.selections = {}
         self.selected_at = None
         self._selection_client = None
         self.core.viewer.selection = []
@@ -458,6 +514,44 @@ class ViewerHub:
         else:
             self._clear_selection()
 
+    def _restore_model_selections(self) -> None:
+        """Keep the newest connected tab's selection for each resident IFC."""
+        selections: dict[str, list[str]] = {}
+        model_ids = {
+            model_id
+            for client in self.clients
+            for model_id in client.selection_versions
+            if self.core.models.get(model_id) is not None
+        }
+        for model_id in model_ids:
+            candidates = [
+                client
+                for client in self.clients
+                if model_id in client.selection_versions
+            ]
+            if candidates:
+                latest = max(
+                    candidates,
+                    key=lambda client: client.selection_versions[model_id],
+                )
+                if guids := latest.selections.get(model_id):
+                    selections[model_id] = list(guids)
+        self.selections = selections
+
+    def selection_rows(self) -> list[dict]:
+        """Model-scoped selections suitable for status and prompt context."""
+        models = self.model_rows()
+        return [
+            {
+                "model_id": row["id"],
+                "model": row["name"],
+                "count": len(guids),
+                "guids": list(guids),
+            }
+            for row in models
+            if (guids := self.selections.get(row["id"]))
+        ]
+
     def _prune_selection_models(self) -> None:
         changed = False
         for client in self.clients:
@@ -468,8 +562,19 @@ class ViewerHub:
                 client.selected_at = None
                 client.selection_order = 0
                 changed = True
+            client.selections = {
+                selected_model: guids
+                for selected_model, guids in client.selections.items()
+                if self.core.models.get(selected_model) is not None
+            }
+            client.selection_versions = {
+                selected_model: version
+                for selected_model, version in client.selection_versions.items()
+                if self.core.models.get(selected_model) is not None
+            }
         if changed:
             self._restore_latest_selection()
+        self._restore_model_selections()
 
     def _tab_gone(self) -> ToolError:
         return ToolError(
@@ -509,6 +614,7 @@ class ViewerHub:
                 self._ping_task = None
         elif self._selection_client is client:
             self._restore_latest_selection()
+        self._restore_model_selections()
 
     async def close_all(self) -> int:
         """Disconnect every tab (used by /viewer off). Returns tabs closed."""
@@ -521,12 +627,17 @@ class ViewerHub:
 
     def require_connected(self) -> None:
         if not self.clients:
+            if self.core.transport != "http":
+                raise ToolError(
+                    "VIEWER_UNAVAILABLE",
+                    f"this {self.core.transport} session has no web viewer surface.",
+                    "Connect through the shared console with `ifc-console bridge`, "
+                    "or run `ifc-console serve --http`, then call open_viewer.",
+                )
             hint = (
-                "Ask the user to open the viewer: type /viewer in the ifc-console "
-                "terminal, or start with --viewer and open the printed URL."
-                if self.core.viewer.enabled
-                else "The viewer is not enabled for this session. Ask the user to "
-                "type /viewer in the ifc-console terminal or restart with --viewer."
+                "Call open_viewer(wait_for_connection_s=10) to open and connect "
+                "the local viewer tab. If the browser cannot be opened on this "
+                "machine, ask the user to run /viewer in the ifc-console terminal."
             )
             raise ToolError(
                 "VIEWER_NOT_CONNECTED",
@@ -541,50 +652,51 @@ class ViewerHub:
         client = self._selection_client
         return client.id if client is not None and client in self.clients else None
 
-    def measurement_source(self) -> ViewerClient | None:
+    def measurement_source(self, model_id: str | None = None) -> ViewerClient | None:
         """The tab whose measurements the tools should read.
 
         Content beats recency: a tab rebuilding its scene publishes an empty
         list, which must not erase the dimensions another tab is showing.
         """
-        active = self.core.models.active_id
+        target = model_id or self.core.models.active_id
         candidates = [
             client
             for client in self.clients
-            if client.measured_at is not None and client.measurement_model_id == active
+            if client.measured_at is not None and client.measurement_model_id == target
         ]
         if not candidates:
             return None
         with_items = [client for client in candidates if client.measurements]
         return max(with_items or candidates, key=lambda client: client.measurement_order)
 
-    def latest_measurements(self) -> tuple[list[dict], str | None]:
+    def latest_measurements(self, model_id: str | None = None) -> tuple[list[dict], str | None]:
         """The measurements a tool should report, with their timestamp."""
-        client = self.measurement_source()
+        client = self.measurement_source(model_id)
         if client is None:
             return [], None
         return list(client.measurements), client.measured_at
 
-    def viewport_source(self) -> ViewerClient | None:
+    def viewport_source(self, model_id: str | None = None) -> ViewerClient | None:
         """The tab whose viewport the tools should describe."""
+        target = model_id or self.core.models.active_id
         candidates = [
             client
             for client in self.clients
-            if client.viewport is not None and client.view_model_id == self.core.models.active_id
+            if client.viewport is not None and client.view_model_id == target
         ]
         if not candidates:
             return None
         ready = [client for client in candidates if client.scene_state == "ready"]
         return max(ready or candidates, key=lambda client: client.last_active)
 
-    def viewport_state(self) -> dict | None:
+    def viewport_state(self, model_id: str | None = None) -> dict | None:
         """The full viewport of the tab showing the active model, or None."""
-        client = self.viewport_source()
+        client = self.viewport_source(model_id)
         return dict(client.viewport) if client is not None and client.viewport else None
 
-    def viewport_summary(self) -> str | None:
+    def viewport_summary(self, model_id: str | None = None) -> str | None:
         """One line describing what is on screen, for a status or a panel note."""
-        state = self.viewport_state()
+        state = self.viewport_state(model_id)
         return _summarize_viewport(state) if state else None
 
     # -- state payloads ----------------------------------------------------------
@@ -658,6 +770,8 @@ class ViewerHub:
         ).hexdigest()[:16]
 
     def status_payload(self) -> dict:
+        from ifc_console.themes import resolve_theme
+
         s = self.core.session
         return {
             "type": "status",
@@ -665,7 +779,7 @@ class ViewerHub:
             "models": self.model_rows(),
             "schema": s.schema,
             "mode": self.core.policy.mode.value,
-            "theme": "light" if self.core.ui_theme == "light" else "dark",
+            "theme": resolve_theme(self.core.ui_theme),
             "dirty": s.dirty,
             "fingerprint": s.fingerprint,
             # The file's own length unit: the viewer measures in SI metres and
@@ -677,6 +791,7 @@ class ViewerHub:
             "project_scope": self.project_scope(),
             "etag": self.model_etag(),
             "selection": list(self.selection),
+            "selections": self.selection_rows(),
             "highlight": self.last_highlight,
             "color_theme": self.last_color_theme,
             "tabs": self.connected,
@@ -744,8 +859,10 @@ class ViewerHub:
                 else []
             )
             requested_model = frame.get("model_id")
-            if requested_model is None:
+            if "model_id" not in frame:
                 model_id = self.core.models.active_id
+            elif requested_model is None:
+                model_id = None
             elif (
                 isinstance(requested_model, str)
                 and len(requested_model) <= _MAX_MODEL_ID_LENGTH
@@ -760,9 +877,45 @@ class ViewerHub:
             client.view_model_id = model_id
             client.selected_at = _utcnow()
             client.selection_order = next(self._selection_updates)
+            previous_selection_models = set(client.selections)
+            supplied_selections = frame.get("selections")
+            selections: dict[str, list[str]] = {}
+            if isinstance(supplied_selections, list):
+                for item in supplied_selections[:32]:
+                    if not isinstance(item, dict):
+                        continue
+                    selected_model = item.get("model_id")
+                    supplied = item.get("guids")
+                    if (
+                        not isinstance(selected_model, str)
+                        or len(selected_model) > _MAX_MODEL_ID_LENGTH
+                        or self.core.models.get(selected_model) is None
+                        or not isinstance(supplied, list)
+                    ):
+                        continue
+                    cleaned = [
+                        guid
+                        for guid in supplied
+                        if isinstance(guid, str) and 0 < len(guid) <= _MAX_GUID_LENGTH
+                    ][:500]
+                    if cleaned:
+                        selections[selected_model] = list(dict.fromkeys(cleaned))
+            elif model_id is not None and guids:
+                # Older viewers publish only the current model.
+                selections[model_id] = list(dict.fromkeys(guids))
+            if model_id is not None and guids and model_id not in selections:
+                selections[model_id] = list(dict.fromkeys(guids))
+            for selected_model in previous_selection_models | set(selections):
+                client.selection_versions[selected_model] = client.selection_order
+            client.selections = selections
             self._adopt_selection(client)
+            self._restore_model_selections()
             self.core.events.emit(
-                "viewer_selection", guids=guids, count=len(guids), model_id=model_id
+                "viewer_selection",
+                guids=guids,
+                count=len(guids),
+                model_id=model_id,
+                selections=self.selection_rows(),
             )
         elif ftype == "measurements":
             requested_model = frame.get("model_id")
@@ -786,7 +939,9 @@ class ViewerHub:
             viewport = _clean_viewport_state(frame.get("state") or frame)
             if viewport is not None:
                 shown = viewport.get("model_id")
-                if shown is not None and self.core.models.get(shown) is not None:
+                if "model_id" in viewport and shown is None:
+                    client.view_model_id = None
+                elif shown is not None and self.core.models.get(shown) is not None:
                     client.view_model_id = shown
                 client.viewport = viewport
                 client.viewport_at = _utcnow()
@@ -831,6 +986,7 @@ class ViewerHub:
         isolate: bool,
         fit: bool,
         clear: bool,
+        model_id: str | None = None,
     ) -> None:
         frame = {
             "type": "highlight",
@@ -840,13 +996,30 @@ class ViewerHub:
             "fit": fit,
             "clear": clear,
         }
+        if model_id is not None:
+            frame["model_id"] = model_id
         self.last_highlight = None if clear else frame
-        await self.broadcast(frame)
+        if model_id is None:
+            await self.broadcast(frame)
+        else:
+            await (await self._ready_client(model_id, "a highlight")).send(frame)
 
-    async def send_color_theme(self, groups: list[dict], *, title: str, clear: bool) -> None:
+    async def send_color_theme(
+        self,
+        groups: list[dict],
+        *,
+        title: str,
+        clear: bool,
+        model_id: str | None = None,
+    ) -> None:
         frame = {"type": "color_theme", "title": title, "groups": groups, "clear": clear}
+        if model_id is not None:
+            frame["model_id"] = model_id
         self.last_color_theme = None if clear else frame
-        await self.broadcast(frame)
+        if model_id is None:
+            await self.broadcast(frame)
+        else:
+            await (await self._ready_client(model_id, "a color theme")).send(frame)
 
     # -- screenshots -----------------------------------------------------------------
     def _target_client(self, model_id: str | None) -> ViewerClient:
@@ -855,8 +1028,8 @@ class ViewerHub:
         if not candidates:
             raise ToolError(
                 "VIEWER_NOT_CONNECTED",
-                "no connected viewer tab is showing the active model.",
-                "Ask the user to open or switch a viewer tab to the active model, then retry.",
+                f"no connected viewer tab is showing model {model_id!r}.",
+                "Ask the user to open or switch a viewer tab to that model, then retry.",
             )
         # A tab mid-rebuild has disposed its geometry, so it would answer any
         # id-addressed command with "not in this model".
@@ -885,22 +1058,37 @@ class ViewerHub:
                 return client
         raise self._busy_error(action)
 
-    async def run_command(self, action: str, params: dict | None = None) -> Any:
-        """Run one viewer command in the tab showing the active model.
+    async def run_command(
+        self,
+        action: str,
+        params: dict | None = None,
+        *,
+        model_id: str | None = None,
+    ) -> Any:
+        """Run one viewer command in the tab showing the requested model.
 
         Returns whatever the command produced. Raises VIEWER_NOT_CONNECTED if
         no tab is showing the model, VIEWER_BUSY while it rebuilds its scene,
         VIEWER_TIMEOUT if none answers, and VIEWER_ERROR carrying the viewer's
         own message if it refused.
         """
-        client = await self._ready_client(self.core.models.active_id, action)
+        target_model = model_id or self.core.models.active_id
+        client = await self._ready_client(target_model, action)
         command_id = str(next(self._shot_ids))
         loop = asyncio.get_running_loop()
         fut: asyncio.Future = loop.create_future()
         self._commands[command_id] = (client, fut)
         client.commands.add(command_id)
         try:
-            await client.send({"type": "command", "id": command_id, "action": action, **(params or {})})
+            await client.send(
+                {
+                    "type": "command",
+                    "id": command_id,
+                    "model_id": target_model,
+                    "action": action,
+                    **(params or {}),
+                }
+            )
             try:
                 frame = await asyncio.wait_for(fut, timeout=_COMMAND_TIMEOUT)
             except asyncio.TimeoutError:
@@ -944,6 +1132,7 @@ class ViewerHub:
         max_size: int,
         format: str,
         quality: int,
+        model_id: str | None = None,
     ) -> tuple[bytes, int, int]:
         """Ask the most recently active tab for a canvas capture.
 
@@ -952,7 +1141,7 @@ class ViewerHub:
         VIEWER_TIMEOUT if no tab answers in time, and VIEWER_ERROR /
         RESULT_TOO_LARGE on bad replies.
         """
-        model_id = self.core.models.active_id
+        model_id = model_id or self.core.models.active_id
         client = await self._ready_client(model_id, "a screenshot")
         shot_id = str(next(self._shot_ids))
         loop = asyncio.get_running_loop()

@@ -79,7 +79,7 @@ setting.
 | `server.port` | `8383` | HTTP port for MCP and the viewer |
 | `server.persistent_token` | `true` | reuse one machine token so clients are configured once |
 | `server.token_in_config_snippets` | `false` | include the token in generated direct-HTTP configurations |
-| `tui.theme` | `dark` | `dark`, `light`, or `auto` for the console and viewer |
+| `tui.theme` | `blue` | `light`, `dark`, `modern`, or `blue` for the console, viewer, and chat |
 
 ## Generated code and sandbox
 

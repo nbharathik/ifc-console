@@ -36,7 +36,9 @@ import {
   obbCorners,
   outlinePoints,
   planSpatialGrid,
+  polylineMeasure as polylineCore,
   polygonMeasure as polygonCore,
+  spanMeasure,
   unionBoxCorners,
   unitForFile,
   unitOf,
@@ -368,24 +370,27 @@ let groundY = 0;   // grid sits at the model's lowest point
 // Theme: the workspace supplies the system choice over the WS. A local viewer
 // preference may override it without changing the rest of the console.
 const THEME_COLORS = {
-  dark: { canvas: 0x101720, gridMinor: 0x24303d, gridMajor: 0x3c536a },
   light: { canvas: 0xe7edf3, gridMinor: 0xc7d2dd, gridMajor: 0x9fb0c0 },
+  dark: { canvas: 0x0d0e10, gridMinor: 0x24272c, gridMajor: 0x3b4048 },
+  modern: { canvas: 0x080808, gridMinor: 0x202020, gridMajor: 0x383838 },
+  blue: { canvas: 0x101720, gridMinor: 0x24303d, gridMajor: 0x3c536a },
 };
-const colorPreference = window.matchMedia("(prefers-color-scheme: dark)");
-let uiTheme = "dark";
+let uiTheme = "blue";
 let consoleTheme = null;
 let themePreference = "system";
 
 function resolvedTheme() {
   if (THEME_COLORS[themePreference]) return themePreference;
   if (consoleTheme && THEME_COLORS[consoleTheme]) return consoleTheme;
-  return colorPreference.matches ? "dark" : "light";
+  return "blue";
 }
 
 function paintTheme(theme) {
   uiTheme = theme;
   document.documentElement.dataset.theme = theme;
   document.documentElement.dataset.themePreference = themePreference;
+  const picker = $("set-theme");
+  if (picker) picker.value = themePreference === "system" ? theme : themePreference;
   const colors = THEME_COLORS[theme];
   scene.background.set(colors.canvas);
   grid.material.uniforms.uMinor.value.set(colors.gridMinor);
@@ -403,19 +408,15 @@ function applyTheme(name) {
 }
 
 function setThemePreference(value, { persist = true } = {}) {
-  themePreference = value === "dark" || value === "light" ? value : "system";
+  themePreference = value === "system" || THEME_COLORS[value] ? value : "system";
   if (persist) {
     uiState.themePreference = themePreference;
     saveUi();
   }
   const picker = $("set-theme");
-  if (picker) picker.value = themePreference;
+  if (picker) picker.value = themePreference === "system" ? resolvedTheme() : themePreference;
   paintTheme(resolvedTheme());
 }
-
-colorPreference.addEventListener("change", () => {
-  if (themePreference === "system" && !consoleTheme) paintTheme(resolvedTheme());
-});
 
 const modelRoot = new THREE.Group();
 scene.add(modelRoot);
@@ -474,6 +475,9 @@ function resize() {
   viewportHeight = h;
   applyResolution();
   applyProjectionShape();
+  // Projection and drawing-buffer coordinates changed even though
+  // OrbitControls did not emit change; discard any old async pick decode.
+  cameraSerial++;
   // Re-render in the same frame; the observer fires before paint, so the
   // resized buffer never appears blank or stretched while dragging a splitter.
   renderer.render(scene, camera);
@@ -639,6 +643,29 @@ let reloadQueued = false;
 // model; a model_id pins one of the attached ones (read-only, like the tools).
 let viewModelId = null;
 let modelRows = [];
+const closedModelTabs = new Set();
+// A browser tab may keep the Agent workspace open without claiming that its
+// hidden WebGL scene is an available viewer. The model remains resident on the
+// server; this flag only says whether this page is currently showing it.
+let viewerDocumentOpen = true;
+// Each IFC tab keeps its own working view in memory. Switching documents no
+// longer carries a cut, camera or selection into an unrelated model, and
+// returning to a tab feels like returning to the same drawing.
+const modelTabViews = new Map();
+// Parsing is the expensive WebAssembly step. Keep the parsed chunks for every
+// resident IFC revision so returning to a tab never downloads or reparses it.
+// Entries disappear only when the server detaches that model or its ETag is
+// replaced by a newer revision.
+const parsedModelCache = new Map(); // model id -> { etag, parsed }
+// A selection belongs to its IFC, not to whichever tab happens to be visible.
+// GlobalIds make these snapshots stable across rebuilds and let the chat carry
+// several models' selections at once.
+const modelSelections = new Map(); // model id -> GlobalIds
+let pendingModelTabView = null;
+let loadingModelId = null;
+// The scene can keep showing the previous IFC while another tab parses. This
+// id names what the meshes and express-id maps actually belong to.
+let renderedModelId = null;
 
 function modelQuery() {
   return viewModelId ? `?model=${encodeURIComponent(viewModelId)}` : "";
@@ -654,11 +681,6 @@ let isolateSet = null;            // expressIDs visible during isolation, or nul
 const hiddenByTree = new Set();   // expressIDs hidden via tree checkboxes
 let userIsolateSet = null;        // user-driven isolation from the view tools
 const hiddenManual = new Set();   // expressIDs hidden via the view tools
-
-// Focus tabs: named per-element analysis views. GUID-keyed so they survive
-// rebuilds; the active tab is what drives userIsolateSet.
-const focusTabs = [];             // [{name, guids: [GlobalId]}]
-let activeFocusName = null;       // active tab name, or null for All
 
 // Color theme (LLM computes, viewer paints): GlobalId-keyed so it survives
 // scene rebuilds; unmatched ids simply paint nothing after a model switch.
@@ -676,15 +698,49 @@ function selectedGuids() {
   return [...selection].map((id) => guidOf.get(id)).filter(Boolean);
 }
 
+function rememberCurrentSelection() {
+  if (!viewerDocumentOpen) return [];
+  const modelId = renderedModelId || currentModelRow()?.id;
+  if (!modelId) return [];
+  const guids = selectedGuids();
+  if (guids.length) modelSelections.set(modelId, guids);
+  else modelSelections.delete(modelId);
+  return guids;
+}
+
+function selectionGuidsForModel(modelId) {
+  const currentId = viewerDocumentOpen
+    ? (renderedModelId || currentModelRow()?.id)
+    : null;
+  if (modelId === currentId) return selectedGuids();
+  return [...(modelSelections.get(modelId) || [])];
+}
+
+function modelSelectionRows() {
+  if (!viewerDocumentOpen) return [];
+  return modelRows.flatMap((row) => {
+    const guids = selectionGuidsForModel(row.id);
+    return guids.length ? [{
+      model_id: row.id,
+      model: row.name,
+      count: guids.length,
+      guids,
+    }] : [];
+  });
+}
+
 function viewerContext(reason = viewerContextReason) {
-  const row = currentModelRow();
+  const row = viewerDocumentOpen ? currentModelRow() : null;
   const fallbackName = $("model-name")?.textContent || "";
   return {
     version: 1,
     reason,
+    open: viewerDocumentOpen,
     model: row
       ? { id: row.id, name: row.name, schema: row.schema || "" }
-      : fallbackName ? { id: null, name: fallbackName, schema: $("schema")?.textContent || "" } : null,
+      : viewerDocumentOpen && fallbackName
+        ? { id: null, name: fallbackName, schema: $("schema")?.textContent || "" }
+        : null,
     models: modelRows.map((item) => ({
       id: item.id,
       name: item.name,
@@ -692,6 +748,7 @@ function viewerContext(reason = viewerContextReason) {
       active: item.active === true,
     })),
     selection: { count: selection.size, guids: selectedGuids() },
+    selections: modelSelectionRows(),
     mode: $("mode")?.dataset.mode || null,
     theme: { preference: themePreference, resolved: uiTheme },
     isolated: userIsolateSet ? userIsolateSet.size : 0,
@@ -704,7 +761,7 @@ function viewerContext(reason = viewerContextReason) {
       ghosted: ghostCount,
       total: elements.size,
     },
-    focus: { tabs: focusTabs.map((tab) => tab.name), active: activeFocusName },
+    focus: { active: Boolean(userIsolateSet), count: userIsolateSet?.size || 0 },
     views: Object.keys(VIEW_DIRECTIONS),
     projection: isOrtho() ? "orthographic" : "perspective",
     // Where the eye is, in the model's axes. Without it an agent is reasoning
@@ -1041,6 +1098,14 @@ function instancedTransparentMaterialFor(alpha) {
 // from, so hiding, clipping, ghosting and tinting all reach them for free.
 const EDGE_ANGLE = 30;
 const EDGE_DEPTH_BIAS = 0.0003;
+// Measurement keeps only a compact feature index. A tessellation too large
+// to inspect uses exact surface picking without feature snapping: a box edge
+// is not necessarily an edge of the product and must never be presented as
+// one. A product can retain at most 800 real segments. Placements reference the
+// shared local array, keeping the wider snap coverage inexpensive.
+const SNAP_TRIANGLE_LIMIT = 50_000;
+const SNAP_SEGMENT_LIMIT = 800;
+const EMPTY_SNAP_EDGES = new Float32Array(0);
 // Extraction is per unique shape and the bake is per placement, so the cost
 // tracks the merged half of the model; past this the lines stop paying for
 // their memory and the switch says so.
@@ -1051,7 +1116,7 @@ scene.add(edgeRoot);
 const edgeMaterial = patchMaterial(new THREE.LineBasicMaterial({
   color: 0x0d131a, transparent: true, opacity: 0.55, depthWrite: false,
 }), { depthBias: EDGE_DEPTH_BIAS });
-let edgesWanted = true;      // the Display switch
+let edgesWanted = false;     // IFC surfaces are the default; outlines are opt-in
 let edgesAffordable = true;  // this model is small enough to draw them
 let edgeDrawCount = 0;
 
@@ -1081,8 +1146,8 @@ function syncEdgeSwitch() {
   const note = $("set-edges-note");
   if (note) {
     note.textContent = edgesAffordable
-      ? "Creases and outlines, drawn over the surfaces."
-      : "Off: this model is too large to outline.";
+      ? "Optional mesh creases over the default IFC surfaces."
+      : "Unavailable: this model is too large to outline.";
   }
 }
 
@@ -1110,6 +1175,61 @@ function edgeListFor(geom) {
   }
   geom.edges = out;
   return out;
+}
+
+/** Actual crease/boundary edges when affordable, otherwise no false feature. */
+function snapEdgeListFor(geom) {
+  if (geom.snapEdges !== undefined) return geom.snapEdges;
+  const triangles = geom.indices.length / 3;
+  const extracted = triangles <= SNAP_TRIANGLE_LIMIT ? edgeListFor(geom) : null;
+  if (extracted && extracted.length) {
+    const count = Math.floor(extracted.length / 6);
+    if (count <= SNAP_SEGMENT_LIMIT) {
+      geom.snapEdges = Float32Array.from(extracted);
+    } else {
+      // Spread the budget across the shape; taking only the first edges makes
+      // a long or multipart product snap at one end and nowhere else.
+      const sampled = new Float32Array(SNAP_SEGMENT_LIMIT * 6);
+      for (let i = 0; i < SNAP_SEGMENT_LIMIT; i++) {
+        const at = Math.floor((i * count) / SNAP_SEGMENT_LIMIT) * 6;
+        sampled.set(extracted.subarray(at, at + 6), i * 6);
+      }
+      geom.snapEdges = sampled;
+    }
+  } else {
+    geom.snapEdges = EMPTY_SNAP_EDGES;
+  }
+  return geom.snapEdges;
+}
+
+/** Retain shared local features plus this placement while ingest still owns both. */
+function recordSnapParts(rec, geom, matrix) {
+  const segments = snapEdgeListFor(geom);
+  const sourceCount = Math.floor(segments.length / 6);
+  if (!sourceCount) return;
+  for (let i = 0; i < 16; i++) {
+    if (!Number.isFinite(matrix[i])) return;
+  }
+  const placed = Float32Array.from(matrix);
+  placed[12] -= origin[0];
+  placed[13] -= origin[1];
+  placed[14] -= origin[2];
+  if (!rec.snapParts) rec.snapParts = [];
+  rec.snapParts.push({ segments, matrix: placed, sourceCount, count: 0 });
+}
+
+/** Share the per-product edge budget fairly across all of its placements. */
+function finalizeSnapParts() {
+  for (const rec of elements.values()) {
+    const parts = rec.snapParts || [];
+    let remaining = SNAP_SEGMENT_LIMIT;
+    for (let i = 0; i < parts.length; i++) {
+      const share = Math.max(1, Math.floor(remaining / (parts.length - i)));
+      parts[i].count = Math.min(parts[i].sourceCount, remaining, share);
+      remaining -= parts[i].count;
+      if (remaining <= 0) break;
+    }
+  }
 }
 
 // GPU id picking: a 1x1 render with this override encodes elementIndex + 1
@@ -1146,7 +1266,7 @@ const pickMaterial = new THREE.ShaderMaterial({
       float id = floor(vIfcIndex + 0.5);
       vec2 uv = vec2((mod(id, uStateSize.x) + 0.5) / uStateSize.x,
                      (floor(id / uStateSize.x) + 0.5) / uStateSize.y);
-      if (texture2D(uStateTex, uv).r < 0.5) discard;
+      if (texture2D(uStateTex, uv).r < 0.05) discard;
       float enc = id + 1.0;
       gl_FragColor = vec4(
         floor(enc / 65536.0) / 255.0,
@@ -1155,11 +1275,11 @@ const pickMaterial = new THREE.ShaderMaterial({
         1.0);
     }`,
 });
-// Same 1x1 trick for measuring: encode the distance from the camera to the
-// fragment into 24 bits. Merged chunks free their CPU arrays after upload, so
-// there is no vertex data left to raycast against; the GPU is the only source
-// of a surface point. Clipping is compiled in so a sectioned-away face is not
-// measurable and the surface behind it answers instead.
+// Same 1x1 trick for measuring: encode view-axis depth into 24 bits. The range
+// is tightened to the model bounds for every probe instead of spanning the
+// camera's deliberately huge far plane. That keeps millimetre-scale picks
+// stable even in a kilometre-scale site. Merged chunks free their CPU arrays
+// after upload, so the GPU remains the source of the exact surface point.
 const depthMaterial = new THREE.ShaderMaterial({
   side: THREE.DoubleSide,
   clipping: true,
@@ -1168,7 +1288,6 @@ const depthMaterial = new THREE.ShaderMaterial({
     uStateSize: { value: new THREE.Vector2(STATE_W, stateH) },
     uNear: { value: 0 },
     uFar: { value: 1 },
-    uOrtho: { value: 0 },
   },
   vertexShader: `
     attribute float aElementIndex;
@@ -1193,19 +1312,14 @@ const depthMaterial = new THREE.ShaderMaterial({
     uniform vec2 uStateSize;
     uniform float uNear;
     uniform float uFar;
-    uniform float uOrtho;
     #include <clipping_planes_pars_fragment>
     void main() {
       #include <clipping_planes_fragment>
       float id = floor(vIfcIndex + 0.5);
       vec2 uv = vec2((mod(id, uStateSize.x) + 0.5) / uStateSize.x,
                      (floor(id / uStateSize.x) + 0.5) / uStateSize.y);
-      if (texture2D(uStateTex, uv).r < 0.5) discard;
-      // Perspective reconstructs along a unit ray from the eye, so radial
-      // distance is what it wants. Parallel reconstructs from a point on the
-      // camera plane straight down the view axis, so depth is, and that depth
-      // is negative for anything behind the plane.
-      float measured = uOrtho > 0.5 ? -vMeasureViewPosition.z : length(vMeasureViewPosition);
+      if (texture2D(uStateTex, uv).r < 0.05) discard;
+      float measured = -vMeasureViewPosition.z;
       float d = clamp((measured - uNear) / (uFar - uNear), 0.0, 1.0);
       vec3 enc = fract(vec3(1.0, 255.0, 65025.0) * d);
       enc -= enc.yzz * vec3(1.0 / 255.0, 1.0 / 255.0, 0.0);
@@ -1315,6 +1429,7 @@ function elementRecord(expressID) {
       // can ask about the element's own axes rather than the world's.
       obb: null,
       obbReach: -1,
+      snapParts: null,
       scaled: false,
     };
     elements.set(expressID, rec);
@@ -1811,6 +1926,7 @@ function ingestChunk(chunk, layout, uses) {
       if (boxes[at + k + 3] > rec.box[k + 3]) rec.box[k + 3] = boxes[at + k + 3];
     }
     accrueMass(rec, geom, matrix);
+    recordSnapParts(rec, geom, matrix);
     triangleCount += geom.indices.length / 3;
 
     const alpha = color[3];
@@ -2147,6 +2263,7 @@ async function fetchModelBytes(res) {
 }
 
 async function loadModel() {
+  if (!viewerDocumentOpen) return;
   if (loading) {
     reloadQueued = true;
     // another rebuild follows this one; the scene is not settling yet
@@ -2154,7 +2271,22 @@ async function loadModel() {
     return;
   }
   loading = true;
+  const targetRow = currentModelRow();
+  loadingModelId = targetRow?.id || null;
+  const targetModelId = loadingModelId;
+  const targetEtag = targetRow?.etag || null;
   try {
+    const cached = targetModelId ? parsedModelCache.get(targetModelId) : null;
+    if (cached && cached.etag === targetEtag) {
+      showProgress("Opening cached model", null);
+      const rendered = await buildScene(null, cached.parsed, targetModelId, cached.etag);
+      if (rendered) {
+        currentEtag = cached.etag;
+        hideProgress();
+        refreshStatus();
+      }
+      return;
+    }
     showProgress("Loading model", null);
     const headers = currentEtag ? { "If-None-Match": currentEtag } : {};
     const res = await api(`/api/model.ifc${modelQuery()}`, { headers });
@@ -2209,11 +2341,13 @@ async function loadModel() {
       try { spawnWorker(); } catch { /* parseBuffer falls back to inline */ }
     }
     const buffer = await fetchModelBytes(res);
-    await buildScene(buffer);
-    currentEtag = nextEtag;
-    hideProgress();
-    // the hub's change frames carry no name/schema; re-sync the top bar
-    refreshStatus();
+    const rendered = await buildScene(buffer, null, targetModelId, nextEtag);
+    if (rendered) {
+      currentEtag = nextEtag;
+      hideProgress();
+      // the hub's change frames carry no name/schema; re-sync the top bar
+      refreshStatus();
+    }
   } catch (err) {
     console.error("[ifc-console] model load failed", err);
     hideProgress();
@@ -2257,22 +2391,44 @@ function nextFrame() {
 }
 
 async function buildScene(buffer) {
+  const residentParsed = arguments[1] || null;
+  const targetModelId = arguments.length > 2 ? arguments[2] : loadingModelId;
+  const targetEtag = arguments.length > 3 ? arguments[3] : null;
+  const switchingTabs = pendingModelTabView?.modelId === targetModelId
+    || (renderedModelId !== null && renderedModelId !== targetModelId);
+  if (switchingTabs && renderedModelId && selection.size) rememberCurrentSelection();
   // Live edits trigger rebuilds; carry selection and highlights across so a
   // refresh does not silently drop what the user (or the LLM) marked.
-  const keepSelection = [...selection].map((id) => guidOf.get(id)).filter(Boolean);
+  const keepSelection = switchingTabs
+    ? [...(modelSelections.get(targetModelId) || [])]
+    : [...selection].map((id) => guidOf.get(id)).filter(Boolean);
   const keepPropertyGuid = keepSelection.at(-1) || null;
-  const keepHighlight = [...highlightSet].map((id) => guidOf.get(id)).filter(Boolean);
-  const keepIsolate = isolateSet !== null;
+  const keepHighlight = switchingTabs
+    ? [] : [...highlightSet].map((id) => guidOf.get(id)).filter(Boolean);
+  const keepIsolate = !switchingTabs && isolateSet !== null;
+  const keepUserIsolate = switchingTabs || userIsolateSet === null
+    ? null
+    : [...userIsolateSet].map((id) => guidOf.get(id)).filter(Boolean);
   // Every revision bump rebuilds, so throwing the measurements away here meant
   // the assistant writing one property set deleted the user's whole morning of
   // dimensions, server copy included. They are anchored to GlobalIds instead.
-  const keepMeasurements = measurementCarry();
+  const keepMeasurements = switchingTabs ? [] : measurementCarry();
   sendSceneState("rebuilding");
-  disposeModel();
-  userMovedCamera = false;
-  showProgress("Reading IFC model", null);
+  showProgress(residentParsed ? "Opening cached model" : "Reading IFC model", null);
 
-  const parsed = await parseBuffer(buffer);
+  const parsed = residentParsed || await parseBuffer(buffer);
+  if (targetModelId && targetEtag) {
+    parsedModelCache.set(targetModelId, { etag: targetEtag, parsed });
+  }
+  // A user may switch again while WebAssembly is still parsing. Keep the
+  // finished result warm, but never replace the newly requested tab with it.
+  if (!viewerDocumentOpen || currentModelRow()?.id !== targetModelId) {
+    reloadQueued = viewerDocumentOpen;
+    return false;
+  }
+  disposeModel();
+  renderedModelId = targetModelId;
+  userMovedCamera = false;
   showProgress("Preparing complete model", null);
   // Yield once so the label above actually paints: everything below is one
   // long synchronous block on a big model.
@@ -2300,6 +2456,7 @@ async function buildScene(buffer) {
     ? new THREE.Matrix4().fromArray(parsed.coordination)
     : new THREE.Matrix4();
   refreshFrames();
+  for (const axis of AXES) syncSectionRow(axis);
   let done = 0;
   for (const chunk of parsed.chunks) {
     ingestChunk(chunk, placed.layout.get(chunk), placed.uses);
@@ -2310,6 +2467,7 @@ async function buildScene(buffer) {
       await nextFrame();
     }
   }
+  finalizeSnapParts();
   finalizeAllAccumulators();
   if (parsed.maps) {
     for (let i = 0; i < parsed.maps.guidIds.length; i++) {
@@ -2324,6 +2482,18 @@ async function buildScene(buffer) {
   geomUse.clear();
   updateGround();
   updateStats();
+  if (switchingTabs) {
+    // A document with no prior tab state starts as an uncut IFC view. A saved
+    // tab view is restored once its GlobalIds exist again below.
+    for (const axis of AXES) {
+      section[axis].on = false;
+      section[axis].t = 1;
+      section[axis].flip = false;
+      syncSectionRow(axis);
+    }
+    setSliceDepth(0);
+    setProjection("perspective");
+  }
   updateClipping();
 
   for (const guid of keepSelection) {
@@ -2333,6 +2503,12 @@ async function buildScene(buffer) {
   highlightSet = new Set(
     keepHighlight.map((g) => expressOf.get(g)).filter((id) => id !== undefined));
   if (keepIsolate && highlightSet.size) isolateSet = new Set(highlightSet);
+  if (keepUserIsolate) {
+    const restored = keepUserIsolate
+      .map((guid) => expressOf.get(guid))
+      .filter((id) => id !== undefined);
+    userIsolateSet = restored.length ? new Set(restored) : null;
+  }
   applyAppearance();
   applyVisibility();
   markTreeSelection();
@@ -2346,23 +2522,25 @@ async function buildScene(buffer) {
   refreshSearch();
   // A rebuild resets the server's selection; tell it what survived.
   sendSelection();
-  if (activeFocusName !== null) {
-    // re-map the active focus tab onto the rebuilt express ids
-    try {
-      applyFocusTab(activeFocusName, false);
-    } catch {
-      applyFocusTab(null, false);
-    }
-  } else {
-    renderFocusTabs();
-  }
   // Last, once every visibility gate is settled: each end re-resolves through
   // its GlobalId, so a wall that moved carries its dimension with it, and a
   // replayed clearance sees the same model the user does.
   restoreMeasurements(keepMeasurements);
+  if (switchingTabs) {
+    const saved = pendingModelTabView?.modelId === targetModelId
+      ? pendingModelTabView.view
+      : modelTabViews.get(targetModelId) || null;
+    if (pendingModelTabView?.modelId === targetModelId) pendingModelTabView = null;
+    if (saved) restoreView(saved);
+  }
   if (!userMovedCamera) fitTo(null);
+  // A transcript click may have queued this model switch. Its element can
+  // still turn out to have no mesh once parsing completes; that is a local
+  // command failure, not a failed model build.
+  applyPendingGuidCommand(targetModelId, { reportFailure: true });
   invalidate();
   sendSceneState("ready");
+  return true;
 }
 
 // ---------------------------------------------------------------- spatial tree
@@ -2582,13 +2760,20 @@ function isElementShown(id) {
  * tree deliberately hid was meant to go away, and it does.
  */
 function isGhosted(id) {
-  return ghostContext && isolatedOut(id)
+  const selectionContext = selection.size > 0 && !selection.has(id);
+  return ghostContext && (isolatedOut(id) || selectionContext)
     && !hiddenByTree.has(id) && !hiddenManual.has(id);
+}
+
+/** Ghosted geometry is still visible geometry: it must remain selectable and
+ * measurable so the solid highlight can move through the faded context. */
+function isElementPickable(id) {
+  return isElementShown(id) || isGhosted(id);
 }
 
 let hiddenCount = 0;
 let ghostCount = 0;
-let ghostContext = true;
+let ghostContext = false;
 function applyVisibility() {
   hiddenCount = 0;
   ghostCount = 0;
@@ -2625,6 +2810,7 @@ function setGhostContext(on) {
 
 // ---------------------------------------------------------------- selection
 function setSelection(ids, additive) {
+  const options = arguments[2] || {};
   const touched = new Set(selection);  // what leaves the selection restyles too
   if (!additive) selection.clear();
   for (const id of ids) {
@@ -2633,9 +2819,12 @@ function setSelection(ids, additive) {
     touched.add(id);
   }
   applyAppearanceTo(touched);
+  if (ghostContext) applyVisibility();
   markTreeSelection();
   updateSelectionInfo();
-  sendSelection();
+  if (options.remember !== false) rememberCurrentSelection();
+  syncModelSelectionCounts();
+  if (options.publish !== false) sendSelection();
   const last = ids[ids.length - 1];
   if (last !== undefined && selection.has(last) && guidOf.has(last)) {
     showProperties(guidOf.get(last));
@@ -2659,12 +2848,14 @@ function updateSelectionInfo() {
   if (!n) {
     status.textContent = "No selection";
     scheduleViewerContext("selection");
+    renderViewerFilters();
     return;
   }
   const shown = [...selection].slice(0, 3)
     .map((id) => guidOf.get(id) || `#${id}`).join(", ");
   status.textContent = `${n} selected · ${shown}${n > 3 ? ", …" : ""}`;
   scheduleViewerContext("selection");
+  renderViewerFilters();
 }
 
 function updateHighlightInfo() {
@@ -2672,20 +2863,22 @@ function updateHighlightInfo() {
   $("hl-info").textContent = n ? `${n} highlighted · ${highlightColor}` : "";
   // The clear control only earns space when there is something to clear.
   $("btn-clear-hl").hidden = n === 0;
+  renderViewerFilters();
 }
 
 // The hub keeps the first 500; sending more just inflates the frame.
 const SELECTION_WIRE_MAX = 500;
 
 function sendSelection() {
-  const guids = [];
-  for (const id of selection) {
-    const guid = guidOf.get(id);
-    if (guid) guids.push(guid);
-    if (guids.length >= SELECTION_WIRE_MAX) break;
-  }
-  const row = currentModelRow();
-  wsSend({ type: "selection", guids, model_id: row ? row.id : null });
+  const guids = viewerDocumentOpen
+    ? rememberCurrentSelection().slice(0, SELECTION_WIRE_MAX)
+    : [];
+  const row = viewerDocumentOpen ? currentModelRow() : null;
+  const selections = modelSelectionRows().map((item) => ({
+    model_id: item.model_id,
+    guids: item.guids.slice(0, SELECTION_WIRE_MAX),
+  }));
+  wsSend({ type: "selection", guids, model_id: row ? row.id : null, selections });
 }
 
 // GPU pick: render the pixel under the cursor with the id-encoding override
@@ -2705,6 +2898,7 @@ function pickElementAt(clientX, clientY) {
   const measureWasVisible = measureGroup.visible;
   const snapWasVisible = snapGroup.visible;
   const edgesWereVisible = edgeRoot.visible;
+  const sectionHelperWasVisible = sectionHelperRoot.visible;
   const prevTarget = renderer.getRenderTarget();
   const prevClearColor = renderer.getClearColor(new THREE.Color()).clone();
   const prevClearAlpha = renderer.getClearAlpha();
@@ -2719,6 +2913,7 @@ function pickElementAt(clientX, clientY) {
     // An outline sits exactly on the surface it outlines, so at a silhouette
     // the winner of the depth test is a coin toss; the surface answers.
     edgeRoot.visible = false;
+    sectionHelperRoot.visible = false;
     scene.overrideMaterial = pickMaterial;
     camera.setViewOffset(size.x, size.y, x, y, 1, 1);
     renderer.setRenderTarget(pickTarget);
@@ -2737,6 +2932,7 @@ function pickElementAt(clientX, clientY) {
     measureGroup.visible = measureWasVisible;
     snapGroup.visible = snapWasVisible;
     edgeRoot.visible = edgesWereVisible;
+    sectionHelperRoot.visible = sectionHelperWasVisible;
     // Only a resolution change owes the canvas a redraw; the pass itself never
     // touched it.
     if (scaled) invalidate();
@@ -2751,17 +2947,53 @@ function pickElementAt(clientX, clientY) {
 // Click-to-select with a small movement threshold so orbiting never selects.
 const DRAG_THRESHOLD = 6;
 let downAt = null;
+let downPointerId = null;
+let latestMeasurePointer = null;
+let measurePressHit = null;
+let measureDragActive = false;
+let measureDragAddedStart = false;
+const activeTouchPointers = new Set();
+let touchNavigationActive = false;
 canvas.addEventListener("pointerdown", (e) => {
   // The viewport has to hold focus for arrow-key panning, but :focus-visible
   // cannot tell this focus() from a Tab press and drew a ring around the
   // model on every click. Mark it so the ring is a keyboard affordance only.
   canvas.dataset.quietFocus = "1";
   canvas.focus({ preventScroll: true });
+  if (e.pointerType === "touch") {
+    activeTouchPointers.add(e.pointerId);
+    if (activeTouchPointers.size > 1) {
+      // OrbitControls owns a two-finger dolly/pan. Cancel the measurement
+      // gesture before either touch can turn that camera move into a point.
+      touchNavigationActive = true;
+      if (measureDragAddedStart) undoPendingPoint();
+      downAt = null;
+      downPointerId = null;
+      measurePressHit = null;
+      measureDragActive = false;
+      measureDragAddedStart = false;
+      latestMeasurePointer = null;
+      canvas.classList.remove("is-dragging");
+      if (measureMode) clearSnapPreview();
+      return;
+    }
+    // Once a two-finger gesture starts, its remaining finger still belongs to
+    // navigation until every touch is up.
+    if (touchNavigationActive) return;
+  }
   downAt = [e.clientX, e.clientY];
+  downPointerId = e.pointerId;
+  measurePressHit = measureMode && e.button === 0 && !e.altKey
+    ? (cachedMeasurePoint(e.clientX, e.clientY)
+      || measurePointAt(e.clientX, e.clientY))
+    : null;
+  measureDragActive = false;
+  measureDragAddedStart = false;
   canvas.classList.remove("is-dragging");
+  if (measureMode) clearSnapPreview();
   // Every gesture starts from the surface under the cursor: orbit, pan and
   // zoom all scale from the pivot distance, so pan and orbit re-seat it too.
-  if (!measureMode) repivotIfStale(e.clientX, e.clientY);
+  if (!measureMode || e.button === 2) repivotIfStale(e.clientX, e.clientY);
 });
 
 const _pivotDir = new THREE.Vector3();
@@ -2794,7 +3026,7 @@ let wheelRepivot = 0;
 canvas.addEventListener("wheel", (e) => {
   clearTimeout(wheelRepivot);
   wheelRepivot = setTimeout(() => {
-    if (!downAt) repivotIfStale(e.clientX, e.clientY);
+    if (!downAt && !measureMode) repivotIfStale(e.clientX, e.clientY);
   }, 160);
 }, { passive: true });
 
@@ -2815,6 +3047,7 @@ function isShortcutSurface(target) {
 }
 
 window.addEventListener("keydown", (e) => {
+  if (e.defaultPrevented) return;
   if (!measureMode || e.ctrlKey || e.metaKey || e.altKey) return;
   if (!isShortcutSurface(e.target)) return;
   const key = e.key.toLowerCase();
@@ -2827,14 +3060,7 @@ window.addEventListener("keydown", (e) => {
     if (undoPendingPoint()) e.preventDefault();
     return;
   }
-  if (key === "shift") {
-    // Shift hardens the current axis inference; pressed again it lets go.
-    if (axisLock) axisLock = "";
-    else if (inferredAxis) axisLock = inferredAxis;
-    else return;
-    renderMeasurements();
-    return;
-  }
+  if (!["distance", "path"].includes(measureKind)) return;
   if (!["x", "y", "z"].includes(key)) return;
   // A toggle, not a hold: locking stays on across clicks until the same key,
   // another axis, or leaving measure mode. Holding a key while aiming a
@@ -2843,22 +3069,61 @@ window.addEventListener("keydown", (e) => {
   renderMeasurements();
 });
 canvas.addEventListener("blur", () => { delete canvas.dataset.quietFocus; });
-canvas.addEventListener("pointerleave", () => clearSnapPreview());
+canvas.addEventListener("pointerleave", () => {
+  latestMeasurePointer = null;
+  clearSnapPreview();
+});
 // A preview is a claim about where the cursor is pointing, and moving the
 // camera invalidates it before the pointer has moved at all.
 controls.addEventListener("change", () => clearSnapPreview());
+controls.addEventListener("end", () => {
+  if (measureMode && latestMeasurePointer) {
+    queueSnapPreview(latestMeasurePointer[0], latestMeasurePointer[1]);
+  }
+});
 canvas.addEventListener("pointermove", (e) => {
-  if (measureMode && !downAt) showSnapPreview(e.clientX, e.clientY);
-  if (!downAt) return;
+  if (e.pointerType === "touch" && touchNavigationActive) return;
+  latestMeasurePointer = [e.clientX, e.clientY];
+  if (measureMode && !downAt) queueSnapPreview(e.clientX, e.clientY);
+  if (!downAt || e.pointerId !== downPointerId) return;
   const moved = Math.hypot(e.clientX - downAt[0], e.clientY - downAt[1]);
-  if (moved > DRAG_THRESHOLD) canvas.classList.add("is-dragging");
+  if (moved > DRAG_THRESHOLD) {
+    canvas.classList.add("is-dragging");
+    if (measureMode && (e.buttons & 1) && measureKind === "distance") {
+      if (!pending.length && measurePressHit) {
+        handleMeasureClick(downAt[0], downAt[1], measurePressHit);
+        measureDragAddedStart = pending.length === 1;
+      }
+      measureDragActive = pending.length === 1;
+      if (measureDragActive) queueSnapPreview(e.clientX, e.clientY);
+    }
+  }
 });
 canvas.addEventListener("pointerup", (e) => {
   canvas.classList.remove("is-dragging");
-  if (!downAt) return;
+  if (e.pointerType === "touch") {
+    const wasNavigation = touchNavigationActive;
+    activeTouchPointers.delete(e.pointerId);
+    if (!activeTouchPointers.size) touchNavigationActive = false;
+    if (wasNavigation) {
+      downAt = null;
+      downPointerId = null;
+      measurePressHit = null;
+      measureDragActive = false;
+      measureDragAddedStart = false;
+      return;
+    }
+  }
+  if (!downAt || e.pointerId !== downPointerId) return;
   const moved = Math.hypot(e.clientX - downAt[0], e.clientY - downAt[1]);
   downAt = null;
-  if (moved > DRAG_THRESHOLD || e.button !== 0) return;
+  downPointerId = null;
+  const pressHit = measurePressHit;
+  const draggedMeasurement = measureDragActive;
+  measurePressHit = null;
+  measureDragActive = false;
+  measureDragAddedStart = false;
+  if (e.button !== 0) return;
 
   if (measureMode) {
     if (e.altKey) {
@@ -2871,9 +3136,17 @@ canvas.addEventListener("pointerup", (e) => {
       }
       return;
     }
-    handleMeasureClick(e.clientX, e.clientY);
+    if (draggedMeasurement || moved <= DRAG_THRESHOLD) {
+      handleMeasureClick(e.clientX, e.clientY, draggedMeasurement ? null : pressHit);
+    } else {
+      // Measurement owns the primary button, so a shaky press still places a
+      // point even when it crossed the selection/orbit drag threshold.
+      handleMeasureClick(e.clientX, e.clientY);
+    }
     return;
   }
+
+  if (moved > DRAG_THRESHOLD) return;
 
   const hit = pickElementAt(e.clientX, e.clientY);
   const additive = e.ctrlKey || e.metaKey || e.shiftKey;
@@ -2888,8 +3161,12 @@ canvas.addEventListener("dblclick", (e) => {
   if (measureMode) {
     // pointerup already added a point for each half of the pair, so the second
     // one goes back before the outline closes on the first
-    if (measureKind === "area") undoPendingPoint();
-    if (finishArea()) renderMeasurements();
+    const duplicateWasRejected = measureProblem.startsWith("That point is the same");
+    if ((measureKind === "area" || measureKind === "path") && !duplicateWasRejected) {
+      undoPendingPoint();
+    }
+    measureProblem = "";
+    if (finishOpenMeasurement()) renderMeasurements();
     return;
   }
   const id = pickElementAt(e.clientX, e.clientY);
@@ -2899,12 +3176,28 @@ canvas.addEventListener("dblclick", (e) => {
   }
   repivotIfStale(e.clientX, e.clientY);
 });
-canvas.addEventListener("pointercancel", () => {
+canvas.addEventListener("pointercancel", (e) => {
+  if (e.pointerType === "touch") {
+    activeTouchPointers.delete(e.pointerId);
+    if (!activeTouchPointers.size) touchNavigationActive = false;
+  }
+  if (measureDragAddedStart) undoPendingPoint();
   downAt = null;
+  downPointerId = null;
+  measurePressHit = null;
+  measureDragActive = false;
+  measureDragAddedStart = false;
   canvas.classList.remove("is-dragging");
 });
 window.addEventListener("blur", () => {
+  if (measureDragAddedStart) undoPendingPoint();
   downAt = null;
+  downPointerId = null;
+  measurePressHit = null;
+  measureDragActive = false;
+  measureDragAddedStart = false;
+  activeTouchPointers.clear();
+  touchNavigationActive = false;
   canvas.classList.remove("is-dragging");
 });
 
@@ -3222,6 +3515,44 @@ function fitCommand(command) {
 // ---------------------------------------------------------------- sectioning
 const AXIS_INDEX = { x: 0, y: 1, z: 2 };
 
+// While a cut slider moves, draw the real plane through the model. A number
+// alone cannot show which storey or bay is about to be removed.
+const sectionHelperRoot = new THREE.Group();
+sectionHelperRoot.name = "section-plane-helper";
+sectionHelperRoot.visible = false;
+scene.add(sectionHelperRoot);
+// CAD axis colors are attached to the IFC/model axis, not whichever scene
+// axis it happens to map onto after coordination.
+const SECTION_HELPER_COLORS = { x: 0xe56b70, y: 0x67b886, z: 0x6fa8d8 };
+const sectionHelpers = {};
+for (const axis of AXES) {
+  const geometry = new THREE.PlaneGeometry(1, 1);
+  const fill = new THREE.Mesh(geometry, new THREE.MeshBasicMaterial({
+    color: SECTION_HELPER_COLORS[axis],
+    side: THREE.DoubleSide,
+    transparent: true,
+    opacity: 0.16,
+    depthTest: false,
+    depthWrite: false,
+  }));
+  const border = new THREE.LineSegments(
+    new THREE.EdgesGeometry(geometry),
+    new THREE.LineBasicMaterial({
+      color: SECTION_HELPER_COLORS[axis], transparent: true, opacity: 0.9,
+      depthTest: false, depthWrite: false,
+    }),
+  );
+  fill.renderOrder = 990;
+  border.renderOrder = 991;
+  const group = new THREE.Group();
+  group.add(fill, border);
+  group.visible = false;
+  sectionHelperRoot.add(group);
+  sectionHelpers[axis] = group;
+}
+let sectionHelperAxis = null;
+let sectionHelperTimer = 0;
+
 function axisRange(axis) {
   const k = AXIS_INDEX[axis];
   if (!modelBox) return [0, 1];
@@ -3229,7 +3560,62 @@ function axisRange(axis) {
   return [modelBox[k] - pad, modelBox[k + 3] + pad];
 }
 
+function showSectionHelper(axis) {
+  if (!modelBox || !section[axis]?.on) return;
+  clearTimeout(sectionHelperTimer);
+  sectionHelperAxis = axis;
+  const spans = [
+    Math.max(modelBox[3] - modelBox[0], 1e-3),
+    Math.max(modelBox[4] - modelBox[1], 1e-3),
+    Math.max(modelBox[5] - modelBox[2], 1e-3),
+  ];
+  const centres = [
+    (modelBox[0] + modelBox[3]) / 2,
+    (modelBox[1] + modelBox[4]) / 2,
+    (modelBox[2] + modelBox[5]) / 2,
+  ];
+  const [low, high] = axisRange(axis);
+  const at = low + (high - low) * section[axis].t;
+  for (const [name, helper] of Object.entries(sectionHelpers)) {
+    helper.visible = name === axis;
+  }
+  const helper = sectionHelpers[axis];
+  const modelAxis = MODEL_OF_SCENE[axis] || axis;
+  const color = SECTION_HELPER_COLORS[modelAxis];
+  helper.children[0].material.color.setHex(color);
+  helper.children[1].material.color.setHex(color);
+  helper.position.set(centres[0], centres[1], centres[2]);
+  helper.rotation.set(0, 0, 0);
+  if (axis === "x") {
+    helper.position.x = at;
+    helper.rotation.y = Math.PI / 2;
+    helper.scale.set(spans[2] * 1.04, spans[1] * 1.04, 1);
+  } else if (axis === "y") {
+    helper.position.y = at;
+    helper.rotation.x = -Math.PI / 2;
+    helper.scale.set(spans[0] * 1.04, spans[2] * 1.04, 1);
+  } else {
+    helper.position.z = at;
+    helper.scale.set(spans[0] * 1.04, spans[1] * 1.04, 1);
+  }
+  sectionHelperRoot.visible = true;
+  invalidate();
+}
+
+function hideSectionHelper(delay = 0) {
+  clearTimeout(sectionHelperTimer);
+  const hide = () => {
+    sectionHelperAxis = null;
+    sectionHelperRoot.visible = false;
+    invalidate();
+  };
+  if (delay > 0) sectionHelperTimer = setTimeout(hide, delay);
+  else hide();
+}
+
 function updateClipping() {
+  // A cached measurement preview was sampled against the old cut surfaces.
+  if (measureMode) clearSnapPreview();
   activeClipPlanes.length = 0;
   for (const axis of AXES) {
     const state = section[axis];
@@ -3264,6 +3650,7 @@ function updateClipping() {
       mat.needsUpdate = true;
     }
   }
+  if (sectionHelperAxis) showSectionHelper(sectionHelperAxis);
   updateVisibilityInfo();
   scheduleViewerContext("section");
   invalidate();
@@ -3300,31 +3687,28 @@ scene.add(measureGroup);
 
 const measurements = [];
 let measureMode = false;
+let measureCardDismissed = false;
+let measurePanelPinned = false;
 // Distance wants two clicks, angle three, area as many as the outline has.
 // One pending list serves all three; the tool says when it is satisfied.
-const MEASURE_KINDS = { distance: 2, angle: 3, area: 0 };
+const MEASURE_KINDS = { distance: 2, path: 0, angle: 3, area: 0 };
 // Two outline points closer than a micrometre are one point clicked twice.
 const AREA_MIN_EDGE_SQ = 1e-12;
+const AREA_CLOSE_PX = 13;
+const MAX_MEASURE_POINTS = 200;
 let measureKind = "distance";
 const pending = [];
-let pendingNormal = null;
+let measureProblem = "";
 // Toggled while measuring (press X, Y or Z). IFC is Z-up and three.js is
 // Y-up, so the lock names are the model's axes and axisFrame maps them.
 let axisLock = "";
-// A soft lock the tool infers on its own: a rubber band within a few degrees
-// of a model axis sticks to it, SketchUp style, and Shift hardens the stick.
-let inferredAxis = "";
-const AXIS_INFER_COS = Math.cos((8 * Math.PI) / 180);
 // CAD convention: X red, Y green, Z blue, in the model's axes.
 const AXIS_COLORS = { x: 0xe0645c, y: 0x69b56b, z: 0x5a8fd6 };
 
-/** The point a distance click or preview lands on, lock and inference applied. */
+/** The point a length click or preview lands on, with only a visible lock applied. */
 function constrainedMeasurePoint(anchor, raw) {
-  inferredAxis = "";
-  if (!anchor || measureKind !== "distance") return raw;
-  if (axisLock) return constrainToAxis(anchor, raw, axisLock);
-  inferredAxis = inferAxis(anchor, raw, axisFrame, AXIS_INFER_COS);
-  return inferredAxis ? constrainToAxis(anchor, raw, inferredAxis) : raw;
+  if (!anchor || !["distance", "path"].includes(measureKind)) return raw;
+  return axisLock ? constrainToAxis(anchor, raw, axisLock) : raw;
 }
 // Snapping is on by default: a measurement that lands a centimetre inside the
 // face it was aimed at is worse than no measurement, because it looks right.
@@ -3353,7 +3737,7 @@ const EMPHASIS_COLOR = 0x5ad1ff;
 function screenScaledDot(px, color) {
   const dot = new THREE.Mesh(
     new THREE.SphereGeometry(1, 12, 8),
-    new THREE.MeshBasicMaterial({ color, depthTest: false }));
+    new THREE.MeshBasicMaterial({ color, depthTest: true, depthWrite: false }));
   dot.userData.px = px;
   dot.renderOrder = 999;
   return dot;
@@ -3381,7 +3765,7 @@ function syncScreenMarkers() {
 // Snap glyphs follow the CAD convention people already read: square for a
 // corner, triangle for a midpoint, circle for a face centre, diamond for a
 // point along an edge, and a plain dot for a bare surface hit.
-const GLYPH_PX = { corner: 13, midpoint: 13, centre: 12, edge: 12, surface: 7 };
+const GLYPH_PX = { corner: 13, midpoint: 13, centre: 12, edge: 12, axis: 13, surface: 7 };
 const _glyphTextures = new Map();
 
 function snapGlyphTexture(kind) {
@@ -3420,6 +3804,13 @@ function snapGlyphTexture(kind) {
     ctx.lineTo(size / 2, size - m);
     ctx.lineTo(m, size / 2);
     ctx.closePath();
+    ctx.stroke();
+  } else if (kind === "axis") {
+    ctx.beginPath();
+    ctx.moveTo(m, size / 2);
+    ctx.lineTo(size - m, size / 2);
+    ctx.moveTo(size / 2, m);
+    ctx.lineTo(size / 2, size - m);
     ctx.stroke();
   } else {
     ctx.beginPath();
@@ -3512,6 +3903,43 @@ function addMarker(point) {
   return dot;
 }
 
+const _depthForward = new THREE.Vector3();
+const _depthCorner = new THREE.Vector3();
+
+/** Tight view-depth bounds keep the packed 24-bit point precise on large sites. */
+function depthPickRange() {
+  camera.getWorldDirection(_depthForward);
+  if (!modelBox) {
+    return {
+      near: camera.near,
+      far: Math.max(camera.near + 1e-3, camera.far),
+      forward: _depthForward.clone(),
+    };
+  }
+  let near = Infinity;
+  let far = -Infinity;
+  for (let corner = 0; corner < 8; corner++) {
+    _depthCorner.set(
+      corner & 1 ? modelBox[3] : modelBox[0],
+      corner & 2 ? modelBox[4] : modelBox[1],
+      corner & 4 ? modelBox[5] : modelBox[2],
+    );
+    const depth = _depthCorner.sub(camera.position).dot(_depthForward);
+    near = Math.min(near, depth);
+    far = Math.max(far, depth);
+  }
+  near = Math.max(near, camera.near);
+  far = Math.min(far, camera.far);
+  if (!Number.isFinite(near) || !Number.isFinite(far)) {
+    near = camera.near;
+    far = camera.far;
+  }
+  const padding = Math.max((far - near) * 1e-5, 1e-5);
+  near = Math.max(camera.near, near - padding);
+  far = Math.max(near + 1e-3, Math.min(camera.far, far + padding));
+  return { near, far, forward: _depthForward.clone() };
+}
+
 /**
  * Draw the depth of one pixel into pickTarget, and remember what to put back.
  *
@@ -3522,20 +3950,33 @@ function addMarker(point) {
  */
 function beginDepthProbe(clientX, clientY) {
   if (!elements.size) return null;
-  const scaled = ensureFullResolution();
   const rect = canvas.getBoundingClientRect();
+  if (clientX < rect.left || clientX >= rect.right
+    || clientY < rect.top || clientY >= rect.bottom) return null;
+  const scaled = ensureFullResolution();
   const size = renderer.getDrawingBufferSize(new THREE.Vector2());
-  const x = Math.floor(((clientX - rect.left) / rect.width) * size.x);
-  const y = Math.floor(((clientY - rect.top) / rect.height) * size.y);
-  const ortho = isOrtho();
+  const x = Math.min(size.x - 1, Math.max(0,
+    Math.floor(((clientX - rect.left) / rect.width) * size.x)));
+  const y = Math.min(size.y - 1, Math.max(0,
+    Math.floor(((clientY - rect.top) / rect.height) * size.y)));
+  // The render samples the centre of the chosen drawing-buffer pixel. Decode
+  // through that exact ray, not the fractional CSS coordinate that selected it.
+  const sampleClientX = rect.left + ((x + 0.5) / size.x) * rect.width;
+  const sampleClientY = rect.top + ((y + 0.5) / size.y) * rect.height;
+  _ndc.x = ((sampleClientX - rect.left) / rect.width) * 2 - 1;
+  _ndc.y = -((sampleClientY - rect.top) / rect.height) * 2 + 1;
+  camera.updateMatrixWorld();
+  raycaster.setFromCamera(_ndc, camera);
+  const range = depthPickRange();
   const state = {
     rect,
     scaled,
-    ortho,
-    // Perspective measures from the eye outwards, so its range starts at
-    // zero whatever the near plane says.
-    near: ortho ? camera.near : 0,
-    far: camera.far,
+    near: range.near,
+    far: range.far,
+    forward: range.forward,
+    cameraPosition: camera.position.clone(),
+    rayOrigin: raycaster.ray.origin.clone(),
+    rayDirection: raycaster.ray.direction.clone(),
     serial: cameraSerial,
     background: scene.background,
     override: scene.overrideMaterial,
@@ -3544,6 +3985,7 @@ function beginDepthProbe(clientX, clientY) {
     measureWasVisible: measureGroup.visible,
     snapWasVisible: snapGroup.visible,
     edgesWereVisible: edgeRoot.visible,
+    sectionHelperWasVisible: sectionHelperRoot.visible,
     target: renderer.getRenderTarget(),
     clearColor: renderer.getClearColor(new THREE.Color()).clone(),
     clearAlpha: renderer.getClearAlpha(),
@@ -3556,11 +3998,11 @@ function beginDepthProbe(clientX, clientY) {
   snapGroup.visible = false;
   // A line drawn on a surface would be measured instead of the surface.
   edgeRoot.visible = false;
+  sectionHelperRoot.visible = false;
   depthMaterial.uniforms.uStateTex.value = stateTex;
   depthMaterial.uniforms.uStateSize.value.set(STATE_W, stateH);
   depthMaterial.uniforms.uNear.value = state.near;
   depthMaterial.uniforms.uFar.value = state.far;
-  depthMaterial.uniforms.uOrtho.value = ortho ? 1 : 0;
   depthMaterial.clippingPlanes = activeClipPlanes;
   scene.overrideMaterial = depthMaterial;
   camera.setViewOffset(size.x, size.y, x, y, 1, 1);
@@ -3582,25 +4024,25 @@ function endDepthProbe(state) {
   measureGroup.visible = state.measureWasVisible;
   snapGroup.visible = state.snapWasVisible;
   edgeRoot.visible = state.edgesWereVisible;
+  sectionHelperRoot.visible = state.sectionHelperWasVisible;
   // The probe renders into pickTarget and never touches the canvas, so only a
   // resolution change owes the screen a redraw.
   if (state.scaled) invalidate();
 }
 
-/** The encoded depth as a point on the ray through the cursor. */
-function depthPointFrom(state, clientX, clientY, buffer) {
+/** The encoded view depth as a point on the exact sampled ray. */
+function depthPointFrom(state, buffer) {
   if (!buffer[3]) return null;
   const normalized = buffer[0] / 255 + buffer[1] / 65025 + buffer[2] / 16581375;
-  const distance = state.near + normalized * (state.far - state.near);
-  if (!Number.isFinite(distance)) return null;
-  if (!state.ortho && !(distance > 0)) return null;
-  const rect = state.rect;
-  _ndc.x = ((clientX - rect.left) / rect.width) * 2 - 1;
-  _ndc.y = -((clientY - rect.top) / rect.height) * 2 + 1;
-  raycaster.setFromCamera(_ndc, camera);
-  return raycaster.ray.origin
-    .clone()
-    .add(raycaster.ray.direction.clone().multiplyScalar(distance));
+  const depth = state.near + normalized * (state.far - state.near);
+  if (!Number.isFinite(depth)) return null;
+  const originDepth = _depthCorner
+    .copy(state.rayOrigin).sub(state.cameraPosition).dot(state.forward);
+  const rayDepth = state.rayDirection.dot(state.forward);
+  if (!(rayDepth > 1e-8)) return null;
+  const along = (depth - originDepth) / rayDepth;
+  if (!Number.isFinite(along)) return null;
+  return state.rayOrigin.clone().addScaledVector(state.rayDirection, along);
 }
 
 function surfacePointAt(clientX, clientY) {
@@ -3611,7 +4053,7 @@ function surfacePointAt(clientX, clientY) {
   } finally {
     endDepthProbe(state);
   }
-  return depthPointFrom(state, clientX, clientY, pickBuffer);
+  return depthPointFrom(state, pickBuffer);
 }
 
 const probeBuffer = new Uint8Array(4);
@@ -3649,53 +4091,211 @@ async function surfacePointAsync(clientX, clientY) {
   // A camera that moved during the wait would put the ray somewhere the pixel
   // was never measured from.
   if (state.serial !== cameraSerial) return null;
-  return depthPointFrom(state, clientX, clientY, probeBuffer);
+  return depthPointFrom(state, probeBuffer);
+}
+
+// The reference viewer asks the GPU which visible elements occupy a small
+// patch around the cursor before it scans CPU-side feature edges. This avoids
+// snapping to a hidden wall or to the wrong part of a multi-part product.
+const SNAP_PATCH = 81; // enough for an 18 CSS-px reach at the capped 2x DPR
+const SNAP_CANDIDATE_LIMIT = 16;
+const snapCandidateTarget = new THREE.WebGLRenderTarget(SNAP_PATCH, SNAP_PATCH);
+const snapCandidateBuffer = new Uint8Array(SNAP_PATCH * SNAP_PATCH * 4);
+const snapCandidateAsyncBuffer = new Uint8Array(SNAP_PATCH * SNAP_PATCH * 4);
+let asyncCandidateWorks = true;
+
+function beginSnapCandidateProbe(clientX, clientY) {
+  if (!elements.size) return null;
+  const rect = canvas.getBoundingClientRect();
+  if (clientX < rect.left || clientX >= rect.right
+    || clientY < rect.top || clientY >= rect.bottom) return null;
+  const scaled = ensureFullResolution();
+  const size = renderer.getDrawingBufferSize(new THREE.Vector2());
+  const px = Math.min(size.x - 1, Math.max(0,
+    Math.floor(((clientX - rect.left) / rect.width) * size.x)));
+  const py = Math.min(size.y - 1, Math.max(0,
+    Math.floor(((clientY - rect.top) / rect.height) * size.y)));
+  const scale = Math.min(size.x / rect.width, size.y / rect.height);
+  const half = Math.min(
+    Math.ceil(SNAP_REACH_PX * scale), Math.floor((SNAP_PATCH - 1) / 2));
+  const span = half * 2 + 1;
+  const state = {
+    rect,
+    drawingWidth: size.x,
+    drawingHeight: size.y,
+    px,
+    py,
+    half,
+    span,
+    scaled,
+    serial: cameraSerial,
+    background: scene.background,
+    override: scene.overrideMaterial,
+    gridWasVisible: grid.visible,
+    axesWasVisible: axes ? axes.visible : false,
+    measureWasVisible: measureGroup.visible,
+    snapWasVisible: snapGroup.visible,
+    edgesWereVisible: edgeRoot.visible,
+    sectionHelperWasVisible: sectionHelperRoot.visible,
+    target: renderer.getRenderTarget(),
+    clearColor: renderer.getClearColor(new THREE.Color()).clone(),
+    clearAlpha: renderer.getClearAlpha(),
+  };
+  scene.background = null;
+  grid.visible = false;
+  if (axes) axes.visible = false;
+  measureGroup.visible = false;
+  snapGroup.visible = false;
+  edgeRoot.visible = false;
+  sectionHelperRoot.visible = false;
+  scene.overrideMaterial = pickMaterial;
+  camera.setViewOffset(size.x, size.y, px - half, py - half, span, span);
+  renderer.setRenderTarget(snapCandidateTarget);
+  renderer.setClearColor(0x000000, 0);
+  renderer.clear();
+  renderer.render(scene, camera);
+  return state;
+}
+
+function endSnapCandidateProbe(state) {
+  renderer.setRenderTarget(state.target);
+  renderer.setClearColor(state.clearColor, state.clearAlpha);
+  camera.clearViewOffset();
+  scene.overrideMaterial = state.override;
+  scene.background = state.background;
+  grid.visible = state.gridWasVisible;
+  if (axes) axes.visible = state.axesWasVisible;
+  measureGroup.visible = state.measureWasVisible;
+  snapGroup.visible = state.snapWasVisible;
+  edgeRoot.visible = state.edgesWereVisible;
+  sectionHelperRoot.visible = state.sectionHelperWasVisible;
+  if (state.scaled) invalidate();
+}
+
+function decodeSnapCandidates(buffer, state) {
+  const ids = [];
+  const seen = new Set();
+  const centre = (SNAP_PATCH - 1) / 2;
+  let centreId = null;
+  let nearest = null;
+  let nearestDistance = Infinity;
+  const at = (x, y) => {
+    if (x < 0 || y < 0 || x >= SNAP_PATCH || y >= SNAP_PATCH) return;
+    const pixel = (y * SNAP_PATCH + x) * 4;
+    const encoded = buffer[pixel] * 65536 + buffer[pixel + 1] * 256 + buffer[pixel + 2];
+    if (!encoded) return;
+    const id = elementsByIndex[encoded - 1];
+    if (id === undefined) return;
+    if (x === centre && y === centre) centreId = id;
+    const distance = (x - centre) ** 2 + (y - centre) ** 2;
+    if (state && distance < nearestDistance) {
+      // WebGL readback rows run bottom-up, while setViewOffset's Y is measured
+      // from the top. Map the occupied patch pixel back to the CSS position
+      // whose exact surface depth can guard a just-outside-silhouette snap.
+      const sourceX = state.px - state.half
+        + ((x + 0.5) / SNAP_PATCH) * state.span;
+      const sourceY = state.py - state.half
+        + ((SNAP_PATCH - y - 0.5) / SNAP_PATCH) * state.span;
+      nearest = {
+        id,
+        clientX: state.rect.left
+          + (sourceX / state.drawingWidth) * state.rect.width,
+        clientY: state.rect.top
+          + (sourceY / state.drawingHeight) * state.rect.height,
+      };
+      nearestDistance = distance;
+    }
+    if (seen.has(id) || ids.length >= SNAP_CANDIDATE_LIMIT) return;
+    seen.add(id);
+    ids.push(id);
+  };
+  at(centre, centre);
+  // Scan the complete patch even after the id budget is full: the nearest
+  // occupied pixel supplies the depth reference and must be truly nearest.
+  for (let radius = 1; radius <= centre; radius++) {
+    for (let delta = -radius; delta <= radius; delta++) {
+      at(centre + delta, centre - radius);
+      at(centre + delta, centre + radius);
+      at(centre - radius, centre + delta);
+      at(centre + radius, centre + delta);
+    }
+  }
+  return { ids, centreId, nearest };
+}
+
+function snapCandidatesAt(clientX, clientY) {
+  const state = beginSnapCandidateProbe(clientX, clientY);
+  if (!state) return { ids: [], centreId: null, nearest: null };
+  try {
+    renderer.readRenderTargetPixels(
+      snapCandidateTarget, 0, 0, SNAP_PATCH, SNAP_PATCH, snapCandidateBuffer);
+  } finally {
+    endSnapCandidateProbe(state);
+  }
+  return decodeSnapCandidates(snapCandidateBuffer, state);
+}
+
+async function snapCandidatesAsync(clientX, clientY) {
+  if (!asyncCandidateWorks || typeof renderer.readRenderTargetPixelsAsync !== "function") {
+    return snapCandidatesAt(clientX, clientY);
+  }
+  const state = beginSnapCandidateProbe(clientX, clientY);
+  if (!state) return { ids: [], centreId: null, nearest: null };
+  let read;
+  try {
+    read = renderer.readRenderTargetPixelsAsync(
+      snapCandidateTarget, 0, 0, SNAP_PATCH, SNAP_PATCH, snapCandidateAsyncBuffer);
+  } finally {
+    endSnapCandidateProbe(state);
+  }
+  try {
+    await read;
+  } catch {
+    asyncCandidateWorks = false;
+    return snapCandidatesAt(clientX, clientY);
+  }
+  if (state.serial !== cameraSerial) return { ids: [], centreId: null, nearest: null };
+  return decodeSnapCandidates(snapCandidateAsyncBuffer, state);
 }
 
 // ---------------------------------------------------------------- snapping
-// Screen pixels a feature reaches for the cursor. A corner reaches furthest
-// because it is what people aim at; a face centre barely reaches at all
-// because nobody aims at one by accident.
-const SNAP_RADIUS = { corner: 15, midpoint: 11, centre: 9, edge: 8 };
-const SNAP_RANK = { corner: 0, midpoint: 1, centre: 2, edge: 3, surface: 4 };
-const SNAP_REACH_PX = 15;
-// How far behind the surface under the cursor a feature may still sit. A face
-// is not perfectly flat against its own box, so a couple of pixels of world
-// is slack, not permission to reach through the wall.
-const SNAP_DEPTH_SLACK_PX = 3;
-// A crowded corner still only has so many useful answers in it.
-const SNAP_CANDIDATE_LIMIT = 24;
-
-// Corner c has bit 0 for x, bit 1 for y, bit 2 for z, so an edge is a pair
-// differing in one bit and a face is the four sharing one.
-const BOX_EDGES = [
-  [0, 1], [2, 3], [4, 5], [6, 7],
-  [0, 2], [1, 3], [4, 6], [5, 7],
-  [0, 4], [1, 5], [2, 6], [3, 7],
-];
-const BOX_FACES = [
-  [0, 2, 4, 6], [1, 3, 5, 7],
-  [0, 1, 4, 5], [2, 3, 6, 7],
-  [0, 1, 2, 3], [4, 5, 6, 7],
-];
+// Screen pixels a real mesh feature reaches for the cursor. Surface remains
+// the fallback, so a snap never has to invent a box face-centre away from the
+// geometry somebody can see.
+const SNAP_RADIUS = { corner: 16, midpoint: 14, edge: 12 };
+const SNAP_BIAS = { corner: 0, midpoint: 0.55, edge: 1.1 };
+const SNAP_REACH_PX = 18;
+// A candidate is allowed a little either side of the exact cursor surface.
+// Bounding the front as well as the back stops a near OBB/feature from pulling
+// the endpoint through a thin part after the camera is orbited.
+const SNAP_DEPTH_SLACK_PX = 8;
+const SNAP_FRONT_SLACK_PX = 10;
 
 const _snapVP = new THREE.Matrix4();
-const _snapV = new THREE.Vector3();
+const _snapA = new THREE.Vector3();
+const _snapB = new THREE.Vector3();
 const _snapHit = new THREE.Vector3();
 const _snapDir = new THREE.Vector3();
 const _snapDepth = new THREE.Vector3();
-const _corner = Array.from({ length: 8 }, () => new THREE.Vector3());
-const _screenX = new Float64Array(8);
-const _screenY = new Float64Array(8);
-const _onScreen = new Uint8Array(8);
-const _nearIds = new Set();
 
 /** How much world one screen pixel covers at `point`. */
 function worldPerPixel(point) {
   const height = canvas.clientHeight || canvas.height || 1;
   if (isOrtho()) return (camera.top - camera.bottom) / camera.zoom / height;
-  const distance = camera.position.distanceTo(point);
+  camera.getWorldDirection(_snapDir);
+  const distance = Math.abs(_snapDepth.copy(point).sub(camera.position).dot(_snapDir));
   return (2 * Math.tan((camera.fov * Math.PI) / 360) * distance) / height;
+}
+
+function transformSnapPoint(source, at, matrix, out) {
+  const x = source[at];
+  const y = source[at + 1];
+  const z = source[at + 2];
+  return out.set(
+    matrix[0] * x + matrix[4] * y + matrix[8] * z + matrix[12],
+    matrix[1] * x + matrix[5] * y + matrix[9] * z + matrix[13],
+    matrix[2] * x + matrix[6] * y + matrix[10] * z + matrix[14],
+  );
 }
 
 /**
@@ -3703,110 +4303,113 @@ function worldPerPixel(point) {
  *
  * Judged in screen space, because that is how the person holding the mouse
  * judges it: a corner ten pixels away is the one they mean, not one three
- * centimetres away in a direction the screen cannot show. Candidates come
- * from every element near the cursor, not just the one in front, so the
- * corner where two walls meet offers both walls.
+ * centimetres away in a direction the screen cannot show. Candidate ids come
+ * from the GPU patch around the cursor, so only geometry actually visible in
+ * this view gets to offer its retained crease and boundary edges.
  *
  * Screen space alone cannot tell a near corner from a far one: in a plan view
  * a wall's top and bottom corners land on the same pixel, so the depth of the
  * surface under the cursor is what decides between them.
  */
-function snapAt(clientX, clientY, surface) {
-  if (!snapEnabled || !elements.size) return null;
+function snapAt(clientX, clientY, surface, candidateIds) {
+  // A visible product id is not a depth reference: one product can contain
+  // several distant parts. Without an exact surface at or next to the cursor,
+  // offering one of all its retained edges can pull the point across space.
+  if (!snapEnabled || !elements.size || !surface) return null;
   const rect = canvas.getBoundingClientRect();
   camera.updateMatrixWorld();
   _snapVP.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
-  _ndc.x = ((clientX - rect.left) / rect.width) * 2 - 1;
-  _ndc.y = -((clientY - rect.top) / rect.height) * 2 + 1;
-  raycaster.setFromCamera(_ndc, camera);
-  const ray = raycaster.ray;
+  const projection = _snapVP.elements;
 
   // Depth along the view axis, which both projections agree on.
   const view = camera.getWorldDirection(_snapDir);
-  const surfaceDepth = surface
-    ? _snapDepth.copy(surface).sub(camera.position).dot(view) : 0;
-  const depthSlack = surface
-    ? worldPerPixel(surface) * SNAP_DEPTH_SLACK_PX : Infinity;
+  const surfaceDepth = _snapDepth.copy(surface).sub(camera.position).dot(view);
+  const depthSlack = worldPerPixel(surface) * SNAP_DEPTH_SLACK_PX;
+  const frontSlack = worldPerPixel(surface) * SNAP_FRONT_SLACK_PX;
 
   let best = null;
   let bestId = null;
+  let projectedX = 0;
+  let projectedY = 0;
   const project = (point) => {
-    _snapV.copy(point).applyMatrix4(_snapVP);
-    // Behind the lens the projection wraps and the pixel distance is a lie.
-    if (_snapV.z < -1 || _snapV.z > 1) return -1;
-    const sx = rect.left + (_snapV.x * 0.5 + 0.5) * rect.width - clientX;
-    const sy = rect.top + (0.5 - _snapV.y * 0.5) * rect.height - clientY;
-    // Squared: thousands of these run per hover and only the order matters.
-    return sx * sx + sy * sy;
+    const x = point.x, y = point.y, z = point.z;
+    const w = projection[3] * x + projection[7] * y
+      + projection[11] * z + projection[15];
+    if (!(w > 1e-8)) return 0;
+    const ndcZ = (projection[2] * x + projection[6] * y
+      + projection[10] * z + projection[14]) / w;
+    if (ndcZ < -1 || ndcZ > 1) return 0;
+    projectedX = rect.left + ((projection[0] * x + projection[4] * y
+      + projection[8] * z + projection[12]) / w * 0.5 + 0.5) * rect.width;
+    projectedY = rect.top + (0.5 - (projection[1] * x + projection[5] * y
+      + projection[9] * z + projection[13]) / w * 0.5) * rect.height;
+    return w;
   };
 
-  for (const id of snapCandidates(surface)) {
+  const offer = (kind, distance, point, id) => {
+    const reach = SNAP_RADIUS[kind];
+    if (!(distance >= 0) || distance >= reach * reach) return;
+    // Screen distance is what the user sees. A small bias helps exact corners
+    // win a close tie without letting a distant corner pull a point off the
+    // edge directly under the cursor.
+    const score = Math.sqrt(distance) + SNAP_BIAS[kind];
+    if (best && best.score <= score) return;
+    for (const plane of activeClipPlanes) {
+      if (plane.distanceToPoint(point) < 0) return;
+    }
+    const depth = _snapDepth.copy(point).sub(camera.position).dot(view) - surfaceDepth;
+    if (depth > depthSlack || depth < -frontSlack) return;
+    best = { kind, distance, score, point: point.clone(), depth };
+    bestId = id;
+  };
+
+  for (const id of candidateIds || []) {
     const rec = elements.get(id);
-    if (!rec || !isElementShown(id)) continue;
-    if (!obbCorners(rec, _corner)) continue;
-    for (let c = 0; c < 8; c++) {
-      const d = project(_corner[c]);
-      _onScreen[c] = d < 0 ? 0 : 1;
-      _screenX[c] = d;
-    }
-    const offer = (kind, distance, point) => {
-      const reach = SNAP_RADIUS[kind];
-      if (!(distance >= 0) || distance >= reach * reach) return;
-      if (best && (SNAP_RANK[best.kind] < SNAP_RANK[kind]
-        || (best.kind === kind && best.distance <= distance))) return;
-      // A section cuts the geometry away for the eye and for the pick pass;
-      // its corners must not survive either.
-      for (const plane of activeClipPlanes) {
-        if (plane.distanceToPoint(point) < 0) return;
+    if (!rec || !isElementPickable(id) || !rec.snapParts) continue;
+    for (const part of rec.snapParts) {
+      const source = part.segments;
+      const matrix = part.matrix;
+      for (let segment = 0; segment < part.count; segment++) {
+        const at = Math.floor((segment * part.sourceCount) / part.count) * 6;
+        transformSnapPoint(source, at, matrix, _snapA);
+        const aw = project(_snapA);
+        if (!aw) continue;
+        const ax = projectedX;
+        const ay = projectedY;
+        offer("corner", (ax - clientX) ** 2 + (ay - clientY) ** 2, _snapA, id);
+
+        transformSnapPoint(source, at + 3, matrix, _snapB);
+        const bw = project(_snapB);
+        if (!bw) continue;
+        const bx = projectedX;
+        const by = projectedY;
+        offer("corner", (bx - clientX) ** 2 + (by - clientY) ** 2, _snapB, id);
+
+        _snapHit.addVectors(_snapA, _snapB).multiplyScalar(0.5);
+        if (project(_snapHit)) {
+          offer("midpoint", (projectedX - clientX) ** 2
+            + (projectedY - clientY) ** 2, _snapHit, id);
+        }
+
+        // Closest point in screen space, with perspective-correct interpolation
+        // back along the 3D segment. This is where the cursor appears to be.
+        const dx = bx - ax;
+        const dy = by - ay;
+        const lengthSq = dx * dx + dy * dy;
+        if (lengthSq < 1e-9) continue;
+        const t = Math.min(1, Math.max(0,
+          ((clientX - ax) * dx + (clientY - ay) * dy) / lengthSq));
+        const amount = (t * aw) / (bw + t * (aw - bw));
+        _snapHit.copy(_snapA).lerp(_snapB, amount);
+        const sx = ax + dx * t - clientX;
+        const sy = ay + dy * t - clientY;
+        offer("edge", sx * sx + sy * sy, _snapHit, id);
       }
-      // Behind the surface means hidden by it. In front is a silhouette, which
-      // is exactly what people snap to, so only the far side is refused.
-      const depth = _snapDepth.copy(point).sub(camera.position).dot(view) - surfaceDepth;
-      if (depth > depthSlack) return;
-      best = { kind, distance, point: point.clone(), depth };
-      bestId = id;
-    };
-    for (let c = 0; c < 8; c++) {
-      if (_onScreen[c]) offer("corner", _screenX[c], _corner[c]);
-    }
-    for (const [a, b] of BOX_EDGES) {
-      if (!_onScreen[a] || !_onScreen[b]) continue;
-      _snapHit.addVectors(_corner[a], _corner[b]).multiplyScalar(0.5);
-      offer("midpoint", project(_snapHit), _snapHit);
-      // Anywhere along the edge, not just its ends: the useful answer when
-      // measuring to the side of an opening rather than to its corner.
-      closestOnSegmentToRay(_corner[a], _corner[b], ray, _snapHit);
-      offer("edge", project(_snapHit), _snapHit);
-    }
-    for (const face of BOX_FACES) {
-      if (face.some((c) => !_onScreen[c])) continue;
-      _snapHit.set(0, 0, 0);
-      for (const c of face) _snapHit.add(_corner[c]);
-      _snapHit.multiplyScalar(0.25);
-      offer("centre", project(_snapHit), _snapHit);
     }
   }
   if (!best) return null;
   best.express_id = bestId;
   return best;
-}
-
-/** Elements worth testing for a snap near `surface`, nearest first. */
-function snapCandidates(surface) {
-  if (!surface) return [];
-  const reach = worldPerPixel(surface) * SNAP_REACH_PX;
-  elementsNear(surface, reach, _nearIds);
-  if (_nearIds.size <= SNAP_CANDIDATE_LIMIT) return _nearIds;
-  const scored = [];
-  for (const id of _nearIds) {
-    const b = elements.get(id).box;
-    scored.push([id, Math.hypot(
-      surface.x - (b[0] + b[3]) / 2,
-      surface.y - (b[1] + b[4]) / 2,
-      surface.z - (b[2] + b[5]) / 2)]);
-  }
-  scored.sort((a, b) => a[1] - b[1]);
-  return scored.slice(0, SNAP_CANDIDATE_LIMIT).map((entry) => entry[0]);
 }
 
 /**
@@ -3817,17 +4420,26 @@ function snapCandidates(surface) {
  * often to pay for a number nobody reads until the click lands.
  */
 function measurePointAt(clientX, clientY, { needId = true } = {}) {
-  return snapOnSurface(clientX, clientY, surfacePointAt(clientX, clientY), needId);
+  const surface = surfacePointAt(clientX, clientY);
+  const candidates = snapCandidatesAt(clientX, clientY);
+  const reference = surface || (candidates.nearest
+    ? surfacePointAt(candidates.nearest.clientX, candidates.nearest.clientY) : null);
+  return snapOnSurface(clientX, clientY, surface, candidates, needId, reference);
 }
 
 /** The same answer for the hover preview, off the probe that does not block. */
 async function measurePointAsync(clientX, clientY) {
-  const surface = await surfacePointAsync(clientX, clientY);
-  return snapOnSurface(clientX, clientY, surface, false);
+  const [surface, candidates] = await Promise.all([
+    surfacePointAsync(clientX, clientY),
+    snapCandidatesAsync(clientX, clientY),
+  ]);
+  const reference = surface || (candidates.nearest
+    ? await surfacePointAsync(candidates.nearest.clientX, candidates.nearest.clientY) : null);
+  return snapOnSurface(clientX, clientY, surface, candidates, false, reference);
 }
 
-function snapOnSurface(clientX, clientY, surface, needId) {
-  const snapped = snapAt(clientX, clientY, surface);
+function snapOnSurface(clientX, clientY, surface, candidates, needId, reference = surface) {
+  const snapped = snapAt(clientX, clientY, reference, candidates.ids);
   if (snapped) {
     return {
       point: snapped.point,
@@ -3841,7 +4453,7 @@ function snapOnSurface(clientX, clientY, surface, needId) {
     point: surface,
     kind: "surface",
     depth: 0,
-    express_id: needId ? pickElementAt(clientX, clientY) : null,
+    express_id: needId ? (candidates.centreId ?? pickElementAt(clientX, clientY)) : null,
   };
 }
 
@@ -3854,19 +4466,61 @@ snapGroup.name = "snap-preview";
 scene.add(snapGroup);
 let snapPreview = null;
 let previewLine = null;
+let previewLinePosition = null;
 let snapPreviewAt = 0;
 let snapPreviewCost = 8;
 let snapPreviewBusy = false;
+let snapPreviewQueued = null;
+let snapPreviewTimer = 0;
+let snapPreviewHit = null;
 // Bumped whenever the preview is taken down, so a probe still in flight when
 // the pointer leaves or the camera moves cannot put the glyph back.
 let snapPreviewGen = 0;
 
-function clearSnapPreview() {
+function clearSnapPreview({ keepQueue = false } = {}) {
   snapPreviewGen++;
+  snapPreviewHit = null;
+  if (!keepQueue) {
+    snapPreviewQueued = null;
+    clearTimeout(snapPreviewTimer);
+    snapPreviewTimer = 0;
+  }
   if (snapPreview) snapPreview.visible = false;
   if (previewLine) previewLine.visible = false;
   $("snap-hint").hidden = true;
+  updateMeasureLive();
   invalidate();
+}
+
+/** Reuse a fresh hover answer for the click made on that same screen point. */
+function cachedMeasurePoint(clientX, clientY) {
+  const cached = snapPreviewHit;
+  if (!cached || cached.serial !== cameraSerial
+    || performance.now() - cached.at > 300
+    || Math.hypot(clientX - cached.clientX, clientY - cached.clientY) > 4) return null;
+  return { ...cached.hit, point: cached.hit.point.clone() };
+}
+
+/** Keep only the newest pointer sample while the GPU readback is in flight. */
+function queueSnapPreview(clientX, clientY) {
+  snapPreviewQueued = [clientX, clientY];
+  if (snapPreviewBusy || snapPreviewTimer) return;
+  const wait = Math.max(0, Math.max(16, snapPreviewCost * 2)
+    - (performance.now() - snapPreviewAt));
+  if (wait > 0) {
+    snapPreviewTimer = setTimeout(runQueuedSnapPreview, wait);
+  } else {
+    void runQueuedSnapPreview();
+  }
+}
+
+async function runQueuedSnapPreview() {
+  snapPreviewTimer = 0;
+  if (snapPreviewBusy || !snapPreviewQueued || !measureMode) return;
+  const request = snapPreviewQueued;
+  snapPreviewQueued = null;
+  await showSnapPreview(request[0], request[1]);
+  if (snapPreviewQueued && measureMode) queueSnapPreview(...snapPreviewQueued);
 }
 
 /**
@@ -3875,10 +4529,6 @@ function clearSnapPreview() {
  */
 async function showSnapPreview(clientX, clientY) {
   const now = performance.now();
-  // One probe in flight at a time, and never more often than the last one
-  // took: the readback no longer blocks, so what is left to pace is the 1x1
-  // render itself rather than a stall picked in advance.
-  if (snapPreviewBusy || now - snapPreviewAt < Math.max(16, snapPreviewCost * 2)) return;
   snapPreviewAt = now;
   snapPreviewBusy = true;
   const generation = snapPreviewGen;
@@ -3891,32 +4541,46 @@ async function showSnapPreview(clientX, clientY) {
   snapPreviewCost = performance.now() - now;
   if (generation !== snapPreviewGen) return;
   if (!hit) {
-    clearSnapPreview();
+    clearSnapPreview({ keepQueue: true });
     return;
   }
+  snapPreviewHit = {
+    clientX,
+    clientY,
+    serial: cameraSerial,
+    at: performance.now(),
+    hit: { ...hit, point: hit.point.clone() },
+  };
   const anchor = pending.length ? pending[pending.length - 1].point : null;
   const point = constrainedMeasurePoint(anchor, hit.point);
+  const movedByLock = point.distanceToSquared(hit.point) > 1e-16;
+  const previewKind = movedByLock ? "axis" : hit.kind;
   if (!snapPreview) {
     snapPreview = new THREE.Sprite(new THREE.SpriteMaterial({
-      map: snapGlyphTexture(hit.kind), depthTest: false, transparent: true,
+      map: snapGlyphTexture(previewKind), depthTest: false, transparent: true,
     }));
     snapPreview.renderOrder = 1001;
     snapGroup.add(snapPreview);
   }
   snapPreview.visible = true;
-  snapPreview.material.map = snapGlyphTexture(hit.kind);
-  snapPreview.material.color.set(hit.kind === "surface" ? 0x9fb2c4 : 0x5ad1ff);
-  const px = GLYPH_PX[hit.kind] || GLYPH_PX.surface;
+  snapPreview.material.map = snapGlyphTexture(previewKind);
+  snapPreview.material.color.set(
+    movedByLock ? AXIS_COLORS[axisLock] : hit.kind === "surface" ? 0x9fb2c4 : 0x5ad1ff);
+  const px = GLYPH_PX[previewKind] || GLYPH_PX.surface;
   snapPreview.userData.pxW = px;
   snapPreview.userData.pxH = px;
   snapPreview.position.copy(point);
   syncMarkerScale(snapPreview);
 
-  const lockAxis = axisLock || inferredAxis;
+  const lockAxis = axisLock;
   if (anchor) {
     if (!previewLine) {
+      const geometry = new THREE.BufferGeometry();
+      previewLinePosition = new THREE.BufferAttribute(new Float32Array(6), 3);
+      previewLinePosition.setUsage(THREE.DynamicDrawUsage);
+      geometry.setAttribute("position", previewLinePosition);
       previewLine = new THREE.Line(
-        new THREE.BufferGeometry().setFromPoints([anchor, point]),
+        geometry,
         new THREE.LineBasicMaterial({
           color: MEASURE_COLOR, transparent: true, opacity: 0.9, depthTest: false,
         }));
@@ -3925,23 +4589,24 @@ async function showSnapPreview(clientX, clientY) {
     }
     previewLine.visible = true;
     previewLine.material.color.set(lockAxis ? AXIS_COLORS[lockAxis] : MEASURE_COLOR);
-    previewLine.geometry.setFromPoints([anchor, point]);
+    previewLinePosition.setXYZ(0, anchor.x, anchor.y, anchor.z);
+    previewLinePosition.setXYZ(1, point.x, point.y, point.z);
+    previewLinePosition.needsUpdate = true;
+    previewLine.geometry.computeBoundingSphere();
   } else if (previewLine) {
     previewLine.visible = false;
   }
 
   const hint = $("snap-hint");
-  const feature = hit.kind === "surface" ? "" : hit.kind;
+  const feature = movedByLock
+    ? `${axisLock.toUpperCase()} axis` : hit.kind === "surface" ? "" : hit.kind;
   // A silhouette snap sits off the face the cursor is over, so the point is
   // not where the pixel says it is. Say by how much rather than let the
   // number arrive as a surprise.
-  const offSurface = hit.depth < -1e-3 ? `${formatLength(-hit.depth)} in front` : "";
+  const offSurface = !movedByLock && hit.depth < -1e-3
+    ? `${formatLength(-hit.depth)} in front` : "";
   if (anchor && measureKind !== "angle") {
-    const lock = axisLock
-      ? `${axisLock.toUpperCase()} locked`
-      : inferredAxis
-        ? `on ${inferredAxis.toUpperCase()} (Shift locks)`
-        : "";
+    const lock = axisLock ? `${axisLock.toUpperCase()} locked` : "";
     hint.textContent = [formatLength(anchor.distanceTo(point)), lock, feature, offSurface]
       .filter(Boolean).join(" · ");
   } else {
@@ -3949,6 +4614,7 @@ async function showSnapPreview(clientX, clientY) {
   }
   hint.style.transform = `translate(${clientX + 14}px, ${clientY + 14}px)`;
   hint.hidden = false;
+  updateMeasureLive(point);
   invalidate();
 }
 
@@ -4046,6 +4712,16 @@ function polygonMeasure(points) {
     flatness: measured.flatness,
     normal: [normal.x, normal.y, normal.z],
     centre: modelCentre(toVector(measured.centre)),
+  };
+}
+
+/** Total and per-segment lengths of an open clicked route. */
+function polylineMeasure(points) {
+  const measured = polylineCore(points);
+  return {
+    points: points.map(toModelPoint),
+    distance: measured.distance,
+    segments: measured.segments,
   };
 }
 
@@ -4195,10 +4871,18 @@ function replayMeasurement(item) {
     addMarker(placed[1].point);
     const held = axisLock;
     axisLock = item.axis || "";
-    inferredAxis = "";
     commitMeasurement(
       placed[0].point, placed[1].point, item.ends || ["surface", "surface"], anchors);
     axisLock = held;
+  } else if (item.kind === "path") {
+    if (placed.length < 2) return;
+    const points = placed.map((entry) => entry.point);
+    for (const point of points) addMarker(point);
+    for (let i = 1; i < points.length; i++) drawPath([points[i - 1], points[i]], false);
+    const measured = polylineMeasure(points);
+    recordMeasurement(
+      "path", measured, `${points.length} points`, formatLength(measured.distance),
+      points[points.length - 1], anchors);
   } else if (item.kind === "angle") {
     if (placed.length !== 3) return;
     const points = placed.map((entry) => entry.point);
@@ -4273,6 +4957,10 @@ function sendMeasurements() {
             from: toModelPoint(m.from),
             to: toModelPoint(m.to),
             distance: m.distance,
+            horizontal: m.horizontal,
+            vertical: m.vertical,
+            slope_percent: m.slopePercent,
+            slope_angle: m.slopeAngle,
             delta: ["x", "y", "z"].map((name) => m.delta[SCENE_DELTA[axisFrame[name].axis]]),
             axis: m.axis || null,
             ends: m.ends || null,
@@ -4286,8 +4974,10 @@ function sendMeasurements() {
 }
 
 function commitMeasurement(from, to, ends = ["surface", "surface"], anchors = null) {
+  measureCardDismissed = false;
   const line = drawPath([from, to], false);
-  const distance = from.distanceTo(to);
+  const measured = spanMeasure(from, to, axisFrame.z.axis);
+  const distance = measured.distance;
   const mid = from.clone().add(to).multiplyScalar(0.5);
   const group = adoptPending(formatLength(distance), mid);
   measurements.push({
@@ -4295,8 +4985,12 @@ function commitMeasurement(from, to, ends = ["surface", "surface"], anchors = nu
     from, to, line, group,
     ends,
     anchors: anchors || [anchorAt(from, null), anchorAt(to, null)],
-    axis: axisLock || inferredAxis || null,
+    axis: axisLock || null,
     distance,
+    horizontal: measured.horizontal,
+    vertical: measured.vertical,
+    slopePercent: measured.slopePercent,
+    slopeAngle: measured.slopeAngle,
     delta: [
       Math.abs(to.x - from.x), Math.abs(to.y - from.y), Math.abs(to.z - from.z),
     ],
@@ -4310,7 +5004,7 @@ function drawPath(points, close) {
   const path = close ? [...points, points[0]] : points;
   const line = new THREE.Line(
     new THREE.BufferGeometry().setFromPoints(path),
-    new THREE.LineBasicMaterial({ color: MEASURE_COLOR, depthTest: false }));
+    new THREE.LineBasicMaterial({ color: MEASURE_COLOR, depthTest: true, depthWrite: false }));
   line.renderOrder = 998;
   ensurePendingGroup().add(line);
   return line;
@@ -4320,6 +5014,7 @@ function drawPath(points, close) {
 function recordMeasurement(
   kind, data, label, labelText = "", labelPoint = null, anchors = null,
 ) {
+  measureCardDismissed = false;
   const group = adoptPending(labelText, labelPoint);
   measurements.push({
     kind, data, label,
@@ -4357,6 +5052,7 @@ function emphasizeMeasurement(measurement, on) {
 
 /** Drop the newest unclicked point, with its marker and segment. */
 function undoPendingPoint() {
+  measureProblem = "";
   const entry = pending.pop();
   if (!entry) return false;
   for (const visual of [entry.marker, entry.line]) {
@@ -4393,6 +5089,9 @@ function renderMeasurements() {
   const card = $("measure-card");
   const list = $("measure-list");
   if (!card || !list) return;
+  // Remember focus before rebuilding the ledger: deleting its last row
+  // disconnects the focused button before we can test where focus used to be.
+  const hadCardFocus = card.contains(document.activeElement);
   list.textContent = "";
   for (let i = measurements.length - 1; i >= 0; i--) {
     const m = measurements[i];
@@ -4411,6 +5110,10 @@ function renderMeasurements() {
         `${m.label || "element"} · ${formatLength(d.length)} × ${formatLength(d.width)}`
         + ` × ${formatLength(d.thickness)}`
         + (d.volume > 0 ? ` · ${formatVolume(d.volume)}` : "")));
+    } else if (m.kind === "path") {
+      row.appendChild(el("span", "measure-dist", formatLength(m.data.distance)));
+      row.appendChild(el("span", "measure-delta",
+        `${m.data.points.length} points · ${m.data.segments.length} segments`));
     } else if (m.kind === "angle") {
       row.appendChild(el("span", "measure-dist", `${m.data.degrees.toFixed(1)}°`));
       row.appendChild(el("span", "measure-delta",
@@ -4432,12 +5135,15 @@ function renderMeasurements() {
       row.appendChild(el("span", "measure-dist", formatLength(m.distance)));
       // three.js is Y-up while IFC is Z-up, so report the model's own axes
       const snapped = (m.ends || []).filter((end) => end && end !== "surface");
+      const slope = m.vertical > 1e-9 && m.horizontal > 1e-9
+        ? ` · slope ${m.slopePercent.toFixed(1)}%` : "";
       row.appendChild(el("span", "measure-delta",
         (m.axis ? `${m.axis.toUpperCase()} locked · ` : "")
         + (snapped.length ? `${snapped.join("/")} · ` : "")
         + `X ${formatLength(m.delta[SCENE_DELTA[axisFrame.x.axis]])}`
         + ` · Y ${formatLength(m.delta[SCENE_DELTA[axisFrame.y.axis]])}`
-        + ` · Z ${formatLength(m.delta[SCENE_DELTA[axisFrame.z.axis]])}`));
+        + ` · Z ${formatLength(m.delta[SCENE_DELTA[axisFrame.z.axis]])}`
+        + slope));
     }
     // A carried measurement whose element did not come back sits where it was
     // clicked, which is a guess. Say so rather than let it read as measured.
@@ -4449,7 +5155,15 @@ function renderMeasurements() {
     }
     list.appendChild(row);
   }
-  card.hidden = !measurements.length && !measureMode;
+  card.hidden = !measurePanelPinned && (
+    (!measurements.length && !measureMode)
+    || (measureCardDismissed && !measureMode)
+  );
+  if (card.hidden && hadCardFocus) canvas.focus({ preventScroll: true });
+  const launcher = $("tool-open-measure");
+  if (launcher) launcher.setAttribute("aria-expanded", String(!card.hidden));
+  const railLauncher = $("btn-tool-measure");
+  if (railLauncher) railLauncher.setAttribute("aria-expanded", String(!card.hidden));
   const hint = $("measure-hint");
   if (hint) {
     hint.hidden = !measureMode;
@@ -4458,12 +5172,39 @@ function renderMeasurements() {
       : "snap off (S)";
     hint.textContent = measureHint(snap);
   }
+  const count = $("measure-count");
+  if (count) count.textContent = String(measurements.length);
+  const railCount = $("measure-rail-count");
+  if (railCount) {
+    railCount.textContent = String(measurements.length);
+    railCount.hidden = measurements.length === 0;
+  }
+  renderViewerFilters();
+  const finish = $("measure-finish");
+  if (finish) {
+    const canFinish = measureMode
+      && ((measureKind === "path" && pending.length >= 2)
+        || (measureKind === "area" && pending.length >= 3));
+    finish.hidden = !(measureMode && (measureKind === "path" || measureKind === "area"));
+    finish.disabled = !canFinish;
+    const label = $("measure-finish-label");
+    if (label) label.textContent = measureKind === "area" ? "Finish area" : "Finish path";
+  }
+  for (const button of document.querySelectorAll("[data-measure-axis]")) {
+    const active = measureMode && button.dataset.measureAxis === axisLock;
+    button.classList.toggle("is-active", active);
+    button.setAttribute("aria-pressed", String(active));
+  }
+  const axis = $("measure-axis");
+  if (axis) axis.hidden = !measureMode || !["distance", "path"].includes(measureKind);
+  updateMeasureLive();
   invalidate();
 }
 
 /** What to do next, in the words of whichever tool is running. */
 const MEASURE_BUTTONS = {
   distance: $("tool-measure"),
+  path: $("tool-measure-path"),
   angle: $("tool-measure-angle"),
   area: $("tool-measure-area"),
 };
@@ -4479,6 +5220,7 @@ function setSnap(on) {
 }
 
 function measureHint(snap) {
+  if (measureProblem) return `${measureProblem} · choose another point or press Backspace`;
   if (measureKind === "angle") {
     if (!pending.length) return `${snap} · click one end of the angle`;
     if (pending.length === 1) return `${snap} · click the corner the angle sits at`;
@@ -4488,7 +5230,12 @@ function measureHint(snap) {
     if (pending.length < 3) {
       return `${snap} · click the outline, ${3 - pending.length} more before it closes`;
     }
-    return `${snap} · ${pending.length} points · Enter or double-click to close`;
+    return `${snap} · ${pending.length} points · click the first point or Finish`;
+  }
+  if (measureKind === "path") {
+    if (!pending.length) return `${snap} · click the first point of the route`;
+    if (pending.length === 1) return `${snap} · click the next point`;
+    return `${snap} · ${pending.length} points · Finish or press Enter`;
   }
   if (!pending.length) return `${snap} · click to start, or Alt-click an element for its size`;
   return axisLock
@@ -4496,11 +5243,63 @@ function measureHint(snap) {
     : `${snap} · click the second point; X, Y or Z locks an axis`;
 }
 
+/** Prominent value in the card, including the latest uncommitted preview. */
+function updateMeasureLive(preview = null) {
+  const live = $("measure-live");
+  if (!live) return;
+  const points = pending.map((entry) => entry.point);
+  if (preview) points.push(preview);
+  let value = "-";
+  if (measureKind === "distance" && points.length >= 2) {
+    value = formatLength(points[0].distanceTo(points[1]));
+  } else if (measureKind === "path" && points.length >= 2) {
+    value = formatLength(polylineCore(points).distance);
+  } else if (measureKind === "angle" && points.length >= 3) {
+    value = `${angleCore(points[0], points[1], points[2]).degrees.toFixed(1)}°`;
+  } else if (measureKind === "area" && points.length >= 3) {
+    value = formatArea(polygonCore(points).area);
+  }
+  live.textContent = value;
+}
+
+const ORBIT_LEFT_MOUSE = controls.mouseButtons.LEFT;
+const ORBIT_MIDDLE_MOUSE = controls.mouseButtons.MIDDLE;
+const ORBIT_RIGHT_MOUSE = controls.mouseButtons.RIGHT;
+const ORBIT_ONE_TOUCH = controls.touches.ONE;
+
+function setMeasurePanelOpen(open) {
+  measurePanelPinned = Boolean(open);
+  measureCardDismissed = !open;
+  if (!open && measureMode) {
+    setMeasureMode(false);
+    return;
+  }
+  renderMeasurements();
+}
+
 function setMeasureMode(on, kind) {
+  const wasOn = measureMode;
   measureMode = on;
+  measureProblem = "";
   if (kind) measureKind = kind;
+  if (on) {
+    measureCardDismissed = false;
+    measurePanelPinned = true;
+  }
   clearPending();
-  if (!on) axisLock = "";
+  if (!on || !["distance", "path"].includes(measureKind)) axisLock = "";
+  // A measurement click must not also be an orbit gesture. While the tool is
+  // open right-drag orbits, middle-drag pans, and the wheel still zooms.
+  controls.mouseButtons.LEFT = on ? null : ORBIT_LEFT_MOUSE;
+  controls.mouseButtons.MIDDLE = on ? THREE.MOUSE.PAN : ORBIT_MIDDLE_MOUSE;
+  controls.mouseButtons.RIGHT = on ? THREE.MOUSE.ROTATE : ORBIT_RIGHT_MOUSE;
+  controls.touches.ONE = on ? null : ORBIT_ONE_TOUCH;
+  if (on && !wasOn && controls.enableDamping) {
+    // Flush the last orbit step and clear its residual glide before aiming.
+    controls.enableDamping = false;
+    controls.update();
+    applyMotionPreference();
+  }
   clearSnapPreview();
   canvas.classList.toggle("is-measuring", on);
   for (const [name, button] of Object.entries(MEASURE_BUTTONS)) {
@@ -4526,11 +5325,18 @@ function finishArea() {
   const owner = new Map(pending.map((entry) => [entry.point, entry.express_id]));
   const points = areaOutline(pending.map((entry) => entry.point));
   if (points.length < 3) return false;
-  drawPath(points, true);
+  const measured = polygonMeasure(points);
+  if (measured.area <= Math.max(1e-12, measured.perimeter ** 2 * 1e-10)) {
+    measureProblem = "Area needs non-collinear points";
+    renderMeasurements();
+    return false;
+  }
+  // Each click already drew the preceding edge; add only the closing edge so
+  // the completed outline is not rendered twice over itself.
+  drawPath([points[points.length - 1], points[0]], false);
   const centroid = points
     .reduce((sum, p) => sum.add(p), new THREE.Vector3())
     .multiplyScalar(1 / points.length);
-  const measured = polygonMeasure(points);
   recordMeasurement(
     "area", measured, `${points.length} points`, formatArea(measured.area), centroid,
     points.map((point) => anchorAt(point, owner.get(point) ?? null)));
@@ -4538,30 +5344,80 @@ function finishArea() {
   return true;
 }
 
+/** Commit an open route without adding an artificial closing segment. */
+function finishPath() {
+  if (measureKind !== "path" || pending.length < 2) return false;
+  const points = pending.map((entry) => entry.point);
+  const measured = polylineMeasure(points);
+  if (measured.distance <= 1e-9) return false;
+  recordMeasurement(
+    "path", measured, `${points.length} points`, formatLength(measured.distance),
+    points[points.length - 1], pendingAnchors());
+  pending.length = 0;
+  return true;
+}
+
+function finishOpenMeasurement() {
+  return measureKind === "path" ? finishPath() : finishArea();
+}
+
 /** One anchor per pending click, each naming the element it landed on. */
 function pendingAnchors() {
   return pending.map((entry) => anchorAt(entry.point, entry.express_id));
 }
 
-function handleMeasureClick(clientX, clientY) {
-  const hit = measurePointAt(clientX, clientY);
+/** Whether the pointer is visibly back on the first corner of an area. */
+function areaClosesAt(clientX, clientY) {
+  if (measureKind !== "area" || pending.length < 3) return false;
+  const ndc = pending[0].point.clone().project(camera);
+  if (ndc.z < -1 || ndc.z > 1) return false;
+  const rect = canvas.getBoundingClientRect();
+  const x = rect.left + (ndc.x * 0.5 + 0.5) * rect.width;
+  const y = rect.top + (0.5 - ndc.y * 0.5) * rect.height;
+  return Math.hypot(clientX - x, clientY - y) <= AREA_CLOSE_PX;
+}
+
+function handleMeasureClick(clientX, clientY, prefetched = null) {
+  const hit = prefetched || measurePointAt(clientX, clientY);
   if (!hit) return;
   lastSnapKind = hit.kind;
-  // The click lands exactly where the preview said it would: the same lock
-  // and the same axis inference decide both.
+  // The click lands exactly where the preview said it would: only the visible
+  // axis lock can move it away from the raw surface hit.
   const anchor = pending.length ? pending[pending.length - 1].point : null;
   const point = constrainedMeasurePoint(anchor, hit.point);
+  const movedByLock = point.distanceToSquared(hit.point) > 1e-16;
+  if (areaClosesAt(clientX, clientY)) {
+    if (finishArea()) renderMeasurements();
+    clearSnapPreview();
+    return;
+  }
+  if ((measureKind === "area" || measureKind === "path")
+    && pending.length >= MAX_MEASURE_POINTS) {
+    measureProblem = `Maximum ${MAX_MEASURE_POINTS} points reached; finish this measurement`;
+    clearSnapPreview();
+    renderMeasurements();
+    return;
+  }
+  if (anchor && point.distanceToSquared(anchor) <= AREA_MIN_EDGE_SQ) {
+    measureProblem = "That point is the same as the previous point";
+    clearSnapPreview();
+    renderMeasurements();
+    return;
+  }
+  measureProblem = "";
   // measurePointAt already resolved which element is under the cursor; keeping
   // it is what lets the measurement survive the next rebuild.
   const entry = {
-    point, kind: hit.kind, express_id: hit.express_id,
+    point,
+    kind: movedByLock ? "axis" : hit.kind,
+    express_id: movedByLock ? null : hit.express_id,
     marker: addMarker(point), line: null,
   };
   pending.push(entry);
 
   const wanted = MEASURE_KINDS[measureKind];
   if (!wanted || pending.length < wanted) {
-    if (measureKind === "area" && pending.length > 1) {
+    if ((measureKind === "area" || measureKind === "path") && pending.length > 1) {
       entry.line = drawPath([pending[pending.length - 2].point, point], false);
     }
     renderMeasurements();
@@ -4732,7 +5588,8 @@ let sceneState = "ready";
 function sendSceneState(state) {
   sceneState = state;
   try {
-    wsSend({ type: "scene_state", state, model_id: currentModelRow()?.id ?? null });
+    const row = viewerDocumentOpen ? currentModelRow() : null;
+    wsSend({ type: "scene_state", state, model_id: row?.id ?? null });
   } catch { /* a build must never fail because the socket did */ }
 }
 
@@ -4810,7 +5667,7 @@ function handleFrame(frame) {
       // the LLM reading a selection the user cannot see, or missing one they
       // can. While a reload is pending the selection belongs to the old model,
       // so buildScene resends it instead.
-      if (want && want !== currentEtag) scheduleReload();
+      if (viewerDocumentOpen && want && want !== currentEtag) scheduleReload();
       else sendSelection();
       break;
     }
@@ -4819,7 +5676,7 @@ function handleFrame(frame) {
       if (frame.reason === "loaded") applyColorThemeFrame({ clear: true });
       // These describe the active model; a pinned one is read-only and only
       // changes through a status frame (attach, detach, active switch).
-      if (viewModelId) break;
+      if (viewModelId || !viewerDocumentOpen) break;
       if (!frame.etag || frame.etag !== currentEtag) scheduleReload();
       break;
     case "mode_changed":
@@ -4829,10 +5686,10 @@ function handleFrame(frame) {
       applyTheme(frame.theme);
       break;
     case "highlight":
-      applyHighlightFrame(frame);
+      if (frameTargetsCurrentModel(frame)) applyHighlightFrame(frame);
       break;
     case "color_theme":
-      applyColorThemeFrame(frame);
+      if (frameTargetsCurrentModel(frame)) applyColorThemeFrame(frame);
       break;
     case "camera":
       if (frame.view && frame.view !== "current") setView(frame.view, fitTargetIds(frame.fit));
@@ -4842,16 +5699,7 @@ function handleFrame(frame) {
       handleScreenshot(frame);
       break;
     case "command": {
-      let ok = true;
-      let result = null;
-      let error = null;
-      try {
-        result = runViewerCommand(frame);
-      } catch (err) {
-        ok = false;
-        error = commandFailure(err);
-      }
-      wsSend({
+      const answer = (ok, result = null, error = null) => wsSend({
         type: "command_result",
         id: frame.id,
         action: frame.action || "",
@@ -4859,6 +5707,18 @@ function handleFrame(frame) {
         result,
         error,
       });
+      try {
+        const result = runViewerCommand(frame);
+        if (result && typeof result.then === "function") {
+          result.then((value) => answer(true, value)).catch(
+            (error) => answer(false, null, commandFailure(error)),
+          );
+        } else {
+          answer(true, result);
+        }
+      } catch (err) {
+        answer(false, null, commandFailure(err));
+      }
       break;
     }
     case "ping":
@@ -4867,6 +5727,11 @@ function handleFrame(frame) {
     default:
       break;
   }
+}
+
+function frameTargetsCurrentModel(frame) {
+  return viewerDocumentOpen
+    && (!frame.model_id || frame.model_id === currentModelRow()?.id);
 }
 
 function applyHighlightFrame(frame) {
@@ -4904,6 +5769,7 @@ function applyColorThemeFrame(frame) {
   }
   applyAppearance();
   renderLegend();
+  renderViewerFilters();
 }
 
 function renderLegend() {
@@ -5018,18 +5884,186 @@ function setMode(mode) {
   scheduleViewerContext("mode");
 }
 
+function syncModelSelectionCounts() {
+  for (const badge of document.querySelectorAll("[data-model-selection]")) {
+    const count = selectionGuidsForModel(badge.dataset.modelSelection).length;
+    badge.textContent = String(count);
+    badge.hidden = count === 0;
+    badge.title = count
+      ? `${count} selected element${count === 1 ? "" : "s"} kept in chat context`
+      : "";
+  }
+}
+
+function renderModelTabs() {
+  const tabs = $("model-tabs");
+  const choices = $("model-tab-choices");
+  if (!tabs || !choices) return;
+  const currentId = viewerDocumentOpen ? currentModelRow()?.id || null : null;
+  for (const id of [...closedModelTabs]) {
+    if (!modelRows.some((row) => row.id === id)) closedModelTabs.delete(id);
+  }
+  tabs.textContent = "";
+  const openRows = modelRows.filter((row) => !closedModelTabs.has(row.id));
+  for (const row of openRows) {
+    const tab = el("div", `model-tab${row.id === currentId ? " active" : ""}`);
+    const selected = selectionGuidsForModel(row.id).length;
+    tab.title = `${row.name}${row.active ? " · active in console" : ""}`
+      + `${selected ? ` · ${selected} selected` : ""}`;
+    const open = el("button", "model-tab-main");
+    open.type = "button";
+    open.dataset.modelId = row.id;
+    open.setAttribute("role", "tab");
+    open.setAttribute("aria-selected", String(row.id === currentId));
+    open.setAttribute("aria-controls", "canvas-wrap");
+    open.setAttribute("aria-label", `View ${row.name}`);
+    open.appendChild(el("span", "model-tab-label", row.name));
+    const selectionCount = el("span", "model-tab-selection-count", String(selected));
+    selectionCount.dataset.modelSelection = row.id;
+    selectionCount.hidden = selected === 0;
+    open.appendChild(selectionCount);
+    open.addEventListener("click", () => selectViewerModel(row.id));
+    const close = el("button", "model-tab-close", "\u00d7");
+    close.type = "button";
+    close.title = `Close ${row.name}`;
+    close.setAttribute("aria-label", close.title);
+    close.addEventListener("click", (event) => {
+      event.stopPropagation();
+      closedModelTabs.add(row.id);
+      if (row.id === currentId) {
+        const replacement = openRows.find((candidate) => candidate.id !== row.id);
+        if (replacement) selectViewerModel(replacement.id);
+        else closeViewerSurface({ openAgent: true });
+      } else {
+        renderModelTabs();
+      }
+    });
+    tab.append(open, close);
+    tabs.appendChild(tab);
+  }
+
+  choices.textContent = "";
+  for (const row of modelRows) {
+    const isCurrent = row.id === currentId;
+    const isOpen = !closedModelTabs.has(row.id);
+    const open = el("button", `model-tab-choice${isCurrent ? " current" : ""}`);
+    open.type = "button";
+    open.title = isCurrent ? `${row.name} is being viewed` : `View ${row.name}`;
+    open.setAttribute("aria-pressed", String(isCurrent));
+    open.appendChild(el("span", null, row.name));
+    const selected = selectionGuidsForModel(row.id).length;
+    const state = isCurrent
+      ? "Viewing"
+      : row.active ? (isOpen ? "Active · open" : "Active") : isOpen ? "Open" : "Closed";
+    open.appendChild(el(
+      "span",
+      "model-tab-choice-state",
+      `${state}${selected ? ` · ${selected} selected` : ""}`,
+    ));
+    open.addEventListener("click", () => {
+      closedModelTabs.delete(row.id);
+      $("model-tab-menu").hidden = true;
+      $("model-tab-add").setAttribute("aria-expanded", "false");
+      selectViewerModel(row.id);
+    });
+    choices.appendChild(open);
+  }
+  $("model-tab-empty").hidden = modelRows.length > 0;
+  $("viewer-rail").classList.toggle("single-model", modelRows.length <= 1);
+  syncViewerSurface();
+}
+
+const modelTabAdd = $("model-tab-add");
+modelTabAdd.addEventListener("click", (event) => {
+  event.stopPropagation();
+  const menu = $("model-tab-menu");
+  menu.hidden = !menu.hidden;
+  modelTabAdd.setAttribute("aria-expanded", String(!menu.hidden));
+});
+$("model-tab-menu").addEventListener("click", (event) => event.stopPropagation());
+
+function activeModelRow() {
+  return modelRows.find((row) => row.active) || modelRows[0] || null;
+}
+
+function syncViewerSurface() {
+  document.body.classList.toggle("viewer-closed", !viewerDocumentOpen);
+  const active = activeModelRow();
+  const openActive = $("model-tab-open-active");
+  openActive.hidden = viewerDocumentOpen || !active;
+  if (active) {
+    openActive.title = `Open ${active.name}`;
+    openActive.setAttribute("aria-label", `Open active IFC file ${active.name}`);
+  }
+  $("viewer-empty-open").disabled = !active;
+  $("viewer-empty-open").textContent = active ? `Open ${active.name}` : "No IFC file attached";
+  const chatVisible = typeof chatDock !== "undefined" && !chatDock.hidden;
+  $("viewer-empty").hidden = viewerDocumentOpen || chatVisible;
+  $("viewer-toolbar").inert = !viewerDocumentOpen;
+  if (typeof chatResize !== "undefined") {
+    chatResize.hidden = !chatVisible || !viewerDocumentOpen;
+  }
+  if (viewerDocumentOpen) {
+    if (chatVisible && typeof closePanelsForChat === "function") closePanelsForChat(true);
+    if (typeof applyChatWidthForViewport === "function") applyChatWidthForViewport();
+    requestAnimationFrame(() => {
+      resize();
+      invalidate();
+    });
+  }
+}
+
+function closeViewerSurface({ openAgent = false } = {}) {
+  if (viewerDocumentOpen) {
+    const current = currentModelRow();
+    if (current?.id) modelTabViews.set(current.id, captureView(current.name));
+  }
+  viewerDocumentOpen = false;
+  pendingModelTabView = null;
+  clearTimeout(reloadTimer);
+  reloadQueued = false;
+  setSelection([], false);
+  clearProperties();
+  if (measureMode) setMeasureMode(false);
+  setToolPanel(null, { persist: false });
+  closePopovers();
+  $("model-tab-menu").hidden = true;
+  modelTabAdd.setAttribute("aria-expanded", "false");
+  renderModelTabs();
+  scheduleViewerContext("closed");
+  if (openAgent && !chatBtn.hidden) void setChat(true);
+  else syncViewerSurface();
+}
+
+function openActiveViewerModel() {
+  const active = activeModelRow();
+  if (active) selectViewerModel(active.id);
+}
+
+$("model-tab-open-active").addEventListener("click", openActiveViewerModel);
+$("viewer-empty-open").addEventListener("click", openActiveViewerModel);
+
 // The console can hold more than one model; the picker appears only then.
 // The active model is always the first entry and the default view.
 function renderModelPicker(rows) {
   modelRows = rows || [];
+  const residentIds = new Set(modelRows.map((row) => row.id));
+  for (const store of [modelTabViews, parsedModelCache, modelSelections]) {
+    for (const modelId of store.keys()) {
+      if (!residentIds.has(modelId)) store.delete(modelId);
+    }
+  }
   const select = $("model-select");
   const many = modelRows.length > 1;
-  select.hidden = !many;
+  select.hidden = true;
+  if (!modelRows.length) viewerDocumentOpen = false;
   if (!many) {
     if (viewModelId !== null) {
       viewModelId = null;
-      scheduleReload();
+      if (viewerDocumentOpen) scheduleReload();
     }
+    renderModelTabs();
+    scheduleViewerContext("models");
     return;
   }
   const activeId = (modelRows.find((m) => m.active) || {}).id;
@@ -5037,9 +6071,9 @@ function renderModelPicker(rows) {
     viewModelId = null;  // a pinned model that became active should follow edits again
   }
   if (viewModelId && !modelRows.some((m) => m.id === viewModelId)) {
-    setSelection([], false);
+    setSelection([], false, { remember: false, publish: false });
     viewModelId = null;  // the pinned model was detached: follow the active one
-    scheduleReload();
+    if (viewerDocumentOpen) scheduleReload();
   }
   const wanted = viewModelId || (modelRows.find((m) => m.active) || {}).id || "";
   const signature = modelRows.map((m) => `${m.id}:${m.active}`).join("|");
@@ -5054,6 +6088,7 @@ function renderModelPicker(rows) {
     }
   }
   select.value = wanted;
+  renderModelTabs();
   scheduleViewerContext("models");
 }
 
@@ -5066,10 +6101,10 @@ function setModelInfo(status) {
   const label = $("model-name");
   if (status) {
     if (status.models) renderModelPicker(status.models);
-    const row = currentModelRow();
+    const row = viewerDocumentOpen ? currentModelRow() : activeModelRow();
     // With the picker visible the select already names the model; showing it
     // twice in a one-line topbar just costs space.
-    label.hidden = !$("model-select").hidden;
+    label.hidden = modelRows.length > 0 && viewerDocumentOpen;
     label.textContent = (row && row.name) || status.model || "no model";
     label.title = label.textContent;
     const schema = $("schema");
@@ -5080,8 +6115,12 @@ function setModelInfo(status) {
     // one, so a pinned second model labels its own numbers.
     setFileUnits((row && row.units) || status.units || null);
     $("dirty").hidden = !status.dirty;
-    if (status.highlight) applyHighlightFrame(status.highlight);
-    if (status.color_theme) applyColorThemeFrame(status.color_theme);
+    if (status.highlight && frameTargetsCurrentModel(status.highlight)) {
+      applyHighlightFrame(status.highlight);
+    }
+    if (status.color_theme && frameTargetsCurrentModel(status.color_theme)) {
+      applyColorThemeFrame(status.color_theme);
+    }
     if (status.chat) setChatAvailable(status.chat.enabled);
   } else {
     label.textContent = "no model";
@@ -5109,11 +6148,34 @@ async function refreshStatus() {
 // Switching model reloads the scene; the active model is the default view.
 function selectViewerModel(picked) {
   if (!modelRows.some((row) => row.id === picked)) return false;
+  const current = currentModelRow();
+  const reopening = !viewerDocumentOpen;
+  viewerDocumentOpen = true;
+  closedModelTabs.delete(picked);
+  if (reopening) clearProperties();
+  if (current?.id === picked) {
+    const saved = reopening ? modelTabViews.get(picked) : null;
+    if (saved) {
+      if (loading || !currentEtag) pendingModelTabView = { modelId: picked, view: saved };
+      else restoreView(saved);
+    }
+    renderModelTabs();
+    if (!currentEtag && !loading) loadModel();
+    else sendSelection();
+    scheduleViewerContext(reopening ? "opened" : "model");
+    return true;
+  }
+  if (current?.id) modelTabViews.set(current.id, captureView(current.name));
+  pendingModelTabView = { modelId: picked, view: modelTabViews.get(picked) || null };
+  // Clear the old model's shared selection before the model id changes. The
+  // snapshot above keeps it for this tab without leaking it to another file.
+  setSelection([], false, { remember: false, publish: false });
   const active = (modelRows.find((m) => m.active) || {}).id;
   viewModelId = picked === active ? null : picked;
   currentEtag = null;  // a different model, not a newer revision of this one
   setFileUnits((currentModelRow() || {}).units || null);
   clearProperties();
+  renderModelTabs();
   loadModel();
   scheduleViewerContext("model");
   return true;
@@ -5139,6 +6201,97 @@ function updateToolButtons() {
   $("tool-fit-sel").disabled = none;
 }
 
+function activeViewerFilters() {
+  const rows = [];
+  if (selection.size) {
+    rows.push({
+      key: "selection",
+      label: `${selection.size} selected`,
+      clear: () => setSelection([], false),
+    });
+  }
+  if (ghostContext && selection.size) {
+    rows.push({
+      key: "transparency",
+      label: "Transparent context",
+      clear: () => setGhostContext(false),
+    });
+  }
+  if (userIsolateSet || isolateSet || hiddenManual.size || hiddenByTree.size) {
+    rows.push({ key: "visibility", label: "Hidden or isolated elements", clear: showEverything });
+  }
+  const cuts = AXES.filter((axis) => section[axis].on).length;
+  if (cuts) {
+    rows.push({ key: "section", label: `${cuts} section ${cuts === 1 ? "plane" : "planes"}`, clear: clearSections });
+  }
+  if (measurements.length || pending.length) {
+    rows.push({
+      key: "measurements",
+      label: `${measurements.length + (pending.length ? 1 : 0)} measurement${measurements.length === 1 && !pending.length ? "" : "s"}`,
+      clear: clearMeasurements,
+    });
+  }
+  if (highlightSet.size) {
+    rows.push({ key: "highlights", label: `${highlightSet.size} assistant highlights`, clear: () => applyHighlightFrame({ clear: true }) });
+  }
+  if (themeByGuid.size) {
+    rows.push({ key: "theme", label: themeTitle || "Color theme", clear: () => applyColorThemeFrame({ clear: true }) });
+  }
+  if (isOrtho()) {
+    rows.push({ key: "projection", label: "Orthographic projection", clear: () => setProjection("perspective") });
+  }
+  return rows;
+}
+
+function renderViewerFilters() {
+  const list = $("filter-list");
+  if (!list) return;
+  const rows = activeViewerFilters();
+  list.textContent = "";
+  if (!rows.length) {
+    list.appendChild(el("div", "filter-empty", "Default IFC view · no filters"));
+  } else {
+    for (const row of rows) {
+      const item = el("div", "filter-row");
+      item.dataset.filter = row.key;
+      item.appendChild(el("span", "filter-row-label", row.label));
+      const remove = el("button", "filter-remove", "\u00d7");
+      remove.type = "button";
+      remove.title = `Remove ${row.label}`;
+      remove.setAttribute("aria-label", remove.title);
+      remove.addEventListener("click", row.clear);
+      item.appendChild(remove);
+      list.appendChild(item);
+    }
+  }
+  $("tool-clear-filters").disabled = rows.length === 0;
+  const badge = $("filter-count");
+  badge.textContent = String(rows.length);
+  badge.hidden = rows.length === 0;
+  $("btn-tool-filters").classList.toggle("has-active", rows.length > 0);
+  $("btn-tool-visibility").classList.toggle(
+    "has-active", Boolean(userIsolateSet || isolateSet || hiddenManual.size || hiddenByTree.size
+      || (ghostContext && selection.size)),
+  );
+  $("btn-tool-section").classList.toggle("has-active", sectionActive());
+  $("btn-tool-views").classList.toggle("has-active", isOrtho());
+  $("btn-tool-display").classList.toggle("has-active", edgesOn());
+}
+
+function clearAllViewerFilters() {
+  setSelection([], false);
+  setGhostContext(false);
+  showEverything();
+  clearSections();
+  clearMeasurements();
+  applyHighlightFrame({ clear: true });
+  applyColorThemeFrame({ clear: true });
+  setProjection("perspective");
+  renderViewerFilters();
+}
+
+$("tool-clear-filters").addEventListener("click", clearAllViewerFilters);
+
 /**
  * What is not on screen, and why, where the person looking at it can see it.
  *
@@ -5151,9 +6304,12 @@ function updateVisibilityInfo() {
   // A ghost is on screen, so it is not one of the missing; it is counted as
   // its own thing rather than reported twice under two names.
   const gone = hiddenCount - ghostCount;
+  const hasVisibilityFilter = Boolean(
+    userIsolateSet || isolateSet || hiddenManual.size || hiddenByTree.size,
+  );
   $("tool-hidden-info").textContent =
     gone ? `${gone} of ${elements.size} elements hidden` : "";
-  $("tool-show-all").disabled = hiddenCount === 0;
+  $("tool-show-all").disabled = !hasVisibilityFilter;
   // Before a model lands there is nothing to be missing from, and the section
   // sliders have no real range to name a cut height in.
   const parts = [];
@@ -5168,8 +6324,9 @@ function updateVisibilityInfo() {
     if (isOrtho()) parts.push("orthographic");
   }
   $("vis-info-text").textContent = parts.join(" · ");
-  $("vis-show-all").hidden = hiddenCount === 0;
+  $("vis-show-all").hidden = !hasVisibilityFilter;
   $("vis-clear-section").hidden = !parts.length || !sectionActive();
+  renderViewerFilters();
 }
 
 /**
@@ -5189,7 +6346,6 @@ function showEverything() {
   }
   applyVisibility();
   updateToolButtons();
-  dropFocusActive();
 }
 
 /**
@@ -5211,36 +6367,24 @@ function unhide(ids) {
   return hidden.length;
 }
 
-/**
- * Isolate the selection as a named tab, so it is one click from undone.
- *
- * Assigning userIsolateSet directly left no trace of what had been isolated or
- * how to get back; a focus tab is the control the agent's own focus command
- * already gets, and the user could close its tabs but never make one.
- */
+/** Isolate the selection directly; Show all is the single way back. */
 function focusSelection(fit) {
   if (!selection.size) return;
-  const guids = selectedGuids();
-  if (guids.length) {
-    openFocusTab(guids, null, fit);
-    return;
-  }
-  // geometry with no GlobalId cannot be named, so it isolates without a tab
   userIsolateSet = new Set(selection);
   applyVisibility();
   updateToolButtons();
-  dropFocusActive();
   if (fit) fitTo([...selection]);
 }
 
 $("tool-isolate").addEventListener("click", () => focusSelection(false));
 $("tool-focus-sel").addEventListener("click", () => focusSelection(true));
-$("tool-hide").addEventListener("click", () => {
+function hideSelection() {
   if (!selection.size) return;
   for (const id of selection) hiddenManual.add(id);
   setSelection([], false);
   applyVisibility();
-});
+}
+$("tool-hide").addEventListener("click", hideSelection);
 $("tool-show-all").addEventListener("click", showEverything);
 $("tool-fit-sel").addEventListener("click", () => {
   if (selection.size) fitTo([...selection]);
@@ -5295,14 +6439,20 @@ function syncSectionRow(axis) {
   const slider = document.querySelector(`.section-at[data-axis="${axis}"]`);
   const flip = document.querySelector(`.section-flip[data-axis="${axis}"]`);
   const box = document.querySelector(`.section-on[data-axis="${axis}"]`);
+  const modelAxis = (MODEL_OF_SCENE[axis] || axis).toUpperCase();
   if (box) box.checked = state.on;
+  const label = box?.closest(".section-head")?.querySelector(".section-label");
+  if (label) label.textContent = modelAxis;
   if (slider) {
     slider.hidden = !state.on;
     slider.value = String(state.t);
+    slider.setAttribute("aria-label", `${modelAxis} section position`);
   }
   if (flip) {
     flip.hidden = !state.on;
     flip.classList.toggle("is-active", state.flip);
+    flip.title = `Flip ${modelAxis} cut side`;
+    flip.setAttribute("aria-label", flip.title);
   }
   $("tool-section-clear").hidden = !sectionActive();
 }
@@ -5322,15 +6472,26 @@ for (const box of document.querySelectorAll(".section-on")) {
     if (box.checked && section[axis].t >= 1) section[axis].t = 0.5;
     syncSectionRow(axis);
     updateClipping();
+    if (box.checked) {
+      showSectionHelper(axis);
+      hideSectionHelper(700);
+    } else {
+      hideSectionHelper();
+    }
     saveSection();
   });
 }
 for (const slider of document.querySelectorAll(".section-at")) {
   slider.addEventListener("input", () => {
-    section[slider.dataset.axis].t = Number(slider.value);
+    const axis = slider.dataset.axis;
+    section[axis].t = Number(slider.value);
+    showSectionHelper(axis);
     updateClipping();
   });
-  slider.addEventListener("change", saveSection);
+  slider.addEventListener("change", () => {
+    saveSection();
+    hideSectionHelper(500);
+  });
 }
 for (const flip of document.querySelectorAll(".section-flip")) {
   flip.addEventListener("click", () => {
@@ -5338,6 +6499,8 @@ for (const flip of document.querySelectorAll(".section-flip")) {
     section[axis].flip = !section[axis].flip;
     syncSectionRow(axis);
     updateClipping();
+    showSectionHelper(axis);
+    hideSectionHelper(700);
     saveSection();
   });
 }
@@ -5360,7 +6523,7 @@ function syncSliceInput() {
   const label = unit.imperial ? "ft" : unit.label;
   input.value = String(Number((sliceDepth * unit.perMetre).toFixed(3)));
   input.step = String(Number((0.1 * unit.perMetre).toPrecision(2)));
-  input.setAttribute("aria-label", `Section slice depth in ${label}`);
+  input.setAttribute("aria-label", `Section slice thickness in ${label}`);
   const note = $("section-depth-unit");
   if (note) note.textContent = label;
 }
@@ -5378,6 +6541,7 @@ $("tool-ortho").addEventListener("click", () => {
 });
 /** Every cut off again, from the popover or from the footer chip. */
 function clearSections() {
+  hideSectionHelper();
   for (const axis of AXES) {
     section[axis].on = false;
     syncSectionRow(axis);
@@ -5391,6 +6555,33 @@ $("vis-show-all").addEventListener("click", showEverything);
 $("vis-clear-section").addEventListener("click", clearSections);
 
 // -- measurement controls
+const measureQuickActions = document.querySelector(
+  '#tools-panel [data-tool-panel="measure"] .tool-action-grid',
+);
+if (measureQuickActions) {
+  measureQuickActions.classList.add("measure-quick-actions");
+  $("measure-card").querySelector(".measure-readout").before(measureQuickActions);
+}
+
+$("btn-tool-measure").addEventListener("click", (event) => {
+  event.stopPropagation();
+  closePopovers();
+  setToolPanel(null);
+  setMeasurePanelOpen($("measure-card").hidden);
+  if (!$("measure-card").hidden) {
+    MEASURE_BUTTONS[measureKind]?.focus({ preventScroll: true });
+  }
+});
+
+const openMeasure = $("tool-open-measure");
+if (openMeasure) {
+  openMeasure.addEventListener("click", () => {
+    closePopovers();
+    setToolPanel(null);
+    setMeasureMode(true, measureKind || "distance");
+    MEASURE_BUTTONS[measureKind]?.focus({ preventScroll: true });
+  });
+}
 for (const [kind, button] of Object.entries(MEASURE_BUTTONS)) {
   // Clicking the tool that is already running turns measuring off; clicking
   // another switches to it without a stop in between.
@@ -5398,10 +6589,32 @@ for (const [kind, button] of Object.entries(MEASURE_BUTTONS)) {
     setMeasureMode(!(measureMode && measureKind === kind), kind);
   });
 }
-$("measure-clear").addEventListener("click", () => {
-  clearMeasurements();
-  setMeasureMode(false);
-});
+for (const button of document.querySelectorAll("[data-measure-axis]")) {
+  button.addEventListener("click", () => {
+    const wanted = button.dataset.measureAxis || "";
+    axisLock = wanted && axisLock === wanted ? "" : wanted;
+    clearSnapPreview();
+    renderMeasurements();
+    if (latestMeasurePointer) {
+      queueSnapPreview(latestMeasurePointer[0], latestMeasurePointer[1]);
+    }
+  });
+}
+const measureFinish = $("measure-finish");
+if (measureFinish) {
+  measureFinish.addEventListener("click", () => {
+    if (finishOpenMeasurement()) renderMeasurements();
+  });
+}
+const measureClear = $("measure-clear");
+if (measureClear) measureClear.addEventListener("click", clearMeasurements);
+const measureClose = $("measure-close");
+if (measureClose) {
+  measureClose.addEventListener("click", () => {
+    setMeasurePanelOpen(false);
+    canvas.focus({ preventScroll: true });
+  });
+}
 
 updateToolButtons();
 updateVisibilityInfo();
@@ -5501,16 +6714,9 @@ function renderSearch(payload) {
   isolate.addEventListener("click", () => {
     const targets = searchIds();
     if (!targets.length) return;
-    // a tab named after the query, so the result set is one click from undone
-    const guids = targets.map((id) => guidOf.get(id)).filter(Boolean);
-    if (guids.length) {
-      openFocusTab(guids, $("search-input").value.trim(), false);
-      return;
-    }
     userIsolateSet = new Set(targets);
     applyVisibility();
     updateToolButtons();
-    dropFocusActive();
   });
 
   markSearchSelection();
@@ -5596,96 +6802,6 @@ function refreshSearch() {
   else resetSearchResults();
 }
 
-// ---------------------------------------------------------------- focus tabs
-// One named tab per element under analysis, in a strip under the topbar. Tabs
-// only ever drive userIsolateSet; picking All or closing the active tab hands
-// the viewport back to the whole model.
-const MAX_FOCUS_TABS = 12;
-
-function focusTabIndex(name) {
-  return focusTabs.findIndex((tab) => tab.name === name);
-}
-
-function applyFocusTab(name, fit = true) {
-  activeFocusName = null;
-  let ids = null;
-  if (name !== null) {
-    const tab = focusTabs[focusTabIndex(name)];
-    if (!tab) throw new Error(`No focus tab named ${name}`);
-    ids = tab.guids.map((guid) => expressOf.get(guid)).filter((id) => id !== undefined);
-    if (!ids.length) throw new Error("None of that tab's elements are in this model");
-    activeFocusName = name;
-  }
-  userIsolateSet = ids ? new Set(ids) : null;
-  applyVisibility();
-  updateToolButtons();
-  renderFocusTabs();
-  if (fit) fitTo(ids);
-}
-
-function openFocusTab(guids, name, fit = true) {
-  const label = String(name || "").trim()
-    || `${guids[0].slice(0, 8)}${guids.length > 1 ? ` +${guids.length - 1}` : ""}`;
-  const existing = focusTabIndex(label);
-  const tab = { name: label, guids: [...guids] };
-  if (existing >= 0) focusTabs[existing] = tab;
-  else {
-    focusTabs.push(tab);
-    if (focusTabs.length > MAX_FOCUS_TABS) focusTabs.shift();
-  }
-  applyFocusTab(label, fit);
-  return tab;
-}
-
-function closeFocusTab(name) {
-  const index = focusTabIndex(name);
-  if (index < 0) return false;
-  focusTabs.splice(index, 1);
-  if (activeFocusName === name) applyFocusTab(null, false);
-  else renderFocusTabs();
-  return true;
-}
-
-function dropFocusActive() {
-  // Isolation changed hands (manual isolate, show all, restored view): the
-  // tabs stay, but none of them is what is on screen now.
-  if (activeFocusName === null) {
-    renderFocusTabs();
-    return;
-  }
-  activeFocusName = null;
-  renderFocusTabs();
-}
-
-function renderFocusTabs() {
-  const strip = $("focus-tabs");
-  if (!strip) return;
-  strip.textContent = "";
-  strip.hidden = !focusTabs.length;
-  scheduleViewerContext("focus");
-  if (!focusTabs.length) return;
-  const all = el("button", `focus-tab${activeFocusName === null ? " active" : ""}`, "All");
-  all.title = "Show the whole model";
-  all.addEventListener("click", () => applyFocusTab(null));
-  strip.appendChild(all);
-  for (const tab of focusTabs) {
-    const active = activeFocusName === tab.name;
-    const btn = el("button", `focus-tab${active ? " active" : ""}`, tab.name);
-    btn.title = `Focus ${tab.name}`;
-    btn.setAttribute("role", "tab");
-    btn.setAttribute("aria-selected", active ? "true" : "false");
-    btn.addEventListener("click", () => applyFocusTab(tab.name));
-    const close = el("span", "focus-tab-close", "×");
-    close.title = `Close ${tab.name}`;
-    close.addEventListener("click", (event) => {
-      event.stopPropagation();
-      closeFocusTab(tab.name);
-    });
-    btn.appendChild(close);
-    strip.appendChild(btn);
-  }
-}
-
 // ---------------------------------------------------------------- saved views
 // Camera poses live in localStorage next to the panel layout: they belong to
 // this browser, not to the model, and survive reloads and model edits.
@@ -5707,6 +6823,8 @@ function captureView(name) {
     // What was on screen is part of what the view was about.
     selection: selectedGuids(),
     isolated: userIsolateSet ? [...userIsolateSet].map((id) => guidOf.get(id)).filter(Boolean) : null,
+    hidden: [...hiddenManual].map((id) => guidOf.get(id)).filter(Boolean),
+    ghost: ghostContext,
     section: AXES.map((axis) => ({ ...section[axis] })),
     slice: sliceDepth,
     // The dimensions taken in a view are part of what the view was about, and
@@ -5732,8 +6850,16 @@ function restoreView(view) {
     userIsolateSet = ids.length ? new Set(ids) : null;
     applyVisibility();
     updateToolButtons();
-    dropFocusActive();
   }
+  if (Array.isArray(view.hidden)) {
+    hiddenManual.clear();
+    for (const guid of view.hidden) {
+      const id = expressOf.get(guid);
+      if (id !== undefined) hiddenManual.add(id);
+    }
+    applyVisibility();
+  }
+  if (typeof view.ghost === "boolean") setGhostContext(view.ghost);
   if (Array.isArray(view.section)) {
     AXES.forEach((axis, index) => {
       const saved = view.section[index];
@@ -5836,8 +6962,8 @@ setThemePreference(uiState.themePreference || "system", { persist: false });
 // The remembered reading choices, before anything is drawn with a number on it.
 lengthUnitChoice = LENGTH_UNITS[uiState.lengthUnit] ? uiState.lengthUnit : "file";
 lengthDecimals = Number.isInteger(uiState.lengthDecimals) ? uiState.lengthDecimals : null;
-edgesWanted = uiState.edges !== false;
-ghostContext = uiState.ghost !== false;
+edgesWanted = uiState.edges === true;
+ghostContext = uiState.ghost === true;
 
 function applySceneSettings() {
   grid.visible = uiState.grid === true;
@@ -6041,13 +7167,52 @@ $("panel-scrim").addEventListener("click", () => {
 const POPOVERS = [
   ["btn-settings", "settings-panel"],
   ["btn-help", "help-panel"],
-  ["btn-tools", "tools-panel"],
 ];
 function setPopoverOpen(btnId, panelId, open) {
   const button = $(btnId);
   $(panelId).hidden = !open;
   button.setAttribute("aria-expanded", String(open));
-  if (panelId === "tools-panel") button.hidden = open;
+}
+
+const TOOL_PANEL_LABELS = {
+  visibility: "Visibility",
+  views: "Views & camera",
+  section: "Section planes",
+  display: "Display",
+  filters: "Viewer filters",
+};
+let activeToolPanel = null;
+
+function setToolPanel(name, { focus = false, persist = true } = {}) {
+  const valid = Object.hasOwn(TOOL_PANEL_LABELS, name) ? name : null;
+  // Measure occupies the same top-right instrument shelf as these panels.
+  // Closing it first avoids two controls stacking over each other there.
+  if (valid && !$("measure-card").hidden) setMeasurePanelOpen(false);
+  activeToolPanel = valid;
+  const panel = $("tools-panel");
+  panel.hidden = !valid;
+  panel.dataset.panel = valid || "";
+  panel.querySelector(".popover-heading").textContent = valid
+    ? TOOL_PANEL_LABELS[valid] : "Viewer tools";
+  for (const sectionNode of panel.querySelectorAll(":scope > .tool-section")) {
+    sectionNode.hidden = !valid || sectionNode.dataset.toolPanel !== valid;
+  }
+  $("tool-hidden-info").hidden = valid !== "visibility";
+  panel.querySelector(".measure-launcher-note").hidden = true;
+  for (const button of document.querySelectorAll("#viewer-toolbar [data-tool-panel]")) {
+    button.setAttribute("aria-expanded", String(button.dataset.toolPanel === valid));
+  }
+  if (persist) {
+    uiState.toolPanel = valid;
+    saveUi();
+  }
+  if (valid) {
+    closePopovers();
+    if (focus) {
+      panel.querySelector("button:not(:disabled), input:not(:disabled), select:not(:disabled)")
+        ?.focus({ preventScroll: true });
+    }
+  }
 }
 
 function closePopovers(exceptId, restoreFocus = false) {
@@ -6064,6 +7229,10 @@ function togglePopover(btnId, panelId) {
   const panel = $(panelId);
   const open = panel.hidden;
   if (open) closePopovers(panelId);
+  if (open) {
+    setMeasurePanelOpen(false);
+    setToolPanel(null, { persist: false });
+  }
   setPopoverOpen(btnId, panelId, open);
   if (open) {
     panel.querySelector("button:not(:disabled), input:not(:disabled), select:not(:disabled)")?.focus();
@@ -6077,8 +7246,25 @@ for (const [btnId, panelId] of POPOVERS) {
   });
   $(panelId).addEventListener("click", (e) => e.stopPropagation());
 }
-$("tools-panel-close").addEventListener("click", () => closePopovers(null, true));
-document.addEventListener("click", () => closePopovers());
+for (const button of document.querySelectorAll("#viewer-toolbar [data-tool-panel]")) {
+  button.addEventListener("click", (event) => {
+    event.stopPropagation();
+    const name = button.dataset.toolPanel;
+    setToolPanel(activeToolPanel === name ? null : name);
+  });
+}
+$("btn-tools").addEventListener("click", () => setToolPanel("visibility"));
+$("tools-panel").addEventListener("click", (event) => event.stopPropagation());
+$("tools-panel-close").addEventListener("click", () => {
+  const trigger = document.querySelector(`#viewer-toolbar [data-tool-panel="${activeToolPanel}"]`);
+  setToolPanel(null);
+  trigger?.focus({ preventScroll: true });
+});
+document.addEventListener("click", () => {
+  closePopovers();
+  $("model-tab-menu").hidden = true;
+  modelTabAdd.setAttribute("aria-expanded", "false");
+});
 
 const gridBox = $("set-grid");
 const axesBox = $("set-axes");
@@ -6094,9 +7280,10 @@ edgesBox.addEventListener("change", () => {
   uiState.edges = edgesWanted;
   saveUi();
   syncEdgeVisibility();
+  renderViewerFilters();
   invalidate();
 });
-themeSelect.value = themePreference;
+themeSelect.value = themePreference === "system" ? resolvedTheme() : themePreference;
 themeSelect.addEventListener("change", () => {
   setThemePreference(themeSelect.value);
 });
@@ -6125,6 +7312,105 @@ $("set-reset-layout").addEventListener("click", () => {
 });
 applySceneSettings();
 renderSavedViews();
+setToolPanel(uiState.toolPanel, { persist: false });
+
+let pendingGuidCommand = null;
+let guidCommandGeneration = 0;
+
+function cachedModelContainsGuid(entry, guid) {
+  const guids = entry?.parsed?.maps?.guids;
+  return Array.isArray(guids) && guids.includes(guid);
+}
+
+async function modelContainingGuid(guid, hint = null) {
+  if (hint && modelRows.some((row) => row.id === hint)) return hint;
+  if (expressOf.has(guid) && renderedModelId) return renderedModelId;
+  for (const row of modelRows) {
+    if (cachedModelContainsGuid(parsedModelCache.get(row.id), guid)) return row.id;
+  }
+  // A GUID in an answer may name an attached IFC the user has not viewed yet.
+  // Probe the lightweight element route for each resident model so one click
+  // can still find and open it without making the user hunt through tabs.
+  const matches = await Promise.all(modelRows.map(async (row) => {
+    try {
+      const query = `?model=${encodeURIComponent(row.id)}`;
+      const response = await api(`/api/elements/${encodeURIComponent(guid)}${query}`);
+      return response.ok ? row.id : null;
+    } catch {
+      return null;
+    }
+  }));
+  return matches.find(Boolean) || null;
+}
+
+function applyGuidCommand(command) {
+  const ids = command.guids
+    .map((guid) => expressOf.get(guid))
+    // Spatial containers and other metadata entities can have a GlobalId and
+    // appear in the model tree without contributing a mesh. Never put one of
+    // those ids into an isolation set: every real mesh would be filtered out
+    // and the view would look irrecoverably blank.
+    .filter((id) => id !== undefined && Number.isFinite(elements.get(id)?.box?.[0]));
+  if (!ids.length) throw new Error("That IFC element has no geometry to show in the 3D viewer");
+  setSelection(ids, false);
+  const unhidden = unhide(ids);
+  if (command.isolate) {
+    focusSelection(true);
+  } else {
+    if (unhidden) {
+      applyVisibility();
+      updateToolButtons();
+    }
+    fitTo(ids);
+  }
+  return {
+    model_id: command.modelId,
+    guids: command.guids,
+    selected: ids.length,
+    isolated: command.isolate ? ids.length : 0,
+  };
+}
+
+function applyPendingGuidCommand(modelId, { reportFailure = false } = {}) {
+  if (!pendingGuidCommand || pendingGuidCommand.modelId !== modelId) return null;
+  const command = pendingGuidCommand;
+  pendingGuidCommand = null;
+  try {
+    return applyGuidCommand(command);
+  } catch (error) {
+    if (!reportFailure) throw error;
+    console.warn("[ifc-console] could not reveal GUID", error);
+    // This can run after a model switch, after revealGuidCommand has already
+    // reported that the request was queued. Send the eventual failure back to
+    // the chat instead of covering the viewport with an undismissable overlay.
+    sendViewerResult(command, false, null, commandFailure(error));
+    return null;
+  }
+}
+
+async function revealGuidCommand(command) {
+  const guids = (Array.isArray(command.guids) ? command.guids : [])
+    .filter((guid) => typeof guid === "string" && guid.length <= 128)
+    .slice(0, SELECTION_WIRE_MAX);
+  if (!guids.length) throw new Error("No IFC GlobalId was provided");
+  const generation = ++guidCommandGeneration;
+  pendingGuidCommand = null;
+  const modelId = await modelContainingGuid(guids[0], command.model_id || command.modelId);
+  if (generation !== guidCommandGeneration) return { superseded: true };
+  if (!modelId) throw new Error("That GlobalId is not in any attached IFC file");
+  pendingGuidCommand = {
+    action: command.action,
+    commandId: command.commandId,
+    modelId,
+    guids,
+    isolate: command.action === "isolate-guids",
+  };
+  if (!selectViewerModel(modelId)) throw new Error("The IFC file is no longer attached");
+  if (renderedModelId === modelId && !loading && currentEtag) {
+    return applyPendingGuidCommand(modelId);
+  }
+  return { model_id: modelId, guids, queued: true };
+}
 
 /**
  * Run one viewer command and return its result, or throw with a reason.
@@ -6134,6 +7420,22 @@ renderSavedViews();
  */
 function runViewerCommand(command) {
   {
+    const passiveWhileClosed = new Set([
+      "get-context", "set-theme", "set-model", "reveal-guids", "isolate-guids",
+    ]);
+    if (!viewerDocumentOpen && !passiveWhileClosed.has(command.action)) {
+      throw new Error("No IFC view is open; open a model tab and retry");
+    }
+    if (
+      command.action !== "set-model"
+      && command.action !== "clear-model-selection"
+      && command.action !== "reveal-guids"
+      && command.action !== "isolate-guids"
+      && command.model_id
+      && command.model_id !== currentModelRow()?.id
+    ) {
+      throw new Error("The requested model is not currently shown in this viewer tab");
+    }
     let result = null;
     if (command.action === "get-context") {
       result = viewerContext("request");
@@ -6145,6 +7447,8 @@ function runViewerCommand(command) {
         throw new Error("The requested model is not attached");
       }
       result = viewerContext("model").model;
+    } else if (command.action === "reveal-guids" || command.action === "isolate-guids") {
+      return revealGuidCommand(command);
     } else if (command.action === "set-panel") {
       const panel = command.panel === "tree" || command.panel === "model"
         ? treePanelController
@@ -6176,6 +7480,22 @@ function runViewerCommand(command) {
     } else if (command.action === "clear-selection") {
       setSelection([], false);
       result = viewerContext("selection").selection;
+    } else if (command.action === "clear-model-selection") {
+      const modelId = command.model_id || currentModelRow()?.id;
+      if (!modelRows.some((row) => row.id === modelId)) {
+        throw new Error("The requested model is not attached");
+      }
+      if (modelId === currentModelRow()?.id) {
+        setSelection([], false);
+      } else {
+        modelSelections.delete(modelId);
+        const saved = modelTabViews.get(modelId);
+        if (saved) saved.selection = [];
+        syncModelSelectionCounts();
+        sendSelection();
+        scheduleViewerContext("selection");
+      }
+      result = modelSelectionRows();
     } else if (command.action === "focus-selection") {
       if (!selection.size) throw new Error("Nothing is selected");
       fitTo([...selection]);
@@ -6203,7 +7523,6 @@ function runViewerCommand(command) {
       if (command.ghost !== undefined) setGhostContext(command.ghost !== false);
       applyVisibility();
       updateToolButtons();
-      dropFocusActive();
       if (command.fit !== false) fitTo(ids);
       result = {
         isolated: ids.length,
@@ -6238,28 +7557,24 @@ function runViewerCommand(command) {
       updateToolButtons();
       result = { hidden: ids.length, total_hidden: hiddenManual.size };
     } else if (command.action === "focus") {
-      // A named analysis view: the element alone on screen, in its own tab.
+      // A direct analysis view: isolate the elements and frame them.
       const guids = Array.isArray(command.guids) && command.guids.length
         ? command.guids
         : selectedGuids();
       if (!guids.length) throw new Error("Pass guids, or select an element to focus");
       const known = guids.filter((guid) => expressOf.has(guid));
       if (!known.length) throw new Error("None of those elements are in this model");
-      const tab = openFocusTab(known, command.name, command.fit !== false);
-      result = {
-        focused: known.length,
-        tab: tab.name,
-        tabs: focusTabs.map((item) => item.name),
-      };
+      const ids = known.map((guid) => expressOf.get(guid));
+      userIsolateSet = new Set(ids);
+      applyVisibility();
+      updateToolButtons();
+      if (command.fit !== false) fitTo(ids);
+      result = { focused: known.length };
     } else if (command.action === "unfocus") {
-      const name = String(command.name || "").trim();
-      if (name) {
-        if (!closeFocusTab(name)) throw new Error(`No focus tab named ${name}`);
-      } else {
-        focusTabs.length = 0;
-        applyFocusTab(null, false);
-      }
-      result = { tabs: focusTabs.map((item) => item.name), active: activeFocusName };
+      userIsolateSet = null;
+      applyVisibility();
+      updateToolButtons();
+      result = { focused: 0 };
     } else if (command.action === "set-view") {
       const view = String(command.view || "");
       if (!VIEW_DIRECTIONS[view]) {
@@ -6323,7 +7638,6 @@ function runViewerCommand(command) {
       addMarker(a);
       addMarker(locked);
       axisLock = command.axis ? String(command.axis).toLowerCase() : "";
-      inferredAxis = "";
       commitMeasurement(a, locked);
       axisLock = "";
       const last = measurements[measurements.length - 1];
@@ -6460,7 +7774,14 @@ function commandFailure(error) {
 document.addEventListener(VIEWER_COMMAND_EVENT, (event) => {
   const command = isPlainObject(event.detail) ? event.detail : {};
   try {
-    sendViewerResult(command, true, runViewerCommand(command));
+    const result = runViewerCommand(command);
+    if (result && typeof result.then === "function") {
+      result.then((value) => sendViewerResult(command, true, value)).catch(
+        (error) => sendViewerResult(command, false, null, commandFailure(error)),
+      );
+    } else {
+      sendViewerResult(command, true, result);
+    }
   } catch (error) {
     sendViewerResult(command, false, null, commandFailure(error));
   }
@@ -6472,6 +7793,7 @@ document.addEventListener(VIEWER_COMMAND_EVENT, (event) => {
 const chatDock = $("chat-dock");
 const chatResize = $("chat-dock-resize");
 const chatBtn = $("btn-chat");
+const agentWorkspacePrimary = queryParams.get("chat") === "1";
 const CHAT_DOCK_MIN_WIDTH = 520;
 const CHAT_DOCK_DEFAULT_WIDTH = 720;
 const CHAT_CANVAS_MIN_WIDTH = 420;
@@ -6556,12 +7878,15 @@ function setChatPanelVisible(visible) {
 function applyChatChrome(open) {
   // Let the panel dismiss transient UI while it can still measure its host.
   if (!open) setChatPanelVisible(false);
+  document.body.classList.toggle("chat-open", open);
   chatDock.hidden = !open;
-  chatResize.hidden = !open;
+  chatResize.hidden = !open || !viewerDocumentOpen;
   chatBtn.setAttribute("aria-pressed", String(open));
-  applyChatWidthForViewport();
+  if (viewerDocumentOpen) applyChatWidthForViewport();
+  else chatDock.style.width = "";
   applyTreePanel();
   if (open) setChatPanelVisible(true);
+  syncViewerSurface();
 }
 
 function closePanelsForChat(force = false) {
@@ -6588,14 +7913,15 @@ function closePanelsForChat(force = false) {
   return changed;
 }
 
-async function setChat(open) {
+async function setChat(open, { force = false } = {}) {
+  if (agentWorkspacePrimary && !force) open = true;
   const requestVersion = ++chatRequestVersion;
   chatDesiredOpen = Boolean(open);
   uiState.chatOpen = chatDesiredOpen;
   // three panels plus the 3D view do not fit a normal window; the properties
   // panel is the one the chat replaces, so fold it away rather than letterbox
   // the model.
-  if (chatDesiredOpen) closePanelsForChat(true);
+  if (chatDesiredOpen && viewerDocumentOpen) closePanelsForChat(true);
   applyChatChrome(chatDesiredOpen);
   saveUi();
   resize();
@@ -6605,12 +7931,7 @@ async function setChat(open) {
     if (!chatPanel) {
       chatLoadPromise ||= import("/viewer/static/chat.js")
         .then(({ mountChat }) => {
-          chatPanel ||= mountChat(chatDock, {
-            onClose: () => {
-              setChat(false);
-              chatBtn.focus({ preventScroll: true });
-            },
-          });
+          chatPanel ||= mountChat(chatDock);
           return chatPanel;
         })
         .finally(() => { chatLoadPromise = null; });
@@ -6641,8 +7962,9 @@ async function setChat(open) {
 }
 
 function reconcileCompactLayout() {
-  let changed = chatDesiredOpen ? closePanelsForChat() : false;
-  applyChatWidthForViewport();
+  let changed = chatDesiredOpen && viewerDocumentOpen ? closePanelsForChat() : false;
+  if (viewerDocumentOpen) applyChatWidthForViewport();
+  else chatDock.style.width = "";
   if (window.innerWidth > 620) {
     if (changed) saveUi();
     syncPanelScrim();
@@ -6677,10 +7999,14 @@ function reconcileCompactLayout() {
 // panel, so the console's status decides whether it is there at all.
 function setChatAvailable(on) {
   chatBtn.hidden = !on;
-  if (!on && chatDesiredOpen) setChat(false);
+  if (!on && chatDesiredOpen) setChat(false, { force: true });
+  syncViewerSurface();
 }
 
-chatBtn.addEventListener("click", () => setChat(chatDock.hidden));
+chatBtn.addEventListener("click", () => {
+  if (agentWorkspacePrimary && !chatDock.hidden) chatPanel?.focus();
+  else setChat(chatDock.hidden);
+});
 
 chatResize.addEventListener("pointerdown", (e) => {
   e.preventDefault();
@@ -6722,7 +8048,7 @@ chatResize.addEventListener("keydown", (event) => {
 // viewport resize. Re-clamp before paint so they cannot squeeze away the 3D
 // canvas or leave the dock wider than its current workspace permits.
 const chatLayoutObserver = new ResizeObserver(() => {
-  if (!chatDesiredOpen) return;
+  if (!chatDesiredOpen || !viewerDocumentOpen) return;
   const changed = closePanelsForChat();
   applyChatWidthForViewport();
   if (changed) saveUi();
@@ -6731,11 +8057,12 @@ const chatLayoutObserver = new ResizeObserver(() => {
 chatLayoutObserver.observe($("tree-panel"));
 chatLayoutObserver.observe($("props-panel"));
 
-if (uiState.chatOpen || queryParams.get("chat") === "1") setChat(true);
+if (uiState.chatOpen || agentWorkspacePrimary) setChat(true);
 window.addEventListener("resize", reconcileCompactLayout);
 reconcileCompactLayout();
 
 window.addEventListener("keydown", (e) => {
+  if (e.defaultPrevented) return;
   if (e.key === "Escape") {
     // an active tool owns Escape first, then the popovers; inside the tool,
     // the pending points and the axis lock go before the mode itself
@@ -6747,6 +8074,15 @@ window.addEventListener("keydown", (e) => {
       } else {
         setMeasureMode(false);
       }
+    } else if (!$("measure-card").hidden) {
+      setMeasurePanelOpen(false);
+      $("btn-tool-measure").focus({ preventScroll: true });
+    } else if (activeToolPanel) {
+      const trigger = document.querySelector(
+        `#viewer-toolbar [data-tool-panel="${activeToolPanel}"]`,
+      );
+      setToolPanel(null);
+      trigger?.focus({ preventScroll: true });
     } else {
       const trigger = POPOVERS.find(([, panelId]) => !$(panelId).hidden)?.[0];
       closePopovers();
@@ -6763,18 +8099,39 @@ window.addEventListener("keydown", (e) => {
     setMeasureMode(!(measureMode && measureKind === kind), kind);
   } else if (key === "enter" && measureMode) {
     e.preventDefault();
-    if (finishArea()) renderMeasurements();
+    if (finishOpenMeasurement()) renderMeasurements();
   } else if (key === "p") {
     e.preventDefault();
     setProjection(isOrtho() ? "perspective" : "orthographic");
   } else if (key === "f") {
     e.preventDefault();
-    // Shift focuses instead: the selection alone, in a tab that names it
+    // Shift focuses instead: isolate the selection and frame it.
     if (e.shiftKey) focusSelection(true);
     else fitTo(null);
+  } else if (key === "h") {
+    e.preventDefault();
+    hideSelection();
+  } else if (key === "i") {
+    e.preventDefault();
+    focusSelection(false);
+  } else if (key === "u") {
+    e.preventDefault();
+    showEverything();
+  } else if (key === "t") {
+    e.preventDefault();
+    setGhostContext(!ghostContext);
+  } else if (["1", "2", "3", "4"].includes(key)) {
+    e.preventDefault();
+    setView({ "1": "top", "2": "front", "3": "right", "4": "iso" }[key], null);
+  } else if (key === "v") {
+    e.preventDefault();
+    setToolPanel(activeToolPanel === "views" ? null : "views", { focus: true });
   } else if (key === "c") {
     e.preventDefault();
-    if (!chatBtn.hidden) setChat(chatDock.hidden);
+    if (!chatBtn.hidden) {
+      if (agentWorkspacePrimary && !chatDock.hidden) chatPanel?.focus();
+      else setChat(chatDock.hidden);
+    }
   } else if (key === "g") {
     e.preventDefault();
     uiState.grid = uiState.grid !== true;

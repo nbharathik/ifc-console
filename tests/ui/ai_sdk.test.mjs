@@ -3,6 +3,7 @@ import { test } from "node:test";
 
 import {
   IFC_PROPOSAL_PART,
+  IFC_TOOL_PROGRESS_PART,
   agentChatRequest,
   createIfcChatTransport,
   createIfcStreamAdapter,
@@ -51,6 +52,21 @@ test("run blocks become ordered AI SDK UI message parts", () => {
   assert.deepEqual(parts[1].input, { ifc_class: "IfcWall" });
   assert.equal(Object.hasOwn(parts[1], "providerExecuted"), false);
   assert.equal(Object.hasOwn(parts[1], "toolMetadata"), false);
+});
+
+test("completed tool parts preserve structured output", () => {
+  const output = { ok: true, data: { count: 3 }, meta: {} };
+  const [part] = uiPartsFromRun({
+    blocks: [{
+      kind: "tool",
+      id: "call-1",
+      name: "query_elements",
+      state: "ok",
+      output,
+    }],
+  });
+  assert.equal(part.state, "output-available");
+  assert.deepEqual(part.output.output, output);
 });
 
 test("finished and failed tool blocks use AI SDK dynamic tool states", () => {
@@ -241,7 +257,17 @@ test("current events become valid AI SDK chunk lifecycles", () => {
     ...adapter.push({ type: "thread", id: "panel-1", agent: "general" }),
     ...adapter.push({ type: "reasoning", text: "Inspect" }),
     ...adapter.push({ type: "tool_call", id: "call-1", name: "query_elements", arguments: "{}" }),
-    ...adapter.push({ type: "tool_result", id: "call-1", ok: true, summary: "3 rows", rows: 3 }),
+    ...adapter.push({
+      type: "tool_progress", id: "call-1", name: "query_elements", done: 2, total: 3,
+    }),
+    ...adapter.push({
+      type: "tool_result",
+      id: "call-1",
+      ok: true,
+      summary: "3 rows",
+      rows: 3,
+      output: { ok: true, data: { count: 3 }, meta: {} },
+    }),
     ...adapter.push({ type: "content", text: "Three" }),
     ...adapter.push({ type: "content", text: " walls" }),
     ...adapter.push({ type: "done" }),
@@ -254,6 +280,7 @@ test("current events become valid AI SDK chunk lifecycles", () => {
     "reasoning-delta",
     "reasoning-end",
     "tool-input-available",
+    IFC_TOOL_PROGRESS_PART,
     "tool-output-available",
     "text-start",
     "text-delta",
@@ -266,6 +293,17 @@ test("current events become valid AI SDK chunk lifecycles", () => {
   const deltas = chunks.filter((chunk) => chunk.type === "text-delta");
   assert.equal(deltas.every((chunk) => chunk.id === starts[0].id), true);
   assert.equal(chunks.at(-1).finishReason, "stop");
+  const progress = chunks.find((chunk) => chunk.type === IFC_TOOL_PROGRESS_PART);
+  assert.deepEqual(progress.data, {
+    toolCallId: "call-1",
+    toolName: "query_elements",
+    done: 2,
+    total: 3,
+    note: "",
+    elapsedSeconds: 0,
+  });
+  const output = chunks.find((chunk) => chunk.type === "tool-output-available");
+  assert.equal(output.output.output.data.count, 3);
   for (const chunk of chunks.filter((item) => item.type.startsWith("tool-"))) {
     assert.equal(Object.hasOwn(chunk, "providerExecuted"), false);
   }

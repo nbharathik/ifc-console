@@ -19,15 +19,25 @@ from ifc_console.core.results import Envelope, ToolError, ok
 from ifc_console.ifc.clash import MAX_ELEMENTS, MAX_RESULTS, compare_sets, prepare_set
 from ifc_console.ifc.geometry import (
     element_meshes,
+    local_rotation,
     mesh_provider,
     probe_elements,
     resolve_targets,
+    tessellation_evidence,
 )
 from ifc_console.ifc.measure import measure_distance, measure_elements
+from ifc_console.ifc.mesh_analysis import (
+    directional_extent,
+    mesh_health,
+    mesh_source,
+    ray_intervals,
+    slice_mesh,
+)
 from ifc_console.ifc.profile import analyze_elements
 from ifc_console.ifc.quantities import AGGREGATE_BY, build_georeferencing, compute_quantities
 from ifc_console.ifc.query import ALLOWED_FIELDS, DEFAULT_FIELDS, element_row
 from ifc_console.ifc.report import build_measurement_report
+from ifc_console.ifc.units import si_to_file, unit_info
 from ifc_console.ifc.validation import run_ids_validation, run_schema_validation
 from ifc_console.mcp.tools_query import MODEL_ARG, _validate_subset, read_meta
 from ifc_console.policy.modes import OpClass, Verdict
@@ -54,12 +64,22 @@ def mesh_cache(core: AppCore, session):
     and the cache is keyed to the session that owns the file.
     """
 
-    def provider(ifc, elements):
+    def provider(ifc, elements, *, profile="standard", max_triangles=None):
         # a federated job reads a second model on its own worker; only the
         # session's own file is cache-keyed here
         if ifc is not session.ifc:
-            return element_meshes(ifc, elements)
-        return core.element_meshes(elements, session=session)
+            return element_meshes(
+                ifc,
+                elements,
+                profile=profile,
+                max_triangles=max_triangles,
+            )
+        return core.element_meshes(
+            elements,
+            session=session,
+            profile=profile,
+            max_triangles=max_triangles,
+        )
 
     return mesh_provider(provider)
 
@@ -83,6 +103,14 @@ def page_global_ids(
         offset=offset,
     )
     return [element.GlobalId for element in page]
+
+
+def _element_identity(element) -> dict:
+    return {
+        "global_id": getattr(element, "GlobalId", None),
+        "class": element.is_a(),
+        "name": getattr(element, "Name", None),
+    }
 
 
 def register(mcp: OperationRegistry, core: AppCore) -> None:
@@ -267,6 +295,482 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
         )
 
     @mcp.tool(
+        name="inspect_element_mesh",
+        annotations=ANALYSIS_ANN,
+        description=(
+            "[QUERY] Inspect the untouched IFC triangle mesh for a small element set. "
+            "Returns watertightness, winding, valid-volume status, connected components, "
+            "boundary/non-manifold edges, degenerate/duplicate faces, Euler characteristic, "
+            "a source hash and the exact tessellation settings. No repair is applied. "
+            "backend='auto' uses optional Trimesh when installed and otherwise the built-in "
+            "deterministic checks. Pass selector or global_ids."
+        ),
+    )
+    @enveloped(core, "inspect_element_mesh")
+    async def inspect_element_mesh_tool(
+        selector: Annotated[
+            str | None, Field(description="IfcOpenShell selector; or pass global_ids.")
+        ] = None,
+        global_ids: Annotated[
+            list[str] | None, Field(max_length=100, description="Explicit GlobalIds to inspect.")
+        ] = None,
+        backend: Literal["auto", "builtin", "trimesh"] = "auto",
+        tessellation: Literal["standard", "analysis"] = "analysis",
+        max_triangles: Annotated[
+            int | None,
+            Field(
+                ge=1,
+                le=1_000_000,
+                description="Optional per-element triangle budget; defaults to the profile cap.",
+            ),
+        ] = None,
+        tolerance: Annotated[
+            float,
+            Field(
+                gt=0.0,
+                le=0.01,
+                description="SI-metre tolerance for degenerate geometry checks.",
+            ),
+        ] = 1e-9,
+        include_filtered_preview: Annotated[
+            bool,
+            Field(
+                description="Also inspect a copy with invalid, degenerate and duplicate faces removed."
+            ),
+        ] = False,
+        physical_only: bool = True,
+        max_elements: Annotated[int, Field(ge=1, le=100)] = 25,
+        offset: Annotated[int, Field(ge=0, description=OFFSET_ARG)] = 0,
+        model: Annotated[str | None, Field(description=MODEL_ARG)] = None,
+    ) -> Envelope:
+        s = core.resolve_session(model)
+        gids = tuple(global_ids) if global_ids else None
+
+        def job() -> dict:
+            elements = resolve_targets(
+                s.ifc,
+                selector=selector,
+                global_ids=list(gids) if gids else None,
+                physical_only=physical_only,
+                max_elements=max_elements,
+                offset=offset,
+            )
+            evidence = tessellation_evidence(tessellation, max_triangles=max_triangles)
+            with mesh_cache(core, s):
+                meshes = element_meshes(
+                    s.ifc,
+                    elements,
+                    profile=tessellation,
+                    max_triangles=max_triangles,
+                )
+            records = []
+            missing = []
+            for element in elements:
+                mesh = meshes.get(element.id())
+                if mesh is None:
+                    missing.append(element.GlobalId)
+                    continue
+                vertices, faces = mesh
+                records.append(
+                    {
+                        **_element_identity(element),
+                        "source": mesh_source(vertices, faces, tessellation=evidence),
+                        "mesh_health": mesh_health(
+                            vertices,
+                            faces,
+                            backend=backend,
+                            tolerance=tolerance,
+                            include_filtered_preview=include_filtered_preview,
+                        ),
+                    }
+                )
+            if not records:
+                raise ToolError(
+                    "NO_GEOMETRY",
+                    "none of the matched elements produced a mesh within the triangle budget",
+                    "Raise max_triangles, use tessellation='standard', or inspect the IFC representation.",
+                )
+            return {
+                "definition": "raw_ifc_tessellation_health",
+                "selector": selector,
+                "units": {**unit_info(s.ifc), "mesh_coordinates": "SI metres"},
+                "tessellation": evidence,
+                "matched": len(elements),
+                "returned": len(records),
+                "without_geometry": missing,
+                "elements": records,
+            }
+
+        report, cached = await core.cached_read(
+            "inspect_element_mesh",
+            job,
+            key=(
+                selector,
+                gids,
+                backend,
+                tessellation,
+                max_triangles,
+                tolerance,
+                include_filtered_preview,
+                physical_only,
+                max_elements,
+                offset,
+            ),
+            timeout=_HEAVY_TIMEOUT,
+            session=s,
+        )
+        return ok(
+            report,
+            core.session_meta(),
+            char_limit=limit_,
+            cached=cached,
+            offset=offset,
+            **read_meta(core, s),
+        )
+
+    @mcp.tool(
+        name="measure_directional_extent",
+        annotations=ANALYSIS_ANN,
+        description=(
+            "[QUERY] Measure the complete outside-to-outside mesh extent along any "
+            "3D direction. This is a support projection, not wall/material thickness, "
+            "and remains meaningful for an open mesh. frame='local' interprets the "
+            "direction in IFC placement axes; frame='principal' returns the PCA basis "
+            "and ambiguity flags. Results include both support points and a source hash."
+        ),
+    )
+    @enveloped(core, "measure_directional_extent")
+    async def measure_directional_extent_tool(
+        direction: Annotated[
+            list[float],
+            Field(min_length=3, max_length=3, description="Three-component direction vector."),
+        ],
+        selector: Annotated[
+            str | None, Field(description="IfcOpenShell selector; or pass global_ids.")
+        ] = None,
+        global_ids: Annotated[
+            list[str] | None, Field(max_length=100, description="Explicit GlobalIds to measure.")
+        ] = None,
+        frame: Literal["world", "local", "principal"] = "world",
+        tessellation: Literal["standard", "analysis"] = "analysis",
+        max_triangles: Annotated[
+            int | None, Field(ge=1, le=1_000_000, description="Per-element triangle budget.")
+        ] = None,
+        physical_only: bool = True,
+        max_elements: Annotated[int, Field(ge=1, le=100)] = 25,
+        offset: Annotated[int, Field(ge=0, description=OFFSET_ARG)] = 0,
+        model: Annotated[str | None, Field(description=MODEL_ARG)] = None,
+    ) -> Envelope:
+        s = core.resolve_session(model)
+        gids = tuple(global_ids) if global_ids else None
+        vector = tuple(direction)
+
+        def job() -> dict:
+            elements = resolve_targets(
+                s.ifc,
+                selector=selector,
+                global_ids=list(gids) if gids else None,
+                physical_only=physical_only,
+                max_elements=max_elements,
+                offset=offset,
+            )
+            evidence = tessellation_evidence(tessellation, max_triangles=max_triangles)
+            with mesh_cache(core, s):
+                meshes = element_meshes(
+                    s.ifc,
+                    elements,
+                    profile=tessellation,
+                    max_triangles=max_triangles,
+                )
+            units = unit_info(s.ifc)
+            factor = units["to_si_factor"]
+            records = []
+            missing = []
+            for element in elements:
+                mesh = meshes.get(element.id())
+                if mesh is None:
+                    missing.append(element.GlobalId)
+                    continue
+                measured = directional_extent(
+                    mesh[0],
+                    mesh[1],
+                    vector,
+                    frame=frame,
+                    local_rotation=local_rotation(element),
+                    tessellation=evidence,
+                )
+                measured["extent_file"] = round(si_to_file(measured["extent_si"], factor), 6)
+                records.append({**_element_identity(element), **measured})
+            if not records:
+                raise ToolError(
+                    "NO_GEOMETRY",
+                    "none of the matched elements produced a mesh within the triangle budget",
+                    "Raise max_triangles or inspect the IFC representation.",
+                )
+            return {
+                "definition": "outside_to_outside_extent",
+                "selector": selector,
+                "units": {**units, "si_values": "metres"},
+                "tessellation": evidence,
+                "matched": len(elements),
+                "returned": len(records),
+                "without_geometry": missing,
+                "elements": records,
+            }
+
+        report, cached = await core.cached_read(
+            "measure_directional_extent",
+            job,
+            key=(
+                vector,
+                selector,
+                gids,
+                frame,
+                tessellation,
+                max_triangles,
+                physical_only,
+                max_elements,
+                offset,
+            ),
+            timeout=_HEAVY_TIMEOUT,
+            session=s,
+        )
+        return ok(
+            report,
+            core.session_meta(),
+            char_limit=limit_,
+            cached=cached,
+            offset=offset,
+            **read_meta(core, s),
+        )
+
+    @mcp.tool(
+        name="slice_element_mesh",
+        annotations=ANALYSIS_ANN,
+        description=(
+            "[QUERY] Cut one element mesh with an arbitrary plane. origin is a world "
+            "point in SI metres (omit it for the referenced-vertex centroid); frame "
+            "controls how normal is interpreted. Returns closure, area, perimeter, "
+            "thickness distribution and an optional bounded 2D outline with a world-space "
+            "origin/basis so a viewer can reconstruct it. Includes mesh prerequisites, "
+            "source hash and tessellation settings; no repair is applied."
+        ),
+    )
+    @enveloped(core, "slice_element_mesh")
+    async def slice_element_mesh_tool(
+        global_id: Annotated[str, Field(min_length=1, max_length=64)],
+        normal: Annotated[
+            list[float],
+            Field(min_length=3, max_length=3, description="Three-component plane normal."),
+        ],
+        origin: Annotated[
+            list[float] | None,
+            Field(
+                min_length=3,
+                max_length=3,
+                description="World plane origin [x,y,z] in SI metres; omit for mesh centroid.",
+            ),
+        ] = None,
+        frame: Literal["world", "local", "principal"] = "world",
+        backend: Literal["auto", "builtin", "trimesh"] = "auto",
+        include_outline: bool = True,
+        outline_points: Annotated[int, Field(ge=12, le=256)] = 160,
+        tessellation: Literal["standard", "analysis"] = "analysis",
+        max_triangles: Annotated[
+            int | None, Field(ge=1, le=1_000_000, description="Per-element triangle budget.")
+        ] = None,
+        model: Annotated[str | None, Field(description=MODEL_ARG)] = None,
+    ) -> Envelope:
+        s = core.resolve_session(model)
+        plane_origin = tuple(origin) if origin is not None else None
+        plane_normal = tuple(normal)
+
+        def job() -> dict:
+            element = resolve_targets(s.ifc, global_ids=[global_id], max_elements=1)[0]
+            evidence = tessellation_evidence(tessellation, max_triangles=max_triangles)
+            with mesh_cache(core, s):
+                meshes = element_meshes(
+                    s.ifc,
+                    [element],
+                    profile=tessellation,
+                    max_triangles=max_triangles,
+                )
+            mesh = meshes.get(element.id())
+            if mesh is None:
+                raise ToolError(
+                    "NO_GEOMETRY",
+                    "the element produced no mesh within the triangle budget",
+                    "Raise max_triangles or inspect the IFC representation.",
+                )
+            result = slice_mesh(
+                mesh[0],
+                mesh[1],
+                plane_normal,
+                origin=plane_origin,
+                frame=frame,
+                local_rotation=local_rotation(element),
+                backend=backend,
+                include_outline=include_outline,
+                outline_points=outline_points,
+                tessellation=evidence,
+            )
+            units = unit_info(s.ifc)
+            factor = units["to_si_factor"]
+            cut = result["section"]
+            if cut is not None:
+                for name in ("width", "height", "perimeter"):
+                    cut[f"{name}_file"] = round(si_to_file(cut[name], factor), 6)
+                cut["area_file"] = (
+                    round(si_to_file(cut["area"], factor, 2), 6)
+                    if cut["area"] is not None
+                    else None
+                )
+            return {
+                **_element_identity(element),
+                "units": {**units, "si_values": "metres"},
+                **result,
+            }
+
+        report, cached = await core.cached_read(
+            "slice_element_mesh",
+            job,
+            key=(
+                global_id,
+                plane_normal,
+                plane_origin,
+                frame,
+                backend,
+                include_outline,
+                outline_points,
+                tessellation,
+                max_triangles,
+            ),
+            timeout=_HEAVY_TIMEOUT,
+            session=s,
+        )
+        return ok(
+            report, core.session_meta(), char_limit=limit_, cached=cached, **read_meta(core, s)
+        )
+
+    @mcp.tool(
+        name="measure_local_thickness",
+        annotations=ANALYSIS_ANN,
+        description=(
+            "[QUERY] Cast an infinite line through one element and return every "
+            "deduplicated surface hit, material interval and internal void/gap. origin "
+            "is always a world-coordinate point in SI metres; frame controls how the "
+            "direction is interpreted. Material intervals are returned only for a valid "
+            "closed, consistently wound volume with balanced oriented crossings; otherwise "
+            "the raw intersections and an explicit refusal are preserved."
+        ),
+    )
+    @enveloped(core, "measure_local_thickness")
+    async def measure_local_thickness_tool(
+        global_id: Annotated[str, Field(min_length=1, max_length=64)],
+        origin: Annotated[
+            list[float],
+            Field(min_length=3, max_length=3, description="World point [x,y,z] in SI metres."),
+        ],
+        direction: Annotated[
+            list[float],
+            Field(min_length=3, max_length=3, description="Three-component line direction."),
+        ],
+        frame: Literal["world", "local", "principal"] = "world",
+        backend: Literal["auto", "builtin", "trimesh"] = "auto",
+        tolerance: Annotated[
+            float,
+            Field(gt=0.0, le=0.01, description="SI-metre hit merge tolerance."),
+        ] = 1e-6,
+        max_intersections: Annotated[
+            int,
+            Field(
+                ge=2,
+                le=128,
+                description="Safety cap for compact line-intersection evidence.",
+            ),
+        ] = 64,
+        tessellation: Literal["standard", "analysis"] = "analysis",
+        max_triangles: Annotated[
+            int | None, Field(ge=1, le=1_000_000, description="Per-element triangle budget.")
+        ] = None,
+        model: Annotated[str | None, Field(description=MODEL_ARG)] = None,
+    ) -> Envelope:
+        s = core.resolve_session(model)
+        point = tuple(origin)
+        vector = tuple(direction)
+
+        def job() -> dict:
+            element = resolve_targets(s.ifc, global_ids=[global_id], max_elements=1)[0]
+            evidence = tessellation_evidence(tessellation, max_triangles=max_triangles)
+            with mesh_cache(core, s):
+                meshes = element_meshes(
+                    s.ifc,
+                    [element],
+                    profile=tessellation,
+                    max_triangles=max_triangles,
+                )
+            mesh = meshes.get(element.id())
+            if mesh is None:
+                raise ToolError(
+                    "NO_GEOMETRY",
+                    "the element produced no mesh within the triangle budget",
+                    "Raise max_triangles or inspect the IFC representation.",
+                )
+            result = ray_intervals(
+                mesh[0],
+                mesh[1],
+                point,
+                vector,
+                frame=frame,
+                local_rotation=local_rotation(element),
+                backend=backend,
+                tolerance=tolerance,
+                tessellation=evidence,
+                max_intersections=max_intersections,
+            )
+            units = unit_info(s.ifc)
+            factor = units["to_si_factor"]
+            for interval in result["material_intervals"]:
+                interval["thickness_file"] = round(
+                    si_to_file(interval["thickness_si"], factor), 6
+                )
+            for interval in result["non_material_intervals"]:
+                interval["clear_width_file"] = round(
+                    si_to_file(interval["clear_width_si"], factor), 6
+                )
+            result["overall_width_file"] = (
+                round(si_to_file(result["overall_width_si"], factor), 6)
+                if result["overall_width_si"] is not None
+                else None
+            )
+            return {
+                **_element_identity(element),
+                "units": {**units, "si_values": "metres"},
+                **result,
+            }
+
+        report, cached = await core.cached_read(
+            "measure_local_thickness",
+            job,
+            key=(
+                global_id,
+                point,
+                vector,
+                frame,
+                backend,
+                tolerance,
+                max_intersections,
+                tessellation,
+                max_triangles,
+            ),
+            timeout=_HEAVY_TIMEOUT,
+            session=s,
+        )
+        return ok(
+            report, core.session_meta(), char_limit=limit_, cached=cached, **read_meta(core, s)
+        )
+
+    @mcp.tool(
         name="measure_elements",
         annotations=ANALYSIS_ANN,
         description=(
@@ -371,7 +875,10 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
         description=(
             "[QUERY] Closest approach between two element sets: centroid "
             "distance, axis-aligned bounding-box gap, and closest-point surface "
-            "distance for the nearest pair, in SI metres and file units. Each "
+            "distance estimate for the nearest AABB pair, in SI metres and file units. "
+            "The result names its sampling/selection methods and flags the surface value "
+            "as an upper bound. AABB overlap is never called a solid overlap unless "
+            "sampled occupancy confirms it on two valid-volume meshes. Each "
             "side is a selector or a GlobalId list. Overlapping pairs report a "
             "surface distance of zero; detect_clashes quantifies the overlap."
         ),

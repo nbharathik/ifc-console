@@ -87,9 +87,13 @@ result limit, and a `corpus` (`builtin`, `project`, or `all`). See
 | `compute_quantities` | selector, grouping, quantity names, `source` | stored `Qto_*` totals in model units; `source="derived"` fills missing values from geometry |
 | `detect_clashes` | two selectors, tolerance, precision, optional model IDs | overlap or clearance pairs |
 | `get_element_geometry` | selector or GlobalIds | per-element mesh geometry in SI metres: bounding box, placement-axis extents, footprint, volume, confidence |
+| `inspect_element_mesh` | selector or GlobalIds, backend, tessellation profile | health of the untouched mesh: components, watertight/winding/volume gates, problem-face/edge counts, source hash and settings |
 | `analyze_element_geometry` | selector or GlobalIds, stations, `include_outline` | the full probe for a few elements: exact profile parameters from the IFC definition plus measured mesh cross sections (width, height, wall thickness distribution, perimeter, area), merged into `dimensions` with a named source per value |
 | `measure_elements` | selector or GlobalIds, method, method params | one metric per element by an explicit method (`stored_qto`, `layer_sum`, `geometry_extent`), in file units and SI |
-| `measure_distance` | two selectors or GlobalId lists | centroid distance, bounding-box gap, and closest-surface distance of the nearest pair |
+| `measure_directional_extent` | selector or GlobalIds, direction, world/local/principal frame | outside-to-outside support extent with normalized direction, basis, support points and mesh hash |
+| `measure_local_thickness` | one GlobalId, world origin, direction and frame | ordered line/mesh hits plus every material and void/gap interval; refuses interval pairing when topology is unsafe |
+| `slice_element_mesh` | one GlobalId, plane origin/normal and frame | arbitrary mesh cut with closure/area/perimeter, bounded outline, world reconstruction frame, health and source evidence |
+| `measure_distance` | two selectors or GlobalId lists | centroid distance, bounding-box gap, and a named sampled surface-distance upper bound; solid overlap needs valid meshes plus occupancy evidence |
 | `get_georeferencing` | none | CRS, map conversion, and north directions |
 | `export_csv` | selector, path, fields, properties | audited CSV report inside an allowed directory |
 | `export_measurement_report` | selector or GlobalIds, path, title, notes | audited markdown measurement report, registered as an artifact |
@@ -103,6 +107,29 @@ element whose extrusion axis is not its long axis is flagged
 `profile_plane_differs` instead of being force-compared. Thickness comes as a
 distribution (median and quartiles) plus a two-group split when flange and web
 plates differ, matching the `t_f`/`t_w` convention of profile drawings.
+
+Mesh-specific analysis uses an opt-in `analysis` tessellation profile (0.5 mm
+linear deflection, 0.25 rad angular deflection, 100,000 triangles per element)
+instead of silently reusing the standard 20,000-triangle viewer/takeoff mesh.
+The profile and triangle budget are part of the cache key and every evidence
+record. Shell reorientation and mesh repair remain disabled so a bad source
+mesh is reported, not hidden.
+
+`inspect_element_mesh`, `slice_element_mesh`, and `measure_local_thickness` accept
+`backend="auto"`: the optional Trimesh adapter supplies its standard health
+predicates when installed, with `process=False` on independent array copies;
+otherwise the built-in NumPy checks run. Install it with:
+
+```bash
+uv tool install "ifc-console[geometry]"
+```
+
+The source hierarchy remains: exact IFC profile or stored material layer,
+then the exact swept/parametric representation exposed by IfcOpenShell, then a
+validated analysis mesh, and finally bounding extents. A directional extent is
+never labelled material thickness. Likewise, an open, inward-wound,
+non-manifold, or unbalanced-intersection mesh returns its observable hits but
+does not invent material intervals or a reliable volume.
 
 Clash precision choices:
 
@@ -289,27 +316,35 @@ the user for approval before a skill lands on disk.
 
 ## Viewer tools
 
-These tools exist only while the optional viewer is enabled and a browser tab
-is connected. One launcher is always registered so an agent can get there
-itself:
+These tools are always discoverable. Their live availability depends on the
+optional viewer and a connected browser tab; the stable catalog lets MCP
+clients that cache `tools/list` activate the viewer without reconnecting:
 
 | tool | use |
 | ---- | --- |
-| `open_viewer` | always on: enable the viewer and open it in the local browser, so the tools below appear |
+| `open_viewer` | enable the viewer, open it in the local browser, and optionally wait for the tab to connect |
 | `get_viewer_selection` | read the user's selected elements |
 | `get_viewer_measurements` | read every measurement taken, by the user or by you |
 | `highlight_elements` | color, isolate, clear, or frame up to 500 elements |
 | `apply_color_theme` | paint labeled groups and show a legend |
 | `get_viewer_screenshot` | capture a preset or current view as JPEG or PNG |
-| `control_viewer` | section, orient, select, isolate, hide, focus tabs, measure, and save viewpoints |
+| `control_viewer` | section, orient, select, isolate, hide, focus, measure, and save viewpoints |
 
 All viewer tools are visual and allowed in either mode. `control_viewer`
 measures against the geometry on screen, which answers questions the schema
 does not: a rotated wall's real thickness, the clear distance between two
-elements, the area inside an outline. Its `focus` action opens elements alone
-in a named tab under the viewer's top bar, so one object can be analyzed with
-the user watching the same thing; `unfocus` closes tabs. See
+elements, the area inside an outline. Its `focus` action isolates and frames
+elements directly, so the user and agent see the same thing; `unfocus` returns
+to the model without creating a history row. See
 [3D viewer](viewer.md).
+
+`describe_capabilities` is the live compatibility report. For every shared
+operation it reports required capabilities, whether session policy permits the
+call, and availability such as `ready`, `call_open_viewer`,
+`waiting_for_viewer_tab`, `viewer_extra_missing`, or
+`unavailable_on_transport`. The same operation registry powers MCP, built-in chat,
+the agent runtime, and the Python SDK, so shared tools do not drift between
+interfaces.
 
 ## Error codes
 
@@ -329,7 +364,10 @@ Every failure includes a `hint`. The table groups codes with the same recovery.
 | `EXEC_BLOCKED` / `EXEC_ERROR` / `EXEC_TIMEOUT` | generated code was denied, failed, or timed out |
 | `EXTRA_NOT_INSTALLED` | an optional dependency is missing |
 | `FILE_EXISTS` / `FILE_NOT_FOUND` | destination exists or source is missing |
+| `FRAME_UNAVAILABLE` | requested local or principal geometry frame cannot be derived; retry in the world frame |
+| `GEOMETRY_ANALYSIS_FAILED` | selected geometry backend could not inspect the mesh; retry with the built-in backend |
 | `INTERNAL_ERROR` | unexpected product error; inspect local logs |
+| `INVALID_GEOMETRY` | geometry input is empty, non-finite, degenerate, or otherwise unsuitable for the requested analysis |
 | `INVALID_INPUT` / `INVALID_OUTPUT` / `INVALID_QUERY` | arguments, output, or selector syntax is invalid |
 | `JOB_CANCELLED` / `JOB_NOT_CANCELLABLE` / `JOB_NOT_FOUND` / `JOB_RESULT_INVALID` / `JOB_SPEC_INVALID` / `JOB_SERVICE_CLOSED` / `JOB_WORKER_FAILED` / `JOB_TIMEOUT` | durable job was cancelled, unavailable, invalid, or failed |
 | `KNOWLEDGE_DISABLED` / `KNOWLEDGE_NOT_READY` | knowledge search is disabled or still building |

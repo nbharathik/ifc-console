@@ -479,6 +479,51 @@ async def test_get_viewer_selection_uses_the_tabs_model(
     assert out["meta"]["read_from"] == model_id
 
 
+async def test_selection_based_viewer_commands_follow_the_selected_model(
+    harness_factory, work_model: Path, tmp_path: Path
+):
+    import shutil
+
+    h = await harness_factory(model=work_model)
+    h.core.enable_viewer()
+    active_tab = _attach_fake_tab(h.core)
+    annex_path = tmp_path / "selected-annex.ifc"
+    shutil.copy2(work_model, annex_path)
+    model_id = await h.core.open_model(annex_path, attach=True, alias="selected-annex")
+    annex_tab = _attach_fake_tab(h.core)
+    annex_tab.client.view_model_id = model_id
+    guid = await h.core.models.require(model_id).run(
+        lambda: h.core.models.require(model_id).ifc.by_type("IfcWall")[0].GlobalId
+    )
+    await h.core.viewer_hub.handle_frame(
+        annex_tab.client,
+        {"type": "selection", "guids": [guid], "model_id": model_id},
+    )
+
+    pending = asyncio.create_task(h.call("control_viewer", action="hide"))
+    for _ in range(20):
+        if annex_tab.frames("command"):
+            break
+        await asyncio.sleep(0)
+    command = annex_tab.frames("command")[0]
+    assert not active_tab.frames("command")
+    assert command["model_id"] == model_id
+    await h.core.viewer_hub.handle_frame(
+        annex_tab.client,
+        {
+            "type": "command_result",
+            "id": command["id"],
+            "ok": True,
+            "result": {"hidden": 1},
+        },
+    )
+
+    out = await pending
+    assert out["ok"] is True
+    assert out["data"]["model_id"] == model_id
+    assert out["meta"]["read_from"] == model_id
+
+
 async def test_highlight_elements_roundtrip(harness_factory, work_model: Path):
     h = await harness_factory(model=work_model)
     h.core.enable_viewer()
@@ -651,6 +696,31 @@ async def test_closed_tab_leaves_no_stale_selection(harness_factory, work_model:
     await h.core.viewer_hub.handle_frame(fresh.client, {"type": "selection", "guids": guids[:1]})
     out = await h.call("get_viewer_selection")
     assert out["data"]["guids"] == guids[:1]
+
+
+async def test_connected_agent_only_page_is_not_a_hidden_viewer(
+    harness_factory, work_model: Path
+):
+    """Closing the IFC surface must stop tools targeting an invisible scene."""
+    h = await harness_factory(model=work_model)
+    h.core.enable_viewer()
+    ws = _attach_fake_tab(h.core)
+    guid = await h.core.session.run(
+        lambda: h.core.session.ifc.by_type("IfcWall")[0].GlobalId
+    )
+    await h.core.viewer_hub.handle_frame(
+        ws.client,
+        {"type": "selection", "guids": [guid], "model_id": h.core.models.active_id},
+    )
+
+    await h.core.viewer_hub.handle_frame(
+        ws.client, {"type": "selection", "guids": [], "model_id": None}
+    )
+
+    assert ws.client.view_model_id is None
+    assert ws.client.selection_model_id is None
+    assert ws.client.selection == []
+    assert h.core.viewer_hub.selection == []
 
 
 async def test_a_second_tab_does_not_erase_what_the_first_one_shows(

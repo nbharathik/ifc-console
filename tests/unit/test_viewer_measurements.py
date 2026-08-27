@@ -15,6 +15,10 @@ MEASUREMENT = {
     "to": [0.2, 0.0, 0.0],
     "distance": 0.2,
     "delta": [0.2, 0.0, 0.0],
+    "horizontal": 0.16,
+    "vertical": 0.12,
+    "slope_percent": 75.0,
+    "slope_angle": 36.869898,
 }
 
 
@@ -46,7 +50,14 @@ AREA = {
     "area": 3.0,
     "perimeter": 8.0,
     "flatness": 0.0,
+    "centre": {"x": 1.5, "y": 0.5, "z": 0.0},
     "points": [[0.0, 0.0, 0.0], [3.0, 0.0, 0.0], [3.0, 1.0, 0.0], [0.0, 1.0, 0.0]],
+}
+PATH = {
+    "kind": "path",
+    "distance": 7.0,
+    "points": [[0.0, 0.0, 0.0], [3.0, 0.0, 0.0], [3.0, 4.0, 0.0]],
+    "segments": [3.0, 4.0],
 }
 
 
@@ -59,14 +70,55 @@ class TestCleaning:
         """A size measured in the viewer used to be sent and then dropped
         here, so the assistant that asked for it was told nothing had been
         measured."""
-        cleaned = _clean_measurements([DIMENSIONS, LASER, ANGLE, AREA])
-        assert [item["kind"] for item in cleaned] == ["dimensions", "laser", "angle", "area"]
+        cleaned = _clean_measurements([DIMENSIONS, LASER, ANGLE, AREA, PATH])
+        assert [item["kind"] for item in cleaned] == [
+            "dimensions",
+            "laser",
+            "angle",
+            "area",
+            "path",
+        ]
         assert cleaned[0]["thickness"] == 0.3
         assert cleaned[0]["volume"] == 3.6
         assert cleaned[1]["axes"]["x"]["span"] == 1.0
         assert cleaned[1]["axes"]["x"]["negative"]["guid"] == "a"
         assert cleaned[2]["degrees"] == 90.0
         assert cleaned[3]["points"][2] == [3.0, 1.0, 0.0]
+        assert cleaned[3]["centre"] == {"x": 1.5, "y": 0.5, "z": 0.0}
+        assert cleaned[4]["distance"] == 7.0
+        assert cleaned[4]["segments"] == [3.0, 4.0]
+
+    def test_path_requires_finite_total_and_ordered_points(self):
+        cleaned = _clean_measurements(
+            [
+                {**PATH, "distance": float("inf")},
+                {**PATH, "points": [[0, 0, 0]]},
+                {**PATH, "points": [[0, 0, 0], [float("nan"), 1, 0]]},
+            ]
+        )
+        assert cleaned == []
+
+    def test_paths_and_areas_over_point_limit_are_rejected(self):
+        points = [[index, 0, 0] for index in range(250)]
+        assert _clean_measurements([{**PATH, "points": points, "segments": [1.0] * 249}]) == []
+        assert _clean_measurements([{**AREA, "points": points}]) == []
+
+    def test_only_aligned_finite_path_segments_survive(self):
+        misaligned = _clean_measurements([{**PATH, "segments": [7.0]}])[0]
+        assert "segments" not in misaligned
+        bad_segment = _clean_measurements([{**PATH, "segments": [3.0, float("nan")]}])[0]
+        assert "segments" not in bad_segment
+
+    def test_area_rejects_an_invalid_interior_point(self):
+        points = [*AREA["points"]]
+        points[2] = [float("inf"), 1.0, 0.0]
+        assert _clean_measurements([{**AREA, "points": points}]) == []
+
+    def test_area_centre_accepts_current_and_legacy_wire_shapes(self):
+        named = _clean_measurements([AREA])[0]
+        assert named["centre"] == {"x": 1.5, "y": 0.5, "z": 0.0}
+        legacy = _clean_measurements([{**AREA, "centre": [1.5, 0.5, 0.0]}])[0]
+        assert legacy["centre"] == [1.5, 0.5, 0.0]
 
     def test_an_untagged_item_is_still_a_distance(self):
         """The only shape there used to be."""

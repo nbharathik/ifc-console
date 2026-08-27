@@ -25,8 +25,10 @@ import {
   obbCorners,
   outlinePoints,
   planSpatialGrid,
+  polylineMeasure,
   polygonMeasure,
   polygonNormal,
+  spanMeasure,
   unionBoxCorners,
   unitForFile,
   unitOf,
@@ -162,6 +164,27 @@ test("collinear and degenerate outlines have no area and no NaN", () => {
 test("Newell's area vector is twice the area along the normal", () => {
   const areaVec = polygonNormal([v3(0, 0, 0), v3(2, 0, 0), v3(2, 0, 2), v3(0, 0, 2)]);
   near(norm3(...areaVec), 4);
+});
+
+test("an open path totals its segments without closing the route", () => {
+  const measured = polylineMeasure([
+    v3(0, 0, 0), v3(3, 0, 0), v3(3, 4, 0), v3(3, 4, 12),
+  ]);
+  near(measured.distance, 19);
+  assert.deepEqual(measured.segments, [3, 4, 12]);
+});
+
+test("a span reports horizontal run, rise and slope", () => {
+  const measured = spanMeasure(v3(0, 0, 0), v3(3, 4, 0), "y");
+  near(measured.distance, 5);
+  near(measured.horizontal, 3);
+  near(measured.vertical, 4);
+  near(measured.slopePercent, 400 / 3);
+  near(measured.slopeAngle, (Math.atan2(4, 3) * 180) / Math.PI);
+
+  const vertical = spanMeasure(v3(0, 0, 0), v3(0, 8, 0), "y");
+  assert.equal(vertical.slopePercent, null);
+  near(vertical.slopeAngle, 90);
 });
 
 test("a 3-4-5 triangle's angles", () => {

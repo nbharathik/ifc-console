@@ -139,6 +139,99 @@ async def test_analyze_element_geometry_reads_profile_and_mesh(
     assert warm["meta"]["cached"] is True
 
 
+async def test_inspect_element_mesh_returns_raw_health_and_source(
+    harness_factory, work_model: Path
+):
+    h = await harness_factory(model=work_model)
+    out = await h.call(
+        "inspect_element_mesh",
+        selector="IfcWall, Name=Wall-1",
+        backend="builtin",
+    )
+    assert out["ok"] is True
+    data = out["data"]
+    assert data["definition"] == "raw_ifc_tessellation_health"
+    assert data["tessellation"]["profile"] == "analysis"
+    record = data["elements"][0]
+    assert record["source"]["mesh_hash"].startswith("sha256:")
+    assert record["source"]["repair_applied"] is False
+    assert record["mesh_health"]["watertight"] is True
+    assert record["mesh_health"]["valid_volume"] is True
+    assert record["mesh_health"]["backend"] == "builtin"
+
+
+async def test_directional_extent_is_arbitrary_and_evidence_backed(
+    harness_factory, work_model: Path
+):
+    h = await harness_factory(model=work_model)
+    out = await h.call(
+        "measure_directional_extent",
+        selector="IfcWall, Name=Wall-1",
+        direction=[1.0, 1.0, 0.0],
+        frame="world",
+    )
+    assert out["ok"] is True
+    record = out["data"]["elements"][0]
+    assert record["definition"] == "outside_to_outside_extent"
+    assert record["extent_si"] == pytest.approx(5.2 / (2**0.5), rel=1e-3)
+    assert record["source"]["mesh_hash"].startswith("sha256:")
+    assert record["support_points"]["min"] != record["support_points"]["max"]
+
+
+async def test_local_thickness_returns_surface_evidence_and_material_interval(
+    harness_factory, work_model: Path
+):
+    h = await harness_factory(model=work_model)
+    out = await h.call(
+        "measure_local_thickness",
+        global_id="1fTRrSB3LEdQg16mMfXa_p",
+        origin=[2.5, 0.1, 1.5],
+        direction=[0.0, 1.0, 0.0],
+        backend="builtin",
+    )
+    assert out["ok"] is True
+    data = out["data"]
+    assert len(data["intersections"]) == 2
+    assert data["material_intervals"][0]["thickness_si"] == pytest.approx(0.2, rel=1e-3)
+    assert data["material_intervals"][0]["thickness_file"] == pytest.approx(200.0, rel=1e-3)
+    assert data["prerequisites"]["valid_volume"] is True
+    assert data["refusal"] is None
+
+
+async def test_slice_element_mesh_returns_outline_with_world_frame(
+    harness_factory, work_model: Path
+):
+    h = await harness_factory(model=work_model)
+    out = await h.call(
+        "slice_element_mesh",
+        global_id="1fTRrSB3LEdQg16mMfXa_p",
+        origin=[2.5, 0.1, 1.5],
+        normal=[1.0, 0.0, 0.0],
+        backend="builtin",
+    )
+    assert out["ok"] is True
+    data = out["data"]
+    assert data["intersects"] is True
+    assert data["section"]["closed"] is True
+    assert data["section"]["area"] == pytest.approx(0.6, rel=1e-3)
+    assert data["section"]["area_file"] == pytest.approx(600_000.0, rel=1e-3)
+    assert len(data["section"]["outline"][0]) >= 4
+    assert len(data["section"]["outline_frame"]["origin"]) == 3
+
+
+async def test_directional_extent_rejects_a_zero_direction(
+    harness_factory, work_model: Path
+):
+    h = await harness_factory(model=work_model)
+    out = await h.call(
+        "measure_directional_extent",
+        selector="IfcWall, Name=Wall-1",
+        direction=[0.0, 0.0, 0.0],
+    )
+    assert out["ok"] is False
+    assert out["error"]["code"] == "INVALID_INPUT"
+
+
 async def test_geometry_tools_tessellate_an_element_once(
     harness_factory, work_model: Path, monkeypatch
 ):
@@ -355,12 +448,15 @@ async def test_describe_capabilities_tracks_viewer_category(
     assert out["ok"] is True
     names = {tool["name"] for tool in out["data"]["tools"]}
     assert {"orient", "validate_model", "compute_quantities", "export_csv"} <= names
-    assert "highlight_elements" not in names
+    assert "highlight_elements" in names
+    tools = {tool["name"]: tool for tool in out["data"]["tools"]}
+    assert tools["highlight_elements"]["availability"] == "call_open_viewer"
     assert out["data"]["mode"]["current"] == "ask"
     purposes = {tool["name"]: tool["purpose"] for tool in out["data"]["tools"]}
     assert not purposes["orient"].startswith("[")
 
     h.core.enable_viewer()
     out = await h.call("describe_capabilities")
-    names = {tool["name"] for tool in out["data"]["tools"]}
-    assert "highlight_elements" in names and "apply_color_theme" in names
+    tools = {tool["name"]: tool for tool in out["data"]["tools"]}
+    assert tools["highlight_elements"]["availability"] == "waiting_for_viewer_tab"
+    assert tools["apply_color_theme"]["availability"] == "waiting_for_viewer_tab"

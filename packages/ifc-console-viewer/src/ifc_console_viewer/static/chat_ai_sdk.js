@@ -2,6 +2,7 @@
 
 export const IFC_PROPOSAL_PART = "data-ifc-proposal";
 export const IFC_THREAD_PART = "data-ifc-thread";
+export const IFC_TOOL_PROGRESS_PART = "data-ifc-tool-progress";
 
 const FINISH_REASONS = new Set([
   "stop",
@@ -57,6 +58,7 @@ function toolOutput(block) {
     ok: block.state === "ok",
     summary: text(block.summary),
     preview: text(block.preview),
+    output: block.output == null ? undefined : jsonValue(block.output),
     detail: text(block.detail),
     rows: number(block.rows) ?? undefined,
     durationMs: number(block.ms) ?? undefined,
@@ -181,6 +183,8 @@ function copySharedOptions(target, options) {
     "model",
     "base_url",
     "api_key",
+    "tools_supported",
+    "vision_supported",
     "temperature",
     "top_p",
     "max_tokens",
@@ -262,6 +266,7 @@ function streamToolOutput(event) {
     ok: Boolean(event.ok),
     summary: text(event.summary),
     preview: text(event.preview),
+    output: event.output,
     detail: text(event.detail),
     rows: number(event.rows) ?? undefined,
   });
@@ -321,7 +326,7 @@ export function createIfcStreamAdapter({ messageId = "assistant-message" } = {})
       finishReason = text(event.reason) || finishReason;
       return [];
     }
-    if (!["thread", "tool_call", "tool_result", "proposal", "usage", "error"].includes(
+    if (!["thread", "tool_call", "tool_progress", "tool_result", "proposal", "usage", "error"].includes(
       event.type,
     )) return [];
 
@@ -340,6 +345,20 @@ export function createIfcStreamAdapter({ messageId = "assistant-message" } = {})
         toolName: text(event.name) || "tool",
         input: parseInput(event.arguments),
         dynamic: true,
+      });
+    } else if (event.type === "tool_progress") {
+      chunks.push({
+        type: IFC_TOOL_PROGRESS_PART,
+        id: text(event.id) || "tool-progress",
+        data: {
+          toolCallId: text(event.id),
+          toolName: text(event.name),
+          done: number(event.done) ?? 0,
+          total: number(event.total),
+          note: text(event.note),
+          elapsedSeconds: number(event.elapsed) ?? 0,
+        },
+        transient: true,
       });
     } else if (event.type === "tool_result") {
       chunks.push(...closeActive());

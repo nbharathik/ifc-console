@@ -23,8 +23,9 @@ Then use:
 /chat off      close chat and forget any in-memory key
 ```
 
-In split view, press ++c++ to show or hide the panel and drag the divider to
-resize it.
+In split view, Agent is the fixed first workspace tab and has no close control.
+Viewer tabs can be closed independently. Press ++c++ to open or focus Agent and
+drag the divider to resize it.
 
 ## Choose a provider
 
@@ -45,6 +46,23 @@ not appear in the fetched list.
 For a local provider, set its base URL, for example
 `http://localhost:8000/v1`. Enable `chat.local_only=true` to reject any provider
 URL outside the local machine.
+
+### Model capabilities
+
+Models behind the same provider do not always support the same inputs. In
+**Models > Advanced model controls**, Tool calling and Image input each have an
+Auto-detect, Supported, and Not supported setting. OpenRouter's model response
+includes these capability fields, so Auto-detect can configure them directly.
+OpenAI-compatible servers often return model ids only; Auto-detect then leaves
+the capability unknown and attempts it when used.
+
+Choose **Not supported** for a text-only model or a model without function/tool
+calling. The console then omits unsupported tool schemas or image blocks,
+adds a guardrail that prevents claims about unseen IFC evidence, and keeps the
+text conversation usable. Attaching the current 3D view is unavailable when
+Image input is disabled. If an unknown model rejects tools or images, the
+provider error points back to the corresponding override instead of ending in
+an internal error.
 
 ## Agents in the panel
 
@@ -133,6 +151,15 @@ environment variable. Keyring support ships with the base package. Select
 securely from the panel. Stored keys never enter browser or project storage;
 `ifc-console keys list` and `keys delete` manage them. Without that explicit
 choice, a pasted key is held in console memory only until `/chat off` or exit.
+
+The model editor always shows the key field and names the active source. A
+stored or environment key cannot be revealed to browser JavaScript; the Show
+control reveals only a replacement currently typed into the field. Durable
+secrets use the operating-system credential store under service
+`ifc-console`, with the provider id as the account name. On Windows this is
+Credential Manager, on macOS Keychain, and on Linux Secret Service. The
+console home `keys.json` contains only provider names so the keyring can be
+listed; it never contains secret values.
 
 The browser never contacts the provider directly. ifc-console sends the
 provider:

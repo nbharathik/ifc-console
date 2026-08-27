@@ -125,8 +125,12 @@ BLOCKS: tuple[AgentBlock, ...] = (
         tools=(
             "compute_quantities",
             "get_element_geometry",
+            "inspect_element_mesh",
             "analyze_element_geometry",
             "measure_elements",
+            "measure_directional_extent",
+            "measure_local_thickness",
+            "slice_element_mesh",
             "measure_distance",
             "get_measurement_recipe",
             "export_measurement_report",
@@ -136,7 +140,11 @@ BLOCKS: tuple[AgentBlock, ...] = (
             "about one element (a profile's width, height, flange and web thickness, "
             "length), use analyze_element_geometry: it reads exact profile parameters from "
             "the file and cross-checks them against measured mesh sections, and each value "
-            "names its source. Report the method, the unit, the SI value, the source, and "
+            "names its source. Use inspect_element_mesh before trusting a mesh volume; use "
+            "measure_directional_extent for an outside-to-outside size along an arbitrary "
+            "vector, and measure_local_thickness for all material/cavity intervals through "
+            "one point. Use slice_element_mesh for an arbitrary, reconstructable cut. "
+            "Report the method, the unit, the SI value, the source, and "
             "the uncertainty for every result; state any mismatch flags. Prefer one batched "
             "call over many single ones. Never infer an exact dimension from an "
             "uncalibrated image. When the user wants the results to keep, write "
@@ -178,6 +186,7 @@ BLOCKS: tuple[AgentBlock, ...] = (
         title="Viewer vision",
         description="Read selection and hand measurements, highlight, theme, screenshot 3D.",
         tools=(
+            "open_viewer",
             "get_viewer_selection",
             "get_viewer_measurements",
             "highlight_elements",
@@ -187,9 +196,10 @@ BLOCKS: tuple[AgentBlock, ...] = (
             "orient",
         ),
         instructions=(
+            "If the viewer is off or disconnected, call open_viewer and wait for ready=true. "
             "Use the viewer selection when the user points at something. When analyzing one "
-            "element, control_viewer action='focus' opens it alone in a named viewer tab so "
-            "you and the user look at the same thing; unfocus restores the model. For "
+            "element, control_viewer action='focus' isolates and frames it directly so you "
+            "and the user look at the same thing; unfocus restores the model. For "
             "complex geometry, highlight or focus the relevant elements and inspect a "
             "screenshot before describing them. Visual inspection supports deterministic "
             "measurement; it never replaces it."

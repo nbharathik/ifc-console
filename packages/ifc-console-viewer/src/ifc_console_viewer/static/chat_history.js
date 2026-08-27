@@ -284,15 +284,42 @@ function approvalTarget(args) {
 const scalar = (value) =>
   value !== null && value !== undefined && value !== "" && !plain(value) && !Array.isArray(value);
 
+function approvalPayload(block) {
+  const source = block?.args;
+  if (plain(source)) return source;
+  try {
+    const parsed = JSON.parse(String(source || "{}"));
+    return plain(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+/** The compact argument view used inside an approval card.
+ *
+ * Executable code is the part a reviewer needs to inspect, so show it as code
+ * instead of burying it in an escaped JSON string. Other tools retain their
+ * complete, pretty-printed argument object.
+ */
+export function approvalArgumentPreview(block) {
+  const raw = block?.args;
+  const args = approvalPayload(block);
+  if (typeof args.code === "string" && args.code.trim()) {
+    return { label: "Code", text: args.code, code: true };
+  }
+  let text = "";
+  try {
+    text = plain(raw) ? JSON.stringify(raw, null, 1) : String(raw || "").trim();
+    if (text) text = JSON.stringify(JSON.parse(text), null, 1);
+  } catch {
+    // An unreadable payload is still useful evidence; show it unchanged.
+  }
+  return { label: "Arguments", text, code: false };
+}
+
 export function approvalDigest(block) {
   const name = String(block?.name || "tool");
-  let args = {};
-  try {
-    const parsed = JSON.parse(String(block?.args || "{}"));
-    if (plain(parsed)) args = parsed;
-  } catch {
-    args = {};
-  }
+  const args = approvalPayload(block);
   const facts = [];
   for (const [label, keys] of APPROVAL_FIELDS) {
     const key = keys.find((candidate) => scalar(args[candidate]));

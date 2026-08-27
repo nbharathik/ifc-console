@@ -109,6 +109,8 @@ async def test_agent_profiles_scope_ifc_tools_but_keep_company_tools(
         editing = await runtime.toolset(profile=IfcToolProfile.PROPERTY_EDIT)
 
         assert "search_elements" in inspect
+        assert "open_viewer" in inspect
+        assert "control_viewer" in inspect
         assert "company__requirements" in inspect
         assert "execute_ifc_code" not in inspect
         assert "preview_property_change" not in inspect

@@ -91,14 +91,135 @@ def test_side_panels_use_contextual_close_controls_and_edge_tabs(
     assert "top: 50%" in styles
 
 
-def test_view_tools_have_one_launcher_for_each_state(html: str, script: str) -> None:
-    assert 'id="btn-tools"' in html
+def test_view_tools_live_in_a_persistent_top_instrument_rail(
+    html: str, script: str, styles: str
+) -> None:
+    assert 'id="viewer-rail"' in html
+    assert 'id="viewer-toolbar"' in html
+    for name in ("visibility", "views", "section", "display", "filters"):
+        assert f'data-tool-panel="{name}"' in html
+    assert 'id="btn-tool-measure"' in html
     assert 'id="tools-panel-close"' in html
-    popover = script.split("function setPopoverOpen", 1)[1].split(
+    panel = script.split("function setToolPanel", 1)[1].split(
         "function closePopovers", 1
     )[0]
-    assert 'if (panelId === "tools-panel") button.hidden = open;' in popover
+    assert "panel.hidden = !valid" in panel
+    assert "sectionNode.hidden = !valid" in panel
+    # Canvas interaction does not dismiss a tool panel; only its icon, close
+    # button, Escape, or another explicit popover does.
+    outside = script.split('document.addEventListener("click"', 1)[1].split(
+        chr(10) + "});", 1
+    )[0]
+    assert "setToolPanel" not in outside
     assert '$("tools-panel-close").addEventListener("click"' in script
+    rail_styles = re.findall(r"(?m)^\.rail-tool \{([^}]*)\}", styles)
+    assert any("width: 32px" in rule for rule in rail_styles)
+    assert ".rail-tool > span { display: none; }" in styles
+
+
+def test_ifc_documents_use_closeable_tabs_with_per_tab_views(
+    html: str, script: str
+) -> None:
+    assert 'id="model-tabs" role="tablist"' in html
+    assert 'id="model-tab-add"' in html
+    assert 'id="model-tab-open-active"' in html
+    assert 'id="viewer-empty-open"' in html
+    render = script.split("function renderModelTabs()", 1)[1].split(
+        "const modelTabAdd", 1
+    )[0]
+    assert 'open.setAttribute("role", "tab")' in render
+    assert 'open.setAttribute("aria-selected"' in render
+    assert 'el("button", "model-tab-close"' in render
+    assert "closedModelTabs.add(row.id)" in render
+    assert "Keep at least one IFC file open" not in render
+    assert "closeViewerSurface({ openAgent: true })" in render
+    assert "for (const row of modelRows)" in render
+    assert '"model-tab-choice-state"' in render
+    switch = script.split("function selectViewerModel(picked)", 1)[1].split(
+        chr(10) + "}", 1
+    )[0]
+    assert "viewerDocumentOpen = true" in switch
+    assert "modelTabViews.set(current.id, captureView(current.name))" in switch
+    assert "pendingModelTabView" in switch
+    rebuild = script.split("async function buildScene(buffer)", 1)[1].split(
+        "// ---------------------------------------------------------------- spatial tree", 1
+    )[0]
+    assert "const switchingTabs" in rebuild
+    assert "if (saved) restoreView(saved)" in rebuild
+
+
+def test_ifc_tabs_keep_parsed_revisions_and_model_scoped_selections(
+    script: str, styles: str, chat_js: str
+) -> None:
+    load = script.split("async function loadModel()", 1)[1].split(
+        "/**\n * Yield to the browser", 1
+    )[0]
+    assert "parsedModelCache.get(targetModelId)" in load
+    assert "cached.etag === targetEtag" in load
+    assert "buildScene(null, cached.parsed" in load
+    build = script.split("async function buildScene(buffer)", 1)[1].split(
+        "// ---------------------------------------------------------------- spatial tree", 1
+    )[0]
+    assert "residentParsed || await parseBuffer(buffer)" in build
+    assert "parsedModelCache.set(targetModelId" in build
+    assert build.index("await parseBuffer(buffer)") < build.index("disposeModel();")
+
+    context = script.split("function viewerContext(", 1)[1].split(
+        "function scheduleViewerContext", 1
+    )[0]
+    assert "selections: modelSelectionRows()" in context
+    wire = script.split("function sendSelection()", 1)[1].split(chr(10) + "}", 1)[0]
+    assert "selections = modelSelectionRows()" in wire
+    assert "model_id: item.model_id" in wire
+    assert "selections });" in wire
+    assert 'class="model-tab-selection-count"' not in script
+    assert '"model-tab-selection-count"' in script
+    assert ".model-tab-selection-count" in styles
+
+    assert "function viewerSelections()" in chat_js
+    assert "sessionStatus.selections" in chat_js
+    assert 'action: "clear-model-selection"' in chat_js
+    assert "selectedModel.model_id" in chat_js
+
+
+def test_agent_workspace_can_hide_and_reopen_the_ifc_surface(
+    html: str, script: str, styles: str, chat_css: str
+) -> None:
+    assert '<span id="brand">' in html
+    assert '$("brand").addEventListener' not in script
+    assert '$("brand").setAttribute("aria-pressed"' not in script
+    assert 'id="viewer-empty"' in html
+    close = script.split("function closeViewerSurface", 1)[1].split(
+        "function openActiveViewerModel", 1
+    )[0]
+    assert "viewerDocumentOpen = false" in close
+    assert "setSelection([], false)" in close
+    assert 'scheduleViewerContext("closed")' in close
+    assert 'body.viewer-closed #canvas-wrap' in styles
+    assert 'body.viewer-closed #viewer-toolbar' in styles
+    assert 'body.viewer-closed #chat-dock:not([hidden])' in chat_css
+
+
+def test_filter_panel_can_restore_the_default_ifc_view(html: str, script: str) -> None:
+    assert 'data-tool-panel="filters"' in html
+    assert 'id="filter-count"' in html
+    assert 'id="tool-clear-filters"' in html
+    active = script.split("function activeViewerFilters()", 1)[1].split(
+        "function renderViewerFilters", 1
+    )[0]
+    for key in (
+        "selection", "transparency", "visibility", "section",
+        "measurements", "highlights", "theme", "projection",
+    ):
+        assert f'key: "{key}"' in active
+    clear = script.split("function clearAllViewerFilters()", 1)[1].split(
+        chr(10) + "}", 1
+    )[0]
+    for reset in (
+        "setSelection([], false)", "setGhostContext(false)", "showEverything()",
+        "clearSections()", "clearMeasurements()", 'setProjection("perspective")',
+    ):
+        assert reset in clear
 
 
 def test_viewer_bridge_exposes_context_and_command_results(script: str) -> None:
@@ -126,7 +247,10 @@ def test_viewer_bridge_exposes_context_and_command_results(script: str) -> None:
         "capture-evidence",
     ):
         assert f'command.action === "{action}"' in script
-    assert "sendViewerResult(command, true, runViewerCommand(command))" in handler
+    assert "const result = runViewerCommand(command)" in handler
+    assert 'typeof result.then === "function"' in handler
+    assert "sendViewerResult(command, true, value)" in handler
+    assert "sendViewerResult(command, true, result)" in handler
     # the failure carries the frame it came from: a command that dies inside
     # three.js says nothing useful without it
     assert "sendViewerResult(command, false, null, commandFailure(error))" in handler
@@ -137,13 +261,13 @@ def test_theme_preference_is_persisted_and_resolves_through_workspace(
     html: str, script: str, styles: str
 ) -> None:
     assert 'id="set-theme"' in html
-    for choice in ("system", "dark", "light"):
+    for choice in ("light", "dark", "modern", "blue"):
         assert f'value="{choice}"' in html
     theme = script.split("function resolvedTheme()", 1)[1].split(
         "// ---------------------------------------------------------------- model state", 1
     )[0]
     assert "consoleTheme" in theme
-    assert "colorPreference.matches" in theme
+    assert 'return "blue"' in theme
     assert "uiState.themePreference = themePreference" in script
     assert ':root[data-theme="light"]' in styles
 
@@ -188,7 +312,7 @@ def test_viewport_and_splitters_are_keyboard_operable(html: str, script: str) ->
     assert 'aria-controls="chat-dock"' in html
 
 
-def test_chat_splitter_updates_aria_and_restores_close_focus(
+def test_chat_splitter_updates_aria_and_primary_agent_has_no_close_callback(
     script: str, chat_css: str
 ) -> None:
     handler = script.split('chatResize.addEventListener("keydown"', 1)[1].split(
@@ -206,9 +330,9 @@ def test_chat_splitter_updates_aria_and_restores_close_focus(
         "aria-valuetext",
     ):
         assert f'"{attribute}"' in aria
-    close = script.split("chatPanel ||= mountChat", 1)[1].split("return chatPanel", 1)[0]
-    assert "setChat(false)" in close
-    assert "chatBtn.focus({ preventScroll: true })" in close
+    mount = script.split("chatPanel ||= mountChat", 1)[1].split("return chatPanel", 1)[0]
+    assert "onClose" not in mount
+    assert "agentWorkspacePrimary" in script
     assert "#chat-dock-resize:focus-visible" in chat_css
 
 
@@ -346,18 +470,21 @@ def test_measurement_depth_is_computed_from_interpolated_view_position(
     shader = script.split("const depthMaterial", 1)[1].split("makeStateTextures()", 1)[0]
     assert shader.count("varying vec3 vMeasureViewPosition;") == 2
     assert "vMeasureViewPosition = mvPosition.xyz;" in shader
-    # perspective reconstructs along a unit ray from the eye, so it wants
-    # radial distance; parallel reconstructs down the view axis from a point
-    # on the camera plane, and that depth is negative behind the plane
-    assert "uOrtho > 0.5 ? -vMeasureViewPosition.z : length(vMeasureViewPosition)" in shader
+    # Both projections encode view-axis depth over the model's actual range,
+    # rather than radial distance across the camera's deliberately huge far plane.
+    assert "float measured = -vMeasureViewPosition.z;" in shader
     assert "clamp((measured - uNear) / (uFar - uNear), 0.0, 1.0)" in shader
     assert "varying float vDist" not in shader
-    # and the reader has to undo exactly that, against the range the probe was
-    # rendered with rather than whatever the camera holds when the pixel lands
+    # The reader undoes that against the captured range and exact pixel-centre
+    # ray, rather than whatever camera happens to be live when the read lands.
     reader = script.split("function depthPointFrom(", 1)[1].split(chr(10) + "}", 1)[0]
     assert "state.near + normalized * (state.far - state.near)" in reader
+    assert "state.rayOrigin" in reader and "state.rayDirection" in reader
+    assert "camera.position" not in reader
     probe = script.split("function beginDepthProbe(", 1)[1].split(chr(10) + "}", 1)[0]
-    assert "near: ortho ? camera.near : 0," in probe
+    assert "const range = depthPickRange();" in probe
+    assert "sampleClientX" in probe and "sampleClientY" in probe
+    assert "rayOrigin: raycaster.ray.origin.clone()" in probe
     assert "depthMaterial.uniforms.uNear.value = state.near;" in probe
 
 
@@ -463,24 +590,28 @@ def test_the_viewer_exposes_its_own_tools_to_the_panel(script: str) -> None:
     assert "Object.keys(VIEW_DIRECTIONS).join" in view
 
 
-def test_focus_tabs_isolate_one_element_per_named_tab(
+def test_focus_is_direct_and_does_not_create_an_object_tab_row(
     html: str, script: str, styles: str
 ) -> None:
-    """One tab per analyzed element; All hands the viewport back."""
-    assert 'id="focus-tabs"' in html
-    assert ".focus-tab" in styles
+    """Focus narrows the viewport; Show all is the one visible way back."""
+    assert 'id="focus-tabs"' not in html
+    assert ".focus-tab" not in styles
     focus = script.split('command.action === "focus"', 1)[1].split(
         'command.action === "unfocus"', 1
     )[0]
-    # falls back to the selection, and refuses ids the model does not hold
+    # Focus falls back to the selection, refuses ids the model does not hold,
+    # and directly updates the one active isolation set.
     assert "selectedGuids()" in focus
     assert "None of those elements are in this model" in focus
-    # tabs are GUID-keyed so a rebuild can re-map the active one
-    assert "guids: [...guids]" in script
-    rebuilt = script.split("// A rebuild resets the server's selection", 1)[1]
-    assert "applyFocusTab(activeFocusName, false)" in rebuilt.split("invalidate();", 1)[0]
-    # manual isolation and show-all drop the active tab rather than lying
-    assert "function dropFocusActive(" in script
+    assert "userIsolateSet = new Set(ids)" in focus
+    assert "if (command.fit !== false) fitTo(ids)" in focus
+    assert "openFocusTab" not in script
+    assert "focusTabs" not in script
+    assert "activeFocusName" not in script
+    # The current isolation survives a live model rebuild without becoming a
+    # list of saved analysis tabs.
+    assert "const keepUserIsolate" in script
+    assert "userIsolateSet = restored.length ? new Set(restored) : null" in script
 
 
 def test_measurement_answers_the_questions_a_model_is_asked(
@@ -492,20 +623,17 @@ def test_measurement_answers_the_questions_a_model_is_asked(
     assert "function constrainToAxis(" in script
     lock = script.split("function constrainToAxis(", 1)[1].split(chr(10) + "function ", 1)[0]
     assert "axisFrame[lock]" in lock
-    # the click and the preview share one constraint, so a click lands exactly
-    # where the preview said it would; the lock is joined by soft axis
-    # inference that Shift hardens
+    # The click and preview share one constraint, so a click lands exactly
+    # where the preview said it would. Only a visible X/Y/Z lock may move it;
+    # the old silent near-axis inference pulled points off the clicked face.
     handler = script.split("function handleMeasureClick(", 1)[1].split("\n}", 1)[0]
     assert "constrainedMeasurePoint(anchor, hit.point)" in handler
-    infer = script.split("function constrainedMeasurePoint(", 1)[1].split(chr(10) + "}", 1)[0]
-    assert "inferAxis(anchor, raw, axisFrame, AXIS_INFER_COS)" in infer
-    assert "constrainToAxis(anchor, raw, inferredAxis)" in infer
-    assert "else if (inferredAxis) axisLock = inferredAxis;" in script
-    # the boundary itself is arithmetic, and it is tested as arithmetic
-    axis = measure_math.split("export function inferAxis(", 1)[1].split(
+    constraint = script.split("function constrainedMeasurePoint(", 1)[1].split(
         chr(10) + "}", 1
     )[0]
-    assert "Math.abs(along) / length >= cosLimit" in axis
+    assert "axisLock ? constrainToAxis(anchor, raw, axisLock) : raw" in constraint
+    assert "inferAxis(" not in constraint
+    assert "controls.mouseButtons.LEFT = on ? null : ORBIT_LEFT_MOUSE" in script
 
     # element size on the element's own axes: a wall at forty degrees has a
     # thickness, and the world-axis box around it reports the diagonal
@@ -540,19 +668,29 @@ def test_measurement_answers_the_questions_a_model_is_asked(
     # down the model's axis is not always down the scene axis it runs along
     assert "axisFrame[name].sign < 0" in clearance
 
-    # snapping, judged in screen space, on the element's own box
+    # Snapping is judged in screen space on retained real feature edges. A GPU
+    # patch limits candidates to geometry visible around the cursor.
     assert "function snapAt(" in script
-    assert "export function obbCorners(" in measure_math
-    snap = script.split("function snapAt(", 1)[1].split(chr(10) + "/** Elements worth", 1)[0]
+    assert "function snapEdgeListFor(" in script
+    assert "function recordSnapParts(" in script
+    assert "function beginSnapCandidateProbe(" in script
+    # A proxy box can have corners in empty space on a curved/complex product.
+    # Over-budget geometry therefore falls back to the exact surface, not a
+    # feature the IFC never contained.
+    assert "EMPTY_SNAP_EDGES" in script
+    assert "boxEdgeList" not in script
+    snap = script.split("function snapAt(", 1)[1].split(
+        "function measurePointAt", 1
+    )[0]
     assert "SNAP_RADIUS[kind]" in snap
     assert "rect.left" in snap and "rect.width" in snap
     # a point behind the lens projects to a pixel distance that is a lie
-    assert "_snapV.z < -1 || _snapV.z > 1" in snap
-    # corners, edge midpoints, face centres and anywhere along an edge
-    for kind in ("corner", "midpoint", "centre", "edge"):
+    assert "ndcZ < -1 || ndcZ > 1" in snap
+    # Actual segment ends, midpoint, and anywhere along the feature edge.
+    for kind in ("corner", "midpoint", "edge"):
         assert f'offer("{kind}"' in snap, kind
-    # every element near the cursor, not just the one in front of it
-    assert "for (const id of snapCandidates(surface))" in snap
+    assert 'offer("centre"' not in snap
+    assert "for (const id of candidateIds || [])" in snap
 
     for command in (
         "measure-element", "measure-laser", "measure-points", "measure-angle",
@@ -572,19 +710,29 @@ def test_a_snap_cannot_be_taken_through_a_wall_or_through_a_section(
     orthographic plan a wall's top and bottom corners land on the same pixel, so
     a horizontal-looking measurement could silently take one end at 0 and the
     other at 3 m; with a section on, cut-away geometry still offered all eight."""
-    snap = script.split("function snapAt(", 1)[1].split(
-        chr(10) + "/** Elements worth", 1
-    )[0]
+    snap = script.split("function snapAt(", 1)[1].split("function measurePointAt", 1)[0]
     # the cut applies to the pick passes and to the draw, so it applies here
     assert "for (const plane of activeClipPlanes) {" in snap
     assert "if (plane.distanceToPoint(point) < 0) return;" in snap
     # depth is measured against the surface the cursor is actually over
-    assert "const SNAP_DEPTH_SLACK_PX = 3;" in script
+    assert "const SNAP_DEPTH_SLACK_PX = 8;" in script
     assert "worldPerPixel(surface) * SNAP_DEPTH_SLACK_PX" in snap
+    assert "!snapEnabled || !elements.size || !surface" in snap
     assert "camera.getWorldDirection(_snapDir)" in snap
-    # behind is refused, in front is kept: a silhouette corner is what people aim at
-    assert "if (depth > depthSlack) return;" in snap
-    assert "best = { kind, distance, point: point.clone(), depth };" in snap
+    # Both behind and foreground pulls are bounded, and distance with a small
+    # feature bias decides rather than an unconditional corner-first rank.
+    assert "depth > depthSlack || depth < -frontSlack" in snap
+    assert "Math.sqrt(distance) + SNAP_BIAS[kind]" in snap
+    assert "best = { kind, distance, score, point: point.clone(), depth };" in snap
+    # Just outside a silhouette, use the nearest occupied patch pixel as the
+    # local depth guard; a visible multipart product id alone is insufficient.
+    assert "const sourceX = state.px - state.half" in script
+    assert "surfacePointAt(candidates.nearest.clientX" in script
+    assert "await surfacePointAsync(candidates.nearest.clientX" in script
+    resize = script.split("function resize()", 1)[1].split(
+        "/** Give whichever camera", 1
+    )[0]
+    assert "cameraSerial++" in resize
     # and the residual ambiguity is shown rather than left to surprise the reader
     preview = script.split("function showSnapPreview(", 1)[1].split(chr(10) + "}", 1)[0]
     assert "hit.depth < -1e-3" in preview
@@ -625,31 +773,46 @@ def test_a_snap_is_shown_before_it_is_committed_to(script: str) -> None:
     )[0]
     assert "await measurePointAsync(clientX, clientY)" in preview
     # the rubber band from the anchor and the live length beside the cursor
-    assert "previewLine.geometry.setFromPoints([anchor, point])" in preview
+    assert "previewLinePosition.setXYZ(0, anchor.x, anchor.y, anchor.z)" in preview
+    assert "previewLinePosition.setXYZ(1, point.x, point.y, point.z)" in preview
     assert "formatLength(anchor.distanceTo(point))" in preview
     # the axis lock constrains the preview exactly like the click it predicts
     assert "constrainedMeasurePoint(anchor, hit.point)" in preview
     assert "AXIS_COLORS[lockAxis]" in preview
     # the snap point wears its CAD glyph, not an anonymous dot
-    assert "snapGlyphTexture(hit.kind)" in preview
-    # one probe in flight at a time, paced by what the pass actually costs on
-    # this model rather than by a number picked in advance
-    assert "snapPreviewBusy || now - snapPreviewAt < Math.max(16, snapPreviewCost * 2)" in preview
+    assert "snapGlyphTexture(previewKind)" in preview
+    # One probe is in flight at a time, but pointer moves are coalesced to the
+    # newest sample instead of discarded and left visibly stale.
+    queue = script.split("function queueSnapPreview(", 1)[1].split(
+        "async function runQueuedSnapPreview", 1
+    )[0]
+    assert "snapPreviewQueued = [clientX, clientY]" in queue
+    assert "snapPreviewBusy || snapPreviewTimer" in queue
     assert "snapPreviewCost = performance.now() - now" in preview
     # a probe still in flight when the preview is taken down cannot put it back
     assert "if (generation !== snapPreviewGen) return;" in preview
     assert "snapPreviewGen++;" in script
     # only while measuring, and never while the pointer is down
-    assert "if (measureMode && !downAt) showSnapPreview(e.clientX, e.clientY);" in script
+    assert "if (measureMode && !downAt) queueSnapPreview(e.clientX, e.clientY);" in script
     assert 'controls.addEventListener("change", () => clearSnapPreview());' in script
+    # A click on the shown glyph reuses that exact fresh answer rather than
+    # stalling for and potentially landing on a second GPU sample.
+    cached = script.split("function cachedMeasurePoint(", 1)[1].split(
+        chr(10) + "}", 1
+    )[0]
+    assert "cached.serial !== cameraSerial" in cached
+    assert "cached.hit.point.clone()" in cached
+    pointer = script.split('canvas.addEventListener("pointerdown"', 1)[1].split(
+        chr(10) + "});", 1
+    )[0]
+    assert "cachedMeasurePoint(e.clientX, e.clientY)" in pointer
 
 
-def test_the_hover_probe_does_not_block_but_the_click_still_does(script: str) -> None:
+def test_the_hover_probe_does_not_block_and_click_has_an_exact_fallback(script: str) -> None:
     """readRenderTargetPixels flushes the command stream and blocks JavaScript
     until the GPU catches up, which is what held the preview to 25 Hz. The
-    click keeps the blocking read: a point that landed a frame later would let
-    the double-click that closes an outline run before the point it takes
-    back."""
+    click reuses a fresh preview, with a blocking fallback for touch and for a
+    pointer that never paused long enough to preview."""
     probe = script.split("async function surfacePointAsync(", 1)[1].split(
         chr(10) + "}", 1
     )[0]
@@ -663,10 +826,11 @@ def test_the_hover_probe_does_not_block_but_the_click_still_does(script: str) ->
     # a context that cannot read back asynchronously falls back rather than
     # leaving the preview permanently blank
     assert "asyncProbeWorks = false;" in probe
-    # the click path stays synchronous, start to finish
+    # the click path stays synchronous, start to finish; its fallback cannot
+    # land a frame after the double-click that closes an outline.
     click = script.split("function handleMeasureClick(", 1)[1].split(chr(10) + "}", 1)[0]
     assert "await" not in click
-    assert "const hit = measurePointAt(clientX, clientY);" in click
+    assert "const hit = prefetched || measurePointAt(clientX, clientY);" in click
     blocking = script.split("function surfacePointAt(", 1)[1].split(chr(10) + "}", 1)[0]
     assert "renderer.readRenderTargetPixels(pickTarget, 0, 0, 1, 1, pickBuffer);" in blocking
     # neither pass owes the canvas a redraw unless it changed the resolution
@@ -747,7 +911,7 @@ def test_each_measurement_is_one_labelled_deletable_thing(script: str) -> None:
 
 
 def test_angle_and_area_share_the_click_flow(script: str, measure_math: str) -> None:
-    assert "const MEASURE_KINDS = { distance: 2, angle: 3, area: 0 };" in script
+    assert "const MEASURE_KINDS = { distance: 2, path: 0, angle: 3, area: 0 };" in script
     area = measure_math.split("export function polygonMeasure(", 1)[1].split(
         chr(10) + "}", 1
     )[0]
@@ -765,13 +929,18 @@ def test_angle_and_area_share_the_click_flow(script: str, measure_math: str) -> 
     # the viewer's own copies are the frame conversion and nothing else
     assert "polygonCore(points)" in script
     assert "angleCore(from, at, to)" in script
-    # an outline closes on Enter or a double-click, never on a point count
+    # Open paths and area outlines finish explicitly, never on a point count.
+    assert "function finishPath()" in script
     assert "function finishArea()" in script
-    assert "if (finishArea()) renderMeasurements();" in script
+    assert "const MAX_MEASURE_POINTS = 200;" in script
+    assert "pending.length >= MAX_MEASURE_POINTS" in script
+    assert "if (finishOpenMeasurement()) renderMeasurements();" in script
+    assert "polylineCore(points)" in script
+    assert "export function polylineMeasure(points)" in measure_math
     # pointerup commits a point for each half of a double-click, so closing on
     # the last corner used to leave a duplicate: a rectangle read "6 points"
     # and polygonMeasure integrated the zero-length edges into the perimeter
-    assert 'if (measureKind === "area") undoPendingPoint();' in script
+    assert 'measureKind === "area" || measureKind === "path"' in script
     assert "outlinePoints(points, AREA_MIN_EDGE_SQ)" in script
     outline = measure_math.split("export function outlinePoints(", 1)[1].split(
         chr(10) + "}", 1
@@ -793,7 +962,7 @@ def test_measurements_are_anchored_to_globalids_and_outlive_a_rebuild(
     whole measurement set, server copy included. A reload lost them too."""
     build = script.split("async function buildScene(", 1)[1].split(chr(10) + "}", 1)[0]
     assert "clearMeasurements();" not in build
-    assert "const keepMeasurements = measurementCarry();" in build
+    assert "const keepMeasurements = switchingTabs ? [] : measurementCarry();" in build
     assert "restoreMeasurements(keepMeasurements);" in build
     # snapshot before the scene is torn down, replay once the ids are rebuilt
     assert build.index("measurementCarry()") < build.index("disposeModel();")
@@ -801,7 +970,8 @@ def test_measurements_are_anchored_to_globalids_and_outlive_a_rebuild(
 
     # each end keeps the identity measurePointAt already resolved and threw away
     click = script.split("function handleMeasureClick(", 1)[1].split(chr(10) + "}", 1)[0]
-    assert "express_id: hit.express_id," in click
+    assert 'kind: movedByLock ? "axis" : hit.kind' in click
+    assert "express_id: movedByLock ? null : hit.express_id" in click
     assert "pendingAnchors()" in click
     anchor = script.split("function anchorAt(", 1)[1].split(chr(10) + "}", 1)[0]
     # in the element's own box, so a wall that moved carries its dimension
@@ -879,6 +1049,27 @@ def test_a_section_can_keep_a_slice_rather_than_a_half_space(script: str) -> Non
     state = script.split("function sectionState()", 1)[1].split(chr(10) + "function ", 1)[0]
     assert "toModelAxis(axis, scenePosition)" in state
     assert 'command.action === "set-section"' in script
+
+
+def test_section_slider_shows_the_real_coordinated_cut_plane(
+    html: str, script: str
+) -> None:
+    assert "section-plane-helper" in script
+    helper = script.split("function showSectionHelper(axis)", 1)[1].split(
+        "function hideSectionHelper", 1
+    )[0]
+    assert "const modelAxis = MODEL_OF_SCENE[axis] || axis" in helper
+    assert "SECTION_HELPER_COLORS[modelAxis]" in helper
+    assert "sectionHelperRoot.visible = true" in helper
+    slider = script.split('for (const slider of document.querySelectorAll(".section-at"))', 1)[1]
+    slider = slider.split(chr(10) + "}", 1)[0]
+    assert "showSectionHelper(axis)" in slider
+    assert "updateClipping()" in slider
+    row = script.split("function syncSectionRow(axis)", 1)[1].split(
+        chr(10) + "}", 1
+    )[0]
+    assert "MODEL_OF_SCENE[axis]" in row
+    assert 'class="tool-note section-note"' in html
 
 
 def test_nearby_elements_are_found_without_scanning_the_model(script: str) -> None:
@@ -1399,14 +1590,95 @@ def test_settings_apply_is_deduplicated_serialized_and_generation_guarded(
     assert 'provider()?.id === id && el("key").value.trim() === key' in saver
 
 
+def test_ifc_tabs_start_in_the_viewer_column_and_agent_settings_stay_in_its_header(
+    html: str, script: str, styles: str, chat_js: str, chat_css: str
+) -> None:
+    rail = html.split('<div id="viewer-rail">', 1)[1].split("</div>", 1)[0]
+    assert 'id="btn-chat"' not in rail
+    assert 'id="model-tabs"' in rail
+    assert 'class="agent-workspace-tab"' not in html
+    assert html.index('<main id="layout">') < html.index('<div id="viewer-rail">')
+    assert html.index('id="chat-dock"') < html.index('<div id="viewer-rail">')
+    assert html.index('id="chat-dock"') < html.index('id="viewer-stage"')
+    layout = styles.split("#layout {", 1)[1].split("}", 1)[0]
+    rail_style = styles.split("#viewer-rail {", 1)[1].split("}", 1)[0]
+    stage_style = styles.split("#viewer-stage {", 1)[1].split("}", 1)[0]
+    assert "display: grid" in layout
+    assert "grid-column: 3" in rail_style
+    assert "padding: 0 7px 0 0" in rail_style
+    assert "grid-column: 3" in stage_style
+    dock_style = chat_css.split("#chat-dock {", 1)[1].split("}", 1)[0]
+    assert "grid-column: 1" in dock_style
+    assert "grid-row: 1 / 3" in dock_style
+    assert 'id="btn-settings"' not in html.split('<div id="viewer-rail">', 1)[0]
+    assert 'id="btn-settings"' in html.split('id="viewer-toolbar"', 1)[1]
+    chat_header = chat_js.split('<header class="chat-head">', 1)[1].split(
+        "</header>", 1
+    )[0]
+    assert 'class="chat-title" data-role="title"' in chat_header
+    assert 'title="Agent settings" aria-label="Open agent settings"' in chat_header
+    assert "chatPanel ||= mountChat(chatDock);" in script
+    assert "const agentWorkspacePrimary" in script
+
+
+def test_model_capability_controls_and_key_location_are_visible(
+    chat_js: str, chat_css: str
+) -> None:
+    assert 'data-role="toolcap"' in chat_js
+    assert 'data-role="visioncap"' in chat_js
+    assert 'tools_supported: effectiveCapability("tools")' in chat_js
+    assert 'vision_supported: effectiveCapability("vision")' in chat_js
+    assert 'el("keyfield").hidden = !p.needs_key;' in chat_js
+    assert "operating system under service ifc-console" in chat_js
+    assert ".chat-composer-select select option" in chat_css
+
+
 def test_stream_repaint_keeps_a_followed_answer_in_view(chat_js: str) -> None:
     run = chat_js.split("async function run({ retry = false } = {})", 1)[1].split(
         "async function submit()", 1
     )[0]
     assert "schedule(stick);" in run
+    assert "repaintShouldScroll && followingOutput" in run
     assert "if (shouldScroll) scroll();" in run
-    assert "const finishStick = nearBottom() || repaintShouldScroll;" in run
+    assert "const finishStick = followingOutput;" in run
     assert "if (finishStick) scroll();" in run
+
+
+def test_upward_scroll_owns_the_viewport_while_output_keeps_rendering(
+    chat_js: str,
+) -> None:
+    scroll_control = chat_js.split("const nearBottom =", 1)[1].split(
+        "/* True while the reader", 1
+    )[0]
+    assert "let followingOutput = true;" in scroll_control
+    assert 'log.addEventListener("wheel"' in scroll_control
+    assert "if (event.deltaY < 0) followingOutput = false;" in scroll_control
+    assert "if (top < lastScrollTop - 0.5) followingOutput = false;" in scroll_control
+    assert "top > lastScrollTop + 0.5 && nearBottom()" in scroll_control
+
+    run = chat_js.split("async function run({ retry = false } = {})", 1)[1].split(
+        "async function submit()", 1
+    )[0]
+    assert "const stick = followingOutput;" in run
+    assert "const heldScrollTop = followingOutput ? null : log.scrollTop;" in run
+    assert "if (heldScrollTop !== null)" in run
+    assert "log.scrollTop = heldScrollTop;" in run
+    assert "if (stick && followingOutput && !repaint) scroll();" in run
+
+
+def test_tool_results_render_lazily_and_progress_is_throttled(chat_js: str) -> None:
+    tool = chat_js.split("function toolNode(block)", 1)[1].split(
+        "function paintBlock", 1
+    )[0]
+    assert 'details.addEventListener("toggle"' in tool
+    assert "function paintToolBody(" in tool
+    assert 'block.output !== null' in tool
+    assert '"Output preview"' in tool
+    run = chat_js.split("async function run({ retry = false } = {})", 1)[1].split(
+        "async function submit()", 1
+    )[0]
+    assert 'event.type === "tool_progress"' in run
+    assert "schedule(stick);" in run
 
 
 def test_agent_attachments_and_ai_proposals_are_first_class(
@@ -1472,8 +1744,8 @@ def test_standalone_chat_uses_status_theme_after_os_default(
     assert 'typeof options.onStatus === "function"' in chat_js
     startup = chat_js.split("const urlAgent =", 1)[1].split("return {", 1)[0]
     assert startup.index("refreshContext();") < startup.index("loadProviders();")
-    assert "onStatus: (status) =>" in chat_page_js
-    assert "document.documentElement.dataset.consoleTheme = status.theme" in chat_page_js
+    assert "onStatus: () =>" in chat_page_js
+    assert "document.documentElement.dataset.consoleTheme = root.dataset.theme" in chat_page_js
     assert "html:not([data-console-theme]) body.chat-page" in chat_css
     assert 'html[data-console-theme="light"] body.chat-page' in chat_css
 
@@ -1635,7 +1907,7 @@ def test_a_tool_is_drawn_where_it_ran(chat_js: str, chat_css: str, chat_flow_js:
     assert "function syncStream(" in chat_js
     assert "function paintTool(" in chat_js
     # the card carries the arguments the model chose and what came back
-    assert 'toolPart("Input", args)' in chat_js
+    assert 'toolPart(input.code ? "Code" : "Input", input.text' in chat_js
     assert '.chat-tool-card' in chat_css
     assert '.chat-tool-part pre' in chat_css
     assert ".chat-tools {" not in chat_css, "the chip strip is gone"
@@ -1674,6 +1946,15 @@ def test_header_and_composer_controls_open_the_shared_models_view(chat_js: str) 
     assert 'data-workspace-view="models"' in template
     assert 'data-workspace-view="app"' in template
     assert 'data-workspace-view="settings"' not in template
+
+
+def test_chat_header_shows_only_the_agent_name(chat_js: str) -> None:
+    header = chat_js.split('<header class="chat-head">', 1)[1].split("</header>", 1)[0]
+    assert 'class="chat-title" data-role="title"' in header
+    assert 'class="chat-subtitle" data-role="reach" hidden' in header
+    # Capability counts and preview policy still exist in Agent workspace, but
+    # no longer take a second line under the active agent's name.
+    assert chat_js.count('el("reach").textContent = "";') == 2
 
 
 def test_open_sidebars_hide_duplicate_header_launchers_and_keep_focus(
@@ -2044,6 +2325,46 @@ def test_an_approval_stops_the_run_and_offers_two_answers(
     assert ".chat-approval.waiting" in chat_css
 
 
+def test_approval_cards_are_compact_explicit_and_bound_long_code(
+    chat_js: str, chat_css: str
+) -> None:
+    """Completed decisions become one-row audit entries, while a waiting card
+    names the one-call and conversation-long choices. Long code owns both
+    scroll axes instead of widening or stretching the transcript."""
+    card = chat_js.split("function approvalNode()", 1)[1].split(SPLIT_BLOCK_END, 1)[0]
+    assert 'document.createElement("details")' in card
+    assert "Approve once" in card
+    assert "Always allow this tool" in card
+    assert 'pre tabindex="0"' in card
+    paint = chat_js.split("function paintApproval(", 1)[1].split(
+        SPLIT_BLOCK_END, 1
+    )[0]
+    assert 'node.open = block.state === "waiting"' in paint
+    assert "approvalArgumentPreview(block)" in paint
+    assert "approvalAllowlist.set(block.name" in paint
+    rule = _css_rule_with(chat_css, ".chat-approval-args pre", "overflow-y: auto")
+    assert "max-height:" in rule
+    assert "overflow-x: auto" in rule
+    code = _css_rule_with(chat_css, ".chat-approval-args code", "white-space: pre")
+    assert "width: max-content" in code
+
+
+def test_tool_inputs_and_results_stack_as_full_width_rows(
+    chat_js: str, chat_css: str
+) -> None:
+    body = _css_rule_with(chat_css, ".chat-tool-body", "grid-template-columns")
+    assert "minmax(0, 1fr)" in body
+    assert "0.72fr" not in body and "1.28fr" not in body
+    paint = chat_js.split("function paintToolBody(", 1)[1].split(
+        SPLIT_BLOCK_END, 1
+    )[0]
+    assert "approvalArgumentPreview(block)" in paint
+    source = _css_rule_with(chat_css, ".chat-tool-part.code code", "white-space: pre")
+    assert "width: max-content" in source
+    answer = _css_rule_with(chat_css, ".chat-answer pre", "overflow: auto")
+    assert "max-height:" in answer
+
+
 def test_the_agent_page_leads_with_what_it_is_and_may_do(chat_js: str) -> None:
     """Starter prompts, the stage map and the instruction editor are things
     you go and open, so they are identical folds at the foot of the page."""
@@ -2056,6 +2377,22 @@ def test_the_agent_page_leads_with_what_it_is_and_may_do(chat_js: str) -> None:
     # the standing policy card is gone; the guarantee moved onto the mark
     assert "chat-ws-policy" not in overview
     assert "with a provenance record, and never on disk" in chat_js
+
+
+def test_agent_page_folds_keep_long_content_scrollable(
+    chat_js: str, chat_css: str
+) -> None:
+    """Opening a long workflow or instruction must not push its content
+    behind the fixed workspace footer, and keyboard users need the same scroll
+    surface as wheel and trackpad users."""
+    fold = chat_js.split("function wsFold(", 1)[1].split(SPLIT_BLOCK_END, 1)[0]
+    assert "chat-ws-fold-body" in fold
+    assert "inner.tabIndex = 0" in fold
+    assert 'inner.setAttribute("role", "region")' in fold
+    rule = _css_rule_with(chat_css, ".chat-ws-fold-body", "overflow-y: auto")
+    assert "max-height:" in rule
+    assert "overflow-y: auto" in rule
+    assert "overscroll-behavior-y: contain" in rule
 
 
 def test_the_workspace_sheet_closes_on_a_backdrop_click(chat_js: str) -> None:
@@ -2136,6 +2473,48 @@ def test_the_viewer_exposes_selection_commands_to_the_panel(script: str) -> None
     assert "None of those elements are in this model" in handler
 
 
+def test_guids_in_answers_open_frame_and_isolate_their_ifc(
+    script: str, chat_js: str
+) -> None:
+    select = chat_js.split("const selectInViewer", 1)[1].split("// GlobalId chips", 1)[0]
+    assert 'action: isolate ? "isolate-guids" : "reveal-guids"' in select
+    assert "model_id: modelId" in select
+    shortcut = chat_js.split('document.addEventListener("keydown", (event) => {', 1)[1].split(
+        "});", 1
+    )[0]
+    assert 'event.key.toLowerCase() !== "i"' in shortcut
+    assert "globalIdsIn(textSelection.toString())" in shortcut
+    assert "selectInViewer(guids, { isolate: true" in shortcut
+
+    resolver = script.split("async function modelContainingGuid", 1)[1].split(
+        "function applyGuidCommand", 1
+    )[0]
+    assert "expressOf.has(guid)" in resolver
+    assert "parsedModelCache.get(row.id)" in resolver
+    assert 'api(`/api/elements/${encodeURIComponent(guid)}${query}`)' in resolver
+    reveal = script.split("async function revealGuidCommand", 1)[1].split(
+        "/**\n * Run one viewer command", 1
+    )[0]
+    assert "selectViewerModel(modelId)" in reveal
+    assert "pendingGuidCommand" in reveal
+    apply = script.split("function applyGuidCommand", 1)[1].split(
+        "function applyPendingGuidCommand", 1
+    )[0]
+    assert "Number.isFinite(elements.get(id)?.box?.[0])" in apply
+    assert "setSelection(ids, false)" in apply
+    assert "focusSelection(true)" in apply
+    assert "fitTo(ids)" in apply
+    pending = script.split("function applyPendingGuidCommand", 1)[1].split(
+        "async function revealGuidCommand", 1
+    )[0]
+    assert "showOverlay(" not in pending
+    assert "sendViewerResult(command, false" in pending
+    rebuild = script.split("async function buildScene", 1)[1].split(
+        "// ---------------------------------------------------------------- spatial tree", 1
+    )[0]
+    assert "applyPendingGuidCommand(targetModelId, { reportFailure: true })" in rebuild
+
+
 def test_the_agent_and_the_buttons_mean_the_same_thing_by_visibility(
     script: str,
 ) -> None:
@@ -2197,7 +2576,8 @@ def test_the_viewer_says_which_model_it_speaks_for_and_when_it_is_rebuilding(
     assert "model_id: row ? row.id : null," in send
 
     state = script.split("function sendSceneState(state)", 1)[1].split(chr(10) + "}", 1)[0]
-    assert 'wsSend({ type: "scene_state", state, model_id: currentModelRow()?.id ?? null });' in state
+    assert "viewerDocumentOpen ? currentModelRow() : null" in state
+    assert 'wsSend({ type: "scene_state", state, model_id: row?.id ?? null });' in state
     # a socket failure must never be what breaks a build
     assert "try {" in state and "} catch" in state
 
@@ -2247,16 +2627,15 @@ def test_hidden_and_isolated_state_is_visible_outside_the_popover(
     projection = script.split("function setProjection(kind)", 1)[1].split(chr(10) + "}", 1)[0]
     assert "updateVisibilityInfo();" in projection
 
-    # every user isolation goes through a named tab, which openFocusTab already
-    # gives the agent's focus command and the user could close but never make
+    # User isolation is immediate and does not create a second tab history row.
     assert 'id="tool-focus-sel"' in html
     focus = script.split("function focusSelection(fit)", 1)[1].split(chr(10) + "}", 1)[0]
-    assert "openFocusTab(guids, null, fit);" in focus
+    assert "userIsolateSet = new Set(selection);" in focus
     assert '$("tool-isolate").addEventListener("click", () => focusSelection(false));' in script
     assert '$("tool-focus-sel").addEventListener("click", () => focusSelection(true));' in script
     assert '$("tool-focus-sel").disabled = none;' in script
     search = script.split("function renderSearch(payload)", 1)[1].split(chr(10) + "}", 1)[0]
-    assert 'openFocusTab(guids, $("search-input").value.trim(), false);' in search
+    assert "userIsolateSet = new Set(targets);" in search
     assert "if (e.shiftKey) focusSelection(true);" in script
 
 
@@ -2422,21 +2801,26 @@ def test_isolation_ghosts_the_context_instead_of_deleting_it(
     body = script.split("function applyVisibility()", 1)[1].split(chr(10) + "}", 1)[0]
     assert "level = GHOST_LEVEL;" in body
     assert 'scheduleViewerContext("visibility")' in body
-    # only isolation ghosts: an element the user hid was meant to go away
+    # Isolation context and non-selected context may fade. Something the user
+    # or the tree deliberately hid still goes away.
     ghosted = script.split("function isGhosted(id)", 1)[1].split(chr(10) + "}", 1)[0]
-    assert "ghostContext && isolatedOut(id)" in ghosted
+    assert "isolatedOut(id) || selectionContext" in ghosted
     assert "!hiddenByTree.has(id) && !hiddenManual.has(id)" in ghosted
     # the draw material keeps the middle value and dithers it
     assert "if (ifcState.r < 0.05) discard;" in script
     assert "float ifcGhost = step(ifcState.r, 0.5);" in script
     assert "ifcOrdered(gl_FragCoord.xy) > uGhostFill" in script
-    # the 1x1 passes keep the old test, so a ghost stays unpickable and
-    # unmeasurable rather than becoming a surface nobody can see
+    # Faded geometry stays selectable and measurable, while truly hidden
+    # geometry (state zero) still cannot answer either pass.
     for name in ("pickMaterial", "depthMaterial"):
         material = script.split(f"const {name} = new THREE.ShaderMaterial(", 1)[1]
         assert (
-            "if (texture2D(uStateTex, uv).r < 0.5) discard;" in material.split("});", 1)[0]
+            "if (texture2D(uStateTex, uv).r < 0.05) discard;" in material.split("});", 1)[0]
         ), name
+    assert "return isElementShown(id) || isGhosted(id);" in script
+    # It is an explicit display mode; the default is ordinary highlight-only.
+    assert "let ghostContext = false;" in script
+    assert "ghostContext = uiState.ghost === true;" in script
     # context recedes towards whatever the canvas is, in either theme
     assert "uGhostTint" in script
     assert "ghostTint.set(colors.canvas);" in script
@@ -2528,3 +2912,137 @@ def test_lengths_are_shown_in_the_unit_the_file_was_drawn_in(
     units = context.split(chr(10) + "    units: {", 1)[1].split("},", 1)[0]
     for field in ("display:", "decimals:", "file_unit:", "to_si_factor:"):
         assert field in units, field
+
+
+def test_measurement_card_is_compact_explicit_and_non_destructive(
+    html: str, script: str, styles: str
+) -> None:
+    """The point workflow stays visible while the model is being clicked, and
+    closing it must not look like or behave like deleting the saved ledger."""
+    for element_id in (
+        "tool-open-measure",
+        "tool-measure",
+        "tool-measure-path",
+        "tool-measure-angle",
+        "tool-measure-area",
+        "measure-live",
+        "measure-axis",
+        "measure-finish",
+        "measure-close",
+        "measure-clear",
+    ):
+        assert f'id="{element_id}"' in html, element_id
+    assert 'data-measure-axis=""' in html
+    for axis in "xyz":
+        assert f'data-measure-axis="{axis}"' in html
+    assert "function finishPath()" in script
+    assert "function finishOpenMeasurement()" in script
+    assert "controls.mouseButtons.LEFT = on ? null : ORBIT_LEFT_MOUSE" in script
+    assert "controls.mouseButtons.RIGHT = on ? THREE.MOUSE.ROTATE" in script
+    assert "controls.mouseButtons.MIDDLE = on ? THREE.MOUSE.PAN" in script
+    assert "measurePressHit" in script and "measureDragActive" in script
+    close = script.split('const measureClose = $("measure-close")', 1)[1].split(
+        "updateToolButtons()", 1
+    )[0]
+    assert "setMeasurePanelOpen(false)" in close
+    panel_close = script.split("function setMeasurePanelOpen(open)", 1)[1].split(
+        chr(10) + "}", 1
+    )[0]
+    assert "measureCardDismissed = !open" in panel_close
+    assert "setMeasureMode(false)" in panel_close
+    assert "canvas.focus({ preventScroll: true })" in close
+    assert "clearMeasurements()" not in close
+    render = script.split("function renderMeasurements()", 1)[1].split(
+        "/** What to do next", 1
+    )[0]
+    assert "const hadCardFocus = card.contains(document.activeElement)" in render
+    assert "if (card.hidden && hadCardFocus) canvas.focus" in render
+    assert 'Clear all measurements' in html
+    assert '.measure-row:focus-within .measure-drop' in styles
+    assert '.measure-drop:focus-visible' in styles
+    coarse = styles.split("@media (pointer: coarse)", 1)[1].split(
+        "@media (forced-colors: active)", 1
+    )[0]
+    assert ".measure-head-actions .icon-btn" in coarse
+    assert ".measure-drop" in coarse and "opacity: 1" in coarse
+    assert ".measure-mode-grid" in styles
+    assert ".measure-finish" in styles
+    card_style = styles.split("#measure-card {", 1)[1].split("}", 1)[0]
+    assert "top: 10px" in card_style
+    assert "right: 12px" in card_style
+    assert "bottom: auto" in card_style
+    assert "width: min(300px" in card_style
+    tool_panel = script.split("function setToolPanel", 1)[1].split(
+        "function closePopovers", 1
+    )[0]
+    assert "setMeasurePanelOpen(false)" in tool_panel
+    measure_launcher = script.split(
+        '$("btn-tool-measure").addEventListener', 1
+    )[1].split("const openMeasure", 1)[0]
+    assert "closePopovers()" in measure_launcher
+    popover_toggle = script.split("function togglePopover", 1)[1].split(
+        'for (const [btnId, panelId] of POPOVERS)', 1
+    )[0]
+    assert "setMeasurePanelOpen(false)" in popover_toggle
+
+
+def test_measurement_pointer_ownership_survives_touch_navigation_and_cancel(
+    script: str,
+) -> None:
+    """Two fingers belong to camera navigation, and cancelling a drag may only
+    remove the start that the same drag inserted."""
+    assert "const activeTouchPointers = new Set();" in script
+    assert "if (activeTouchPointers.size > 1)" in script
+    assert "touchNavigationActive = true;" in script
+    assert 'if (e.pointerType === "touch" && touchNavigationActive) return;' in script
+    # TWO is deliberately left on OrbitControls' configured dolly/pan action.
+    measure_mode = script.split("function setMeasureMode(on, kind)", 1)[1].split(
+        chr(10) + "}", 1
+    )[0]
+    assert "controls.touches.ONE = on ? null : ORBIT_ONE_TOUCH;" in measure_mode
+    assert "controls.touches.TWO" not in measure_mode
+
+    move = script.split('canvas.addEventListener("pointermove"', 1)[1].split(
+        'canvas.addEventListener("pointerup"', 1
+    )[0]
+    assert "measureDragAddedStart = pending.length === 1;" in move
+    cancel = script.split('canvas.addEventListener("pointercancel"', 1)[1].split(
+        'window.addEventListener("blur"', 1
+    )[0]
+    blur = script.split('window.addEventListener("blur", () => {', 1)[1].split(
+        chr(10) + "});", 1
+    )[0]
+    assert "if (measureDragAddedStart) undoPendingPoint();" in cancel
+    assert "if (measureDragActive) undoPendingPoint();" not in cancel
+    assert "if (measureDragAddedStart) undoPendingPoint();" in blur
+    assert "if (measureDragActive) undoPendingPoint();" not in blur
+
+
+def test_measurement_preview_line_reuses_one_dynamic_position_buffer(script: str) -> None:
+    """Hovering must update one GPU buffer instead of abandoning one per sample."""
+    preview = script.split("async function showSnapPreview(", 1)[1].split(
+        chr(10) + "}", 1
+    )[0]
+    assert "new THREE.BufferAttribute(new Float32Array(6), 3)" in preview
+    assert "previewLinePosition.setUsage(THREE.DynamicDrawUsage);" in preview
+    assert "previewLinePosition.setXYZ(0," in preview
+    assert "previewLinePosition.setXYZ(1," in preview
+    assert "previewLinePosition.needsUpdate = true;" in preview
+    assert "previewLine.geometry.computeBoundingSphere();" in preview
+    assert "previewLine.geometry.setFromPoints" not in preview
+
+
+def test_section_slice_number_has_a_name_unit_and_fixed_layout(
+    html: str, styles: str
+) -> None:
+    assert "Slice thickness" in html
+    assert "0 = one-sided cut" in html
+    assert 'class="number-field"' in html
+    assert 'id="section-depth-unit" class="number-unit"' in html
+    number = styles.split(".number-field {", 1)[1].split("}", 1)[0]
+    assert "width: 92px" in number
+    input_style = styles.split('.number-field input[type="number"] {', 1)[1].split(
+        "}", 1
+    )[0]
+    assert "min-width: 0" in input_style
+    assert "text-align: right" in input_style

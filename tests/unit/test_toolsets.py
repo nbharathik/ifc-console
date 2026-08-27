@@ -180,7 +180,10 @@ class _FakeMcpSession:
             inputSchema={"type": "object", "properties": {"id": {"type": "string"}}},
             outputSchema={"type": "object"},
             annotations=SimpleNamespace(model_dump=lambda **_kwargs: {"readOnlyHint": True}),
-            meta={"tags": ["erp"]},
+            meta={
+                "tags": ["erp"],
+                "ifcConsole": {"requiredCapabilities": ["model.read"]},
+            },
         )
         return SimpleNamespace(tools=[tool], nextCursor=None)
 
@@ -200,9 +203,70 @@ async def test_mcp_tools_compose_with_a_namespace():
 
     assert tools.names == ("erp__lookup",)
     assert "erp" in tools.require("erp__lookup").tags
+    assert tools.require("erp__lookup").required_capabilities == ("model.read",)
     assert tools.require("erp__lookup").requires_approval is False
     result = await tools.call("erp__lookup", {"id": "A-42"})
     assert result["data"] == {"record": "A-42"}
+
+
+@pytest.mark.asyncio
+async def test_mcp_source_recovers_an_unstructured_ifc_console_envelope():
+    expected = {
+        "ok": False,
+        "error": {
+            "code": "VIEWER_NOT_CONNECTED",
+            "message": "no viewer tab is connected",
+            "hint": "Call open_viewer.",
+        },
+        "meta": {"viewer": False},
+    }
+
+    class Session:
+        async def call_tool(self, name, arguments):
+            assert name == "get_viewer_selection"
+            assert arguments == {}
+            return SimpleNamespace(
+                structuredContent=None,
+                content=[SimpleNamespace(text=json.dumps(expected))],
+                isError=False,
+            )
+
+    result = await McpToolSource(Session()).call_tool("get_viewer_selection", {})
+
+    assert result == expected
+
+
+@pytest.mark.asyncio
+async def test_mcp_source_normalizes_native_images_for_agent_vision():
+    class Session:
+        async def call_tool(self, name, arguments):
+            assert name == "get_viewer_screenshot"
+            return SimpleNamespace(
+                structuredContent=None,
+                content=[
+                    SimpleNamespace(
+                        model_dump=lambda **_kwargs: {
+                            "type": "image",
+                            "data": "iVBORw0KGgo=",
+                            "mimeType": "image/png",
+                        }
+                    ),
+                    SimpleNamespace(
+                        model_dump=lambda **_kwargs: {
+                            "type": "text",
+                            "text": "viewer screenshot 1x1 png",
+                        }
+                    ),
+                ],
+                isError=False,
+            )
+
+    result = await McpToolSource(Session()).call_tool("get_viewer_screenshot", {})
+
+    assert result["data"] == {
+        "images": [{"media_type": "image/png", "data": "iVBORw0KGgo="}],
+        "note": "viewer screenshot 1x1 png",
+    }
 
 
 @pytest.mark.asyncio

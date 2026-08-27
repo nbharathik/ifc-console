@@ -143,6 +143,14 @@ class ProviderError(RuntimeError):
     """A provider refused the call. The message is safe to show the user."""
 
 
+class ModelList(list[str]):
+    """Model ids with optional capabilities discovered from the provider."""
+
+    def __init__(self, names: list[str], details: dict[str, dict[str, Any]]) -> None:
+        super().__init__(names)
+        self.details = details
+
+
 def _close_stream_response(response: Any) -> None:
     pending = [response]
     seen: set[int] = set()
@@ -327,11 +335,12 @@ def list_models(
     base_url: str | None = None,
     *,
     local_only: bool = False,
-) -> list[str]:
+) -> ModelList:
     if provider.family == "rehearsal":
         from ifc_console.devkit.rehearsal import REHEARSAL_MODELS
 
-        return list(REHEARSAL_MODELS)
+        names = list(REHEARSAL_MODELS)
+        return ModelList(names, {name: {"tools": True, "vision": True} for name in names})
     base = validate_base_url(base_url or provider.base_url, local_only=local_only)
     headers = {k: v for k, v in _headers(provider, key).items() if k != "accept"}
     with _request(
@@ -356,10 +365,48 @@ def list_models(
         raise ProviderError("provider model list has an invalid data field")
     if len(rows) > _MAX_MODELS:
         raise ProviderError("provider returned too many models")
-    names = [row.get("id") or row.get("name") for row in rows if isinstance(row, dict)]
-    return sorted(
-        name for name in names if isinstance(name, str) and 0 < len(name) <= _MAX_MODEL_NAME
-    )
+    details: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        name = row.get("id") or row.get("name")
+        if not isinstance(name, str) or not 0 < len(name) <= _MAX_MODEL_NAME:
+            continue
+        detail: dict[str, Any] = {"tools": None, "vision": None}
+        parameters = row.get("supported_parameters")
+        if isinstance(parameters, list):
+            supported = {str(item).lower() for item in parameters}
+            detail["tools"] = "tools" in supported or "tool_choice" in supported
+        architecture = row.get("architecture")
+        modalities = (
+            architecture.get("input_modalities")
+            if isinstance(architecture, dict)
+            else row.get("input_modalities")
+        )
+        if isinstance(modalities, list):
+            detail["vision"] = "image" in {str(item).lower() for item in modalities}
+        details[name] = detail
+    names = sorted(details)
+    return ModelList(names, details)
+
+
+def _capability_error(payload: dict, message: str) -> ProviderError | None:
+    """Turn common capability rejections into an actionable panel message."""
+    low = message.lower()
+    rejected = any(word in low for word in ("unsupported", "not support", "unknown"))
+    if not rejected:
+        return None
+    if payload.get("tools") and any(word in low for word in ("tool", "function")):
+        return ProviderError(
+            "This model rejected tool calling. In Agent workspace, set Tool calling "
+            "to Not supported, or choose a model that supports tools."
+        )
+    if any(word in low for word in ("image", "vision", "multimodal", "image_url")):
+        return ProviderError(
+            "This model rejected image input. In Agent workspace, set Image input "
+            "to Not supported, or choose a vision-capable model."
+        )
+    return None
 
 
 def _relax(payload: dict, message: str) -> dict | None:
@@ -401,6 +448,9 @@ def _open_stream(
             secrets=(key,),
         )
     except ProviderError as first:
+        capability = _capability_error(payload, str(first))
+        if capability is not None:
+            raise capability from None
         relaxed = _relax(payload, str(first))
         if relaxed is None:
             raise

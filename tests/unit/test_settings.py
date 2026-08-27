@@ -207,7 +207,7 @@ def test_oversized_project_settings_are_ignored_without_unbounded_reads(tmp_path
     path.parent.mkdir()
     path.write_text('{"tui":{"theme":"light"},"padding":"' + "x" * 1_048_576 + '"}')
     store = SettingsStore(home=tmp_path / "h", project_dir=tmp_path, env={})
-    assert store.settings.tui.theme == "dark"
+    assert store.settings.tui.theme == "blue"
     assert any("byte limit" in warning for warning in store.warnings)
 
 
@@ -217,7 +217,7 @@ def test_deeply_nested_project_settings_are_ignored(tmp_path: Path) -> None:
         nested = {f"level_{index}": nested}
     _write(tmp_path / ".ifc-console" / "settings.json", nested)
     store = SettingsStore(home=tmp_path / "h", project_dir=tmp_path, env={})
-    assert store.settings.tui.theme == "dark"
+    assert store.settings.tui.theme == "blue"
     assert any("nested too deeply" in warning for warning in store.warnings)
 
 

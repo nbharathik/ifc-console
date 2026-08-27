@@ -103,7 +103,10 @@
     "EXTRA_NOT_INSTALLED",
     "FILE_EXISTS",
     "FILE_NOT_FOUND",
+    "FRAME_UNAVAILABLE",
+    "GEOMETRY_ANALYSIS_FAILED",
     "INTERNAL_ERROR",
+    "INVALID_GEOMETRY",
     "INVALID_INPUT",
     "INVALID_OUTPUT",
     "INVALID_QUERY",
@@ -317,6 +320,18 @@
             "default": null,
             "description": "The groups to paint, in legend order."
           },
+          "model_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Resident IFC model, normally from get_viewer_selection.model_id."
+          },
           "title": {
             "default": "",
             "description": "Legend title.",
@@ -328,7 +343,7 @@
       },
       "name": "apply_color_theme",
       "output_schema": null,
-      "read_only": true
+      "read_only": false
     },
     {
       "destructive": false,
@@ -639,6 +654,18 @@
             "default": null,
             "description": "GlobalIds for select, isolate, hide, focus, fit and measure_elements, and the element to shoot from for measure_clearance. All but select default to the user's viewer selection. Use selector instead of pasting a long list."
           },
+          "model_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Resident IFC model to control. Pass model_id returned by get_viewer_selection. When omitted, selection-based actions follow the model the user selected in; other actions use the active console model."
+          },
           "name": {
             "anyOf": [
               {
@@ -650,7 +677,7 @@
               }
             ],
             "default": null,
-            "description": "Viewpoint name for save_view and restore_view; tab name for focus and unfocus (use the element's Name)."
+            "description": "Viewpoint name for save_view and restore_view."
           },
           "padding": {
             "anyOf": [
@@ -730,7 +757,7 @@
               }
             ],
             "default": null,
-            "description": "query_elements selector standing in for guids on select, isolate, hide, focus and fit, resolved against the active model here: selector='IfcDoor, location=Level 2' isolates a storey's doors in one call and is not capped at 500 ids."
+            "description": "query_elements selector standing in for guids on select, isolate, hide, focus and fit, resolved against the requested model here: selector='IfcDoor, location=Level 2' isolates a storey's doors in one call and is not capped at 500 ids."
           },
           "slice_depth": {
             "anyOf": [
@@ -775,7 +802,7 @@
       },
       "name": "control_viewer",
       "output_schema": null,
-      "read_only": true
+      "read_only": false
     },
     {
       "destructive": false,
@@ -2018,6 +2045,18 @@
             "minimum": 64,
             "type": "integer"
           },
+          "model_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Resident IFC model, normally from get_viewer_selection.model_id."
+          },
           "quality": {
             "default": 85,
             "maximum": 100,
@@ -2090,11 +2129,133 @@
           "isolate": {
             "default": false,
             "type": "boolean"
+          },
+          "model_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Resident IFC model, normally from get_viewer_selection.model_id."
           }
         },
         "type": "object"
       },
       "name": "highlight_elements",
+      "output_schema": null,
+      "read_only": false
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
+          "backend": {
+            "default": "auto",
+            "enum": [
+              "auto",
+              "builtin",
+              "trimesh"
+            ],
+            "type": "string"
+          },
+          "global_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 100,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Explicit GlobalIds to inspect."
+          },
+          "include_filtered_preview": {
+            "default": false,
+            "description": "Also inspect a copy with invalid, degenerate and duplicate faces removed.",
+            "type": "boolean"
+          },
+          "max_elements": {
+            "default": 25,
+            "maximum": 100,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "max_triangles": {
+            "anyOf": [
+              {
+                "maximum": 1000000,
+                "minimum": 1,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional per-element triangle budget; defaults to the profile cap."
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "model_id of an attached model (see list_models); omit for the active model."
+          },
+          "offset": {
+            "default": 0,
+            "description": "Elements to skip in the deterministic order, for paging a large match.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "physical_only": {
+            "default": true,
+            "type": "boolean"
+          },
+          "selector": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "IfcOpenShell selector; or pass global_ids."
+          },
+          "tessellation": {
+            "default": "analysis",
+            "enum": [
+              "standard",
+              "analysis"
+            ],
+            "type": "string"
+          },
+          "tolerance": {
+            "default": 1e-09,
+            "description": "SI-metre tolerance for degenerate geometry checks.",
+            "exclusiveMinimum": 0.0,
+            "maximum": 0.01,
+            "type": "number"
+          }
+        },
+        "type": "object"
+      },
+      "name": "inspect_element_mesh",
       "output_schema": null,
       "read_only": true
     },
@@ -2242,6 +2403,116 @@
         "type": "object"
       },
       "name": "list_project_documents",
+      "output_schema": null,
+      "read_only": true
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
+          "direction": {
+            "description": "Three-component direction vector.",
+            "items": {
+              "type": "number"
+            },
+            "maxItems": 3,
+            "minItems": 3,
+            "type": "array"
+          },
+          "frame": {
+            "default": "world",
+            "enum": [
+              "world",
+              "local",
+              "principal"
+            ],
+            "type": "string"
+          },
+          "global_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 100,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Explicit GlobalIds to measure."
+          },
+          "max_elements": {
+            "default": 25,
+            "maximum": 100,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "max_triangles": {
+            "anyOf": [
+              {
+                "maximum": 1000000,
+                "minimum": 1,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Per-element triangle budget."
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "model_id of an attached model (see list_models); omit for the active model."
+          },
+          "offset": {
+            "default": 0,
+            "description": "Elements to skip in the deterministic order, for paging a large match.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "physical_only": {
+            "default": true,
+            "type": "boolean"
+          },
+          "selector": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "IfcOpenShell selector; or pass global_ids."
+          },
+          "tessellation": {
+            "default": "analysis",
+            "enum": [
+              "standard",
+              "analysis"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "direction"
+        ],
+        "type": "object"
+      },
+      "name": "measure_directional_extent",
       "output_schema": null,
       "read_only": true
     },
@@ -2495,6 +2766,111 @@
       "destructive": false,
       "input_schema": {
         "properties": {
+          "backend": {
+            "default": "auto",
+            "enum": [
+              "auto",
+              "builtin",
+              "trimesh"
+            ],
+            "type": "string"
+          },
+          "direction": {
+            "description": "Three-component line direction.",
+            "items": {
+              "type": "number"
+            },
+            "maxItems": 3,
+            "minItems": 3,
+            "type": "array"
+          },
+          "frame": {
+            "default": "world",
+            "enum": [
+              "world",
+              "local",
+              "principal"
+            ],
+            "type": "string"
+          },
+          "global_id": {
+            "maxLength": 64,
+            "minLength": 1,
+            "type": "string"
+          },
+          "max_intersections": {
+            "default": 64,
+            "description": "Safety cap for compact line-intersection evidence.",
+            "maximum": 128,
+            "minimum": 2,
+            "type": "integer"
+          },
+          "max_triangles": {
+            "anyOf": [
+              {
+                "maximum": 1000000,
+                "minimum": 1,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Per-element triangle budget."
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "model_id of an attached model (see list_models); omit for the active model."
+          },
+          "origin": {
+            "description": "World point [x,y,z] in SI metres.",
+            "items": {
+              "type": "number"
+            },
+            "maxItems": 3,
+            "minItems": 3,
+            "type": "array"
+          },
+          "tessellation": {
+            "default": "analysis",
+            "enum": [
+              "standard",
+              "analysis"
+            ],
+            "type": "string"
+          },
+          "tolerance": {
+            "default": 1e-06,
+            "description": "SI-metre hit merge tolerance.",
+            "exclusiveMinimum": 0.0,
+            "maximum": 0.01,
+            "type": "number"
+          }
+        },
+        "required": [
+          "global_id",
+          "origin",
+          "direction"
+        ],
+        "type": "object"
+      },
+      "name": "measure_local_thickness",
+      "output_schema": null,
+      "read_only": true
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
           "path": {
             "description": "Path to an .ifc/.ifczip/.ifcxml file.",
             "type": "string"
@@ -2517,6 +2893,13 @@
             "default": true,
             "description": "Also open the viewer in the local browser; the user can instead run /viewer.",
             "type": "boolean"
+          },
+          "wait_for_connection_s": {
+            "default": 8.0,
+            "description": "Wait this many seconds for the browser tab to connect before returning. Use 10 for an agent-driven visual workflow; use 0 to return immediately.",
+            "maximum": 30,
+            "minimum": 0,
+            "type": "number"
           }
         },
         "type": "object"
@@ -3054,6 +3437,114 @@
       "name": "set_active_model",
       "output_schema": null,
       "read_only": false
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
+          "backend": {
+            "default": "auto",
+            "enum": [
+              "auto",
+              "builtin",
+              "trimesh"
+            ],
+            "type": "string"
+          },
+          "frame": {
+            "default": "world",
+            "enum": [
+              "world",
+              "local",
+              "principal"
+            ],
+            "type": "string"
+          },
+          "global_id": {
+            "maxLength": 64,
+            "minLength": 1,
+            "type": "string"
+          },
+          "include_outline": {
+            "default": true,
+            "type": "boolean"
+          },
+          "max_triangles": {
+            "anyOf": [
+              {
+                "maximum": 1000000,
+                "minimum": 1,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Per-element triangle budget."
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "model_id of an attached model (see list_models); omit for the active model."
+          },
+          "normal": {
+            "description": "Three-component plane normal.",
+            "items": {
+              "type": "number"
+            },
+            "maxItems": 3,
+            "minItems": 3,
+            "type": "array"
+          },
+          "origin": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "number"
+                },
+                "maxItems": 3,
+                "minItems": 3,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "World plane origin [x,y,z] in SI metres; omit for mesh centroid."
+          },
+          "outline_points": {
+            "default": 160,
+            "maximum": 256,
+            "minimum": 12,
+            "type": "integer"
+          },
+          "tessellation": {
+            "default": "analysis",
+            "enum": [
+              "standard",
+              "analysis"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "global_id",
+          "normal"
+        ],
+        "type": "object"
+      },
+      "name": "slice_element_mesh",
+      "output_schema": null,
+      "read_only": true
     },
     {
       "destructive": false,

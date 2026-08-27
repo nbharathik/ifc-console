@@ -64,8 +64,12 @@ STAGES: tuple[tuple[str, str, str, tuple[str, ...]], ...] = (
             "save_agent_skill",
             "measure_elements",
             "measure_distance",
+            "measure_directional_extent",
+            "measure_local_thickness",
+            "slice_element_mesh",
             "compute_quantities",
             "get_element_geometry",
+            "inspect_element_mesh",
             "analyze_element_geometry",
             "detect_clashes",
             "execute_ifc_code",
@@ -172,7 +176,7 @@ async def describe(
     from ifc_console.agents.presets import PRESET_BY_NAME
 
     info = pack.info
-    viewer = core.viewer.enabled
+    viewer_available = core.viewer_supported
     runtime = panel_runtime(core)
 
     preset = PRESET_BY_NAME.get(info.name)
@@ -199,7 +203,7 @@ async def describe(
 
     if hasattr(pack, "compose"):
         composition = await pack.compose(
-            runtime, viewer=viewer, instructions=instructions
+            runtime, viewer=viewer_available, instructions=instructions
         )
     else:
         from ifc_console.agents.blocks import compose
@@ -209,7 +213,7 @@ async def describe(
             info.blocks,
             role="",
             extra_instructions=instructions,
-            viewer=viewer,
+            viewer=viewer_available,
             agent=info.name,
         )
 
@@ -276,7 +280,8 @@ async def describe(
         "artifact_writes": [row["name"] for row in rows if row["writes_artifact"]],
         "skills": AgentSkillStore(core.store.project_dir).entries(),
         "unavailable_tools": list(composition.unavailable),
-        "viewer": viewer,
+        "viewer": core.viewer.enabled,
+        "viewer_available": viewer_available,
         "mode": core.policy.mode.value,
         "write_policy": {
             "can_commit": False,

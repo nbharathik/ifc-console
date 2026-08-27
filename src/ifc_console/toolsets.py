@@ -21,6 +21,7 @@ from ifc_console.core.capabilities import Capability
 from ifc_console.core.operations import (
     OperationAnnotations,
     OperationRegistry,
+    operation_tags,
 )
 from ifc_console.core.results import Envelope
 
@@ -50,12 +51,14 @@ _INSPECT_TOOLS = frozenset(
         "analyze_element_geometry",
         "apply_color_theme",
         "compute_quantities",
+        "control_viewer",
         "describe_capabilities",
         "detect_clashes",
         "get_agent_skill",
         "get_api_docs",
         "get_element",
         "get_element_geometry",
+        "inspect_element_mesh",
         "get_georeferencing",
         "get_ifc_project_info",
         "get_knowledge_record",
@@ -71,11 +74,15 @@ _INSPECT_TOOLS = frozenset(
         "list_agent_skills",
         "list_models",
         "measure_distance",
+        "measure_directional_extent",
         "measure_elements",
+        "measure_local_thickness",
         "orient",
+        "open_viewer",
         "query_elements",
         "search_elements",
         "search_ifc_knowledge",
+        "slice_element_mesh",
         "validate_ids",
         "validate_model",
     }
@@ -157,33 +164,6 @@ def _public_name(namespace: str, name: str) -> str:
     return f"{_safe_part(namespace)}__{name}" if namespace else name
 
 
-def _operation_tags(
-    name: str,
-    capabilities: Iterable[str],
-    annotations: Mapping[str, Any],
-) -> frozenset[str]:
-    tags = {"ifc"}
-    for capability in capabilities:
-        family, _, action = capability.partition(":")
-        tags.add(family)
-        if action:
-            tags.add(action)
-    if annotations.get("readOnlyHint") is True:
-        tags.add("read")
-    if annotations.get("destructiveHint") is True:
-        tags.update({"write", "destructive"})
-    prefix = name.split("_", 1)[0]
-    if prefix in {"get", "list", "find", "search", "describe", "orient"}:
-        tags.add("read")
-    if any(part in name for part in ("preview", "change_set")):
-        tags.add("preview")
-    if "viewer" in name or "highlight" in name or "color_theme" in name:
-        tags.add("viewer")
-    if "job" in name or "batch" in name or "workflow" in name:
-        tags.add("automation")
-    return frozenset(tags)
-
-
 def definition_from_operation(
     payload: Mapping[str, Any],
     *,
@@ -202,7 +182,11 @@ def definition_from_operation(
         data_schema=payload.get("data_schema"),
         annotations=annotations,
         required_capabilities=capabilities,
-        tags=_operation_tags(str(payload["name"]), capabilities, annotations),
+        tags=operation_tags(
+            str(payload["name"]),
+            capabilities,
+            OperationAnnotations.model_validate(annotations),
+        ),
         permitted=bool(payload.get("permitted", True)),
         requires_approval=(
             bool(_APPROVAL_CAPABILITIES.intersection(capabilities))

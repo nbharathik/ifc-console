@@ -28,6 +28,23 @@
 
 ### Viewer
 
+- Keep the top workspace row for IFC document tabs only. The agent name and
+  settings stay in the agent header, IFC tabs begin at the viewer edge, and
+  focused elements no longer accumulate in a second tab row; Show all is the
+  single visibility reset.
+- Give upward scrolling priority over a streaming answer. A small wheel or
+  trackpad move now pauses bottom-following immediately, inference continues to
+  render below the held viewport, and batched tokens no longer force a layout
+  scroll on every event.
+- Let the Agent workspace stand on its own: every IFC tab can close, the top
+  brand mark returns to an Agent-only view, the active IFC has a one-click
+  reopen control, and the file menu consistently lists every attached model.
+- Keep parsed IFC revisions warm across model-tab switches, retain a separate
+  GlobalId selection for every IFC, and send all selected model contexts to the
+  Agent panel instead of replacing them with the last visible tab.
+- Turn GlobalIds in Agent output into direct model navigation: a click opens the
+  containing IFC and frames the element, while selecting an id and pressing I
+  opens and isolates it.
 - Draw silhouette edges, and ghost the surrounding context instead of hiding it
   outright, so an isolated element keeps the spatial reference that makes it legible.
 - Let the user choose units and precision, defaulting to the file's own unit. The
@@ -63,6 +80,13 @@
 
 ### Tool surface
 
+- Keep the launcher and all six viewer operations in the shared MCP/agent
+  catalog while the browser surface is off. Codex, Claude Code, and other hosts
+  can cache `tools/list`, call `open_viewer`, and continue with control and
+  screenshot calls on the same connection.
+- Publish tool tags and required IFC Console capabilities in MCP metadata, and
+  extend `describe_capabilities` with live policy, transport, optional-package,
+  and viewer-connection availability.
 - Publish a per-tool `data_schema` and stop advertising 54 byte-identical Envelope
   output schemas. A bare envelope schema is the same for every tool, so publishing it
   cost every client thousands of characters and taught it nothing, and declaring one

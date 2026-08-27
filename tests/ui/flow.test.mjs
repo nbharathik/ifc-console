@@ -133,6 +133,36 @@ test("a repainted block is only repainted when it changed", () => {
   assert.ok(run.blocks[0].v > first);
 });
 
+test("tool progress updates the matching call and its compact headline", () => {
+  const run = emptyRun();
+  applyEvent(run, { type: "tool_call", id: "a", name: "analyze_element_geometry" });
+  const before = run.tools[0].v;
+  applyEvent(run, {
+    type: "tool_progress",
+    id: "a",
+    done: 18,
+    total: 40,
+    note: "Tessellating selected elements",
+    elapsed: 0.8,
+  });
+  assert.deepEqual(run.tools[0].progress, {
+    done: 18,
+    total: 40,
+    note: "Tessellating selected elements",
+    elapsed: 0.8,
+  });
+  assert.equal(toolHeadline(run.tools[0]), "Tessellating selected elements");
+  assert.ok(run.tools[0].v > before);
+});
+
+test("a completed tool keeps its structured output for lazy inspection", () => {
+  const run = emptyRun();
+  const output = { ok: true, data: { rows: [{ name: "Wall" }] }, meta: { returned: 1 } };
+  applyEvent(run, { type: "tool_call", id: "a", name: "query_elements" });
+  applyEvent(run, { type: "tool_result", id: "a", ok: true, output });
+  assert.equal(run.tools[0].output, output);
+});
+
 test("usage adds up across tool rounds instead of being overwritten", () => {
   const run = emptyRun();
   applyEvent(run, { type: "usage", in: 100, out: 20 });
@@ -242,6 +272,7 @@ test("GlobalIds are found in tool output and lookalikes are not", () => {
 
 test("pretty formats JSON and leaves anything else alone", () => {
   assert.equal(pretty('{"a":1}'), '{\n "a": 1\n}');
+  assert.equal(pretty({ a: 1 }), '{\n "a": 1\n}');
   assert.equal(pretty("not json"), "not json");
   assert.equal(pretty(""), "");
   assert.equal(pretty(undefined), "");

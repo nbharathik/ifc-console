@@ -2,10 +2,14 @@
  * because the page runs under script-src 'self' with no unsafe-inline. */
 import { mountChat } from "/viewer/static/chat.js";
 
-const panel = mountChat(document.getElementById("chat-page-root"), {
-  onStatus: (status) => {
-    if (status.theme === "dark" || status.theme === "light") {
-      document.documentElement.dataset.consoleTheme = status.theme;
+const root = document.getElementById("chat-page-root");
+const panel = mountChat(root, {
+  onStatus: () => {
+    // mountChat resolves workspace and local preferences on the component.
+    // Mirror that exact result around it instead of repainting the page from
+    // a second, potentially older status value.
+    if (["light", "dark", "modern", "blue"].includes(root.dataset.theme)) {
+      document.documentElement.dataset.consoleTheme = root.dataset.theme;
     }
   },
 });

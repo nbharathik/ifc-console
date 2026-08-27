@@ -73,7 +73,7 @@ async def test_status_adds_the_resolved_console_theme_for_standalone_chat(chat_c
 
     chat_core.set_ui_theme("auto")
     auto = client.get("/api/status", headers=_auth(chat_core)).json()
-    assert auto["theme"] == "dark"
+    assert auto["theme"] == "blue"
 
 
 async def test_a_cross_site_origin_is_refused_even_with_the_token(chat_core):
@@ -201,6 +201,34 @@ async def test_local_only_blocks_model_discovery_before_network(chat_core, monke
     )
     assert response.status_code == 400
     assert "local_only" in response.json()["error"]
+
+
+async def test_model_discovery_returns_capabilities_without_breaking_the_id_list(
+    chat_core, monkeypatch
+):
+    from ifc_console.chat.providers import ModelList
+
+    discovered = ModelList(
+        ["text-model", "vision-model"],
+        {
+            "text-model": {"tools": False, "vision": False},
+            "vision-model": {"tools": True, "vision": True},
+        },
+    )
+    monkeypatch.setattr("ifc_console.chat.routes.list_models", lambda *_args, **_kwargs: discovered)
+    client = _client(chat_core)
+
+    response = client.post(
+        "/api/chat/models",
+        headers=_auth(chat_core),
+        json={"provider": "openai"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "models": ["text-model", "vision-model"],
+        "model_details": discovered.details,
+    }
 
 
 async def test_invalid_provider_url_is_not_remembered(chat_core):

@@ -119,22 +119,49 @@ class TestOpenViewer:
 
         build_operations(core)
         assert not core.viewer.enabled
-        assert tools_viewer.TOOL_NAMES[0] not in core.operations
+        assert all(name in core.operations for name in tools_viewer.TOOL_NAMES)
 
-        result = await core.operation_service.call("open_viewer", {})
+        result = await core.operation_service.call(
+            "open_viewer", {"wait_for_connection_s": 0}
+        )
         assert result.ok is True
         assert result.data["enabled"] is True
         assert result.data["connected"] is False
+        assert result.data["ready"] is False
+        assert result.data["next_action"]
         assert core.viewer.enabled
-        # the gated tools joined the surface with it
+        # The stable viewport tools remain on the same operation surface.
         for name in tools_viewer.TOOL_NAMES:
             assert name in core.operations
         # the tokenized link went to the local browser, never into the result
         assert no_browser and "#t=" in no_browser[0]
         assert "#t=" not in result.data["url"]
 
-        again = await core.operation_service.call("open_viewer", {})
+        again = await core.operation_service.call(
+            "open_viewer", {"wait_for_connection_s": 0}
+        )
         assert again.ok is True
+
+    async def test_launcher_waits_until_the_tab_is_ready(self, core, work_model):
+        from ifc_console.application.operations import build_operations
+
+        build_operations(core)
+        await core.open_model(work_model)
+        pending = asyncio.create_task(
+            core.operation_service.call(
+                "open_viewer", {"open_browser": True, "wait_for_connection_s": 1}
+            )
+        )
+        await asyncio.sleep(0.02)
+        hub, client, _ws = await _connected(core)
+
+        result = await pending
+
+        assert result.ok is True
+        assert result.data["connected"] is True
+        assert result.data["ready"] is True
+        assert result.data["next_action"] == "call control_viewer(action='context')"
+        hub.unregister(client)
 
     async def test_stdio_sessions_say_why_there_is_no_viewer(self, home, tmp_path):
         from ifc_console.app import AppCore
@@ -239,14 +266,14 @@ class TestControlViewerTool:
         assert hidden.ok is True
         assert ws.sent[-1]["action"] == "hide"
 
-    async def test_focus_carries_the_ids_and_the_tab_name(self, core):
+    async def test_focus_carries_the_ids_without_creating_a_tab(self, core):
         await self._register(core)
 
         async def reply(frame):
             await hub.handle_frame(
                 client,
                 {"type": "command_result", "id": frame["id"], "ok": True,
-                 "result": {"focused": 1, "tab": "Pile 07", "tabs": ["Pile 07"]}},
+                 "result": {"focused": 1}},
             )
 
         hub, client, ws = await _connected(core)
@@ -259,11 +286,11 @@ class TestControlViewerTool:
         sent = ws.sent[-1]
         assert sent["action"] == "focus"
         assert sent["guids"] == ["2O2Fr$t4X7Zf8NOew3FL9r"]
-        assert sent["name"] == "Pile 07"
-        assert result.data["result"]["tab"] == "Pile 07"
+        assert "name" not in sent
+        assert result.data["result"] == {"focused": 1}
         await core.operation_service.call("control_viewer", {"action": "unfocus"})
         assert ws.sent[-1]["action"] == "unfocus"
-        assert ws.sent[-1]["name"] == ""
+        assert "name" not in ws.sent[-1]
 
     async def test_set_camera_carries_the_whole_camera_in_model_axes(self, core):
         await self._register(core)

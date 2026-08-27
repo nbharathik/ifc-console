@@ -546,22 +546,37 @@ async def _mode(console: ConsoleScreen, args: str) -> None:
     core.set_mode(new_mode, by="tui")
 
 
-@command("theme", "/theme [dark|light|auto]", "show or switch the console theme", "console")
+@command(
+    "theme",
+    "/theme [light|dark|modern|blue]",
+    "show or switch the console theme",
+    "console",
+)
 async def _theme(console: ConsoleScreen, args: str) -> None:
+    from ifc_console.themes import THEME_IDS, theme_label
+
     core = console.core
     if not args:
-        console.print(f"theme: {core.ui_theme} (dark, light, or auto; /theme light to switch)")
+        console.print(
+            f"theme: {core.ui_theme} ({theme_label(core.ui_theme)}); "
+            "use /theme light, dark, modern, or blue"
+        )
         return
     value = args.strip().lower()
-    if value not in ("dark", "light", "auto"):
-        console.print(f"[red]unknown theme {escape(args)!r}[/red]; use dark, light, or auto")
+    if value not in THEME_IDS:
+        console.print(
+            f"[red]unknown theme {escape(args)!r}[/red]; "
+            "use light, dark, modern, or blue"
+        )
         return
     apply = getattr(console.app, "apply_theme", None)
     if apply is not None:
         apply(value, persist=True)
     else:
         core.set_ui_theme(value, persist=True)
-    console.print(f"theme set to {value} (saved; open viewer tabs follow)")
+    console.print(
+        f"theme set to {value} ({theme_label(value)}; saved; open viewer tabs follow)"
+    )
 
 
 @command(
@@ -582,7 +597,7 @@ async def _viewer(console: ConsoleScreen, args: str) -> None:
         closed = await core.viewer_hub.close_all()
         console.print(
             f"viewer disabled ({closed} tab{'s' if closed != 1 else ''} closed); "
-            "the 4 viewer tools left the MCP tool list"
+            "viewer tools remain available and can reopen it"
         )
         console.refresh_status()
         return
@@ -593,13 +608,7 @@ async def _viewer(console: ConsoleScreen, args: str) -> None:
     if not assets.available():
         console.print(f"[red]{escape(assets.INSTALL_HINT)}[/red]")
         return
-    newly_enabled = not core.viewer.enabled
     core.enable_viewer()
-    if newly_enabled:
-        console.print(
-            "[dim]viewer tools joined the MCP tool list; clients that connected "
-            "earlier pick them up on their next tool refresh or reconnect[/dim]"
-        )
     url = core.viewer.url or core.viewer_url
     if args == "url":
         console.print(f"viewer: {url}")

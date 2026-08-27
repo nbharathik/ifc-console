@@ -141,6 +141,11 @@ def _derived_values(
             "GrossSurfaceArea": probe["surface_area"],
             "GrossVolume": probe["volume"],
         }
+    # Extents and surface areas remain useful on an open mesh, but a signed
+    # tetrahedron sum is not a defensible takeoff volume unless topology says
+    # the tessellation is a consistently wound closed solid.
+    if not probe.get("volume_reliable", True):
+        si_values.pop("GrossVolume", None)
     scale = factor if factor > 0 else 1.0
     return {
         name: float(value) / (scale ** _DERIVED_QUANTITIES[name])

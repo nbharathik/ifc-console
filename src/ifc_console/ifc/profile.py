@@ -17,6 +17,7 @@ import numpy as np
 from ifc_console.core.results import ToolError
 from ifc_console.ifc import geometry, section
 from ifc_console.ifc.elements import _material_info
+from ifc_console.ifc.mesh_analysis import mesh_source
 from ifc_console.ifc.units import file_to_si, si_to_file, unit_info
 
 _MAX_SOLIDS = 12
@@ -523,6 +524,8 @@ def analyze_element(
         for key in ("global_id", "class", "name"):
             probe.pop(key, None)
         record["box"] = probe
+        if not probe["volume_reliable"]:
+            flags.append("mesh_volume_unreliable")
         axis, axis_length, proj = _principal_axis(verts)
         record["axis"] = {
             "direction": [round(float(c), 6) for c in axis],
@@ -576,21 +579,28 @@ def analyze_elements(
     )
     units = unit_info(ifc)
     factor = units["to_si_factor"]
-    meshes = geometry.element_meshes(ifc, elements)
-    records = [
-        analyze_element(
+    tessellation = geometry.tessellation_evidence("analysis")
+    meshes = geometry.element_meshes(ifc, elements, profile="analysis")
+    records = []
+    for element in elements:
+        mesh = meshes.get(element.id())
+        record = analyze_element(
             ifc,
             element,
-            meshes.get(element.id()),
+            mesh,
             factor=factor,
             stations=at,
             include_outline=include_outline,
         )
-        for element in elements
-    ]
+        if mesh is not None:
+            record["mesh_source"] = mesh_source(
+                mesh[0], mesh[1], tessellation=tessellation
+            )
+        records.append(record)
     return {
         "selector": selector,
         "units": {**units, "si_values": "metres", "profile_values": "file units"},
+        "tessellation": tessellation,
         "matched": len(elements),
         "elements": records,
     }

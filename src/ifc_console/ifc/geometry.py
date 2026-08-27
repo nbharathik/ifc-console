@@ -10,7 +10,7 @@ from __future__ import annotations
 import threading
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from typing import Any
+from typing import Any, Literal
 
 import numpy as np
 
@@ -39,7 +39,63 @@ NON_MEASURABLE = (
 # Triangles per element above this are dropped: an element that dense is a
 # rendering mesh, not something anyone measures or clashes by hand.
 MAX_TRIANGLES = 20_000
+ANALYSIS_MAX_TRIANGLES = 100_000
 _EPS = 1e-9
+
+TessellationProfile = Literal["standard", "analysis"]
+
+# The standard profile deliberately leaves IfcOpenShell's mesher controls at
+# their installed-version defaults.  Changing those values would invalidate
+# the meshes used by every existing probe, takeoff and clash call.  Analysis is
+# opt-in and records every override applied to the iterator.
+_TESSELLATION_PROFILES: dict[str, dict[str, Any]] = {
+    "standard": {
+        "max_triangles": MAX_TRIANGLES,
+        "settings": {"use-world-coords": True},
+    },
+    "analysis": {
+        "max_triangles": ANALYSIS_MAX_TRIANGLES,
+        "settings": {
+            "use-world-coords": True,
+            "mesher-linear-deflection": 0.0005,
+            "mesher-angular-deflection": 0.25,
+            "weld-vertices": True,
+            # Reorientation changes topology evidence, so inspect the raw IFC
+            # tessellation and report bad winding instead of repairing it.
+            "reorient-shells": False,
+        },
+    },
+}
+
+
+def tessellation_evidence(
+    profile: TessellationProfile = "standard", *, max_triangles: int | None = None
+) -> dict[str, Any]:
+    """The exact iterator overrides and element budget used by a mesh request."""
+    if profile not in _TESSELLATION_PROFILES:
+        names = ", ".join(sorted(_TESSELLATION_PROFILES))
+        raise ToolError(
+            "INVALID_INPUT",
+            f"unknown tessellation profile {profile!r}",
+            f"Use one of: {names}.",
+        )
+    if max_triangles is not None and (
+        isinstance(max_triangles, bool)
+        or not isinstance(max_triangles, int)
+        or max_triangles <= 0
+    ):
+        raise ToolError(
+            "INVALID_INPUT",
+            f"max_triangles must be a positive integer, got {max_triangles!r}",
+            "Use the profile default, or pass a positive per-element triangle cap.",
+        )
+    spec = _TESSELLATION_PROFILES[profile]
+    return {
+        "profile": profile,
+        "max_triangles": max_triangles or int(spec["max_triangles"]),
+        "settings": dict(spec["settings"]),
+        "repairs_applied": False,
+    }
 
 
 def _class_hit(element: Any, classes: tuple[str, ...], cache: dict[str, bool]) -> bool:
@@ -155,7 +211,7 @@ def resolve_targets(
 # session tessellates on its own worker thread.
 _provider = threading.local()
 
-MeshProvider = Callable[[Any, list[Any]], dict[int, tuple[np.ndarray, np.ndarray]]]
+MeshProvider = Callable[..., dict[int, tuple[np.ndarray, np.ndarray]]]
 
 
 @contextmanager
@@ -173,23 +229,55 @@ def mesh_provider(provider: MeshProvider) -> Iterator[None]:
         _provider.fn = previous
 
 
-def element_meshes(ifc: Any, elements: list[Any]) -> dict[int, tuple[np.ndarray, np.ndarray]]:
+def element_meshes(
+    ifc: Any,
+    elements: list[Any],
+    *,
+    profile: TessellationProfile = "standard",
+    max_triangles: int | None = None,
+) -> dict[int, tuple[np.ndarray, np.ndarray]]:
     """World-space (vertices, triangle indices) per element id, geometry only.
 
     Served by the installed mesh provider when there is one, so probing an
     element and then measuring it tessellates once.
     """
+    # Validate before entering a provider so every cache sees a canonical,
+    # supported request.
+    tessellation_evidence(profile, max_triangles=max_triangles)
+    default_request = profile == "standard" and max_triangles is None
     provider = getattr(_provider, "fn", None)
     if provider is None:
-        return _tessellate(ifc, elements)
+        # Keep two-argument monkeypatches and integrations working for the
+        # unchanged default path.
+        if default_request:
+            return _tessellate(ifc, elements)
+        return _tessellate(
+            ifc,
+            elements,
+            profile=profile,
+            max_triangles=max_triangles,
+        )
     _provider.fn = None
     try:
-        return provider(ifc, elements)
+        if default_request:
+            return provider(ifc, elements)
+        return provider(
+            ifc,
+            elements,
+            profile=profile,
+            max_triangles=max_triangles,
+        )
     finally:
         _provider.fn = provider
 
 
-def _tessellate(ifc: Any, elements: list[Any]) -> dict[int, tuple[np.ndarray, np.ndarray]]:
+def _tessellate(
+    ifc: Any,
+    elements: list[Any],
+    *,
+    profile: TessellationProfile = "standard",
+    max_triangles: int | None = None,
+) -> dict[int, tuple[np.ndarray, np.ndarray]]:
     """One iterator run: the real work behind element_meshes."""
     import multiprocessing
 
@@ -199,8 +287,10 @@ def _tessellate(ifc: Any, elements: list[Any]) -> dict[int, tuple[np.ndarray, np
     if not wanted:
         return {}
 
+    evidence = tessellation_evidence(profile, max_triangles=max_triangles)
     settings = geom.settings()
-    settings.set("use-world-coords", True)
+    for name, value in evidence["settings"].items():
+        settings.set(name, value)
     out: dict[int, tuple[np.ndarray, np.ndarray]] = {}
     try:
         # Spinning up the worker threads costs more than it saves on a small
@@ -217,7 +307,7 @@ def _tessellate(ifc: Any, elements: list[Any]) -> dict[int, tuple[np.ndarray, np
         if shape is not None and shape.id in wanted:
             verts = np.asarray(shape.geometry.verts, dtype=np.float64).reshape(-1, 3)
             faces = np.asarray(shape.geometry.faces, dtype=np.int64).reshape(-1, 3)
-            if len(verts) and len(faces) and len(faces) <= MAX_TRIANGLES:
+            if len(verts) and len(faces) and len(faces) <= evidence["max_triangles"]:
                 out[shape.id] = (verts, faces)
         if not iterator.next():
             break
@@ -312,6 +402,8 @@ def surface_areas(
 
 def probe_element(element: Any, mesh: tuple[np.ndarray, np.ndarray]) -> dict[str, Any]:
     """Derived geometry for one element, all values in SI metres."""
+    from ifc_console.ifc.mesh_analysis import mesh_health
+
     verts, faces = mesh
     low = verts.min(axis=0)
     high = verts.max(axis=0)
@@ -329,9 +421,12 @@ def probe_element(element: Any, mesh: tuple[np.ndarray, np.ndarray]) -> dict[str
     extents = local_high - local_low
 
     volume = mesh_volume(verts, faces)
+    health = mesh_health(verts, faces, backend="builtin")
     box_volume = float(np.prod(np.maximum(extents, _EPS)))
     ratio = volume / box_volume if box_volume > _EPS else 0.0
-    if ratio >= 0.95:
+    if not health["valid_volume"]:
+        confidence = "low"
+    elif ratio >= 0.95:
         confidence = "high"
     elif ratio >= 0.75:
         confidence = "medium"
@@ -355,12 +450,28 @@ def probe_element(element: Any, mesh: tuple[np.ndarray, np.ndarray]) -> dict[str
         "footprint_area": round(footprint_area(verts, faces), 6),
         **{name: round(value, 6) for name, value in surface_areas(verts, faces, rotation).items()},
         "volume": round(volume, 6),
+        "volume_reliable": health["valid_volume"],
         "centroid": [round(v, 6) for v in centroid.tolist()],
         "triangles": int(len(faces)),
         # ratio of mesh volume to the local-extent box; near 1 means the
         # element is prismatic and the extents are trustworthy dimensions
         "prismatic_ratio": round(ratio, 3),
         "confidence": confidence,
+        "mesh_health": {
+            key: health[key]
+            for key in (
+                "connected_components",
+                "watertight",
+                "winding_consistent",
+                "valid_volume",
+                "boundary_edges",
+                "non_manifold_edges",
+                "degenerate_faces",
+                "duplicate_faces",
+                "euler_characteristic",
+                "flags",
+            )
+        },
     }
 
 
@@ -473,6 +584,7 @@ def points_to_triangles_distance(points: np.ndarray, tris: np.ndarray) -> float:
 
 
 __all__ = [
+    "ANALYSIS_MAX_TRIANGLES",
     "MAX_TRIANGLES",
     "NON_MEASURABLE",
     "NON_PHYSICAL",
@@ -490,4 +602,5 @@ __all__ = [
     "resolve_targets",
     "selected",
     "surface_areas",
+    "tessellation_evidence",
 ]

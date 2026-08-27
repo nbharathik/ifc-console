@@ -170,6 +170,38 @@ export function polygonMeasure(points) {
   return { area, perimeter, flatness, normal, centre };
 }
 
+/** Length of an open chain, including each segment for a readable breakdown. */
+export function polylineMeasure(points) {
+  const segments = [];
+  let distance = 0;
+  for (let i = 1; i < points.length; i++) {
+    const a = points[i - 1];
+    const b = points[i];
+    const length = norm3(b.x - a.x, b.y - a.y, b.z - a.z);
+    segments.push(length);
+    distance += length;
+  }
+  return { distance, segments };
+}
+
+/** Distance, run, rise and slope for one span. Geometry stays in metres. */
+export function spanMeasure(from, to, verticalAxis = "y") {
+  const dx = to.x - from.x;
+  const dy = to.y - from.y;
+  const dz = to.z - from.z;
+  const verticalDelta = { x: dx, y: dy, z: dz }[verticalAxis] ?? dy;
+  const distance = norm3(dx, dy, dz);
+  const horizontal = Math.sqrt(Math.max(0, distance * distance - verticalDelta * verticalDelta));
+  const vertical = Math.abs(verticalDelta);
+  return {
+    distance,
+    horizontal,
+    vertical,
+    slopePercent: horizontal > 1e-12 ? (vertical / horizontal) * 100 : null,
+    slopeAngle: (Math.atan2(vertical, horizontal) * 180) / Math.PI,
+  };
+}
+
 /** The angle at `at`, between the directions to `from` and `to`. */
 export function angleMeasure(from, at, to) {
   const ux = from.x - at.x, uy = from.y - at.y, uz = from.z - at.z;

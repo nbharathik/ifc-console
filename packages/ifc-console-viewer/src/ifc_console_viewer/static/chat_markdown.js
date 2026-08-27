@@ -19,7 +19,7 @@ export const esc = (value) =>
 // words never match; loose enough that every real id does.
 const GUID_CHIP =
   '<button type="button" class="chat-guid" data-guid="$1" ' +
-  'title="Select this element in the 3D view">$1</button>';
+  'title="Open, select, and frame this element in the 3D view">$1</button>';
 
 /** GlobalIds become live chips: click one, the viewer frames that element. */
 function mdGlobalIds(h) {
@@ -89,10 +89,52 @@ function mdListContinuations(h) {
   return out.join("\n");
 }
 
+/* Some OpenAI-compatible reasoning streams echo their DSML tool-call wire
+ * format as text. Protocol tags are not useful transcript content; when the
+ * payload contains executable code, retain only that code as a real fenced
+ * block. The incomplete closing tags are intentional so streaming code is
+ * readable before the model finishes the call. */
+const DSML = "[|｜]DSML[|｜]";
+const dsmlAttribute = (attrs, name) => {
+  const match = String(attrs || "").match(new RegExp(`\\b${name}\\s*=\\s*[\"']([^\"']*)[\"']`, "i"));
+  return match ? match[1] : "";
+};
+
+function stashDsmlCode(source, blocks) {
+  const invoke = new RegExp(
+    `<${DSML}invoke\\b([^>]*)>([\\s\\S]*?)(?:<\\/${DSML}invoke\\s*>|$)`,
+    "gi",
+  );
+  const parameter = new RegExp(
+    `<${DSML}parameter\\b([^>]*)>([\\s\\S]*?)(?:<\\/${DSML}parameter\\s*>|$)`,
+    "gi",
+  );
+  let output = String(source || "").replace(invoke, (whole, attrs, body) => {
+    const values = new Map();
+    for (const match of body.matchAll(parameter)) {
+      values.set(dsmlAttribute(match[1], "name"), match[2]);
+    }
+    const code = values.get("code");
+    if (typeof code !== "string" || !code.trim()) return "";
+    const tool = dsmlAttribute(attrs, "name");
+    blocks.push({ lang: tool === "execute_ifc_code" ? "python" : "", code });
+    return "\x00" + (blocks.length - 1) + "\x00";
+  });
+  // A stream may currently contain only a wrapper or an opening parameter.
+  // Keep those implementation markers out of the visible reasoning panel.
+  const tag = new RegExp(
+    `<\\/?${DSML}(?:tool_calls|invoke|parameter)\\b[^>]*>`,
+    "gi",
+  );
+  output = output.replace(tag, "");
+  return output.trim();
+}
+
 export function md(src) {
   const blocks = [];
   const tables = [];
-  src = String(src || "").replace(/```(\w*)\n?([\s\S]*?)(```|$)/g, (m, lang, code) => {
+  src = stashDsmlCode(src, blocks);
+  src = src.replace(/```(\w*)\n?([\s\S]*?)(```|$)/g, (m, lang, code) => {
     blocks.push({ lang, code });
     return "\x00" + (blocks.length - 1) + "\x00";
   });

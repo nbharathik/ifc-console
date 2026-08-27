@@ -52,6 +52,8 @@ zero-setup bridge between an LLM client and an IFC file.
 uv tool install ifc-console
 # Include the optional 3D viewer and browser chat:
 uv tool install "ifc-console[viewer]"
+# Add Trimesh-backed raw-mesh health checks:
+uv tool install "ifc-console[geometry]"
 ```
 
 You can use pip instead, or try the core application once with
@@ -96,35 +98,12 @@ untrusted files or prompts.
 
 ## What it includes
 
-- IFC queries, properties, quantities, validation, clash detection, and CSV
-  export.
-- Multi-model coordination and an offline IFC/IfcOpenShell reference.
-- A framework-neutral agent SDK with individually selectable IFC tools, lazy
-  framework adapters, MCP composition, host approvals, and embeddable surfaces.
-- A general assistant plus focused measurement, document, and review presets,
-  all assembled from the same capability blocks, with base-install PDF support,
-  image/PDF-page vision, cited retrieval, and reviewable AI-marked IFC
-  ChangeSet proposals. Your own assistants compose the same blocks.
-- An agent workspace that shows, for whichever assistant is selected, how it
-  works, every tool it holds, the files it can see, and its own settings.
-- Optional browser viewer, integrated agent/chat panel, and trusted operation
-  plugins. Project-local custom agents are declarative, not executable plugins.
-- Local multi-conversation history, Markdown export, per-agent standing
-  instructions, and opt-in API-key storage through the OS credential store.
-- Every value an agent proposes lands in a reserved `IfcConsole_AI_` property
-  set with a provenance record, so the AI-assisted layer stays separable from
-  the authored model.
-- `ifc-console dev --check` rehearses the whole browser panel against a
-  generated demo project with an offline model: no API key, no cost, and no
-  browser tab.
-
-```python
-from ifc_console import Workbench
-
-with Workbench.open("tower.ifc") as wb:
-    walls = wb.query("IfcWall")
-    print(len(walls))
-```
+- IFC queries, validation, clash detection, quantities, properties, CSV export, and multi-model coordination.
+- Framework-neutral SDK with selectable tools, MCP support, approvals, and embeddable interfaces.
+- Ready-made assistants for general, measurement, document, and review workflows.
+- PDF and image vision, cited retrieval, and reviewable AI-marked IFC changes.
+- Agent workspace with tool, file, workflow, and settings visibility.
+- Optional 3D viewer, chat panel, trusted plugins, conversation history, Markdown export, and secure API-key storage.
 
 ## Documentation
 
@@ -141,6 +120,7 @@ For development setup and tests, see the [contributing guide](docs/contributing.
 ## License
 
 The core package is Apache-2.0 and uses IfcOpenShell (LGPL-3.0-or-later). The
-optional viewer includes Three.js (MIT) and web-ifc (MPL-2.0).
+optional geometry backend uses Trimesh (MIT). The optional viewer includes
+Three.js (MIT) and web-ifc (MPL-2.0).
 
 Inspired by [Bonsai MCP](https://github.com/Show2Instruct/bonsai-mcp).

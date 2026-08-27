@@ -16,6 +16,40 @@ from ifc_console.core.results import Envelope
 
 OperationHandler = Callable[..., Awaitable[Any]]
 
+
+def operation_tags(
+    name: str,
+    capabilities: Iterable[Capability | str],
+    annotations: OperationAnnotations | None,
+) -> frozenset[str]:
+    """Stable discovery tags shared by agent adapters and MCP metadata.
+
+    Tags are descriptive hints, not a permission boundary. Call-time
+    capability policy remains authoritative.
+    """
+    normalized = tuple(str(capability) for capability in capabilities)
+    tags = {"ifc"}
+    for capability in normalized:
+        family, _, action = capability.partition(":")
+        tags.add(family)
+        if action:
+            tags.add(action)
+    if annotations is not None and annotations.readOnlyHint is True:
+        tags.add("read")
+    if annotations is not None and annotations.destructiveHint is True:
+        tags.update({"write", "destructive"})
+    prefix = name.split("_", 1)[0]
+    if prefix in {"get", "list", "find", "search", "describe", "orient"}:
+        tags.add("read")
+    if any(part in name for part in ("preview", "change_set")):
+        tags.add("preview")
+    if "viewer" in name or "highlight" in name or "color_theme" in name:
+        tags.add("viewer")
+    if "job" in name or "batch" in name or "workflow" in name:
+        tags.add("automation")
+    return frozenset(tags)
+
+
 # The same concept is spelled differently across the surface: query_elements
 # takes `query`, measure_elements takes `selector`, search_elements takes
 # `term`. Renaming any of them breaks callers, so the other spellings are
@@ -366,8 +400,12 @@ _CAPABILITY_GROUPS: tuple[tuple[frozenset[str], tuple[Capability, ...]], ...] = 
             {
                 "detect_clashes",
                 "get_element_geometry",
+                "inspect_element_mesh",
                 "measure_elements",
+                "measure_directional_extent",
                 "measure_distance",
+                "measure_local_thickness",
+                "slice_element_mesh",
                 "analyze_element_geometry",
             }
         ),
@@ -429,7 +467,7 @@ _CAPABILITY_GROUPS: tuple[tuple[frozenset[str], tuple[Capability, ...]], ...] = 
         (Capability.VIEWER_READ,),
     ),
     (
-        frozenset({"highlight_elements", "apply_color_theme"}),
+        frozenset({"highlight_elements", "apply_color_theme", "control_viewer"}),
         (Capability.VIEWER_CONTROL,),
     ),
 )

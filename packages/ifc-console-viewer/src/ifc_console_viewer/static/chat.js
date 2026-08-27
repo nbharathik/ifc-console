@@ -1,5 +1,6 @@
 import {
   ChatHistoryStore,
+  approvalArgumentPreview,
   approvalDigest,
   boundedChatTurns,
   carrySlice,
@@ -68,6 +69,7 @@ const PROMPT_LIMIT = 100_000;
 // Kept in step with what the panel stores per turn, so the block list it
 // archives and the one it re-decorates are the same list.
 const TRANSCRIPT_BLOCKS = 60;
+const UI_THEME_IDS = ["light", "dark", "modern", "blue"];
 
 function isPlainObject(value) {
   return value !== null
@@ -194,10 +196,8 @@ const TEMPLATE = `
       <span class="chat-avatar" data-role="avatar" aria-hidden="true">C</span>
       <span class="chat-identity-text">
         <span class="chat-title" data-role="title">Assistant</span>
-        <span class="chat-subtitle" data-role="reach"></span>
+        <span class="chat-subtitle" data-role="reach" hidden></span>
       </span>
-      <span class="chat-dot" data-role="dot" role="status" aria-live="polite"
-            aria-label="Assistant unavailable" title=""></span>
     </div>
     <span class="chat-spacer"></span>
     <div class="chat-actions">
@@ -205,7 +205,7 @@ const TEMPLATE = `
               title="Model setup" aria-label="Open model setup in Agent workspace"
               aria-expanded="false" aria-controls="chat-workspace">${I.model}</button>
       <button class="chat-icon chat-workspace-toggle t-press" data-act="workspace" type="button"
-              title="Agent workspace" aria-label="Open Agent workspace"
+              title="Agent settings" aria-label="Open agent settings"
               aria-expanded="false" aria-controls="chat-workspace">${I.workspace}</button>
       <button class="chat-icon" data-role="export" data-act="export"
               title="Export this conversation as Markdown"
@@ -325,7 +325,7 @@ const TEMPLATE = `
     <section class="chat-workspace-pane" id="chat-workspace-panel" data-role="workspace-pane" role="tabpanel">
       <div class="chat-ws-body" id="chat-ws-panel" data-role="ws-body" tabindex="0"></div>
       <footer class="chat-ws-foot" data-role="workspace-foot">
-        <span>Project-local and policy constrained</span>
+        <span>Project-local · policy constrained</span>
         <button class="chat-btn t-press" data-act="builder" type="button">New assistant</button>
         <button class="chat-btn primary t-press" data-act="studio-current" type="button">Edit agent</button>
       </footer>
@@ -355,8 +355,11 @@ const TEMPLATE = `
       </div>
 
       <div class="chat-field" data-role="keyfield">
-        <label for="chat-key">API key</label>
-        <input id="chat-key" type="password" data-role="key" placeholder="paste a key"
+        <div class="chat-field-label">
+          <label for="chat-key">API key</label>
+          <button class="chat-text-action" data-act="toggle-key" type="button">Show typed key</button>
+        </div>
+        <input id="chat-key" type="password" data-role="key" placeholder="paste a new key to use or replace"
                autocomplete="off" spellcheck="false">
         <p class="chat-help" data-role="keystate"></p>
         <label class="chat-key-save">
@@ -390,6 +393,25 @@ const TEMPLATE = `
 
       <details class="chat-advanced">
         <summary>Advanced model controls</summary>
+        <div class="chat-duo">
+          <div class="chat-field">
+            <label for="chat-tool-capability">Tool calling</label>
+            <select id="chat-tool-capability" data-role="toolcap">
+              <option value="auto">Auto-detect</option>
+              <option value="supported">Supported</option>
+              <option value="unsupported">Not supported</option>
+            </select>
+          </div>
+          <div class="chat-field">
+            <label for="chat-vision-capability">Image input</label>
+            <select id="chat-vision-capability" data-role="visioncap">
+              <option value="auto">Auto-detect</option>
+              <option value="supported">Supported</option>
+              <option value="unsupported">Not supported</option>
+            </select>
+          </div>
+        </div>
+        <p class="chat-help chat-capability-state" data-role="capstate"></p>
         <div class="chat-field">
           <label for="chat-baseurl">Base URL</label>
           <input id="chat-baseurl" type="text" data-role="baseurl" placeholder="provider default" spellcheck="false">
@@ -441,9 +463,10 @@ const TEMPLATE = `
       <div class="chat-field">
         <label for="chat-theme">Theme</label>
         <select id="chat-theme" data-role="theme">
-          <option value="system">Use system theme</option>
-          <option value="dark">Dark</option>
           <option value="light">Light</option>
+          <option value="dark">Dark</option>
+          <option value="modern">Modern Dark</option>
+          <option value="blue">Default Blue</option>
         </select>
         <p class="chat-help">Applies to the viewer, chat, and Agent workspace.</p>
       </div>
@@ -597,7 +620,7 @@ function guidChipsInto(host, text) {
     chip.type = "button";
     chip.className = "chat-guid";
     chip.dataset.guid = guid;
-    chip.title = "Select this element in the 3D view";
+    chip.title = "Open, select, and frame this element in the 3D view";
     chip.textContent = guid;
     host.appendChild(chip);
     at = start + guid.length;
@@ -617,15 +640,17 @@ export function mountChat(root, options = {}) {
 
   // Docked beside the viewer, an id in the transcript is a way into the 3D
   // view. The solo page has no viewer, so callers fall back to copying.
-  const viewerAttached = () => Boolean(document.getElementById("focus-tabs"));
+  const viewerAttached = () => Boolean(document.getElementById("canvas"));
+  let lastTranscriptGuids = [];
 
-  const selectInViewer = (guids) => {
+  const selectInViewer = (guids, { isolate = false, modelId = null } = {}) => {
     if (!guids.length || !viewerAttached()) return false;
+    lastTranscriptGuids = [...guids];
     document.dispatchEvent(new CustomEvent("ifc-console:viewer-command", {
       detail: {
-        action: "set-selection",
+        action: isolate ? "isolate-guids" : "reveal-guids",
         guids,
-        fit: true,
+        model_id: modelId,
         commandId: `chat-guid-${Date.now()}`,
       },
     }));
@@ -647,8 +672,40 @@ export function mountChat(root, options = {}) {
     }
   });
 
+  // A reader can also drag over a GlobalId instead of clicking its chip. With
+  // that text selected, I means the same isolate action as it does over the
+  // canvas. Text inputs keep ordinary typing behaviour.
+  document.addEventListener("keydown", (event) => {
+    if (event.key.toLowerCase() !== "i" || event.ctrlKey || event.metaKey || event.altKey) return;
+    const target = event.target;
+    const editing = target instanceof HTMLInputElement
+      || target instanceof HTMLTextAreaElement
+      || target?.isContentEditable;
+    const textSelection = window.getSelection?.();
+    const selectedText = textSelection
+      && !textSelection.isCollapsed
+      && textSelection.anchorNode
+      && log.contains(textSelection.anchorNode)
+      ? globalIdsIn(textSelection.toString())
+      : [];
+    if (editing && !selectedText.length) return;
+    const current = viewerSelections().find(
+      (row) => row.model_id === sessionStatus.view_model_id,
+    );
+    const guids = selectedText.length
+      ? selectedText
+      : lastTranscriptGuids.length ? lastTranscriptGuids : current?.guids || [];
+    if (!guids.length) return;
+    event.preventDefault();
+    const known = viewerSelections().find(
+      (row) => guids.every((guid) => row.guids.includes(guid)),
+    );
+    selectInViewer(guids, { isolate: true, modelId: known?.model_id || null });
+  });
+
   let turns = [];
   let providers = [];
+  let modelDetails = {};
   let busy = false;
   // A follow-up typed while the agent is still answering. It waits here so
   // that Enter never destroys the run it was typed underneath.
@@ -860,6 +917,7 @@ export function mountChat(root, options = {}) {
   const pack = () => agents.find((agent) => agent.name === currentAgent) || null;
   const agentTitle = () => pack()?.title || PLAIN_CHAT.title;
   const settings = loadSettings();
+  let workspaceTheme = null;
   // Read once, at mount. `settings.agent` is rewritten by the first background
   // saveSettings, which turns "never chosen" into "plain chat" and made the
   // landing assistant depend on which fetch happened to finish first.
@@ -905,7 +963,7 @@ export function mountChat(root, options = {}) {
       agent: typeof saved.agent === "string" ? saved.agent : undefined,
       history: saved.history !== false,
       credentialStore: saved.credentialStore === true,
-      theme: ["system", "dark", "light"].includes(saved.theme) ? saved.theme : "system",
+      theme: ["system", ...UI_THEME_IDS].includes(saved.theme) ? saved.theme : "system",
     };
   }
 
@@ -917,12 +975,53 @@ export function mountChat(root, options = {}) {
   const remembered = (id) => settings.byProvider[id] || {};
   const promptSlot = (agent = currentAgent) => agent || "chat";
 
+  function capabilityPreference(kind) {
+    const model = chosenModel();
+    const stored = remembered(el("provider").value).capabilities;
+    const value = stored?.[model]?.[kind];
+    return ["auto", "supported", "unsupported"].includes(value) ? value : "auto";
+  }
+
+  function effectiveCapability(kind) {
+    const control = el(kind === "tools" ? "toolcap" : "visioncap");
+    if (control.value === "supported") return true;
+    if (control.value === "unsupported") return false;
+    const detected = modelDetails[chosenModel()]?.[kind];
+    return typeof detected === "boolean" ? detected : null;
+  }
+
+  function syncCapabilityControls() {
+    el("toolcap").value = capabilityPreference("tools");
+    el("visioncap").value = capabilityPreference("vision");
+    renderCapabilities();
+  }
+
+  function capabilityDescription(kind) {
+    const value = effectiveCapability(kind);
+    if (value === true) return "supported";
+    if (value === false) return "not supported";
+    return "unknown, attempted when used";
+  }
+
+  function renderCapabilities() {
+    const tools = effectiveCapability("tools");
+    el("tools").disabled = tools === false;
+    el("capstate").textContent =
+      `Tool calling: ${capabilityDescription("tools")}. Image input: ${capabilityDescription("vision")}.`;
+  }
+
   function saveSettings() {
     const id = el("provider").value;
     const model = chosenModel();
     const base_url = el("baseurl").value.trim();
     settings.provider = id;
-    settings.byProvider[id] = { model, base_url };
+    settings.byProvider[id] = { ...remembered(id), model, base_url };
+    const capabilities = settings.byProvider[id].capabilities || {};
+    capabilities[model] = {
+      tools: el("toolcap").value,
+      vision: el("visioncap").value,
+    };
+    settings.byProvider[id].capabilities = capabilities;
     settings.prompts[promptSlot()] = el("system").value;
     settings.tools = el("tools").checked;
     settings.temp = el("temp").value;
@@ -981,6 +1080,8 @@ export function mountChat(root, options = {}) {
       if (p) p.has_key = true;
       if (provider()?.id === id && el("key").value.trim() === key) {
         el("key").value = "";
+        el("key").type = "password";
+        act("toggle-key").textContent = "Show typed key";
       }
     }).catch((error) => {
       if (revision === settingsApplyRevision) {
@@ -1104,16 +1205,30 @@ export function mountChat(root, options = {}) {
   }
 
   function applyThemePreference(value, { notifyViewer = false } = {}) {
-    const theme = ["system", "dark", "light"].includes(value) ? value : "system";
+    const theme = ["system", ...UI_THEME_IDS].includes(value) ? value : "system";
     const resolved = theme === "system"
-      ? (window.matchMedia?.("(prefers-color-scheme: light)").matches ? "light" : "dark")
+      ? (workspaceTheme || "blue")
       : theme;
     root.dataset.theme = resolved;
-    if (el("theme")) el("theme").value = theme;
+    // The standalone Agent page has no viewer root to carry these tokens.
+    // Keeping the document and component on the same resolved value also
+    // prevents the workspace dialog/backdrop from retaining an older palette.
+    document.documentElement.dataset.consoleTheme = resolved;
+    if (el("theme")) el("theme").value = theme === "system" ? resolved : theme;
     if (notifyViewer) {
       document.dispatchEvent(new CustomEvent("ifc-console:viewer-command", {
         detail: { action: "set-theme", theme },
       }));
+    }
+  }
+
+  function rememberThemePreference(theme) {
+    if (!UI_THEME_IDS.includes(theme)) return;
+    settings.theme = theme;
+    try {
+      localStorage.setItem(STORE, JSON.stringify(settings));
+    } catch {
+      /* private mode: the live theme still remains synchronized */
     }
   }
 
@@ -1204,16 +1319,12 @@ export function mountChat(root, options = {}) {
     const short = p ? p.label.split(" (")[0] : "";
     el("modelname").textContent = p ? (model ? `${short} · ${model}` : `${short} · no model`) : "chat off";
     el("modelname").title = p ? `${p.label}${model ? " · " + model : ""}` : "";
-    el("dot").className = "chat-dot" + (ready ? " ok" : "");
-    el("dot").title = ready ? "ready" : "needs an AI model or API key";
-    el("dot").setAttribute(
-      "aria-label",
-      ready ? "Assistant ready" : "Assistant needs an AI model or API key",
-    );
     const active = pack();
     el("title").textContent = agentTitle();
     el("avatar").textContent = initialsOf(agentTitle());
-    el("reach").textContent = workspace ? reachSentence(workspace) : "";
+    // The compact header identifies the active agent; capability counts and
+    // write policy belong in Agent workspace, not beneath the agent name.
+    el("reach").textContent = "";
     el("identity").title = active
       ? active.description
       : "Plain chat over the open model. Open the workspace to see its reach.";
@@ -1227,20 +1338,24 @@ export function mountChat(root, options = {}) {
       el("note").textContent = p.key_from_env
         ? `${p.note} Key found in ${p.key_from_env}.`
         : p.note;
-      el("keyfield").hidden = !p.needs_key || Boolean(p.key_from_env);
-      el("keystate").textContent = p.has_key
-        ? (p.key_from_env === "keyring"
-            ? "Saved in the operating-system credential store. The browser cannot read it."
-            : "A key is available to this console. Paste another to replace it.")
-        : "Held in the running console only unless you explicitly choose secure storage.";
+      el("keyfield").hidden = !p.needs_key;
+      el("keystate").textContent = p.key_from_env === "keyring"
+        ? "Stored by the operating system under service ifc-console. The browser cannot reveal it; paste a new key to replace it."
+        : p.key_from_env
+          ? `Read from ${p.key_from_env} in the console process. The browser cannot reveal it; paste a key here to override it for this run.`
+          : p.has_key
+            ? "Held only in the running console memory. Paste a new key to replace it."
+            : "Paste a key for this run. Enable secure storage below to save it in the operating-system credential store.";
       act("delete-key").hidden = p.key_from_env !== "keyring";
+      act("toggle-key").disabled = !el("key").value;
+      renderCapabilities();
     }
     if (!p) el("hint").textContent = "chat is off; type /chat in the console";
     else if (!model) el("hint").innerHTML = 'choose a model in <b>Agent workspace</b>';
     else if (!hasKey(p)) el("hint").innerHTML = 'add an API key in <b>Agent workspace</b>';
     else if (uploadsInFlight()) el("hint").textContent = "indexing the attachment...";
     else if (busy) el("hint").innerHTML = "<b>Enter</b> queues · <b>Esc</b> stops";
-    else el("hint").innerHTML = "<b>Enter</b> sends · <b>Shift+Enter</b> new line";
+    else el("hint").textContent = "";
     renderContext();
   }
 
@@ -1265,6 +1380,10 @@ export function mountChat(root, options = {}) {
       historyScope = nextScope;
       historyStore.setScope(nextScope);
       sessionStatus = nextStatus;
+      if (UI_THEME_IDS.includes(nextStatus.theme)) {
+        workspaceTheme = nextStatus.theme;
+        if (settings.theme === "system") applyThemePreference("system");
+      }
       if (changedScope) startConversation(false, { focus: false });
       renderContext();
       renderSidebar();
@@ -1307,7 +1426,11 @@ export function mountChat(root, options = {}) {
     el("temp").value = settings.temp;
     el("maxtok").value = settings.maxtok;
     el("key").value = "";
+    el("key").type = "password";
+    act("toggle-key").textContent = "Show typed key";
+    modelDetails = {};
     setModelOptions([], mine.model || payload.selected.model || provider()?.suggested_model || "");
+    syncCapabilityControls();
     render();
     if (hasKey(provider())) loadModels({ quiet: true });
     // no model yet is not an error worth a modal on open: the empty state
@@ -1638,12 +1761,33 @@ export function mountChat(root, options = {}) {
 
   const uploadsInFlight = () => pendingAttachments.some((item) => item.pending);
 
+  function viewerSelections() {
+    if (Array.isArray(sessionStatus.selections)) {
+      return sessionStatus.selections.filter((row) => (
+        row && typeof row.model_id === "string" && Array.isArray(row.guids) && row.guids.length
+      ));
+    }
+    const guids = Array.isArray(sessionStatus.selection) ? sessionStatus.selection : [];
+    if (!guids.length || !sessionStatus.view_model_id) return [];
+    const model = (Array.isArray(sessionStatus.models) ? sessionStatus.models : [])
+      .find((row) => row.id === sessionStatus.view_model_id);
+    return [{
+      model_id: sessionStatus.view_model_id,
+      model: model?.name || sessionStatus.model || "IFC",
+      count: guids.length,
+      guids,
+    }];
+  }
+
+  const viewerSelectionCount = () => viewerSelections()
+    .reduce((total, row) => total + row.guids.length, 0);
+
   // One control for "add something to this message". The paperclip and the
   // camera used to sit in the rail beside the model and mode selectors, which
   // mixed one-off context in with standing configuration.
   function plusOptions() {
     const usesFiles = Boolean(pack() && (pack().features || []).includes("files"));
-    const selected = Array.isArray(sessionStatus.selection) ? sessionStatus.selection.length : 0;
+    const selected = viewerSelectionCount();
     return [
       {
         icon: I.clip,
@@ -1655,8 +1799,10 @@ export function mountChat(root, options = {}) {
       {
         icon: I.camera,
         label: "Attach the current 3D view",
-        note: "Sends what you can see",
-        available: usesFiles && viewerLinked,
+        note: effectiveCapability("vision") === false
+          ? "The selected model is configured for text only"
+          : "Sends what you can see",
+        available: usesFiles && viewerLinked && effectiveCapability("vision") !== false,
         run: () => captureViewerEvidence(),
       },
       {
@@ -1676,8 +1822,13 @@ export function mountChat(root, options = {}) {
             note("Click elements in the 3D view to narrow what the tools see.");
             return;
           }
+          const selectedModel = viewerSelections().find(
+            (row) => row.model_id === sessionStatus.view_model_id,
+          ) || viewerSelections()[0];
           document.dispatchEvent(new CustomEvent("ifc-console:viewer-command", {
-            detail: { action: "focus-selection" },
+            detail: selectedModel.model_id === sessionStatus.view_model_id
+              ? { action: "focus-selection" }
+              : { action: "set-model", model_id: selectedModel.model_id },
           }));
         },
       },
@@ -1823,14 +1974,18 @@ export function mountChat(root, options = {}) {
    */
   function mentionRows() {
     const rows = [];
-    const selection = Array.isArray(sessionStatus.selection) ? sessionStatus.selection : [];
-    if (selection.length) {
-      const named = selection.slice(0, 25);
-      const rest = selection.length - named.length;
+    const selections = viewerSelections();
+    const selectionCount = viewerSelectionCount();
+    if (selectionCount) {
+      const named = selections.map((row) => {
+        const guids = row.guids.slice(0, 25);
+        const rest = row.guids.length - guids.length;
+        return `${row.model || row.model_id}: ${guids.join(" ")}${rest ? ` and ${rest} more` : ""}`;
+      });
       rows.push({
         label: "selection",
-        note: `${selection.length} element${selection.length === 1 ? "" : "s"} in the 3D view`,
-        insert: `@selection [${named.join(" ")}${rest ? ` and ${rest} more` : ""}]`,
+        note: `${selectionCount} element${selectionCount === 1 ? "" : "s"} across ${selections.length} IFC file${selections.length === 1 ? "" : "s"}`,
+        insert: `@selection [${named.join("; ")}]`,
       });
     }
     for (const name of savedViewNames()) {
@@ -1961,7 +2116,8 @@ export function mountChat(root, options = {}) {
 
   function renderAttachments() {
     const tray = el("attachments");
-    const selected = Array.isArray(sessionStatus.selection) ? sessionStatus.selection.length : 0;
+    const selections = viewerSelections();
+    const selected = viewerSelectionCount();
     tray.hidden = !pendingAttachments.length && !selected && !queuedPrompt;
     tray.innerHTML = "";
     // A message typed mid-answer is waiting, not lost, and it can be taken
@@ -1981,20 +2137,24 @@ export function mountChat(root, options = {}) {
     // context and not in the control rail. Nothing is shown for "no
     // selection": the whole model is always available, so saying so every
     // time was noise dressed up as state.
-    if (selected) {
+    for (const selectedModel of selections) {
+      const count = selectedModel.guids.length;
       const chip = document.createElement("span");
       chip.className = "chat-attachment-chip selection";
       chip.innerHTML =
         `<i>${I.cube}</i><span></span>`
         + `<button type="button" class="chat-attachment-remove" data-act="drop-selection"`
-        + ` aria-label="Clear the 3D selection">${I.close}</button>`;
+        + ` aria-label="Clear this IFC selection">${I.close}</button>`;
+      chip.querySelector("button").dataset.modelId = selectedModel.model_id;
       chip.querySelector("span").textContent =
-        `${selected} element${selected === 1 ? "" : "s"}`;
-      chip.title = `${selected} selected IFC element${selected === 1 ? "" : "s"} go to the tools`
-        + " with this message. Click the name to frame them in the 3D view.";
+        `${selectedModel.model || selectedModel.model_id} · ${count}`;
+      chip.title = `${count} selected IFC element${count === 1 ? "" : "s"} from this file go to the tools`
+        + " with this message. Click the name to open that IFC selection.";
       chip.querySelector("span").addEventListener("click", () => {
         document.dispatchEvent(new CustomEvent("ifc-console:viewer-command", {
-          detail: { action: "focus-selection" },
+          detail: selectedModel.model_id === sessionStatus.view_model_id
+            ? { action: "focus-selection" }
+            : { action: "set-model", model_id: selectedModel.model_id },
         }));
       });
       tray.appendChild(chip);
@@ -2117,6 +2277,7 @@ export function mountChat(root, options = {}) {
     add("__custom__", "Custom id...");
     select.value = selected || (names[0] ?? "");
     custom.hidden = select.value !== "__custom__";
+    syncCapabilityControls();
   }
 
   // Switching provider mid-load must not let the older answer win.
@@ -2146,6 +2307,9 @@ export function mountChat(root, options = {}) {
         || el("key").value.trim() !== requestedKey
       ) return;
       if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
+      modelDetails = payload.model_details && typeof payload.model_details === "object"
+        ? payload.model_details
+        : {};
       setModelOptions(payload.models, chosenModel() || p.suggested_model || "");
       if (!quiet) el("note").textContent = `${payload.models.length} model(s) available`;
       saveSettings();
@@ -2451,7 +2615,7 @@ export function mountChat(root, options = {}) {
       workspaceError = exc.message || String(exc);
     }
     renderWorkspace();
-    el("reach").textContent = workspace ? reachSentence(workspace) : "";
+    el("reach").textContent = "";
   }
 
   function setWorkspaceView(view, { focus = false } = {}) {
@@ -2630,15 +2794,22 @@ export function mountChat(root, options = {}) {
 
   /** One toggle shape, used for every foldable section on the agent page. */
   function wsFold(body, title, hint, action, fill) {
-    const fold = wsNode("details", "chat-ws-disclosure");
+    const fold = wsNode("details", "chat-ws-disclosure chat-ws-fold");
     const summary = wsNode("summary", "");
     const copy = wsNode("span", "");
     copy.append(wsNode("b", "", title), wsNode("small", "", hint));
-    summary.append(copy, wsNode("span", "chat-ws-disclosure-state", action));
-    const inner = wsNode("div", "chat-ws-disclosure-body");
+    const state = wsNode("span", "chat-ws-disclosure-state", action);
+    summary.append(copy, state);
+    const inner = wsNode("div", "chat-ws-disclosure-body chat-ws-fold-body");
+    inner.tabIndex = 0;
+    inner.setAttribute("role", "region");
+    inner.setAttribute("aria-label", `${title} details`);
     fold.append(summary, inner);
     body.appendChild(fold);
     fill(inner);
+    fold.addEventListener("toggle", () => {
+      state.textContent = fold.open ? (action === "Edit" ? "Close" : "Hide") : action;
+    });
     return fold;
   }
 
@@ -2707,7 +2878,7 @@ export function mountChat(root, options = {}) {
       wsFold(
         body,
         "Suggested questions",
-        `${examples.length} worked example${examples.length === 1 ? "" : "s"}`,
+        `${examples.length} example prompt${examples.length === 1 ? "" : "s"}`,
         "Show",
         (inner) => {
           const list = wsNode("div", "chat-ws-examples");
@@ -2739,7 +2910,7 @@ export function mountChat(root, options = {}) {
     wsFold(
       body,
       "Instructions",
-      "A project-specific method or output format",
+      "Project-specific method and output format",
       "Edit",
       (inner) => {
         wsInstructions(inner);
@@ -2772,19 +2943,26 @@ export function mountChat(root, options = {}) {
   function wsPipeline(body) {
     const model = workspace;
     const strategy = model.workflow?.strategy || "adaptive";
+    const strategyName = strategy.replaceAll("-", " ");
+    const strategyLabel = strategyName.charAt(0).toUpperCase() + strategyName.slice(1);
+    const available = model.reachableStages.length;
+    const total = model.stages.length;
+    const stageSummary = available === total
+      ? `${total} stages available`
+      : `${available} of ${total} stages available`;
     let pipeline = null;
     wsFold(
       body,
       "How it works",
-      `${strategy.replaceAll("-", " ")} · ${model.reachableStages.length}/${model.stages.length} stages`,
+      `${strategyLabel} path · ${stageSummary}`,
       "Show",
       (inner) => {
         inner.appendChild(wsNode(
           "p",
           "chat-ws-lead",
-          "It scopes the question, gathers evidence when needed, selects a method,"
-            + " verifies the answer, then prepares only reviewable proposals. The model"
-            + " chooses the stages it needs; safety policy checks every call.",
+          "For each question, the assistant uses only the stages it needs. It scopes the task,"
+            + " gathers evidence, chooses a method, verifies the result, and prepares reviewable"
+            + " proposals. Safety policy checks every tool call.",
         ));
         pipeline = wsNode("div", "chat-ws-pipeline chat-ws-pipeline-detail");
         inner.appendChild(pipeline);
@@ -3618,7 +3796,7 @@ export function mountChat(root, options = {}) {
          </div>`;
     log.innerHTML = `
       <div class="chat-empty">
-        <span class="chat-empty-mark" aria-hidden="true">${I.workspace}</span>
+        <span class="chat-empty-mark" aria-hidden="true">${I.agent}</span>
         <span class="chat-empty-eyebrow">${esc(agentTitle())}</span>
         <h1 class="chat-empty-title">${ready ? "What do you want to inspect?" : "Ask the open model"}</h1>
         ${body}
@@ -3777,33 +3955,36 @@ export function mountChat(root, options = {}) {
   }
 
   // The run is stopped while this is on screen, so it says what is being
-  // asked for and offers exactly two answers. Deny is not an error path: a
-  // denied call comes back to the model as a refusal it can work around.
+  // asked for and offers one refusal plus two clear approval scopes. Deny is
+  // not an error path: a denied call comes back as a refusal the model can use.
   // The readable summary is here, at the moment of the decision, and not on
   // the card the console emits once the call has already run.
   function approvalNode() {
-    const card = document.createElement("section");
+    const card = document.createElement("details");
     card.className = "chat-approval";
     card.innerHTML = `
-      <div class="chat-approval-head">
+      <summary class="chat-approval-head">
         <span class="chat-approval-mark">${I.capability}</span>
         <div class="chat-approval-copy">
           <b>Approval needed</b>
           <code></code>
         </div>
         <span class="chat-approval-state"></span>
-      </div>
-      <p class="chat-approval-headline"></p>
-      <dl class="chat-approval-facts"></dl>
-      <div class="chat-approval-caps"></div>
-      <details class="chat-approval-args"><summary>Arguments</summary><pre><code></code></pre></details>
-      <div class="chat-approval-actions">
-        <label class="chat-approval-always">
-          <input type="checkbox" class="chat-approval-remember">
-          <span></span>
-        </label>
-        <button type="button" class="chat-btn chat-approval-deny">Deny</button>
-        <button type="button" class="chat-btn primary chat-approval-allow">Approve</button>
+        <span class="chat-approval-toggle" aria-hidden="true"></span>
+      </summary>
+      <div class="chat-approval-body">
+        <p class="chat-approval-headline"></p>
+        <dl class="chat-approval-facts"></dl>
+        <div class="chat-approval-caps"></div>
+        <details class="chat-approval-args">
+          <summary><span class="chat-approval-args-label">Arguments</span></summary>
+          <pre tabindex="0"><code></code></pre>
+        </details>
+        <div class="chat-approval-actions">
+          <button type="button" class="chat-btn chat-approval-deny">Deny</button>
+          <button type="button" class="chat-btn chat-approval-allow">Approve once</button>
+          <button type="button" class="chat-btn primary chat-approval-always">Always allow this tool</button>
+        </div>
       </div>`;
     return card;
   }
@@ -3831,6 +4012,12 @@ export function mountChat(root, options = {}) {
 
   function paintApproval(node, block) {
     node.className = `chat-approval ${block.state}`;
+    if (node.dataset.approvalState !== block.state) {
+      node.open = block.state === "waiting";
+      node.dataset.approvalState = block.state;
+    }
+    node.querySelector(".chat-approval-copy b").textContent =
+      block.state === "waiting" ? "Approval needed" : "Approval";
     node.querySelector(".chat-approval-copy code").textContent = block.name;
     const state = node.querySelector(".chat-approval-state");
     const word = block.state === "waiting"
@@ -3843,7 +4030,9 @@ export function mountChat(root, options = {}) {
     // What the reviewer is actually allowing, in the words of the change
     // rather than the tool's JSON. The fold below still holds every argument.
     const digest = approvalDigest(block);
-    node.querySelector(".chat-approval-headline").textContent = digest.headline;
+    const headline = node.querySelector(".chat-approval-headline");
+    headline.textContent = digest.headline;
+    headline.hidden = digest.headline === `Run ${digest.name}`;
     const facts = node.querySelector(".chat-approval-facts");
     facts.innerHTML = "";
     for (const fact of digest.facts) {
@@ -3863,22 +4052,25 @@ export function mountChat(root, options = {}) {
     }
     caps.hidden = !caps.children.length;
     const args = node.querySelector(".chat-approval-args");
-    const pretty_ = pretty(block.args);
-    args.hidden = !pretty_ || pretty_ === "{}";
-    if (!args.hidden) args.querySelector("code").textContent = pretty_;
+    const preview = approvalArgumentPreview(block);
+    args.hidden = !preview.text || preview.text === "{}";
+    args.classList.toggle("code", preview.code);
+    args.querySelector(".chat-approval-args-label").textContent = preview.label;
+    if (!args.hidden) args.querySelector("code").textContent = preview.text;
     const actions = node.querySelector(".chat-approval-actions");
     // A restored transcript shows what was decided; the future it answered was
     // resolved long ago, so it carries no live control.
     const live = block.state === "waiting" && Boolean(block.requestId);
     actions.hidden = !live;
-    const remember = node.querySelector(".chat-approval-remember");
-    const always = remember.closest(".chat-approval-always");
-    always.querySelector("span").textContent = `Always allow ${block.name} in this conversation`;
-    always.title = "Applies to this conversation only, and only to these capabilities.";
+    const always = node.querySelector(".chat-approval-always");
+    always.title = `Always allow ${block.name} in this conversation for these capabilities.`;
     if (live && !node.dataset.wired) {
       node.dataset.wired = "1";
       node.querySelector(".chat-approval-allow").addEventListener("click", () => {
-        if (remember.checked) approvalAllowlist.set(block.name, capabilitySignature(block));
+        decideApproval(block, true, node);
+      });
+      always.addEventListener("click", () => {
+        approvalAllowlist.set(block.name, capabilitySignature(block));
         decideApproval(block, true, node);
       });
       node.querySelector(".chat-approval-deny")
@@ -3909,39 +4101,92 @@ export function mountChat(root, options = {}) {
     details.className = "chat-tool-card";
     details.innerHTML = `
       <summary>
+        <span class="chat-tool-signal" aria-hidden="true"><i></i></span>
         <span class="chat-tool-stage"></span>
         <code class="chat-tool-name"></code>
         <span class="chat-tool-state"></span>
+        <progress class="chat-tool-progress" max="1" value="0" hidden></progress>
         <time class="chat-tool-time"></time>
         <i class="chat-tool-caret" aria-hidden="true">${I.chevron}</i>
       </summary>
       <div class="chat-tool-body"></div>`;
+    // Large results cost no layout, GUID decoration, or syntax DOM until the
+    // reader asks to inspect them. Native details preserves keyboard and
+    // screen-reader behaviour without another disclosure component.
+    details.addEventListener("toggle", () => {
+      if (details.open && details._toolBlock) paintToolBody(details, details._toolBlock);
+    });
     return details;
   }
 
   // The richest source of element ids in a transcript is the tool result the
   // answer was written from, so the ids in it are chips too, not dead text.
-  function toolPart(title, text) {
+  function toolPart(title, text, { sourceCode = false } = {}) {
     const part = document.createElement("div");
     part.className = "chat-tool-part";
+    part.classList.toggle("code", sourceCode);
     const label = document.createElement("b");
     label.textContent = title;
     const pre = document.createElement("pre");
+    pre.tabIndex = 0;
     const code = document.createElement("code");
-    guidChipsInto(code, text);
+    if (sourceCode) code.textContent = text;
+    else guidChipsInto(code, text);
     pre.appendChild(code);
     part.append(label, pre);
     return part;
   }
 
+  function paintToolBody(node, block) {
+    const body = node.querySelector(".chat-tool-body");
+    // Progress can revise the header many times a second; inputs and results
+    // only change when the call changes state.
+    if (body.dataset.state === block.state) return;
+    body.dataset.state = block.state;
+    body.innerHTML = "";
+    const input = approvalArgumentPreview(block);
+    if (input.text && input.text !== "{}") {
+      body.appendChild(toolPart(input.code ? "Code" : "Input", input.text, {
+        sourceCode: input.code,
+      }));
+    }
+    const hasFullOutput = block.output !== null && block.output !== undefined;
+    const output = pretty(hasFullOutput ? block.output : block.preview);
+    if (output) {
+      body.appendChild(toolPart(
+        block.state === "bad" ? "Error" : hasFullOutput ? "Result" : "Output preview",
+        output,
+      ));
+    }
+    if (!body.children.length) {
+      const blank = document.createElement("p");
+      blank.className = "chat-tool-blank";
+      blank.textContent = block.state === "running"
+        ? "Waiting for the console..."
+        : "The tool returned nothing to show.";
+      body.appendChild(blank);
+    }
+    addCodeCopies(body);
+  }
+
   function paintTool(node, block) {
     const stage = block.stage >= 0 ? stageLabel(block.stage) : "Tool";
+    node._toolBlock = block;
     node.className = `chat-tool-card ${block.state}`;
     node.querySelector(".chat-tool-stage").textContent = stage;
     node.querySelector(".chat-tool-name").textContent = block.name;
     const state = node.querySelector(".chat-tool-state");
     state.textContent = toolHeadline(block);
     state.title = block.detail || block.summary || "";
+    const progress = node.querySelector(".chat-tool-progress");
+    const total = Number(block.progress?.total);
+    const showProgress = block.state === "running" && Number.isFinite(total) && total > 0;
+    progress.hidden = !showProgress;
+    if (showProgress) {
+      progress.max = total;
+      progress.value = Math.max(0, Math.min(Number(block.progress?.done) || 0, total));
+      progress.setAttribute("aria-label", `${progress.value} of ${total}`);
+    }
     node.querySelector(".chat-tool-time").textContent = duration(block.ms);
     // The 3D view, reachable from the collapsed row: a result naming forty
     // elements should not cost forty clicks inside the fold.
@@ -3969,27 +4214,13 @@ export function mountChat(root, options = {}) {
     } else if (selectAll) {
       selectAll.hidden = true;
     }
-    const body = node.querySelector(".chat-tool-body");
-    body.innerHTML = "";
-    const args = pretty(block.args);
-    if (args && args !== "{}") body.appendChild(toolPart("Input", args));
-    const preview = pretty(block.preview);
-    if (preview) body.appendChild(toolPart(block.state === "bad" ? "Error" : "Output", preview));
-    if (!body.children.length) {
-      const blank = document.createElement("p");
-      blank.className = "chat-tool-blank";
-      blank.textContent = block.state === "running"
-        ? "Waiting for the console..."
-        : "The tool returned nothing to show.";
-      body.appendChild(blank);
-    }
-    addCodeCopies(body);
     // A failure is the one case worth opening on its own: the reader needs the
     // message, not a chevron to find it behind.
     if (block.state === "bad" && !node.dataset.opened) {
       node.open = true;
       node.dataset.opened = "1";
     }
+    if (node.open) paintToolBody(node, block);
   }
 
   function paintBlock(node, block, live) {
@@ -3998,7 +4229,7 @@ export function mountChat(root, options = {}) {
       return;
     }
     if (block.kind === "reasoning") {
-      node.querySelector(".chat-think-body").textContent = block.text.trim();
+      node.querySelector(".chat-think-body").innerHTML = md(block.text.trim());
       const label = node.querySelector(".chat-think-label");
       label.textContent = live ? "Thinking" : "Thought for a moment";
       label.classList.toggle("shimmer", Boolean(live));
@@ -4059,17 +4290,40 @@ export function mountChat(root, options = {}) {
   }
 
   const nearBottom = () => log.scrollHeight - log.scrollTop - log.clientHeight < 140;
+  // Proximity is useful for the jump button, but it is not user intent. A
+  // small upward wheel/trackpad gesture still leaves the viewport "near" the
+  // bottom; treating that as permission to follow the next token made the log
+  // pull against the reader. Once they move upward, streaming keeps painting
+  // below them and only resumes following when they return to the bottom.
+  let followingOutput = true;
+  let lastScrollTop = log.scrollTop;
   // Reading back through a long run used to be one-way: nothing offered the
   // way down again, and the answer kept growing out of sight.
   const jumpButton = el("jump");
   const syncJump = () => {
     jumpButton.hidden = nearBottom();
   };
-  const scroll = () => {
-    log.scrollTop = log.scrollHeight;
+  const scroll = ({ smooth = false } = {}) => {
+    followingOutput = true;
+    if (smooth) log.scrollTo({ top: log.scrollHeight, behavior: "smooth" });
+    else log.scrollTop = log.scrollHeight;
+    lastScrollTop = log.scrollTop;
     syncJump();
   };
-  log.addEventListener("scroll", syncJump, { passive: true });
+  // Wheel fires before the browser updates scrollTop, so it can veto a queued
+  // stream repaint immediately. The scroll listener covers touch, keyboard,
+  // scrollbar, and other scrolling without confusing a tiny upward move with
+  // "still at the bottom".
+  log.addEventListener("wheel", (event) => {
+    if (event.deltaY < 0) followingOutput = false;
+  }, { passive: true });
+  log.addEventListener("scroll", () => {
+    const top = log.scrollTop;
+    if (top < lastScrollTop - 0.5) followingOutput = false;
+    else if (top > lastScrollTop + 0.5 && nearBottom()) followingOutput = true;
+    lastScrollTop = top;
+    syncJump();
+  }, { passive: true });
 
   /* True while the reader is holding a selection inside `host`.
    *
@@ -4528,9 +4782,17 @@ export function mountChat(root, options = {}) {
     // `streaming` is false exactly once, when the run is over: the live line
     // goes away then and never comes back, whatever the last block was.
     const draw = (streaming) => {
+      // Replacing the live Markdown subtree can trigger browser scroll
+      // anchoring. Hold the reader's exact viewport while auto-follow is
+      // paused; the newly inferred text still renders beneath it.
+      const heldScrollTop = followingOutput ? null : log.scrollTop;
       syncStream(view.stream, state.blocks, { live: streaming });
       if (streaming) showStep(view, state);
       else view.step.hidden = true;
+      if (heldScrollTop !== null) {
+        log.scrollTop = heldScrollTop;
+        lastScrollTop = log.scrollTop;
+      }
     };
 
     // Re-parsing the whole answer per token is quadratic and fights the user
@@ -4549,7 +4811,10 @@ export function mountChat(root, options = {}) {
           schedule();
           return;
         }
-        const shouldScroll = repaintShouldScroll;
+        // A reader may scroll up during this 60ms batching window. Their input
+        // owns the viewport even if it moved only a few pixels and remains
+        // geometrically close to the bottom.
+        const shouldScroll = repaintShouldScroll && followingOutput;
         repaintShouldScroll = false;
         draw(true);
         if (shouldScroll) scroll();
@@ -4562,6 +4827,8 @@ export function mountChat(root, options = {}) {
         model: chosenModel(),
         base_url: el("baseurl").value.trim() || undefined,
         api_key: el("key").value.trim() || undefined,
+        tools_supported: effectiveCapability("tools") ?? undefined,
+        vision_supported: effectiveCapability("vision") ?? undefined,
         temperature: el("temp").value === "" ? undefined : parseFloat(el("temp").value),
         max_tokens: el("maxtok").value === "" ? undefined : parseInt(el("maxtok").value, 10),
       };
@@ -4618,10 +4885,14 @@ export function mountChat(root, options = {}) {
         const { events, rest } = decodeIfcSSE(buffer);
         buffer = rest;
         for (const event of events) {
-          const stick = nearBottom();
+          const stick = followingOutput;
           applyEvent(state, event, { now: performance.now() });
           if (event.type === "content" || event.type === "reasoning") {
             firstToken ??= performance.now();
+            schedule(stick);
+          } else if (event.type === "tool_progress") {
+            // Progress may be high frequency; share the same bounded repaint
+            // cadence as tokens instead of forcing layout for every update.
             schedule(stick);
           } else if (
             event.type === "tool_call" ||
@@ -4649,7 +4920,9 @@ export function mountChat(root, options = {}) {
           showStep(view, state);
           // The log grows without firing a scroll event, so the way back down
           // has to be offered from here as well.
-          if (stick) scroll();
+          // Deferred events scroll once with their batched paint. Avoiding a
+          // scroll write for every token removes layout churn and flicker.
+          if (stick && followingOutput && !repaint) scroll();
           else syncJump();
         }
       }
@@ -4657,7 +4930,9 @@ export function mountChat(root, options = {}) {
       if (exc.name !== "AbortError") state.error = String(exc.message || exc);
     }
 
-    const finishStick = nearBottom() || repaintShouldScroll;
+    // `repaintShouldScroll` describes an earlier moment. Only current scroll
+    // position decides whether the final paint follows the response.
+    const finishStick = followingOutput;
     clearTimeout(repaint);
     repaintShouldScroll = false;
     if (!runIsCurrent(runIdentity)) return;
@@ -4971,6 +5246,13 @@ export function mountChat(root, options = {}) {
     else if (action === "close-builder") closeBuilder();
     else if (action === "save-builder") saveBuilder();
     else if (action === "models") loadModels();
+    else if (action === "toggle-key") {
+      const key = el("key");
+      const showing = key.type === "text";
+      key.type = showing ? "password" : "text";
+      actionButton.textContent = showing ? "Show typed key" : "Hide typed key";
+      key.focus({ preventScroll: true });
+    }
     else if (action === "delete-key") {
       const id = el("provider").value;
       const response = await postJSON("/api/chat/credentials", { provider: id, action: "delete" });
@@ -4993,7 +5275,7 @@ export function mountChat(root, options = {}) {
     }
     else if (action === "drop-selection") {
       document.dispatchEvent(new CustomEvent("ifc-console:viewer-command", {
-        detail: { action: "clear-selection" },
+        detail: { action: "clear-model-selection", model_id: actionButton.dataset.modelId },
       }));
     }
     else if (action === "drop-queued") {
@@ -5051,8 +5333,8 @@ export function mountChat(root, options = {}) {
       saveHistory();
       run();
     } else if (action === "jump") {
-      scroll();
-      input.focus();
+      scroll({ smooth: true });
+      input.focus({ preventScroll: true });
     }
     // Only an attachment chip carries an index. The selection and the queued
     // message wear the same control, and Number(undefined) splices at 0.
@@ -5133,6 +5415,7 @@ export function mountChat(root, options = {}) {
   el("model").addEventListener("change", () => {
     el("modelcustom").hidden = el("model").value !== "__custom__";
     if (!el("modelcustom").hidden) el("modelcustom").focus();
+    syncCapabilityControls();
     saveSettings();
     forkConversationForConfigurationChange(
       "AI model changed. A fresh conversation is ready.",
@@ -5162,9 +5445,12 @@ export function mountChat(root, options = {}) {
   });
   el("provider").addEventListener("change", () => {
     modelRequest += 1;
+    modelDetails = {};
     const p = provider();
     const mine = remembered(el("provider").value);
     el("key").value = "";
+    el("key").type = "password";
+    act("toggle-key").textContent = "Show typed key";
     el("baseurl").value = mine.base_url || "";
     setModelOptions([], mine.model || p?.suggested_model || "");
     saveSettings();
@@ -5174,9 +5460,11 @@ export function mountChat(root, options = {}) {
     );
     if (hasKey(p)) loadModels({ quiet: true });
   });
-  for (const role of ["modelcustom", "baseurl", "tools"]) {
+  for (const role of ["modelcustom", "baseurl", "tools", "toolcap", "visioncap"]) {
     el(role).addEventListener("change", () => {
+      if (role === "modelcustom") syncCapabilityControls();
       saveSettings();
+      renderCapabilities();
       forkConversationForConfigurationChange(undefined, {
         keep: "Assistant configuration changed. Later turns use it.",
       });
@@ -5185,6 +5473,7 @@ export function mountChat(root, options = {}) {
   for (const role of ["savekey", "temp", "maxtok", "key"]) {
     el(role).addEventListener("change", saveSettings);
   }
+  el("key").addEventListener("input", render);
   for (const role of ["baseurl", "key"]) {
     el(role).addEventListener("input", () => { modelRequest += 1; });
   }
@@ -5201,20 +5490,26 @@ export function mountChat(root, options = {}) {
   document.addEventListener("ifc-console:viewer-context", (event) => {
     const detail = event.detail;
     if (!detail || typeof detail !== "object") return;
-    viewerLinked = true;
+    const viewerOpen = detail.open !== false;
+    viewerLinked = viewerOpen;
     const model = detail.model && typeof detail.model === "object" ? detail.model : null;
     const selection = detail.selection && typeof detail.selection === "object"
       ? detail.selection
       : null;
+    const selections = Array.isArray(detail.selections) ? detail.selections : null;
     const viewerTheme = typeof detail.theme === "string"
       ? detail.theme
       : detail.theme?.resolved;
     sessionStatus = {
       ...sessionStatus,
       model: model?.name || sessionStatus.model,
-      view_model_id: model?.id || sessionStatus.view_model_id,
+      view_model_id: viewerOpen ? (model?.id || sessionStatus.view_model_id) : null,
       models: Array.isArray(detail.models) ? detail.models : sessionStatus.models,
-      selection: Array.isArray(selection?.guids) ? selection.guids : sessionStatus.selection,
+      selection: viewerOpen && Array.isArray(selection?.guids)
+        ? selection.guids : viewerOpen ? sessionStatus.selection : [],
+      selections: viewerOpen
+        ? (selections || sessionStatus.selections || [])
+        : [],
       // The viewer already publishes its saved views with every context frame,
       // so `@view:` costs nothing beyond reading them.
       saved_views: Array.isArray(detail.savedViews) ? detail.savedViews : sessionStatus.saved_views,
@@ -5223,8 +5518,13 @@ export function mountChat(root, options = {}) {
       dirty: sessionStatus.dirty,
       viewer_theme: viewerTheme || sessionStatus.viewer_theme,
     };
-    if (settings.theme === "system" && viewerTheme) {
-      root.dataset.theme = viewerTheme === "light" ? "light" : "dark";
+    if (UI_THEME_IDS.includes(viewerTheme)) {
+      workspaceTheme = viewerTheme;
+      // The dock and Agent workspace are part of this viewer, not a separately
+      // themed widget. A viewer change therefore always wins and is remembered
+      // so a later lazy mount cannot flash the previous Agent palette.
+      if (root.dataset.theme !== viewerTheme) applyThemePreference(viewerTheme);
+      if (settings.theme !== viewerTheme) rememberThemePreference(viewerTheme);
     }
     renderContext();
   });
@@ -5235,6 +5535,10 @@ export function mountChat(root, options = {}) {
       document.dispatchEvent(new CustomEvent("ifc-console:viewer-context", {
         detail: detail.result,
       }));
+      return;
+    }
+    if (String(detail?.commandId || "").startsWith("chat-guid-") && !detail.ok) {
+      note(`Could not show that IFC element: ${detail.error || "element unavailable"}`, true);
       return;
     }
     if (!detail || detail.commandId !== pendingCaptureCommand) return;

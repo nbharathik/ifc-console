@@ -21,6 +21,7 @@ from ifc_console.core.operations import (
     OperationRegistry,
     OperationSpec,
     argument_aliases,
+    operation_tags,
     strip_auto_titles,
 )
 from ifc_console.core.results import Envelope
@@ -90,7 +91,8 @@ stays the norm):
 
 Selectors. One grammar picks the element set for every tool that takes one:
 query_elements calls it `query`, measure_elements, compute_quantities,
-get_element_geometry, analyze_element_geometry and export_csv call it
+get_element_geometry, inspect_element_mesh, measure_directional_extent,
+analyze_element_geometry and export_csv call it
 `selector`, search_elements calls it `term`. Those three names are
 interchangeable, so pass whichever you reach for. detect_clashes and
 measure_distance compare two sets, `set_a` and `set_b`.
@@ -113,20 +115,20 @@ Bulk results put their list under a tool-specific key (`rows`, `elements`,
 matched and how much came back, and a result that did not fit carries
 `data.truncation` with the offset to resume from.
 
-The 3D viewer is disabled by default. When the user enables it, six extra tools join
-the tool list: get_viewer_selection (what the user click-selected, their way
-of saying "this wall"), highlight_elements (your way of pointing for them),
-apply_color_theme (paint elements by any grouping you compute, with a
-legend), get_viewer_screenshot (see the scene; use highlight or theme
-plus screenshot to verify visual claims), get_viewer_measurements (every
-measurement taken, by them or by you), and control_viewer (operate the
-viewport: section it, orient it, isolate, measure, save a viewpoint). Measuring
-through control_viewer uses the geometry on screen, so it answers what the
-schema cannot: a rotated wall's real thickness, the clear distance between two
-elements, the area inside an outline. Its coordinates are metres in the model's
-own axes. If those tools are absent or report VIEWER_NOT_CONNECTED, the user
-can start the viewer by typing /viewer in the ifc-console terminal; do not
-retry without it.
+The 3D viewer tools are always listed, even while the optional viewer is off,
+so clients that cache tools can complete a visual workflow without reconnecting.
+When visual evidence would help: open/load the IFC with open_ifc_file if needed,
+call open_viewer(wait_for_connection_s=10), then use control_viewer(action="context")
+to read the live viewport. get_viewer_selection is what the user click-selected;
+highlight_elements is your way of pointing for them; apply_color_theme paints
+elements by a grouping you compute; get_viewer_screenshot returns the scene as
+MCP image content; get_viewer_measurements reads every measurement taken by the
+user or by control_viewer. control_viewer can section, orient, isolate, focus,
+measure, and save a viewpoint. Its coordinates are metres in the model's own
+axes. If open_viewer reports VIEWER_UNAVAILABLE, this is a standalone stdio
+server and visual work requires the shared HTTP/bridge connection. If it reports
+EXTRA_NOT_INSTALLED, tell the user to install the viewer extra. Do not use OS or
+browser automation for viewport work when these viewer tools are available.
 
 Never attempt OS, network, or file-system access from execute_ifc_code; that
 class of code is blocked unless the user explicitly enables it.
@@ -214,17 +216,32 @@ def register_mcp_operations(
     names: Iterable[str] | None = None,
 ) -> None:
     """Project registered operations into one MCP server instance."""
+    supports_tool_meta = "meta" in inspect.signature(mcp.tool).parameters
     for spec in registry.specs(names):
         annotations = ToolAnnotations(**spec.annotations.model_dump(exclude_none=True))
-        mcp.tool(
-            name=spec.name,
-            description=spec.description,
-            annotations=annotations,
+        capabilities = [capability.value for capability in spec.required_capabilities]
+        tags = sorted(operation_tags(spec.name, capabilities, spec.annotations))
+        options: dict[str, Any] = {
+            "name": spec.name,
+            "description": spec.description,
+            "annotations": annotations,
             # Only a declared data shape is worth publishing: an output schema
             # also makes FastMCP send every result twice, as text and as
             # structured content.
-            structured_output=spec.output_schema is not None,
-        )(_projected_handler(spec, service))
+            "structured_output": spec.output_schema is not None,
+        }
+        # MCP SDK releases before tool metadata still receive the exact same
+        # callable surface. Newer clients get portable discovery hints.
+        if supports_tool_meta:
+            options["meta"] = {
+                "tags": tags,
+                "ifcConsole": {
+                    "requiredCapabilities": capabilities,
+                    "liveAvailabilityTool": "describe_capabilities",
+                    "sharedOperation": True,
+                },
+            }
+        mcp.tool(**options)(_projected_handler(spec, service))
         _trim_wire_schema(mcp, spec.name)
 
 
@@ -553,6 +570,8 @@ def build_http_app(
         )
 
     async def status(_request: Request) -> JSONResponse:
+        from ifc_console.themes import resolve_theme
+
         s = core.session
         return JSONResponse(
             {
@@ -566,7 +585,7 @@ def build_http_app(
                 # and whether it stops to ask before touching it.
                 "ai_autonomy": core.ai_autonomy,
                 "ai_save_allowed": core.policy.allow_ai_save,
-                "theme": "light" if core.ui_theme == "light" else "dark",
+                "theme": resolve_theme(core.ui_theme),
                 "dirty": s.dirty,
                 "fingerprint": s.fingerprint,
                 "project_scope": core.viewer_hub.project_scope(),

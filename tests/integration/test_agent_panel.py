@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import shutil
 import threading
 import time
 from hashlib import sha256
@@ -1352,3 +1353,43 @@ async def test_the_viewer_selection_rides_along_with_the_prompt(panel_core):
     assert "Viewer context" in user_text
     assert "2O2Fr$t4X7Zf8NOew3FL9r" in user_text
     assert "How thick is this wall?" in user_text
+
+
+async def test_selections_from_two_ifc_files_ride_with_one_prompt(
+    panel_core, work_model: Path, tmp_path: Path
+):
+    class _Ws:
+        async def send_text(self, text: str) -> None:
+            return None
+
+    pack = RecordingPack()
+    panel_core.agent_packs.register(pack)
+    active_id = panel_core.models.active_id
+    annex = tmp_path / "annex.ifc"
+    shutil.copy2(work_model, annex)
+    annex_id = await panel_core.open_model(annex, attach=True, alias="annex")
+    hub = panel_core.viewer_hub
+    viewer_client = hub.register(_Ws())
+    await hub.handle_frame(
+        viewer_client,
+        {
+            "type": "selection",
+            "guids": ["annex-guid"],
+            "model_id": annex_id,
+            "selections": [
+                {"model_id": active_id, "guids": ["main-guid"]},
+                {"model_id": annex_id, "guids": ["annex-guid"]},
+            ],
+        },
+    )
+
+    response = _client(panel_core).post(
+        "/api/agents/stream",
+        headers=_auth(panel_core),
+        json=_stream_body(agent="recorder", prompt="Compare these selected objects."),
+    )
+    assert response.status_code == 200
+    messages = pack.models[-1].turns[0]["messages"]
+    user_text = next(message.text for message in reversed(messages) if message.role == "user")
+    assert f"model_id={active_id}" in user_text and "main-guid" in user_text
+    assert f"model_id={annex_id}" in user_text and "annex-guid" in user_text

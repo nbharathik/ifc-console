@@ -243,7 +243,12 @@ def build_chat_routes(core: AppCore) -> list[Route]:
             )
         except ProviderError as exc:
             return JSONResponse({"error": str(exc)}, status_code=400)
-        return JSONResponse({"models": names})
+        return JSONResponse(
+            {
+                "models": list(names),
+                "model_details": getattr(names, "details", {}),
+            }
+        )
 
     async def remember(request) -> JSONResponse:
         """Hold a key and the model choice for this run only. Never written."""
@@ -308,17 +313,23 @@ def build_chat_routes(core: AppCore) -> list[Route]:
             return JSONResponse({"error": "mode or autonomy is required"}, status_code=400)
         from ifc_console.policy.modes import Mode
 
-        if mode == "edit" and core.policy.mode is not Mode.EDIT:
-            if body.get("confirmed") is not True:
-                return JSONResponse(
-                    {"error": "edit mode requires explicit confirmation"}, status_code=409
-                )
-        if autonomy == "auto" and not core.ai_autonomy:
-            if body.get("confirmed") is not True:
-                return JSONResponse(
-                    {"error": "auto autonomy requires explicit confirmation"},
-                    status_code=409,
-                )
+        if (
+            mode == "edit"
+            and core.policy.mode is not Mode.EDIT
+            and body.get("confirmed") is not True
+        ):
+            return JSONResponse(
+                {"error": "edit mode requires explicit confirmation"}, status_code=409
+            )
+        if (
+            autonomy == "auto"
+            and not core.ai_autonomy
+            and body.get("confirmed") is not True
+        ):
+            return JSONResponse(
+                {"error": "auto autonomy requires explicit confirmation"},
+                status_code=409,
+            )
         if mode is not None:
             core.set_mode(Mode(mode), by="chat-panel")
         if autonomy is not None:
@@ -397,6 +408,12 @@ def build_chat_routes(core: AppCore) -> list[Route]:
         use_tools = body.get("tools", core.settings.chat.tools)
         if not isinstance(use_tools, bool):
             return JSONResponse({"error": "tools must be true or false"}, status_code=400)
+        tools_supported = body.get("tools_supported")
+        if tools_supported is not None and not isinstance(tools_supported, bool):
+            return JSONResponse(
+                {"error": "tools_supported must be true, false, or omitted"},
+                status_code=400,
+            )
 
         async def events():
             try:
@@ -409,6 +426,7 @@ def build_chat_routes(core: AppCore) -> list[Route]:
                     api_key=api_key,
                     system=system,
                     use_tools=use_tools,
+                    tools_supported=tools_supported,
                     options={
                         "temperature": temperature,
                         "top_p": top_p,
