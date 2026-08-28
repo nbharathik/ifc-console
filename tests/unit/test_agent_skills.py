@@ -58,9 +58,9 @@ class TestSkillStore:
     def test_import_takes_external_markdown_as_it_comes(self, tmp_path):
         store = AgentSkillStore(tmp_path)
         with_header = (
-            "---\nname: pile-check\ndescription: Check a pile\napplies_to: IfcPile\n---\n\n"
-            "Steps here.\n"
-        ).encode("utf-8")
+            b"---\nname: pile-check\ndescription: Check a pile\napplies_to: IfcPile\n---\n\n"
+            b"Steps here.\n"
+        )
         row = store.import_file("Anything At All.md", with_header)
         assert row["name"] == "pile-check"
         assert store.read("pile-check")["applies_to"] == "IfcPile"

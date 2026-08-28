@@ -6,14 +6,20 @@ import contextlib
 import json
 import os
 import secrets
+from collections.abc import Iterator
 from datetime import datetime, timezone
 from pathlib import Path
+from threading import RLock
+
+from ifc_console.application.locks import exclusive_file_lock
+from ifc_console.core.results import ToolError
 
 
 class RecentsStore:
     def __init__(self, path: Path, max_entries: int = 20) -> None:
         self.path = path
         self.max_entries = max_entries
+        self._lock = RLock()
 
     def entries(self) -> list[dict]:
         try:
@@ -25,26 +31,46 @@ class RecentsStore:
 
     def touch(self, path: Path, *, size_bytes: int, schema: str, mode: str) -> None:
         key = str(path)
-        entries = [e for e in self.entries() if e.get("path") != key]
-        prev = next((e for e in self.entries() if e.get("path") == key), {})
-        entries.insert(
-            0,
-            {
-                "path": key,
-                "last_opened": datetime.now(timezone.utc).isoformat(),
-                "size_bytes": size_bytes,
-                "schema": schema,
-                "last_mode": mode,
-                "opens": int(prev.get("opens", 0)) + 1,
-            },
-        )
-        self._write(entries[: self.max_entries])
+        try:
+            with self._locked():
+                current = self.entries()
+                prev = next((item for item in current if item.get("path") == key), {})
+                entries = [item for item in current if item.get("path") != key]
+                entries.insert(
+                    0,
+                    {
+                        "path": key,
+                        "last_opened": datetime.now(timezone.utc).isoformat(),
+                        "size_bytes": size_bytes,
+                        "schema": schema,
+                        "last_mode": mode,
+                        "opens": int(prev.get("opens", 0)) + 1,
+                    },
+                )
+                self._write(entries[: self.max_entries])
+        except ToolError:
+            pass
 
     def remove(self, path: str) -> None:
-        self._write([e for e in self.entries() if e.get("path") != path])
+        try:
+            with self._locked():
+                self._write([item for item in self.entries() if item.get("path") != path])
+        except ToolError:
+            pass
 
     def clear(self) -> None:
-        self._write([])
+        try:
+            with self._locked():
+                self._write([])
+        except ToolError:
+            pass
+
+    @contextlib.contextmanager
+    def _locked(self) -> Iterator[None]:
+        with self._lock, exclusive_file_lock(
+            self.path.with_name(f".{self.path.name}.lock"), timeout_s=1
+        ):
+            yield
 
     def _write(self, entries: list[dict]) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)

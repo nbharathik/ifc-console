@@ -34,6 +34,18 @@ def test_concurrent_first_use_returns_one_token(tmp_path: Path) -> None:
     assert _store(home).load_server_token() == tokens[0]
 
 
+def test_legacy_token_lock_file_does_not_block_first_use(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir(parents=True)
+    (home / "token.lock").write_text("stale legacy lock", encoding="utf-8")
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        tokens = list(pool.map(lambda _i: _store(home).load_server_token(), range(16)))
+
+    assert len(set(tokens)) == 1
+    assert _store(home).load_server_token() == tokens[0]
+
+
 def test_cores_share_the_machine_token(tmp_path: Path) -> None:
     """Two ifc-console launches (same home) present the same bearer token."""
     core_a = AppCore(_store(tmp_path / "home"))

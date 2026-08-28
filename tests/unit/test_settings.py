@@ -5,6 +5,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+from pydantic import ValidationError
+
 from ifc_console.settings import SettingsStore
 
 
@@ -61,6 +64,35 @@ def test_project_file_may_set_safe_key(tmp_path: Path) -> None:
     store = SettingsStore(home=tmp_path / "h", project_dir=tmp_path, env={})
     assert store.settings.tui.theme == "light"
     assert store.provenance["tui.theme"] == "project"
+
+
+def test_invalid_project_value_does_not_discard_trusted_layers(tmp_path: Path) -> None:
+    home = tmp_path / "h"
+    _write(
+        home / "settings.json",
+        {"sandbox": {"mode": "strict"}, "tui": {"theme": "light"}},
+    )
+    _write(tmp_path / ".ifc-console" / "settings.json", {"tui": {"theme": "invalid"}})
+
+    store = SettingsStore(
+        home=home,
+        project_dir=tmp_path,
+        env={"IFC_CONSOLE_SERVER_PORT": "9002"},
+        flag_overrides={"exec.timeout_seconds": 45},
+    )
+
+    assert store.settings.sandbox.mode == "strict"
+    assert store.settings.tui.theme == "light"
+    assert store.settings.server.port == 9002
+    assert store.settings.exec.timeout_seconds == 45
+    assert store.provenance["sandbox.mode"] == "user"
+    assert store.provenance["tui.theme"] == "user"
+    assert store.provenance["server.port"] == "env"
+    assert store.provenance["exec.timeout_seconds"] == "flag"
+    assert any(
+        "project: invalid settings value for 'tui.theme' ignored" in warning
+        for warning in store.warnings
+    )
 
 
 def test_project_file_cannot_expand_exposure_logging_or_resource_budgets(
@@ -141,11 +173,8 @@ def test_set_and_unset_user(tmp_path: Path) -> None:
 def test_invalid_value_rejected(tmp_path: Path) -> None:
     store = SettingsStore(home=tmp_path / "h", project_dir=tmp_path, env={})
     store.ensure_dirs()
-    try:
+    with pytest.raises(ValidationError):
         store.set_user("mode.default", "bogus")
-        raise AssertionError("should have rejected bad enum value")
-    except Exception:
-        pass
 
 
 def test_output_limit_cannot_exceed_the_sandbox_protocol_budget(tmp_path: Path) -> None:

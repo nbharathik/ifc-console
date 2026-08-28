@@ -9,7 +9,9 @@ ifcopenshell version, so upgrading the library rebuilds it.
 from __future__ import annotations
 
 import logging
+import os
 import threading
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -95,7 +97,8 @@ class KnowledgeBase:
         self.home = home
         self.schemas = schemas or SCHEMAS
         self._store: Store | None = None
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
+        self._build_lock = threading.Lock()
         self._building = False
         self.last_error: str | None = None
 
@@ -111,7 +114,8 @@ class KnowledgeBase:
 
     @property
     def ready(self) -> bool:
-        return self.path.exists()
+        with self._lock:
+            return self._open_locked() is not None
 
     @property
     def building(self) -> bool:
@@ -119,29 +123,37 @@ class KnowledgeBase:
 
     def build(self, *, force: bool = False) -> dict[str, Any]:
         """Build the index. Safe to call from a worker thread."""
-        if self.ready and not force:
-            return {"built": False, "path": str(self.path), **self.stats()}
-        # Windows cannot replace a file that is still open for reading.
-        self._close()
-        self._building = True
-        try:
-            info = build(
-                self.path,
-                _iter_records(self.schemas),
-                {
-                    "ifcopenshell": _ifcopenshell_version(),
-                    "schemas": list(self.schemas),
-                },
-            )
-            self.last_error = None
-        except Exception as exc:
-            self.last_error = f"{type(exc).__name__}: {exc}"
-            raise
-        finally:
-            self._building = False
-            self._close()
-        self._prune_old()
-        return {"built": True, "path": str(self.path), **info}
+        with self._build_lock:
+            if self.ready and not force:
+                return {"built": False, "path": str(self.path), **self.stats()}
+
+            target = self.path
+            staged = target.with_name(f".{target.name}.{uuid.uuid4().hex}.staged")
+            self._building = True
+            try:
+                info = build(
+                    staged,
+                    _iter_records(self.schemas),
+                    {
+                        "ifcopenshell": _ifcopenshell_version(),
+                        "schemas": list(self.schemas),
+                    },
+                )
+                # Keep the last valid store available while the replacement is
+                # built. Only the final Windows-sensitive swap excludes readers.
+                with self._lock:
+                    self._close_locked()
+                    os.replace(staged, target)
+                    self.last_error = None
+            except Exception as exc:
+                with self._lock:
+                    self.last_error = f"{type(exc).__name__}: {exc}"
+                raise
+            finally:
+                self._building = False
+                staged.unlink(missing_ok=True)
+            self._prune_old()
+            return {"built": True, "path": str(target), **info}
 
     def _prune_old(self) -> None:
         directory = self.path.parent
@@ -151,24 +163,48 @@ class KnowledgeBase:
 
     def _close(self) -> None:
         with self._lock:
-            if self._store is not None:
-                self._store.close()
-                self._store = None
+            self._close_locked()
+
+    def _close_locked(self) -> None:
+        if self._store is not None:
+            self._store.close()
+            self._store = None
 
     def close(self) -> None:
         self._close()
 
+    def _store_is_compatible(self, store: Store) -> bool:
+        indexed_schemas = store.meta.get("schemas")
+        actual = (
+            sorted(str(schema).upper() for schema in indexed_schemas)
+            if isinstance(indexed_schemas, list)
+            else []
+        )
+        expected = sorted(schema.upper() for schema in self.schemas)
+        return actual == expected and store.meta.get("ifcopenshell") == _ifcopenshell_version()
+
+    def _open_locked(self) -> Store | None:
+        path = self.path
+        if self._store is not None and self._store.path != path:
+            self._close_locked()
+        if self._store is None:
+            if not path.is_file():
+                return None
+            try:
+                candidate = Store(path)
+                if not self._store_is_compatible(candidate):
+                    candidate.close()
+                    raise ValueError("knowledge index metadata does not match this installation")
+                self._store = candidate
+                self.last_error = None
+            except Exception as exc:
+                self.last_error = f"{type(exc).__name__}: {exc}"
+                return None
+        return self._store
+
     def _open(self) -> Store | None:
         with self._lock:
-            if self._store is None:
-                if not self.ready:
-                    return None
-                try:
-                    self._store = Store(self.path)
-                except Exception as exc:
-                    self.last_error = f"{type(exc).__name__}: {exc}"
-                    return None
-            return self._store
+            return self._open_locked()
 
     def search(
         self,
@@ -178,40 +214,41 @@ class KnowledgeBase:
         schema: str | None = None,
         limit: int = 10,
     ) -> list[dict[str, Any]]:
-        store = self._open()
-        if store is None:
-            return []
         with self._lock:
+            store = self._open_locked()
+            if store is None:
+                return []
             rows = store.search(
                 query, kind=kind, schema=schema, limit=limit if schema else limit * 3
             )
         return rows[:limit] if schema else _collapse_schemas(rows, limit)
 
     def get(self, key: str) -> dict[str, Any] | None:
-        store = self._open()
-        if store is None:
-            return None
         with self._lock:
+            store = self._open_locked()
+            if store is None:
+                return None
             return store.get(key)
 
     def lookup(
         self, name: str, *, kind: str | None = None, schema: str | None = None
     ) -> list[dict[str, Any]]:
         """Exact name lookup, which is what a tool argument usually gives us."""
-        store = self._open()
-        if store is None:
-            return []
         with self._lock:
+            store = self._open_locked()
+            if store is None:
+                return []
             return store.by_name(name, kind=kind, schema=schema)
 
     def stats(self) -> dict[str, Any]:
-        store = self._open()
-        if store is None:
-            return {"ready": False, "building": self._building, "error": self.last_error}
-        return {
-            "ready": True,
-            "building": self._building,
-            "path": str(self.path),
-            "search": "fts5" if store.fts else "like",
-            **{k: v for k, v in store.meta.items() if k in ("counts", "total", "ifcopenshell")},
-        }
+        with self._lock:
+            store = self._open_locked()
+            if store is None:
+                return {"ready": False, "building": self._building, "error": self.last_error}
+            return {
+                "ready": True,
+                "building": self._building,
+                "path": str(self.path),
+                "search": "fts5" if store.fts else "like",
+                **{k: v for k, v in store.meta.items() if k in ("counts", "total", "ifcopenshell")},
+            }

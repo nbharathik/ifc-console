@@ -1,31 +1,31 @@
-# Building agent applications
+# Agent applications
 
-Use these APIs when an LLM should choose IFC and company tools. For ordinary
-scripts or CI, use [`Workbench`](sdk.md) instead.
+The agent runtime is part of `ifc-console`. Use it when an LLM should choose
+IFC and application tools. Use [`Workbench`](sdk.md) for deterministic scripts
+and CI.
 
 ```text
-runtime -> scoped toolset -> Agent -> typed events
-              |                |
-       IFC + company tools   host approvals
+runtime -> scoped Toolset -> Agent -> typed events
+              |               |
+       IFC + app tools     host approvals
 ```
 
-Your application owns identity, credentials, business policy, and production
-persistence. ifc-console supplies model sessions, tools, capability checks,
-limits, approvals, and audit records.
+Your application owns identity, credentials, business policy, and persistence.
+IFC Console supplies model sessions, operation schemas, limits, capability
+checks, approvals, and audit records.
 
 ## Choose a runtime
 
-`LocalRuntime` opens a model in the application:
+`LocalRuntime` embeds a model:
 
 ```python
 from ifc_console import LocalRuntime
 
-runtime = await LocalRuntime.open("architecture.ifc", mode="ask")
-async with runtime:
+async with await LocalRuntime.open("architecture.ifc", mode="ask") as runtime:
     print((await runtime.workspace.info())["project"])
 ```
 
-`ConsoleRuntime` connects to the model selected in a running console:
+`ConsoleRuntime` uses the model selected in a running console:
 
 ```python
 from ifc_console import ConsoleRuntime
@@ -36,12 +36,12 @@ runtime = await ConsoleRuntime.connect_http(
 )
 ```
 
-Remote runtimes have no mode setter. The user who owns the console owns its
-`ask`/`edit` switch.
+Remote runtimes have no mode setter. The console owner controls `ask` and
+`edit`.
 
 ## Scope the tools
 
-Build the smallest toolset the agent needs:
+Select exact operations whenever possible:
 
 ```python
 tools = await runtime.tools(
@@ -50,19 +50,13 @@ tools = await runtime.tools(
     "get_element",
     "get_psets",
 )
-
-result = await tools.call(
-    "search_elements",
-    {"term": "Wall-1"},
-)
+result = await tools.call("search_elements", {"term": "Wall-1"})
 ```
 
-For metadata-based selection, start with the complete permitted catalog and
-filter it:
+For metadata-based selection, filter the permitted catalog:
 
 ```python
 catalog = await runtime.toolset(permitted_only=True)
-
 review_tools = (
     catalog
     .include(tags={"read", "analysis", "preview"})
@@ -70,7 +64,8 @@ review_tools = (
 )
 ```
 
-For common cases, start with an allowlisted profile:
+`include()` and `exclude()` accept names, globs, tags, and capabilities. Common
+allowlists are also available:
 
 ```python
 from ifc_console import IfcToolProfile
@@ -79,18 +74,12 @@ inspect_tools = await runtime.toolset(profile=IfcToolProfile.INSPECT)
 property_tools = await runtime.toolset(profile=IfcToolProfile.PROPERTY_EDIT)
 ```
 
-`inspect` omits free-form code, file/workspace changes, jobs, and model writes.
-`property-edit` adds structured property previews but still omits commit and
-save. `full` preserves the complete permitted surface. Profiles are a usability
-allowlist; runtime capabilities and host approvals remain the security boundary.
-
-`include()` and `exclude()` accept names, globs, tags, and capabilities. Tool
-definitions include source, tags, capabilities, current permission, and whether
-host approval is required.
+Profiles improve usability. Runtime policy and host approval remain the
+security boundary.
 
 ## Add application tools
 
-Use `FunctionToolSource` for trusted Python functions used only by this app:
+Expose trusted Python functions with `FunctionToolSource`:
 
 ```python
 from ifc_console import FunctionToolSource
@@ -99,28 +88,25 @@ company = FunctionToolSource(namespace="company")
 
 @company.tool(tags={"validation"})
 async def submission_requirements(discipline: str) -> dict:
-    """Return company requirements for one discipline."""
     return await requirements_service.for_discipline(discipline)
 
 tools = await runtime.toolset(company)
-# Exposed as company__submission_requirements.
+# Tool name: company__submission_requirements
 ```
 
-Use `McpToolSource` to add an existing MCP server:
+Add another MCP server with `McpToolSource`:
 
 ```python
 from ifc_console import McpToolSource
 
 async with await McpToolSource.connect_stdio(
-    "company-mcp",
-    ["serve"],
-    namespace="erp",
+    "company-mcp", ["serve"], namespace="erp"
 ) as erp:
     tools = await runtime.toolset(erp)
 ```
 
-Namespacing prevents collisions. Use an [operation plugin](plugins.md) only
-when the tool should appear automatically in every ifc-console interface.
+Use an [operation plugin](plugins.md) only when an operation should appear in
+every IFC Console interface.
 
 ## Run an agent
 
@@ -145,19 +131,11 @@ result = await agent.run("Review the submission", thread_id="review-42")
 print(result.text)
 ```
 
-The same construction is available as `await runtime.create_agent(...)`, which
-builds the selected toolset and agent in one call.
+`runtime.create_agent(...)` builds the toolset and agent together.
+`tools.describe()` renders a prompt-ready catalog. Read-only calls in the same
+round run concurrently unless `parallel_read_only=False`.
 
-`tools.describe()` renders a prompt-ready summary of the selected tools, so
-system prompts list the surface from code instead of by hand. Rounds where
-every requested call is read-only execute concurrently; set
-`AgentLimits(parallel_read_only=False)` to serialize them again.
-
-## Structured answers
-
-Applications want data out of agents, not prose. Pass a Pydantic model and
-the run ends in a validated instance, with one retry that feeds the
-validation error back to the model:
+For validated output, pass a Pydantic model:
 
 ```python
 from pydantic import BaseModel
@@ -170,86 +148,36 @@ result = await agent.run("Review the walls", response_model=Finding)
 print(result.data.global_id)
 ```
 
-The schema is appended to the prompt; a final answer that still does not
-validate raises `AgentRunError`.
+One failed validation is returned to the model for correction. A second failure
+raises `AgentRunError`.
 
-## Test without an LLM key
+## Events, images, and tests
 
-`ifc_console.testing` ships the fakes the internal suite uses:
-`ScriptedAgentModel` plays back provider rounds (`text_round`,
-`tool_call_round` build them), `RecordingThreadStore` remembers saves, and
-`ok_envelope`/`error_envelope` shape tool results. A complete agent test
-needs a model file and no network; `tests/unit/test_builtin_agents.py` shows
-the pattern end to end.
+`agent.stream()` emits `run_started`, text and reasoning deltas, tool start and
+finish events, approval events, usage, and exactly one final `run_completed` or
+`run_failed`. Every event carries run and thread IDs.
 
-## Use LangChain/LangGraph directly
-
-Install LangChain and its model-provider package in the agent application's own
-environment. IFC Console does not install or depend on LangChain.
+Attach images with `AgentImage.from_file()`:
 
 ```python
-from langchain.agents import create_agent
+from ifc_console import AgentImage
 
-tools = await runtime.tools(
-    "get_ifc_project_info",
-    "search_elements",
-    "get_element",
-    "company__submission_requirements",
-    sources=(company,),
+result = await agent.run(
+    "Inspect this detail",
+    images=[AgentImage.from_file("detail.png")],
 )
-agent = create_agent(
-    model="openai:YOUR_MODEL_ID",
-    tools=tools.as_langchain_tools(),
-    system_prompt="Use tools for IFC facts.",
-)
-result = await agent.ainvoke({
-    "messages": [{"role": "user", "content": "Review Wall-1"}]
-})
 ```
 
-This direct adapter is for a custom in-process agent. Use `ConsoleRuntime` when
-you want the same API backed by a user's existing console, or use a normal
-LangChain MCP client when protocol isolation and independent server lifecycle
-are more important than in-process customization.
+Image tool results become native vision input automatically. Keep thread-store
+limits small because image-bearing transcripts grow quickly.
 
-Implement `AgentModel` for another provider library and `ThreadStore` for your
-database. `JsonThreadStore(path)` is suitable for small local applications;
-protect its directory because transcripts can contain model data.
+`ifc_console.testing` provides `ScriptedAgentModel`, `RecordingThreadStore`,
+`text_round`, `tool_call_round`, `ok_envelope`, and `error_envelope` for tests
+without a provider key.
 
-`agent.stream()` emits typed events for text, reasoning, tool calls, approvals,
-usage, completion, and failure. Every event carries run and thread IDs.
+## Host approvals
 
-## The event contract
-
-| event | fires | fields set beyond run and thread ids |
-| ----- | ----- | ------------------------------------ |
-| `run_started` | once, first | |
-| `text_delta` | per streamed answer fragment | `text` |
-| `reasoning_delta` | per streamed reasoning fragment, providers that expose it | `text` |
-| `tool_call_started` | before each tool executes, always paired with a finish | `tool_call_id`, `tool_name`, `arguments` |
-| `approval_requested` | when a protected tool waits on the host | the started fields plus `approval` |
-| `approval_resolved` | when the host decides | `tool_call_id`, `tool_name`, `decision` |
-| `tool_call_finished` | after each tool, budget and parse failures included | the started fields plus `result` |
-| `usage` | after each model round that reports tokens | `usage` |
-| `run_completed` | once, on success, last | `run_result` |
-| `run_failed` | once, on timeout, budget exhaustion, or provider failure, last | `text` |
-
-Exactly one of `run_completed` or `run_failed` ends every run. In a round
-where every requested call is read-only, all started events precede the
-finished events because the calls execute concurrently.
-
-## Vision
-
-`Agent.run(..., images=[AgentImage.from_file("detail.png")])` attaches images
-to the prompt; providers that support vision receive them as native image
-content. Tool results that carry images (such as `get_viewer_screenshot`
-through the SDK) are split automatically: the transcript keeps a count where
-the base64 was, and the pixels follow the round as vision input. Image-bearing
-threads grow quickly; size `JsonThreadStore` limits accordingly.
-
-## Protect actions
-
-Write, commit, restore, subprocess, and destructive MCP tools require host
+Write, commit, restore, subprocess, and destructive operations require host
 approval. The default policy denies them, and the model cannot approve itself.
 
 ```python
@@ -270,181 +198,109 @@ async def approve(request):
 handler = CallbackApprovalHandler(approve)
 ```
 
-Approval is an extra boundary. Normal mode, capability, path, revision, and
-ChangeSet checks still apply. Keep mode changes, ChangeSet approval, commit,
-restore, allowed directories, and credentials in host code.
+Pass `approval_handler=handler` to `Agent`, `agent.run()`, or the runtime's
+agent factory.
 
-## Middleware and specialists
+Keep credentials, mode changes, allowed paths, ChangeSet approval, commit, and
+restore in host code. Approval does not bypass capability, revision, or path
+checks.
 
-Middleware wraps each tool call for tracing, quotas, caching, or logging:
+Middleware can wrap calls for tracing, quotas, or caching. `AgentToolSource`
+can expose a bounded specialist as one namespaced supervisor tool. Prefer
+deterministic [workflows](workflows.md) when no model decision is required.
+
+## Framework integrations
+
+IFC Console does not install LangChain. Applications may project a toolset into
+their own LangChain agent:
 
 ```python
-async def trace_tool(call, call_next):
-    with tracer.start_as_current_span(call.name):
-        return await call_next(call)
+from langchain.agents import create_agent
 
-agent = Agent(..., middleware=(trace_tool,))
+agent = create_agent(
+    model="openai:YOUR_MODEL_ID",
+    tools=tools.as_langchain_tools(),
+    system_prompt="Use tools for IFC facts.",
+)
 ```
 
-`AgentToolSource` can expose a bounded specialist agent as one namespaced tool
-of a supervisor. Use deterministic [workflows](workflows.md) for repeatable
-validation/query graphs and delegation only when a model decision is needed.
+Implement `AgentModel` for another provider library and `ThreadStore` for your
+database. `JsonThreadStore(path)` suits small local applications. The optional
+`ifc-console[graph]` extra adds the LangGraph adapter described in the
+[SDK guide](sdk.md#langchain-and-langgraph).
 
-## Reference application
+## Built-in agents
 
-`examples/sdk/quickstart_agent.py` is the smallest runnable agent: it opens a
-model, selects six read tools, and streams the bundled `Agent` in a terminal.
+Four presets ship in `ifc_console.agents.presets`:
 
-The complete browser chat is part of IFC Console itself. PDF ingestion and PDF
-page vision ship in the base package; install the viewer extra for the browser
-panel, start the Console in a project folder, and open the agent picker:
+| preset | purpose |
+| ------ | ------- |
+| `general` | full query, document, measurement, review, proposal, and code surface |
+| `measurement` | recipe-driven measurement with cited evidence |
+| `docs` | answers from project references with page citations |
+| `review` | schema, IDS, clash, quantity, and data-quality review |
 
-```bash
-pip install "ifc-console[viewer]"
-ifc-console
-# then type /agent
-```
+They use the same public `Agent`, `Toolset`, and provider contracts as custom
+applications. `examples/sdk/quickstart_agent.py` is the smallest runnable
+example. For the browser panel, install `ifc-console[viewer]`, start the
+console, and run `/agent`.
 
-The main panel demonstrates the same public `Agent`, `Toolset`,
-`ProviderModel`, typed event, and image contracts without maintaining a second
-web-chat implementation under `examples/`.
+## Project workspace
 
-`examples/sdk/property_agent` is a separate LangChain project with its own
-`pyproject.toml` and virtual environment. It resolves elements by name,
-GlobalId, selector, or viewer selection; inspects the unit; previews thickness;
-then requires host-side approval before the durable transaction commit.
-
-## The shipped agents
-
-Four presets ship in `ifc_console.agents.presets`. They are data, not code: a
-role prompt, a set of capability blocks, and some worked examples. The same
-`compose()` call builds all of them and any agent a user creates, so a custom
-agent is never a second-class citizen.
-
-| Agent | Blocks | For |
-| --- | --- | --- |
-| `general` | every block, `code` included | Start here. Queries, quantities, documents, validation, generated code, and marked proposals in one place. |
-| `measurement` | context, documents, measurements, viewer, proposals, audit | Recipe-driven measurement with a stated method and a cited source. |
-| `docs` | context, documents, spatial | Answers from the project corpus, every claim cited with its page. |
-| `review` | context, spatial, validation, clash, quantities, viewer | Schema, IDS, clashes, and missing data, worst first. |
-
-The focused presets exist because a narrower agent is easier to trust and to
-read, not because they are a different kind of thing: each is the general
-assistant with fewer blocks and a sharper prompt. To make your own, write
-standing instructions for one of them, or build a preset of your own from the
-blocks below.
-
-The project reference directory is:
+Project-local agent data is inspectable and versionable:
 
 ```text
-project/
-  .ifc-console/
-    agents/references/    local manuals, drawings, and images
-    agents/content-access.json  standing access for built-in agents
-    agents/custom/        your own agents, as inspectable JSON
-    agents/skills/        saved measurement procedures, one markdown file each
-    knowledge/            generated retrieval index and source manifest
-    recipes/              reviewed measurement recipes
+.ifc-console/
+  agents/
+    references/       shared documents and images
+    content-access.json
+    custom/           custom agent blueprints
+    skills/           reusable markdown procedures
+    threads/          optional local conversations
+  knowledge/          retrieval index and source manifest
+  recipes/            reviewed measurement recipes
 ```
 
-Add shared files in **Agent workspace > Content**, with
-`ifc-console agents files <paths>`, or by copying them into
-`agents/references/`. The Content view lets you search the library and grant
-files in bulk: **Select shown** and **Clear shown** act on the filtered set,
-and shift-click extends a range. Upload once, then select which files each
-assistant may use as standing project context. A built-in agent's selection is stored in
-`content-access.json`; a custom agent keeps the same selection in its blueprint
-as `content_paths`.
+Add references in **Agent workspace > Content**, with
+`ifc-console agents files <paths>`, or by copying supported files into
+`agents/references/`. Access may be `all` or an explicit selected set, including
+an empty set. The server enforces it for search, document reads, reference
+images, and rendered PDF pages.
 
-No saved selection means access to all project content, which preserves the
-behavior of existing projects. A saved empty selection means no standing file
-access. The panel enforces the selection around document listing, retrieval
-search, record reads, reference images, and rendered PDF pages. Changing it
-starts a compatible new agent context, so a tighter selection cannot resume a
-thread created with broader access.
+A composer upload is turn-only context and does not change standing access.
+Typing `@` attaches a permitted project file to one message. Changing provider,
+model, instructions, or content access starts a compatible new context.
 
-`list_project_documents` lets an agent inspect its permitted evidence ledger;
-`get_project_reference_image` provides image pixels as native vision input;
-`get_project_document_page` renders a PDF page for native vision, so drawings,
-scans, and layout-dependent tables are not reduced to extracted text. A file
-attached from the composer is message context, not standing agent access. It is
-stored below the hidden `references/.turns/` area and is available only to the
-message that attaches it, without silently changing the agent's saved
-selection or appearing in the shared library. Typing `@` in the composer
-mentions a file the agent already has standing access to and attaches it to
-that message, so the model is told what to read as well as being permitted
-to read it.
-
-## The agent workspace
-
-`GET /api/agents/workspace?agent=<name>` returns one payload describing an
-agent exactly as it would run right now: its role prompt, its blocks and which
-are available, every tool it holds with its full description, input schema,
-required capabilities, source, and pipeline stage, the stages it can reach,
-its worked examples, what it may write, its limits, and the project files it
-can see. Its `content` object carries the
-shared library, the effective access mode, and an `allowed` flag on each file;
-the compatibility `files` list contains only accessible files. The payload is
-assembled from the same composition the agent runs with, so it cannot drift: a
-tool missing from the workspace is a tool the agent does not have.
-
-`agent=` with no name describes plain chat: the console's whole tool surface
-behind the stateless loop, with no blocks and no server-side thread.
-
-The browser has one **Agent workspace**, opened from the right side of the chat
-header or **Agent workspace** at the bottom of the sidebar. A single left rail
-contains **Agents**, **Pipeline**, **Capabilities**, **Tools**, **Content**,
-**Models**, and **App**. Capability, workflow, and tool rows expand only when
-their details are needed. Agent setup opens inside this same workspace. There
-are no separate inspector, settings, and builder panels to coordinate. The
-workspace is a bounded modal centred on the window, closed with its own
-control, Escape, or a click outside it.
-
-The content endpoints use the same project-local store and enforcement:
+The corresponding local API is small:
 
 | endpoint | purpose |
-| --- | --- |
-| `GET /api/agents/content` | List the shared project content library. |
-| `GET /api/agents/content?agent=<name>` | Add the selected agent's access mode and per-file `allowed` state. |
-| `POST /api/agents/content/upload?name=<file>` | Add and index a shared workspace file without granting it to a selected-only agent. |
-| `POST /api/agents/content/access` | Save `{agent, mode, paths}` where mode is `all` or `selected`. |
+| -------- | ------- |
+| `GET /api/agents/workspace?agent=<name>` | resolved prompt, tools, limits, files, and pipeline |
+| `GET /api/agents/content?agent=<name>` | library and per-file access state |
+| `POST /api/agents/content/upload?name=<file>` | add and index a shared reference |
+| `POST /api/agents/content/access` | save `{agent, mode, paths}` |
 
 ## Capability blocks
 
-Every agent in this project, built-in or custom, is assembled from the same
-list in `ifc_console.agents.blocks`. One `compose()` call decides an agent's
-tool surface and safety preamble, so a custom agent is never a second-class
-citizen and no agent can widen policy by construction.
+Built-in and custom agents are composed from reviewed blocks. Blocks narrow
+the tool surface but never widen session policy.
 
-| Block | What it adds |
-| --- | --- |
-| `ifc-context` | Elements, types, property sets, schema docs |
-| `spatial` | Site, building, storey, space hierarchy and georeferencing |
-| `documents` | Project corpus search, reference images, rendered PDF pages |
-| `measurements` | Recipes, geometry extents, distances, quantities |
-| `quantities` | Aggregated takeoff and CSV artifacts |
-| `validation` | Schema checks and IDS conformance |
-| `clash` | Intersection and near-touch detection |
-| `viewer` | Launch, selection, viewport control, measurements, highlight, theme, screenshots |
-| `property-proposals` | AI-marked, preview-only property and measurement writes |
-| `ai-audit` | Inventory of every AI-authored value already in the model |
-| `code` | Generated ifcopenshell code for what the tools do not cover |
+| block | adds |
+| ----- | ---- |
+| `ifc-context` | elements, types, properties, and schema docs |
+| `spatial` | hierarchy and georeferencing |
+| `documents` | project search, images, and rendered PDF pages |
+| `measurements` | recipes, geometry, distances, and reports |
+| `quantities` | takeoff and CSV artifacts |
+| `validation` | schema and IDS checks |
+| `clash` | intersection and clearance checks |
+| `viewer` | selection, screenshots, highlights, and viewport control |
+| `skills` | reusable project procedures |
+| `property-proposals` | marked, preview-only property changes |
+| `ai-audit` | AI-authored value inventory |
+| `code` | generated IfcOpenShell code for uncovered cases |
 
-Composition degrades instead of failing. In the HTTP console, the viewer block
-is available even while the page is off: the agent holds `open_viewer` and the
-six stable viewport tools, so it can activate and use them without rebuilding
-its toolset. Runtimes with no web surface (standalone stdio and the embedded
-SDK) drop the block when their host passes `viewer=False`; unavailable optional
-engines are likewise stated in the prompt, so the agent never promises a
-capability it lacks.
-
-The `code` block is what answers a question the structured tools do not cover,
-such as measuring a wall by walking its layer set. It is not a way around the
-session gate: in ask mode a run is classified before it executes and anything
-that would change the model is refused, while a read-only run goes to a
-separate worker process against a copy of the file. In edit mode a mutating run
-executes against the live in-memory model under the capability and audit
-guards. Neither can write the IFC file: only the person at the console can.
+Compose the same blocks in Python:
 
 ```python
 from ifc_console.agents.blocks import compose
@@ -457,63 +313,35 @@ composition = await compose(
     viewer=False,
     agent="facade-agent",
 )
-agent = Agent(name="facade", model=model, tools=composition.tools,
-              instructions=composition.instructions)
 ```
 
-## Custom agents from blocks
+In the browser use **Agent workspace > Agents**, or use `/agent new` in the
+terminal. Blueprints choose only reviewed blocks, instructions, limits, and
+starter prompts. They cannot load code, name arbitrary operations, approve a
+ChangeSet, or change runtime policy.
 
-Open **Agent workspace > Agents**, then choose **New assistant** or **Edit
-agent**. `/agent new` remains available in the terminal. The compact setup flow
-keeps the essential profile, capabilities, and instructions together. Choose
-the smallest set of blocks, write the company procedure, and save. When needed,
-expand **Advanced run controls** to select an adaptive, evidence-first, or
-fast-scan strategy, set explicit tool-round and tool-call budgets, and add
-starter prompts. The footer summarizes the resulting reach before saving. The
-resulting agent appears beside Documents and Measurement in `/agent`, in
-`ifc-console agents list`, and in the panel sidebar, where it can also be
-deleted. Its standing content selection is edited in the workspace's Content
-view and persisted with the blueprint.
+## AI-marked proposals
 
-Blueprints cannot name arbitrary operations, load code, approve ChangeSets, or
-change runtime policy. The selected blocks expand to a fixed allowlist at build
-time. Viewer tools remain discoverable when the web surface is off so an agent
-can call `open_viewer` without rebuilding its tool catalog; their handlers still
-require a connected viewer tab. This makes a blueprint useful as reusable
-project configuration without turning it into a plugin or a second security
-boundary.
+Agents may create previews, never commits. Values go only into
+`IfcConsole_AI_Measurements` or `IfcConsole_AI_Properties`. Each value and its
+per-property record in `IfcConsole_AI_Provenance` form one ChangeSet, so they
+are approved and committed atomically.
 
-## Marking what the model wrote
+The preview-only tools are:
 
-An agent may propose values, never commit them, and everything it proposes is
-identifiable in the file afterwards. Two preview-only tools exist:
+- `measure__propose_measured_value` for standard metrics;
+- `measure__propose_property_value` for named values defined by instructions or evidence.
 
-- `measure__propose_measured_value` for the standard metrics, into
-  `IfcConsole_AI_Measurements`
-- `measure__propose_property_value` for a property your own instructions or a
-  document define, into `IfcConsole_AI_Properties`
-
-The property set names are fixed in host code. Alongside every value the agent
-writes an `AI_Provenance` record into `IfcConsole_AI_Provenance`:
-
-```json
-{"v": 1, "ai_generated": true, "agent": "measurement-agent",
- "property": "IfcConsole_AI_Measurements.MeasuredThickness",
- "method": "geometry_extent (local_y)", "model": "anthropic/claude-sonnet-5",
- "source": "QS-Manual.pdf p12", "unit": "mm", "confidence": "medium",
- "change_set": "sha256:...", "written_at": "2026-08-23T10:00:00+00:00",
- "tool": "ifc-console"}
-```
-
-Because every AI-authored property set starts with `IfcConsole_AI_`, the whole
-AI-assisted layer is separable from the authored model by prefix match.
-`list_ai_authored_properties` returns that inventory for review, and
-`ifc_console.agents.provenance.read_ai_properties` does the same in Python.
+Provenance records include the agent, target property, model, method, source,
+unit, confidence, timestamp, and proposal ID. `list_ai_authored_properties` and
+`ifc_console.agents.provenance.read_ai_properties` return values with
+`provenance_by_property`. The `IfcConsole_AI_` prefix keeps the complete
+AI-assisted layer identifiable.
 
 ## Measurement recipes
 
-Recipes pin the method and citation as reviewable YAML under
-`.ifc-console/recipes/`:
+Recipes are host-authored YAML in `.ifc-console/recipes/`. They pin a property
+method and citation:
 
 ```yaml
 applies_to: {class: IfcWall, type_name: "Basic Wall: Interior*"}
@@ -523,52 +351,16 @@ params: {exclude_layers: ["*Finish*", "*Render*"]}
 unit: mm
 tolerance: 2
 source: {document: "QS-Manual.pdf", page: 12}
-notes: structural layers only, per section 4.2
 ```
 
-`get_measurement_recipe` resolves the most specific match (type before class)
-and returns ready-to-use `measure_elements` arguments. Recipes remain
-host-authored data: agents may read them but never write them.
+`get_measurement_recipe` returns the most specific type, predefined-type, or
+class match. Agents may read recipes but cannot write them.
 
-## Skills
+### Skills
 
-Skills complement recipes from the other side: where a recipe pins one
-property's method as host-authored YAML, a skill records a whole worked
-procedure as markdown that agents may both read and, with approval, write.
-They live one file per skill under `.ifc-console/agents/skills/`:
-
-```markdown
----
-name: sheet-pile-profile
-description: Measure a sheet pile's b, h, t_f, t_w and length
-applies_to: IfcMember sheet piles
----
-
-## When to use
-The element is a thin-walled pile or profile member.
-
-## Steps
-1. get_viewer_selection, then control_viewer action='focus' on the element.
-2. analyze_element_geometry with its GlobalId; read `dimensions` and the
-   thickness pair (upper is t_f, lower is t_w on Larssen-style piles).
-3. Cross-check against the type's catalogue page if one is indexed.
-4. export_measurement_report when the user wants the result to keep.
-```
-
-The flow is deliberate. Any agent holding the skills block gets the saved
-skills indexed straight into its system prompt at composition (name,
-description, and applicability, along with the open model and mode), so
-discovering them costs no tool round; `list_agent_skills` refreshes the list
-mid-conversation, `get_agent_skill` loads the one that matches, and
-`save_agent_skill` records a new one, asking the user for approval before
-writing. Skills are procedures, not facts: agents are instructed to adapt ids
-and selectors and never to copy session values out of one. The panel shows
-them under **Agent workspace > Skills**, and the files diff cleanly in
-version control.
-
-Skills do not have to be written in the console. Draft one anywhere (any LLM,
-any editor), then bring it in with **Import .md skills** in the Skills tab,
+Skills are reviewable markdown procedures in `.ifc-console/agents/skills/`.
+Agents receive their names and applicability at composition time, load full
+instructions with `get_agent_skill`, and may write with `save_agent_skill`
+only after host approval. Import a skill from **Agent workspace > Skills**,
 `POST /api/agents/skills/import?name=<file>.md`, or by copying the file into
-`agents/skills/`. The importer reads the front matter when present, derives
-the name and description from the file otherwise, and never overwrites an
-existing skill (a taken name gets a numeric suffix).
+the skills directory. Existing names are never overwritten during import.

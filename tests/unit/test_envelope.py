@@ -1,4 +1,4 @@
-"""Envelope invariants (plan 03 §1.2), now as the structured-output model."""
+"""Envelope invariants for the structured-output model."""
 
 from __future__ import annotations
 
@@ -55,19 +55,27 @@ def test_every_raised_code_is_registered() -> None:
     from pathlib import Path
 
     src = Path(__file__).resolve().parents[2] / "src"
-    raised = set()
+    raised: set[str] = set()
     for path in src.rglob("*.py"):
         for node in ast.walk(ast.parse(path.read_text(encoding="utf-8-sig"))):
-            if (
-                isinstance(node, ast.Call)
-                and isinstance(node.func, ast.Name)
-                and node.func.id == "ToolError"
-                and node.args
-                and isinstance(node.args[0], ast.Constant)
-                and isinstance(node.args[0].value, str)
-            ):
-                raised.add(node.args[0].value)
-    assert raised, "no ToolError call sites found; the scan is broken"
+            if not isinstance(node, ast.Call):
+                continue
+            name = (
+                node.func.id
+                if isinstance(node.func, ast.Name)
+                else node.func.attr
+                if isinstance(node.func, ast.Attribute)
+                else None
+            )
+            candidate = node.args[0] if name == "ToolError" and node.args else None
+            if name == "JobFailure":
+                candidate = next(
+                    (keyword.value for keyword in node.keywords if keyword.arg == "code"),
+                    None,
+                )
+            if isinstance(candidate, ast.Constant) and isinstance(candidate.value, str):
+                raised.add(candidate.value)
+    assert raised, "no public failure call sites found; the scan is broken"
     unregistered = raised - set(ERROR_CODES)
     assert not unregistered, f"codes raised but missing from ERROR_CODES: {sorted(unregistered)}"
 

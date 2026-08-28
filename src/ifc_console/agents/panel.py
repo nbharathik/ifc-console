@@ -40,6 +40,15 @@ _MAX_UPLOAD_BYTES = MAX_REFERENCE_BYTES
 _MAX_ARGUMENT_CHARS = 2000
 
 
+async def _read_limited_body(request: Any, limit: int) -> bytes | None:
+    data = bytearray()
+    async for chunk in request.stream():
+        if len(data) + len(chunk) > limit:
+            return None
+        data.extend(chunk)
+    return bytes(data)
+
+
 @dataclass
 class PanelThread:
     pack: str
@@ -84,7 +93,17 @@ class AgentPanelState:
         self.threads[thread_id] = thread
         self.threads.move_to_end(thread_id)
         while len(self.threads) > _MAX_THREADS:
-            self.threads.popitem(last=False)
+            victim = next(
+                (
+                    candidate
+                    for candidate in self.threads
+                    if not self.active_streams.get(candidate)
+                ),
+                None,
+            )
+            if victim is None:
+                break
+            self.threads.pop(victim)
 
 
 class PanelApprovalHandler:
@@ -292,11 +311,20 @@ def _library_entries(core: AppCore) -> list[dict[str, Any]]:
     return core.agent_files.library_entries(core.project_knowledge.sources())
 
 
-def _invalidate_agent_threads(core: AppCore, name: str) -> None:
+async def _invalidate_agent_threads(core: AppCore, name: str) -> int:
     state = _panel_state(core)
-    for thread_id, thread in list(state.threads.items()):
-        if thread.pack == name:
+    async with state.lifecycle_lock:
+        thread_ids = [
+            thread_id
+            for thread_id, thread in state.threads.items()
+            if thread.pack == name
+        ]
+        active: set[asyncio.Task[Any]] = set()
+        for thread_id in thread_ids:
             state.threads.pop(thread_id, None)
+            state.thread_epochs[thread_id] = state.thread_epochs.get(thread_id, 0) + 1
+            active.update(state.active_streams.get(thread_id, ()))
+    return await _cancel_stream_tasks(active)
 
 
 def panel_runtime(core: AppCore) -> Any:
@@ -783,17 +811,19 @@ def build_agent_panel_routes(core: AppCore) -> list[Route]:
             )
         else:
             await asyncio.to_thread(_content_store(core).set, pack.info.name, configured)
-        _invalidate_agent_threads(core, pack.info.name)
+        cancelled = await _invalidate_agent_threads(core, pack.info.name)
         core.audit.record(
             "agent_content_access_saved",
             agent=pack.info.name,
             mode=mode,
             files=len(selected),
+            active_streams_cancelled=cancelled,
         )
         from ifc_console.agents.content import content_access_payload
 
         payload = content_access_payload(configured, library)
         payload["directory"] = str(core.agent_files.directory)
+        payload["cancelled_runs"] = cancelled
         return JSONResponse(payload)
 
     async def save_custom_agent(request) -> JSONResponse:
@@ -827,17 +857,19 @@ def build_agent_panel_routes(core: AppCore) -> list[Route]:
             pack = core.agent_packs.save_blueprint(blueprint)
         except (ValidationError, ValueError) as exc:
             return JSONResponse({"error": str(exc)}, status_code=400)
-        state = _panel_state(core)
-        for thread_id, thread in list(state.threads.items()):
-            if thread.pack == pack.info.name:
-                state.threads.pop(thread_id, None)
+        cancelled = await _invalidate_agent_threads(core, pack.info.name)
         core.audit.record(
             "custom_agent_saved",
             agent=pack.info.name,
             blocks=list(blueprint.blocks),
+            active_streams_cancelled=cancelled,
         )
         return JSONResponse(
-            {"agent": pack.info.model_dump(mode="json")}, status_code=201
+            {
+                "agent": pack.info.model_dump(mode="json"),
+                "cancelled_runs": cancelled,
+            },
+            status_code=201,
         )
 
     async def delete_custom_agent(request) -> JSONResponse:
@@ -858,12 +890,15 @@ def build_agent_panel_routes(core: AppCore) -> list[Route]:
         removed = core.agent_packs.delete_blueprint(name)
         if not removed:
             return JSONResponse({"error": f"no custom agent named {name!r}"}, status_code=404)
-        state = _panel_state(core)
-        for thread_id, thread in list(state.threads.items()):
-            if thread.pack == name:
-                state.threads.pop(thread_id, None)
-        core.audit.record("custom_agent_deleted", agent=name)
-        return JSONResponse({"ok": True, "removed": name})
+        cancelled = await _invalidate_agent_threads(core, name)
+        core.audit.record(
+            "custom_agent_deleted",
+            agent=name,
+            active_streams_cancelled=cancelled,
+        )
+        return JSONResponse(
+            {"ok": True, "removed": name, "cancelled_runs": cancelled}
+        )
 
     async def delete_thread(request) -> JSONResponse:
         """Forget one local agent conversation in memory and on disk."""
@@ -1482,11 +1517,11 @@ def build_agent_panel_routes(core: AppCore) -> list[Route]:
         declared = request.headers.get("content-length")
         if declared and declared.isdigit() and int(declared) > _MAX_UPLOAD_BYTES:
             return JSONResponse({"error": "file is larger than 25 MB"}, status_code=413)
-        data = await request.body()
+        data = await _read_limited_body(request, _MAX_UPLOAD_BYTES)
+        if data is None:
+            return JSONResponse({"error": "file is larger than 25 MB"}, status_code=413)
         if not data:
             return JSONResponse({"error": "the file is empty"}, status_code=400)
-        if len(data) > _MAX_UPLOAD_BYTES:
-            return JSONResponse({"error": "file is larger than 25 MB"}, status_code=413)
 
         from ifc_console.core.results import ToolError
 
@@ -1564,7 +1599,9 @@ def build_agent_panel_routes(core: AppCore) -> list[Route]:
         declared = request.headers.get("content-length")
         if declared and declared.isdigit() and int(declared) > MAX_SKILL_BYTES:
             return JSONResponse({"error": "skill is larger than 64 KB"}, status_code=413)
-        data = await request.body()
+        data = await _read_limited_body(request, MAX_SKILL_BYTES)
+        if data is None:
+            return JSONResponse({"error": "skill is larger than 64 KB"}, status_code=413)
         if not data:
             return JSONResponse({"error": "the file is empty"}, status_code=400)
         store = AgentSkillStore(core.store.project_dir)

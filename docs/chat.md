@@ -1,286 +1,136 @@
-# Chat panel
+# Browser chat
 
-The optional browser chat panel can use the same operations as an MCP client.
-Open it beside the 3D model when you want one browser workspace for questions,
-tool calls, and visual results.
-
-The panel is off by default. It is the only ifc-console feature that may contact
+The chat runtime and built-in agents ship in `ifc-console`. Their browser UI is
+part of the optional asset wheel installed through `ifc-console[viewer]`.
+The panel is off by default and is the only IFC Console feature that may contact
 an external LLM provider.
 
 ## Open the panel
 
-Install the viewer bundle first:
-
 ```bash
 pip install "ifc-console[viewer]"
+ifc-console
 ```
 
 Then use:
 
-```text
-/chat          open chat beside the 3D viewer
-/chat solo     open chat without the 3D canvas
-/chat off      close chat and forget any in-memory key
-```
+| command | action |
+| ------- | ------ |
+| `/chat` | open chat beside the 3D viewer |
+| `/chat solo` | open chat without the canvas |
+| `/chat <provider>` | open chat and select a provider |
+| `/chat off` | close chat and forget any in-memory key |
+| `/agent` | open the General assistant |
+| `/agent list` | list every built-in and custom assistant |
 
-In split view, Agent is the fixed first workspace tab and has no close control.
-Viewer tabs can be closed independently. Press ++c++ to open or focus Agent and
-drag the divider to resize it.
+stdio has no browser surface. Use the interactive console or `--no-tui`.
 
-## Choose a provider
+## Providers and models
 
-| provider | credential | notes |
-| -------- | ---------- | ----- |
-| OpenAI | `OPENAI_API_KEY` | choose a model available to the account |
+| provider | default credential | notes |
+| -------- | ------------------ | ----- |
+| OpenAI | `OPENAI_API_KEY` | models available to the account |
 | Anthropic | `ANTHROPIC_API_KEY` | native Claude tool use |
-| OpenRouter | `OPENROUTER_API_KEY` | one endpoint for many model providers |
-| Local | none by default | OpenAI-compatible vLLM, LM Studio, Ollama, or similar |
+| OpenRouter | `OPENROUTER_API_KEY` | models from several providers |
+| Local | none | OpenAI-compatible local servers |
 
-Choose the provider and model in **Agent workspace > Models**. Open the same
-workspace from the right side of the chat header or from **Agent workspace**
-at the bottom of the sidebar. The adjacent model control and the model pill in
-the composer open **Models** directly. Use **Custom ID** when the model does
-not appear in the fetched list.
-`/chat anthropic` can set the provider from the terminal.
+Choose the provider and model in **Agent workspace > Models**. Use **Custom
+ID** for a model not returned by the provider. For a local server, set its base
+URL, such as `http://localhost:8000/v1`, and enable `chat.local_only=true` to
+reject non-local provider URLs.
 
-For a local provider, set its base URL, for example
-`http://localhost:8000/v1`. Enable `chat.local_only=true` to reject any provider
-URL outside the local machine.
+Tool calling and image input each support **Auto-detect**, **Supported**, and
+**Not supported**. Mark unsupported features explicitly for text-only or
+non-tool models. The console then omits incompatible schemas or image blocks
+and keeps ordinary text chat available.
 
-### Model capabilities
+## Assistants and content
 
-Models behind the same provider do not always support the same inputs. In
-**Models > Advanced model controls**, Tool calling and Image input each have an
-Auto-detect, Supported, and Not supported setting. OpenRouter's model response
-includes these capability fields, so Auto-detect can configure them directly.
-OpenAI-compatible servers often return model ids only; Auto-detect then leaves
-the capability unknown and attempts it when used.
+The panel includes:
 
-Choose **Not supported** for a text-only model or a model without function/tool
-calling. The console then omits unsupported tool schemas or image blocks,
-adds a guardrail that prevents claims about unseen IFC evidence, and keeps the
-text conversation usable. Attaching the current 3D view is unavailable when
-Image input is disabled. If an unknown model rejects tools or images, the
-provider error points back to the corresponding override instead of ending in
-an internal error.
+| assistant | purpose |
+| --------- | ------- |
+| General | full IFC, document, measurement, review, proposal, and code surface |
+| Measurement | cited, recipe-driven measurements |
+| Documents | answers from indexed project references |
+| Model review | schema, IDS, clashes, quantities, and model health |
+| Plain chat | the permitted tool loop without a preset prompt |
 
-## Agents in the panel
+Each assistant has its own conversation, instructions, limits, capability
+blocks, and standing content access. Create or edit one in **Agent workspace >
+Agents** or with `/agent new`. Custom assistants choose reviewed blocks; they
+cannot widen policy or approve their own changes.
 
-The sidebar lists every assistant. **General assistant** holds every capability
-block and is where the panel starts; **Measurement**, **Documents**, and
-**Model review** are the same machinery with a narrower block set and a sharper
-prompt. **Plain chat** is the bare tool loop with no agent around it, listed
-like any other so it is one click away. Python hosts can still register packs
-explicitly; arbitrary extension discovery is not enabled. An agent keeps its
-own conversation, starter prompts, and workflow: the measurement agent resolves
-recipes, reads reference images, cites pages, and can prepare a safe ChangeSet
-proposal; the documents agent answers from the ingested corpus.
+Use **Content** to add manuals, drawings, photographs, and other supported
+references. Access is either all project content or an explicit selected set.
+The server enforces it for retrieval, records, images, and rendered PDF pages.
 
-All assistant configuration lives in one **Agent workspace**:
+Composer attachments are different: the paperclip and camera add evidence only
+to the next message. Typing `@` attaches a permitted project file to that
+message. Selecting elements in the viewer adds model-scoped GlobalIds, so the
+assistant can resolve phrases such as "this wall" without another selection
+round.
 
-- **Agents** selects an assistant and shows its concise overview, suggested
-  questions, safety limits, and standing instructions. **New assistant** and
-  **Edit agent** open the compact setup flow in the same workspace.
-- **Capabilities** explains each agent block and its tools. The assistant's
-  pipeline lives in its own overview under **How this assistant works**,
-  because which stages it can reach follows from the blocks it holds.
-- **Tools** starts as a compact, filterable name list. The filter matches a
-  tool's name and its description, so "pset" finds every tool that reads
-  property sets. Open a row to inspect its full description, safety metadata,
-  and argument schema; a row builds that detail the first time it is opened.
-- **Content** is the shared project library. Upload manuals, specifications,
-  drawings, photographs, and other supported references once, search them,
-  then choose the standing files each assistant may use. Selection is bulk
-  first: **Select shown** and **Clear shown** act on whatever the filter is
-  showing, and shift-click extends from the last file you touched, so granting
-  a folder of manuals is one gesture.
-- **Models** contains provider, model, API key, tool use, and advanced model
-  options. **App** contains local history, theme, and system health.
+Project references live under `.ifc-console/agents/references/`. Add them from
+the panel, with `ifc-console agents files <paths>`, or by copying supported
+files there. See [Agent applications](agents.md#project-workspace).
 
-The assistant identity in the header remains a compact status readout. Agent
-workspace opens as a bounded modal centred on the window, dismissed with its
-close control, Escape, or a click outside it. Agent setup is the exception: an
-unsaved draft is not thrown away by a stray click. Its one left rail replaces
-nested top tabs.
+## Credentials and privacy
 
-An assistant's overview states its reach as a row of marks rather than a wall
-of labels: tools, project content, viewer link, write policy, tool rounds, and
-timeout, each naming itself on hover and to a screen reader.
+A provider key is resolved in this order:
 
-Content access is per assistant and enforced by the server. **All content**
-preserves the existing behavior; clearing it creates an explicit selected set,
-which may also be empty. Adding a new library file does not silently grant it
-to an assistant that uses a selected set. The agent's Files detail shows only
-what that assistant can reach. PDF text extraction and visual page rendering
-ship in the base package, and the library separates images from documents.
+1. key pasted into the panel;
+2. operating-system keyring entry from `ifc-console keys set <provider>`;
+3. provider environment variable.
 
-The paperclip in the composer is different: it adds a file only to the next
-message without changing standing access or adding it to the shared library.
-The camera button adds the current 3D view as the same kind of turn-only visual
-evidence. The selection chip reports whether tools will receive the whole model
-or the elements currently selected in the viewer.
+A pasted key stays in memory unless you explicitly save it to the system
+credential store. Stored and environment keys are never exposed to browser
+JavaScript. `ifc-console keys list` and `ifc-console keys delete <provider>`
+manage saved entries.
 
-Element references in answers are live. Any IFC GlobalId an assistant writes
-renders as a chip: docked beside the viewer, clicking it selects and frames
-that element in 3D; on the standalone chat page it copies the id. An answer
-that names elements can also show them.
-
-Agents start each run already oriented. The composed prompt carries a session
-context section (the open model, the mode, and the project's saved skills), so
-the first round is never spent listing what the host already knows, and every
-panel message that is sent while elements are selected in the 3D viewer
-carries those GlobalIds along, so "this wall" resolves without a
-get_viewer_selection round. The tools stay available for anything richer.
-
-Use `ifc-console agents files <paths>`, copy supported files into
-`.ifc-console/agents/references/`, or use `/agent files` to list or refresh the
-local references. `/agent` in the terminal picks an assistant, `/agent
-measurement` opens one directly, and `/agent new` starts setup. When local
-history is enabled, agent threads are stored as bounded, atomic records under
-`.ifc-console/agents/threads/`, allowing the selected conversation to resume
-after the console restarts. Switching provider, model, standing instructions,
-or content access starts a compatible fresh context instead of loading history
-created under different permissions.
-
-## Credentials and model data
-
-A key is found in this order: pasted in the panel, stored in the system
-keyring (`ifc-console keys set openai`), or read from the provider's
-environment variable. Keyring support ships with the base package. Select
-**Save in the operating-system credential store** to store a pasted key
-securely from the panel. Stored keys never enter browser or project storage;
-`ifc-console keys list` and `keys delete` manage them. Without that explicit
-choice, a pasted key is held in console memory only until `/chat off` or exit.
-
-The model editor always shows the key field and names the active source. A
-stored or environment key cannot be revealed to browser JavaScript; the Show
-control reveals only a replacement currently typed into the field. Durable
-secrets use the operating-system credential store under service
-`ifc-console`, with the provider id as the account name. On Windows this is
-Credential Manager, on macOS Keychain, and on Linux Secret Service. The
-console home `keys.json` contains only provider names so the keyring can be
-listed; it never contains secret values.
-
-The browser never contacts the provider directly. ifc-console sends the
-provider:
-
-- your messages;
-- the chat system instructions;
-- tool results used to answer, which may contain IFC model data.
-
-Use a local provider or keep the chat panel disabled for confidential models
-that must not leave the machine.
+The browser talks only to the local console. The console sends the selected
+provider your messages, system instructions, image inputs, and tool results,
+which may contain IFC or project data. Use a local provider or leave chat off
+when that data must not leave the machine.
 
 ## Tools and safety
 
-With tools enabled, the assistant can query elements, inspect properties,
-validate models, calculate quantities, search the knowledge index, and use any
-other operation permitted by the current session.
+Tool access follows the current session policy. Two controls are independent:
 
-Two independent controls sit in the composer, because they answer two
-different questions:
+| mode | Approval | Auto |
+| ---- | -------- | ---- |
+| Ask | read-only; pauses before protected calls | read-only; runs permitted calls without pausing |
+| Edit | may change memory; pauses before protected calls | may change memory without pausing |
 
-| | **Approval** | **Auto** |
-| --- | --- | --- |
-| **Ask** | Read-only. Stops before running code or writing an artifact. | Read-only. Runs its tools and code without stopping. |
-| **Edit** | May change the model in memory. Stops before every protected call. | May change the model in memory without stopping. |
+Entering Edit or Auto requires confirmation. Approval cards show the operation,
+capabilities, and arguments. Denial returns a tool result the model may handle.
 
-Neither of them lets an assistant write the IFC file. Every change lives in
-memory until **you** press **Save** in the composer, which appears only while
-there is something unsaved. `/save` does the same from the message box.
+Neither control lets the assistant write the IFC file. Changes remain in
+memory until you press **Save** or run `/save`. AI-generated property proposals
+remain revision-bound ChangeSet previews until host code approves and commits
+them. Values and per-property provenance use the reserved `IfcConsole_AI_`
+namespace.
 
-Entering edit mode, and turning autonomy to auto, are each confirmed
-explicitly.
+Every operation appears in the transcript with its arguments, result, and
+error hint. Audit records include provider and model metadata, never the key.
+Turn `chat.tools` off for conversation without IFC tools.
 
-While autonomy is **Approval**, a protected call pauses the run and puts a card
-in the transcript naming the tool, the capabilities it needs, and the arguments
-the model chose. **Approve** lets it through; **Deny** returns a refusal the
-model can work around, and the run continues either way. Reading the model is
-never held up for a decision: only generated code, artifact writes, and model
-writes are.
+## Main controls
 
-The same controls apply as with MCP:
+- Enter sends; Shift+Enter adds a line; Stop cancels the current response.
+- New chat starts a fresh context. Export downloads the conversation as Markdown.
+- GlobalIds in answers select and frame the corresponding viewer element.
+- `/agent`, `/model`, `/content`, `/tools`, `/pipeline`, `/new`, `/export`,
+  `/ask`, and `/edit` are available at the start of a message.
+- `control_viewer` lets assistants focus, select, isolate, section, measure,
+  and capture the same viewport the user sees.
+- Local history stores bounded browser transcripts and agent threads under the
+  project. Switching model, provider, instructions, or content access starts a
+  compatible fresh context.
+- **Delete all** removes conversation history, but keeps credentials and project
+  references.
 
-- `ask` mode blocks model changes;
-- each tool call appears where it ran, between the sentence that led to it and
-  the sentence that follows, and opens to show the arguments the model chose
-  and what the console returned;
-- a failed call opens itself and prints the console's own message and hint;
-- every call is audited with provider and model metadata, never the key.
-
-The measurement agent may create a revision-bound ChangeSet preview in
-`IfcConsole_AI_Measurements`. The name permanently marks committed values as
-AI-assisted. A preview changes neither the live model nor the IFC
-file. Approval and commit remain explicit SDK/CLI host actions.
-
-Turn `chat.tools` off when you want ordinary conversation without model tools.
-
-## Panel controls
-
-The sidebar toggle opens assistants and conversations. One **Agent workspace**
-control in the header and one matching item at the bottom of the sidebar open
-the same configuration surface. Closing it returns to the unchanged chat.
-
-- Enter sends; Shift+Enter adds a line.
-- Escape closes whatever is on top, then stops a running answer.
-- **Stop** cancels the current provider response.
-- **New chat** archives the current conversation when history is on and always
-  starts with a new context.
-- The sidebar reopens or deletes previous local chats, grouped by recency.
-  A row's delete control arms on the first click and acts on the second, so a
-  conversation or a custom assistant is never lost to one stray click beside
-  the control that opens it. Escape, or clicking anything else, cancels it.
-- **Export** downloads the selected conversation as Markdown.
-- **Content > Add files** uploads and indexes shared project references.
-- **+ > Attach a file** attaches content only to the next message without
-  granting persistent access. The chip appears while the file is still being
-  indexed and send waits for it, so a slow PDF cannot be sent half-attached.
-- **New assistant** and **Edit agent** keep setup inside Agent workspace.
-  Adaptive, evidence-first, and fast-scan strategies can be combined with
-  explicit round and tool-call budgets under **Advanced run controls**.
-- **Standing instructions**, under an agent's Instructions detail, are saved
-  per assistant and augment, but cannot replace, its safety and approval rules.
-- The bottom composer row selects the AI model, the IFC model when several
-  are open, and Ask/Edit mode. Everything that belongs to one message sits
-  behind the **+** control: attach a file, attach the current 3D view, mention
-  project content, or frame the 3D selection.
-- Type **@** in the message to name a project document. Accepting a suggestion
-  both writes the name into the prompt and attaches the file to that message.
-- The assistant can drive the 3D view as well as read it: isolate the elements
-  it is talking about, put the camera on a named view, measure an element's
-  size, and cast a clearance laser along each axis from a point or an element.
-  The same three measurements are in **View tools > Measure**, so a number in
-  an answer can be checked by hand without leaving the model.
-  Every result it produces appears in the viewer's own measurement list, so the
-  number in the answer is the number on screen.
-- Type **/** at the start of a message for panel commands: `/agent`, `/model`,
-  `/content`, `/tools`, `/pipeline`, `/new`, `/export`, `/ask`, `/edit`.
-- Selecting elements in the 3D view adds them to the composer as a context
-  chip beside any attached files. Click the chip's name to frame them again,
-  or its close control to clear the selection. Nothing is shown when nothing
-  is selected: the whole model is always available to the tools.
-- **Keep conversation history locally** controls browser transcript storage and
-  durable project-local agent context. Changing it starts a fresh conversation.
-- **Delete all** in **App** asks for confirmation, then cancels any active
-  panel run and removes every browser transcript and project-local assistant
-  thread, including orphaned panel threads. Provider credentials and project
-  reference files are not conversation history and are left alone.
-- Answers show their tool calls in place, token counts, latency, and copy
-  controls. A turn is marked by one icon rather than a repeated name and role
-  word; the assistant's name is on the mark's tooltip and accessible name.
-
-The active assistant stays in the header; model, IFC file, selection context,
-and safety mode stay beside the composer. Everything else about the assistant
-is in Agent workspace. While a run is working, one line in the message says
-whether it is finding elements, reading documents, measuring, checking, or
-preparing a proposal.
-
-Browser history is scoped by an opaque project identifier, the open model, and
-its fingerprint. Switching projects or models therefore starts a separate
-conversation list. Changing the provider, AI model, base URL, tool access,
-standing instructions, or standing content selection also forks a fresh
-context instead of silently reusing messages created under the old
-configuration.
+For viewer navigation and measurement controls, see [3D viewer](viewer.md).
 
 ## Python
 
@@ -296,11 +146,10 @@ with Workbench.open("tower.ifc") as wb:
         model="YOUR_MODEL_ID",
     )
     print(answer["text"])
-    print(answer["tool_calls"])
 ```
 
-Pass `on_event=print` to stream events. Without `api_key=`, the provider key
-comes from the environment. See [Python SDK](sdk.md).
+Pass `on_event=print` to stream events. Without `api_key=`, the key comes from
+the environment or configured credential source. See [Python SDK](sdk.md).
 
 ## Settings
 
@@ -310,9 +159,9 @@ comes from the environment. See [Python SDK](sdk.md).
 | `chat.provider` | `openai` | initial provider |
 | `chat.model` | empty | initial model ID |
 | `chat.base_url` | empty | provider URL override |
-| `chat.tools` | `true` | expose permitted ifc-console tools |
+| `chat.tools` | `true` | expose permitted tools |
 | `chat.max_tool_rounds` | `8` | maximum tool rounds per answer |
 | `chat.local_only` | `false` | allow only local provider URLs |
 | `chat.timeout_s` | `300` | provider response timeout |
 
-Use `ifc-console --chat` to enable the panel at startup.
+Use `ifc-console --chat` to open the panel at startup.

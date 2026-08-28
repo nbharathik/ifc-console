@@ -752,17 +752,17 @@ def test_the_pick_passes_hide_every_marker_the_viewer_drew(script: str) -> None:
     assert "measureGroup.visible = measureWasVisible;" in pick
     # the depth probe hides the same things; both readbacks share the setup so
     # the two can never drift apart again
-    begin = script.split("function beginDepthProbe(", 1)[1].split(chr(10) + "}", 1)[0]
+    begin = script.split("function beginSceneProbe(", 1)[1].split(chr(10) + "}", 1)[0]
     assert "snapWasVisible: snapGroup.visible," in begin
     assert "snapGroup.visible = false;" in begin
     assert "measureGroup.visible = false;" in begin
-    end = script.split("function endDepthProbe(", 1)[1].split(chr(10) + "}", 1)[0]
+    end = script.split("function endSceneProbe(", 1)[1].split(chr(10) + "}", 1)[0]
     assert "snapGroup.visible = state.snapWasVisible;" in end
     assert "measureGroup.visible = state.measureWasVisible;" in end
     for reader in ("function surfacePointAt(", "async function surfacePointAsync("):
         body = script.split(reader, 1)[1].split(chr(10) + "}", 1)[0]
         assert "beginDepthProbe(clientX, clientY)" in body, reader
-        assert "endDepthProbe(state);" in body, reader
+        assert "endSceneProbe(state);" in body, reader
 
 
 def test_a_snap_is_shown_before_it_is_committed_to(script: str) -> None:
@@ -819,7 +819,7 @@ def test_the_hover_probe_does_not_block_and_click_has_an_exact_fallback(script: 
     assert "renderer.readRenderTargetPixelsAsync(pickTarget, 0, 0, 1, 1, probeBuffer)" in probe
     # the scene goes back before the wait, or the next frame draws under the
     # probe's override material
-    assert probe.index("endDepthProbe(state);") < probe.index("await read;")
+    assert probe.index("endSceneProbe(state);") < probe.index("await read;")
     # an answer measured off a camera that has since moved is not an answer
     assert "if (state.serial !== cameraSerial) return null;" in probe
     assert "controls.addEventListener(\"change\", () => { cameraSerial++; });" in script
@@ -1070,16 +1070,6 @@ def test_section_slider_shows_the_real_coordinated_cut_plane(
     )[0]
     assert "MODEL_OF_SCENE[axis]" in row
     assert 'class="tool-note section-note"' in html
-
-
-def test_nearby_elements_are_found_without_scanning_the_model(script: str) -> None:
-    """Snapping asks what is near the cursor on every hover frame."""
-    grid = script.split("function buildElementGrid()", 1)[1].split(chr(10) + "/**", 1)[0]
-    assert "GRID_CELL_BUDGET" in grid
-    # a site or a roof slab reaches across most of the grid
-    assert "oversized.push(id)" in grid
-    assert "buildElementGrid();" in script
-    assert "elementGrid = null;" in script
 
 
 def test_geometry_measurements_are_taken_while_the_mesh_is_still_there(
@@ -1667,7 +1657,7 @@ def test_upward_scroll_owns_the_viewport_while_output_keeps_rendering(
 
 
 def test_tool_results_render_lazily_and_progress_is_throttled(chat_js: str) -> None:
-    tool = chat_js.split("function toolNode(block)", 1)[1].split(
+    tool = chat_js.split("function toolNode()", 1)[1].split(
         "function paintBlock", 1
     )[0]
     assert 'details.addEventListener("toggle"' in tool

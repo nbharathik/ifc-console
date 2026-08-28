@@ -13,6 +13,7 @@ import yaml
 from pydantic import ValidationError
 
 from ifc_console.app import AppCore
+from ifc_console.automation.files import describe_source
 from ifc_console.core.results import ToolError
 from ifc_console.core.workflows import WorkflowState, WorkflowStepState
 from ifc_console.policy.modes import Mode
@@ -190,6 +191,64 @@ async def test_serialized_plan_rejects_a_tampered_identity(
 
         with pytest.raises(ValidationError, match="immutable content"):
             type(plan).model_validate(payload)
+    finally:
+        await core.ashutdown()
+
+
+async def test_submit_revalidates_a_plan_modified_with_model_copy(
+    tmp_path: Path, minimal_ifc4_path: Path
+) -> None:
+    _model(tmp_path, minimal_ifc4_path)
+    manifest = tmp_path / "workflow.json"
+    manifest.write_text(json.dumps(_manifest()), encoding="utf-8")
+    core = _core(tmp_path)
+    try:
+        plan = await core.workflows.plan_manifest(manifest)
+        step = plan.steps[1]
+        operation = step.batch_spec.operation.model_copy(update={"query": "IfcDoor"})
+        batch = step.batch_spec.model_copy(update={"operation": operation})
+        changed = step.model_copy(update={"batch_spec": batch})
+        tampered = plan.model_copy(update={"steps": (plan.steps[0], changed)})
+
+        with pytest.raises(ToolError) as excinfo:
+            await core.workflows.submit_plan(tampered)
+
+        assert excinfo.value.code == "INVALID_INPUT"
+        assert core.workflows.list() == []
+    finally:
+        await core.ashutdown()
+
+
+async def test_submit_rejects_rehashed_sources_outside_declared_input_groups(
+    tmp_path: Path, minimal_ifc4_path: Path
+) -> None:
+    _model(tmp_path, minimal_ifc4_path)
+    manifest = tmp_path / "workflow.json"
+    manifest.write_text(json.dumps(_manifest()), encoding="utf-8")
+    core = _core(tmp_path)
+    try:
+        plan = await core.workflows.plan_manifest(manifest)
+        unmatched = tmp_path / "unmatched" / "other.ifc"
+        unmatched.parent.mkdir()
+        shutil.copy2(minimal_ifc4_path, unmatched)
+        step = plan.steps[0]
+        batch = step.batch_spec.model_copy(
+            update={"inputs": (describe_source(unmatched),)}
+        )
+        changed = step.model_copy(update={"batch_spec": batch})
+        steps = (changed, plan.steps[1])
+        altered = plan.model_copy(
+            update={
+                "steps": steps,
+                "plan_id": type(plan).compute_plan_id(plan.spec, steps),
+            }
+        )
+
+        with pytest.raises(ToolError) as excinfo:
+            await core.workflows.submit_plan(altered)
+
+        assert excinfo.value.code == "INVALID_INPUT"
+        assert core.workflows.list() == []
     finally:
         await core.ashutdown()
 

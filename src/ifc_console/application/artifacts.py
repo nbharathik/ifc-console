@@ -8,7 +8,7 @@ import os
 import secrets
 import time
 from collections.abc import Iterable, Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from datetime import datetime, timezone
 from pathlib import Path
 from threading import RLock
@@ -31,6 +31,7 @@ class ArtifactService:
         self.content_dir.mkdir(parents=True, exist_ok=True)
         self.metadata_dir.mkdir(parents=True, exist_ok=True)
         self._lock = RLock()
+        self._recover_deletions()
 
     def put_text(
         self,
@@ -261,15 +262,42 @@ class ArtifactService:
             yield
 
     def _delete_unlocked(self, ref: ArtifactRef) -> None:
-        self._metadata_path(ref.sha256).unlink()
+        metadata = self._metadata_path(ref.sha256)
+        tombstone = self._deletion_path(ref.sha256)
         try:
+            os.replace(metadata, tombstone)
             self._content_path(ref.sha256).unlink()
         except OSError as exc:
+            if tombstone.exists():
+                with suppress(OSError):
+                    os.replace(tombstone, metadata)
             raise ToolError(
                 "ARTIFACT_GC_FAILED",
-                f"metadata was removed but content deletion failed for {ref.artifact_id!r}: {exc}",
-                "Retry garbage collection to remove the orphaned content.",
+                f"artifact deletion failed for {ref.artifact_id!r}: {exc}",
+                "Retry garbage collection; the artifact remains recoverable.",
             ) from exc
+        with suppress(OSError):
+            tombstone.unlink()
+
+    def _recover_deletions(self) -> None:
+        with self.locked():
+            for tombstone in self.metadata_dir.glob(".*.deleting"):
+                digest = tombstone.name.removeprefix(".").removesuffix(".deleting")
+                if len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest):
+                    continue
+                metadata = self._metadata_path(digest)
+                content = self._content_path(digest)
+                try:
+                    if metadata.exists() or not content.exists():
+                        tombstone.unlink()
+                    else:
+                        os.replace(tombstone, metadata)
+                except OSError as exc:
+                    raise ToolError(
+                        "ARTIFACT_STORE_CORRUPT",
+                        f"could not recover interrupted artifact deletion {digest}: {exc}",
+                        "Repair permissions on the artifact store and restart IFC Console.",
+                    ) from exc
 
     def _merge_references(
         self, existing: ArtifactRef, references: Iterable[str]
@@ -300,6 +328,9 @@ class ArtifactService:
 
     def _metadata_path(self, digest: str) -> Path:
         return self.metadata_dir / f"{digest}.json"
+
+    def _deletion_path(self, digest: str) -> Path:
+        return self.metadata_dir / f".{digest}.deleting"
 
     @staticmethod
     def _make_ref(

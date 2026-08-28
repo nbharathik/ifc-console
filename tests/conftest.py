@@ -83,4 +83,8 @@ def core(home: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     from ifc_console.settings import SettingsStore
 
     store = SettingsStore(home=home, project_dir=tmp_path, env={})
-    return AppCore(store)
+    app = AppCore(store)
+    try:
+        yield app
+    finally:
+        app.shutdown()

@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from ifc_console import LocalRuntime
+from ifc_console.agents import files as agent_files
 from ifc_console.agents.files import AgentReferenceStore
 from ifc_console.core.results import ToolError
 from ifc_console.knowledge.project import ProjectKnowledge
@@ -54,6 +55,37 @@ def test_sync_indexes_files_copied_into_the_folder_by_hand(tmp_path: Path) -> No
         knowledge.close()
 
 
+def test_sync_prunes_deleted_managed_references_including_the_last_one(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    references = AgentReferenceStore(project)
+    first = references.save_upload("obsolete.txt", b"obsoletezircon convention")
+    second = references.save_upload("retained.txt", b"retainedquartz convention")
+    knowledge = ProjectKnowledge(project)
+    try:
+        references.sync(knowledge)
+        assert len(knowledge.sources()) == 2
+
+        first.unlink()
+        report = references.sync(knowledge)
+        assert report["changed"] is True
+        assert report["documents"] == 1
+        assert [row["name"] for row in report["files"]] == ["retained.txt"]
+        assert knowledge.search("obsoletezircon") == []
+        assert knowledge.search("retainedquartz")
+
+        second.unlink()
+        report = references.sync(knowledge)
+        assert report["changed"] is True
+        assert report["documents"] == 0
+        assert report["files"] == []
+        assert knowledge.sources() == []
+        assert knowledge.search("retainedquartz") == []
+        assert knowledge.ready is False
+    finally:
+        knowledge.close()
+
+
 @pytest.mark.asyncio
 async def test_indexed_reference_image_is_available_as_sdk_vision(tmp_path: Path) -> None:
     project = tmp_path / "project"
@@ -66,9 +98,7 @@ async def test_indexed_reference_image_is_available_as_sdk_vision(tmp_path: Path
     finally:
         knowledge.close()
 
-    async with await LocalRuntime.open(
-        home=tmp_path / "home", project_dir=project
-    ) as runtime:
+    async with await LocalRuntime.open(home=tmp_path / "home", project_dir=project) as runtime:
         documents = await runtime.workbench.project_documents(media="image")
         assert documents[0]["path"].endswith("detail.png")
         result = await runtime.workbench.project_reference_image(documents[0]["path"])
@@ -94,13 +124,31 @@ def test_only_indexed_managed_images_can_ride_with_a_prompt(tmp_path: Path) -> N
     assert prompt_images[0].media_type == "image/png"
 
 
+def test_prompt_images_obey_a_total_inline_byte_budget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    references = AgentReferenceStore(project)
+    first = references.save_upload("first.png", b"\x89PNG\r\n\x1a\nfirst")
+    second = references.save_upload("second.png", b"\x89PNG\r\n\x1a\nsecond")
+    knowledge = ProjectKnowledge(project)
+    try:
+        knowledge.ingest([first, second])
+        paths = [path.relative_to(project).as_posix() for path in (first, second)]
+        monkeypatch.setattr(agent_files, "MAX_PROMPT_IMAGE_BYTES", 20)
+        images = references.prompt_images(paths, knowledge.sources())
+    finally:
+        knowledge.close()
+
+    assert len(images) == 1
+
+
 def test_turn_upload_is_hidden_from_library_but_can_ride_its_message(tmp_path: Path) -> None:
     project = tmp_path / "project"
     project.mkdir()
     references = AgentReferenceStore(project)
-    image = references.save_turn_upload(
-        "question.png", b"\x89PNG\r\n\x1a\nturn pixels"
-    )
+    image = references.save_turn_upload("question.png", b"\x89PNG\r\n\x1a\nturn pixels")
     knowledge = ProjectKnowledge(project)
     try:
         knowledge.ingest([image])

@@ -9,6 +9,7 @@ rejected: grid-aligned BIM solids overlap while their triangles only touch.
 
 from __future__ import annotations
 
+import heapq
 from typing import Any
 
 import numpy as np
@@ -26,27 +27,39 @@ PRECISIONS = ("sampled", "fast", "exact")
 MAX_ELEMENTS = 5000
 MAX_RESULTS = 1000
 
-# Rows of the broad-phase pair matrix built at a time.
-_BROAD_PHASE_ROWS = 256
+# Work limits keep peak memory independent of the total pair count.
+_BROAD_PHASE_COLUMNS = 1024
+_INSIDE_POINT_ROWS = 64
+_INSIDE_TRIANGLE_ROWS = 512
 
 _EPS = 1e-9
 
 
-def _candidates(lo_a, hi_a, lo_b, hi_b, mode: str, tolerance: float):
-    """Broad phase: index pairs whose boxes overlap, or sit within tolerance."""
+def _candidates(
+    lo_a,
+    hi_a,
+    lo_b,
+    hi_b,
+    mode: str,
+    tolerance: float,
+    *,
+    upper_triangle: bool = False,
+):
+    """Yield box candidates in deterministic row-major order."""
     # gap > 0 means separated on that axis; gap < 0 means they interpenetrate.
-    # Built in row blocks: the full (n_a, n_b, 3) temporary is ~1.8 GB at the
-    # 5000-element cap, while the result itself is only (n_a, n_b).
-    worst = np.empty((len(lo_a), len(lo_b)))
-    for start in range(0, len(lo_a), _BROAD_PHASE_ROWS):
-        stop = min(start + _BROAD_PHASE_ROWS, len(lo_a))
-        block = np.maximum(
-            lo_a[start:stop, None, :] - hi_b[None, :, :],
-            lo_b[None, :, :] - hi_a[start:stop, None, :],
-        )
-        worst[start:stop] = block.max(axis=2)
-    hits = worst < -tolerance if mode == "overlap" else (worst >= -tolerance) & (worst <= tolerance)
-    return np.argwhere(hits), worst
+    for i in range(len(lo_a)):
+        first = i + 1 if upper_triangle else 0
+        for start in range(first, len(lo_b), _BROAD_PHASE_COLUMNS):
+            stop = min(start + _BROAD_PHASE_COLUMNS, len(lo_b))
+            gap = np.maximum(lo_a[i] - hi_b[start:stop], lo_b[start:stop] - hi_a[i])
+            worst = gap.max(axis=1)
+            hits = (
+                worst < -tolerance
+                if mode == "overlap"
+                else (worst >= -tolerance) & (worst <= tolerance)
+            )
+            for local_j in np.flatnonzero(hits):
+                yield i, start + int(local_j), float(worst[local_j])
 
 
 def _overlap_box(lo_a, hi_a, lo_b, hi_b):
@@ -64,39 +77,47 @@ def _inside(points: np.ndarray, tris: np.ndarray) -> np.ndarray:
     if not len(tris) or not len(points):
         return np.zeros(len(points), dtype=bool)
 
+    counts = np.zeros(len(points), dtype=np.int64)
     tri_lo = tris.min(axis=1)
     tri_hi = tris.max(axis=1)
-    # Only triangles spanning the point in Y and Z, and not fully behind it.
-    mask = (
-        (points[:, None, 1] >= tri_lo[None, :, 1])
-        & (points[:, None, 1] <= tri_hi[None, :, 1])
-        & (points[:, None, 2] >= tri_lo[None, :, 2])
-        & (points[:, None, 2] <= tri_hi[None, :, 2])
-        & (points[:, None, 0] <= tri_hi[None, :, 0])
-    )
-    pi, ti = np.nonzero(mask)
-    counts = np.zeros(len(points), dtype=np.int64)
+    for point_start in range(0, len(points), _INSIDE_POINT_ROWS):
+        point_stop = min(point_start + _INSIDE_POINT_ROWS, len(points))
+        point_block = points[point_start:point_stop]
+        block_counts = np.zeros(len(point_block), dtype=np.int64)
+        for tri_start in range(0, len(tris), _INSIDE_TRIANGLE_ROWS):
+            tri_stop = min(tri_start + _INSIDE_TRIANGLE_ROWS, len(tris))
+            lo = tri_lo[tri_start:tri_stop]
+            hi = tri_hi[tri_start:tri_stop]
+            # Only triangles spanning the point in Y and Z, and not fully behind it.
+            mask = (
+                (point_block[:, None, 1] >= lo[None, :, 1])
+                & (point_block[:, None, 1] <= hi[None, :, 1])
+                & (point_block[:, None, 2] >= lo[None, :, 2])
+                & (point_block[:, None, 2] <= hi[None, :, 2])
+                & (point_block[:, None, 0] <= hi[None, :, 0])
+            )
+            point_indices, triangle_indices = np.nonzero(mask)
+            if not len(point_indices):
+                continue
 
-    step = 200_000
-    for start in range(0, len(pi), step):
-        pidx = pi[start : start + step]
-        tidx = ti[start : start + step]
-        p = points[pidx]
-        a = tris[tidx, 0, :]
-        e1 = tris[tidx, 1, :] - a
-        e2 = tris[tidx, 2, :] - a
-        # h = d x e2 with d = (1, 0, 0)
-        h = np.stack([np.zeros(len(e2)), -e2[:, 2], e2[:, 1]], axis=1)
-        det = np.einsum("ij,ij->i", e1, h)
-        ok = np.abs(det) > _EPS
-        inv = np.where(ok, 1.0 / np.where(ok, det, 1.0), 0.0)
-        sv = p - a
-        u = inv * np.einsum("ij,ij->i", sv, h)
-        q = np.cross(sv, e1)
-        v = inv * q[:, 0]
-        t_hit = inv * np.einsum("ij,ij->i", e2, q)
-        hit = ok & (u >= 0.0) & (u <= 1.0) & (v >= 0.0) & (u + v <= 1.0) & (t_hit > _EPS)
-        np.add.at(counts, pidx[hit], 1)
+            p = point_block[point_indices]
+            selected_tris = tris[tri_start + triangle_indices]
+            a = selected_tris[:, 0, :]
+            e1 = selected_tris[:, 1, :] - a
+            e2 = selected_tris[:, 2, :] - a
+            # h = d x e2 with d = (1, 0, 0)
+            h = np.stack([np.zeros(len(e2)), -e2[:, 2], e2[:, 1]], axis=1)
+            det = np.einsum("ij,ij->i", e1, h)
+            ok = np.abs(det) > _EPS
+            inv = np.where(ok, 1.0 / np.where(ok, det, 1.0), 0.0)
+            sv = p - a
+            u = inv * np.einsum("ij,ij->i", sv, h)
+            q = np.cross(sv, e1)
+            v = inv * q[:, 0]
+            t_hit = inv * np.einsum("ij,ij->i", e2, q)
+            hit = ok & (u >= 0.0) & (u <= 1.0) & (v >= 0.0) & (u + v <= 1.0) & (t_hit > _EPS)
+            block_counts += np.bincount(point_indices[hit], minlength=len(point_block))
+        counts[point_start:point_stop] = block_counts
     return (counts % 2) == 1
 
 
@@ -252,13 +273,23 @@ def compare_sets(
 
     lo_a, hi_a = _boxes(meshes_a, ids_a)
     lo_b, hi_b = _boxes(meshes_b, ids_b)
-    pairs, worst = _candidates(lo_a, hi_a, lo_b, hi_b, mode, tolerance)
-
-    seen: set[tuple[int, int]] = set()
-    clashes: list[dict[str, Any]] = []
+    index_a = {element_id: i for i, element_id in enumerate(ids_a)}
+    index_b = {element_id: i for i, element_id in enumerate(ids_b)}
+    retained: list[tuple[float, int, dict[str, Any]]] = []
+    counts: dict[str, int] = {}
     checked = 0
+    total = 0
 
-    for i, j in pairs:
+    candidates = _candidates(
+        lo_a,
+        hi_a,
+        lo_b,
+        hi_b,
+        mode,
+        tolerance,
+        upper_triangle=self_check and same_model,
+    )
+    for i, j, worst in candidates:
         id_a = ids_a[i]
         id_b = ids_b[j]
         # Express ids only identify an element within its own file: two
@@ -267,10 +298,21 @@ def compare_sets(
         if same_model:
             if id_a == id_b:
                 continue
-            key = (id_a, id_b) if id_a < id_b else (id_b, id_a)
-            if key in seen:
-                continue
-            seen.add(key)
+            reverse_i = index_a.get(id_b)
+            reverse_j = index_b.get(id_a)
+            if reverse_i is not None and reverse_j is not None and (reverse_i, reverse_j) < (i, j):
+                reverse_gap = np.maximum(
+                    lo_a[reverse_i] - hi_b[reverse_j],
+                    lo_b[reverse_j] - hi_a[reverse_i],
+                )
+                reverse_worst = float(reverse_gap.max())
+                reverse_hit = (
+                    reverse_worst < -tolerance
+                    if mode == "overlap"
+                    else -tolerance <= reverse_worst <= tolerance
+                )
+                if reverse_hit:
+                    continue
         checked += 1
 
         low, high = _overlap_box(lo_a[i], hi_a[i], lo_b[j], hi_b[j])
@@ -282,50 +324,56 @@ def compare_sets(
                 real, volume = _solid_overlap(tris_a, tris_b, low, high, samples)
                 if not real:
                     continue
-            depth = float(np.min(high - low))
-            point = ((low + high) / 2.0).tolist()
-            entry = {
-                "type": "overlap",
-                "depth": round(depth, 6),
-                "point": [round(v, 6) for v in point],
-                "overlap_box": {
-                    "min": [round(v, 6) for v in low.tolist()],
-                    "max": [round(v, 6) for v in high.tolist()],
-                },
-            }
-            if volume is not None:
-                entry["volume"] = round(volume, 6)
+            depth = round(float(np.min(high - low)), 6)
+            rounded_volume = round(volume, 6) if volume is not None else None
+            sort_key = -(rounded_volume or depth)
         else:
-            gap = float(max(worst[i, j], 0.0))
-            centre_a = (lo_a[i] + hi_a[i]) / 2.0
-            centre_b = (lo_b[j] + hi_b[j]) / 2.0
-            entry = {
-                "type": "clearance",
-                "gap": round(gap, 6),
-                "point": [round(v, 6) for v in ((centre_a + centre_b) / 2.0).tolist()],
-                # clearance measures box to box; precision='exact' has no effect
-                "basis": "bounding_box",
-            }
+            gap = round(max(worst, 0.0), 6)
+            sort_key = gap
 
-        entry["a"] = by_id_a[id_a]
-        entry["b"] = by_id_b[id_b]
-        clashes.append(entry)
-
-    if mode == "overlap":
-        clashes.sort(key=lambda c: -(c.get("volume") or c["depth"]))
-    else:
-        clashes.sort(key=lambda c: c["gap"])
-
-    counts: dict[str, int] = {}
-    for c in clashes:
-        pair = " / ".join(sorted((c["a"]["class"], c["b"]["class"])))
+        pair = " / ".join(sorted((by_id_a[id_a]["class"], by_id_b[id_b]["class"])))
         counts[pair] = counts.get(pair, 0) + 1
+        ordinal = total
+        total += 1
+
+        # The transformed rank makes the worst retained result the heap root.
+        rank = (-sort_key, -ordinal)
+        if max_results > 0 and (len(retained) < max_results or rank > retained[0][:2]):
+            if mode == "overlap":
+                entry = {
+                    "type": "overlap",
+                    "depth": depth,
+                    "point": [round(v, 6) for v in ((low + high) / 2.0).tolist()],
+                    "overlap_box": {
+                        "min": [round(v, 6) for v in low.tolist()],
+                        "max": [round(v, 6) for v in high.tolist()],
+                    },
+                }
+                if rounded_volume is not None:
+                    entry["volume"] = rounded_volume
+            else:
+                centre_a = (lo_a[i] + hi_a[i]) / 2.0
+                centre_b = (lo_b[j] + hi_b[j]) / 2.0
+                entry = {
+                    "type": "clearance",
+                    "gap": gap,
+                    "point": [round(v, 6) for v in ((centre_a + centre_b) / 2.0).tolist()],
+                    # clearance measures box to box; precision='exact' has no effect
+                    "basis": "bounding_box",
+                }
+            entry["a"] = by_id_a[id_a]
+            entry["b"] = by_id_b[id_b]
+            item = (*rank, entry)
+            if len(retained) < max_results:
+                heapq.heappush(retained, item)
+            else:
+                heapq.heapreplace(retained, item)
+
     by_class_pair = [
         {"pair": k, "count": v} for k, v in sorted(counts.items(), key=lambda kv: -kv[1])
     ]
 
-    total = len(clashes)
-    kept = clashes[:max_results]
+    kept = [item[2] for item in sorted(retained, key=lambda item: (-item[0], -item[1]))]
     global_ids: list[str] = []
     for c in kept:
         for side in ("a", "b"):
@@ -345,7 +393,9 @@ def compare_sets(
             else "axis_aligned_bounding_box"
         ),
         "approximate": True,
-        "sample_budget": samples if mode == "overlap" and effective_precision == "sampled" else None,
+        "sample_budget": samples
+        if mode == "overlap" and effective_precision == "sampled"
+        else None,
         "tolerance": tolerance,
         "set_a": {"selector": prep_a["selector"], "elements": len(ids_a)},
         "set_b": {

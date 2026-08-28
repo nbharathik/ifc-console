@@ -3947,7 +3947,7 @@ export function mountChat(root, options = {}) {
   // changes. This is what puts a tool card exactly where the model called it
   // rather than in a pile above the answer.
   function blockNode(block) {
-    if (block.kind === "tool") return toolNode(block);
+    if (block.kind === "tool") return toolNode();
     if (block.kind === "proposal") return proposalNode(block.proposal);
     if (block.kind === "approval") return approvalNode();
     if (block.kind === "reasoning") return reasoningNode();
@@ -4096,7 +4096,7 @@ export function mountChat(root, options = {}) {
     return details;
   }
 
-  function toolNode(block) {
+  function toolNode() {
     const details = document.createElement("details");
     details.className = "chat-tool-card";
     details.innerHTML = `

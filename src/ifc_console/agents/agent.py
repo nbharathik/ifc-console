@@ -350,6 +350,8 @@ class Agent:
         result = await self._run_once(
             guided, thread_id=thread_id, options=options, images=images
         )
+        usage = result.usage
+        tool_calls = list(result.tool_calls)
         for attempt in (0, 1):
             try:
                 data = _parse_structured(result.text, response_model)
@@ -362,11 +364,16 @@ class Agent:
                     f"That answer did not validate ({exc}). Answer again with "
                     "only the JSON object, nothing else."
                 )
-                result = await self._run_once(
+                retry = await self._run_once(
                     correction, thread_id=result.thread_id, options=options
                 )
+                usage = _add_usage(usage, retry.usage)
+                tool_calls.extend(retry.tool_calls)
+                result = retry
                 continue
-            return result.model_copy(update={"data": data})
+            return result.model_copy(
+                update={"data": data, "tool_calls": tuple(tool_calls), "usage": usage}
+            )
         raise AgentRunError("structured answer retry loop ended unexpectedly")
 
     async def _run_once(
@@ -446,7 +453,6 @@ class Agent:
         deadline = time.monotonic() + self.limits.timeout_s
         history = list(await self.thread_store.load(thread_id))
         history.append(AgentMessage(role="user", text=prompt, images=images))
-        await self.thread_store.save(thread_id, history)
         records: list[AgentToolCallRecord] = []
         answer_parts: list[str] = []
         # answer text that no saved assistant message carries yet; a stopped
@@ -457,6 +463,7 @@ class Agent:
         yield AgentEvent(type="run_started", run_id=run_id, thread_id=thread_id)
 
         try:
+            await self.thread_store.save(thread_id, history)
             for round_index in range(self.limits.max_tool_rounds):
                 round_text: list[str] = []
                 calls: list[dict[str, Any]] = []
@@ -873,7 +880,8 @@ class Agent:
             raise
         except (AgentRunError, TimeoutError) as exc:
             history = _sealed(history)
-            await self.thread_store.save(thread_id, history)
+            with contextlib.suppress(Exception):
+                await self.thread_store.save(thread_id, history)
             yield AgentEvent(
                 type="run_failed",
                 run_id=run_id,
@@ -882,7 +890,8 @@ class Agent:
             )
         except Exception as exc:
             history = _sealed(history)
-            await self.thread_store.save(thread_id, history)
+            with contextlib.suppress(Exception):
+                await self.thread_store.save(thread_id, history)
             yield AgentEvent(
                 type="run_failed",
                 run_id=run_id,

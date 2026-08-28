@@ -543,6 +543,21 @@ async def test_a_finished_run_only_denies_its_own_pending_approvals():
     assert (await asking_second).approved is True
 
 
+async def test_panel_lru_never_evicts_a_running_thread():
+    from ifc_console.agents.panel import _MAX_THREADS, AgentPanelState
+
+    state = AgentPanelState()
+    for index in range(_MAX_THREADS):
+        state.remember(f"thread-{index}", SimpleNamespace())
+    state.active_streams["thread-0"] = {asyncio.current_task()}
+
+    state.remember("new-thread", SimpleNamespace())
+
+    assert "thread-0" in state.threads
+    assert "thread-1" not in state.threads
+    assert "new-thread" in state.threads
+
+
 async def test_one_conversation_finishing_leaves_another_approval_waiting(panel_core):
     panel_core.agent_packs.register(ApprovalPack())
     outcome: dict[str, object] = {}
@@ -699,6 +714,42 @@ async def test_bulk_thread_clear_cancels_an_active_stream_before_unlinking(panel
 
     assert not worker.is_alive()
     assert not list(thread_dir.glob("*.json")), "a cancelled stream recreated its thread"
+
+
+async def test_content_access_change_cancels_runs_using_the_old_grant(panel_core):
+    started = threading.Event()
+    release = threading.Event()
+    panel_core.agent_packs.register(DelayedPack(started, release))
+    outcome: dict[str, object] = {}
+
+    with _client(panel_core) as client:
+        def send_delayed() -> None:
+            try:
+                outcome["response"] = client.post(
+                    "/api/agents/stream",
+                    headers=_auth(panel_core),
+                    json=_stream_body(agent="delayed"),
+                )
+            except BaseException as exc:
+                outcome["error"] = exc
+
+        worker = threading.Thread(target=send_delayed, daemon=True)
+        worker.start()
+        try:
+            assert started.wait(timeout=5), "the delayed provider did not start"
+            changed = client.post(
+                "/api/agents/content/access",
+                headers=_auth(panel_core),
+                json={"agent": "delayed", "mode": "selected", "paths": []},
+            )
+            assert changed.status_code == 200
+            assert changed.json()["cancelled_runs"] == 1
+            assert not panel_core.agent_panel.threads
+        finally:
+            release.set()
+            worker.join(timeout=5)
+
+    assert not worker.is_alive()
 
 
 async def test_individual_thread_delete_cannot_be_undone_by_an_active_stream(panel_core):
@@ -1066,6 +1117,16 @@ async def test_upload_is_gated_by_the_feature(panel_core):
     assert denied.status_code == 403
 
 
+async def test_upload_stream_is_bounded_without_content_length(panel_core, monkeypatch):
+    monkeypatch.setattr("ifc_console.agents.panel._MAX_UPLOAD_BYTES", 5)
+    response = _client(panel_core).post(
+        "/api/agents/upload?agent=uploader&name=notes.md",
+        headers=_auth(panel_core),
+        content=iter((b"123", b"456")),
+    )
+    assert response.status_code == 413
+
+
 async def test_turn_upload_is_indexed_but_hidden_and_denied_on_a_later_run(panel_core):
     client = _client(panel_core)
     response = client.post(
@@ -1270,9 +1331,9 @@ async def test_upload_rejects_unsupported_names(panel_core):
 async def test_skills_import_accepts_external_markdown(panel_core):
     client = _client(panel_core)
     body = (
-        "---\nname: sheet-pile-profile\ndescription: Measure a sheet pile\n"
-        "applies_to: IfcMember\n---\n\n1. analyze_element_geometry\n"
-    ).encode("utf-8")
+        b"---\nname: sheet-pile-profile\ndescription: Measure a sheet pile\n"
+        b"applies_to: IfcMember\n---\n\n1. analyze_element_geometry\n"
+    )
     response = client.post(
         "/api/agents/skills/import?name=Sheet Pile.md",
         headers=_auth(panel_core),

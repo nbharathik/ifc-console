@@ -1,108 +1,93 @@
 # Architecture
 
-Several interfaces share one operation core:
+All interfaces share one operation core:
 
 ```text
- SDK       Agent       CLI/TUI       MCP client       Browser
-  |          |            |              |               |
-  +----------+------------+--------------+---------------+
-                              |
-             OperationService + OperationRegistry
-             schemas, capabilities, envelopes, audit IDs
-                              |
-                         AppCore
-          policy, models, settings, backups, viewer state
-                    |                         |
-          model worker threads         durable services
-                                      jobs, batches,
-                                   workflows, transactions
-                                                |
-                                      restricted workers
+SDK       Agent       CLI/TUI       MCP       Browser
+ |          |            |           |           |
+ +----------+------------+-----------+-----------+
+                         |
+            OperationService + Registry
+              schemas, policy, envelopes
+                         |
+                      AppCore
+         model sessions, settings, audit, viewer state
+              |                       |
+       model worker threads     jobs and transactions
+                                      |
+                              restricted workers
 ```
 
-Built-in operations register once. The SDK and agents call them directly; MCP,
-the CLI, and browser tools are adapters over the same definitions and policy.
+`ifc-console` contains this complete Python runtime, including MCP, SDK,
+agents, chat, plugins, and workflows. `ifc-console-viewer` contains static
+browser assets only and is installed through `ifc-console[viewer]`.
 
-## Main decisions
+## Operation contract
 
-### One operation contract
+Built-in operations register once. Every interface receives the same schema,
+capability requirements, policy decision, `{ok, data/error, meta}` envelope,
+and correlation ID. Adapters do not reimplement IFC behavior.
 
-Every operation declares its schema and required capabilities. `ask` and `edit`
-are permission profiles over those capabilities. Results use the same
-`{ok, data/error, meta}` envelope on every interface.
+`ask` and `edit` are capability profiles. Mode changes, ChangeSet approval,
+commit, restore, and allowed paths remain host-controlled actions.
 
-One correlation ID follows a call into jobs, workers, artifacts, transactions,
-and audit events.
+## Model access
 
-### Serialized model access
-
-IfcOpenShell file objects are not thread-safe. Each resident model therefore
-has one worker thread, and every read or write is serialized through it.
-
-Exactly one model is active and writable. Attached models remain read-only and
-may be evicted when clean and over the workspace memory budget.
-
-### Separate workers for long or risky work
+IfcOpenShell file objects are not thread-safe. Each resident model has one
+worker thread, and all access is serialized through it. One model is active
+and writable; attached models are read-only.
 
 ```text
-live model thread        short reads and approved in-memory edits
-restricted process      read-only generated code, validation, queries
-transaction process     preview, commit, restore, and verification
+model thread          short reads and approved in-memory edits
+restricted process   read-only code, validation, and queries
+transaction process  preview, commit, restore, and verification
 ```
 
-Restricted workers receive minimal environments and bounded filesystem,
-network, subprocess, time, and memory capabilities. Generated-code sandboxing
-uses a verified disk copy, so it is available only for clean read-only work.
+Workers receive bounded filesystem, network, subprocess, time, and memory
+capabilities. The generated-code sandbox uses a verified on-disk copy, so it
+is limited to clean read-only work.
 
-### Durable automation
+## Durable work
 
 ```text
 job -> batch -> workflow
   \------ content-addressed artifacts ------/
 ```
 
-- A **job** runs one validation or transaction.
-- A **batch** applies validation or a selector query to many captured inputs.
-- A **workflow** connects batches through a versioned dependency graph.
+Jobs run one validation or transaction. Batches capture inputs for repeated
+validation or queries. Workflows connect batches through a versioned dependency
+graph. Source hashes and artifact checksums prevent unsafe resume.
 
-Input hashes prevent resume from silently adopting changed files. Records are
-written before work starts, and successful outputs enter artifact storage only
-after checksum verification.
-
-### Previewed writes
+Structured writes follow one path:
 
 ```text
-preview -> ChangeSet -> caller approval -> commit -> receipt
-                                           \-> backup
+preview -> ChangeSet -> host approval -> commit -> receipt and backup
 ```
 
-Structured changes run against an isolated copy first. Commit rechecks the
-model revision and source hash, validates a reopened candidate, creates a
-backup, and replaces the target under a cross-process lock. A durable journal
-supports recovery and checksum-guarded restore.
+Commit rechecks the revision and source hash, validates a reopened candidate,
+and replaces the target under a cross-process lock. Durable journals support
+recovery and checksum-guarded restore.
 
-Approval, commit, restore, and mode changes are not AI-callable operations.
-
-### Audit and artifact lifecycle
+## Audit and artifacts
 
 Audit JSONL uses sequence numbers and a SHA-256 hash chain. Generated source,
-secrets, and sensitive values are redacted. Verification detects local edits,
-but an external append-only sink is still needed for enterprise retention.
+secrets, and sensitive values are redacted. An external append-only sink is
+still required for enterprise retention.
 
-Artifacts record references to other artifacts. Recent outputs, retained jobs,
-explicit pins, and transaction history are protected from garbage collection.
+Artifact cleanup preserves pinned outputs and references held by retained jobs,
+recent activity, and transaction history.
 
-### Optional viewer
+## Browser boundary
 
-The viewer is a separate package containing plain browser modules, Three.js,
-and web-ifc WASM. It has no CDN or Node runtime. Its HTTP routes serve model
-data only while the viewer is enabled. The launcher and six viewport MCP tools
-stay registered for catalog stability; their handlers report whether the
-optional package, HTTP transport, and browser connection are ready.
+The optional wheel ships plain browser modules, Three.js, web-ifc, and WASM.
+It has no Python application logic, CDN dependency, or Node runtime. The core
+package owns the HTTP routes, authentication, selection bridge, chat runtime,
+and seven stable viewer operations. Without the assets or a connected tab,
+those operations return an actionable availability state.
 
-## Runtime model
+## Runtime
 
-Textual and uvicorn share one asyncio event loop. Operation handlers run on that
-loop and send IFC access to the owning model thread. Long validation, queries,
-generated code, and transactions use supervised subprocesses. State changes
-return to the loop and update the console and viewer.
+Textual and Uvicorn share one asyncio loop. Operation handlers send IFC access
+to model threads; long validation, queries, code, and transactions use
+supervised subprocesses. Results return to the loop and update the console and
+browser clients.

@@ -5,13 +5,13 @@ build-backend = "hatchling.build"
 [project]
 name = "ifc-console"
 dynamic = ["version"]
-description = "A terminal interface to connect IFC files to LLMs: a standalone MCP server for IFC/BIM with an ask/edit safety switch and a local 3D viewer."
+description = "A local IFC workbench with MCP, SDK, guarded agents, workflows, and an optional 3D viewer."
 readme = "README.md"
 requires-python = ">=3.10,<3.15"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
 authors = [{ name = "nbharathik" }]
-keywords = ["ifc", "bim", "mcp", "ifcopenshell", "llm", "claude", "openbim"]
+keywords = ["ifc", "bim", "mcp", "ifcopenshell", "llm", "agents", "openbim"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Environment :: Console",
@@ -37,13 +37,13 @@ dependencies = [
     "textual>=1.0",
     "uvicorn>=0.30",
     "starlette>=0.37",
+    # McpToolSource constructs the HTTP transport directly.
+    "httpx>=0.27",
     # detect_clashes does its broad phase and occupancy sampling in numpy;
     # rich renders the console feed. Both arrive transitively today, but the
     # imports are ours, so the dependency is ours.
     "numpy>=1.24",
     "rich>=13",
-    # workflow manifests and measurement recipes are YAML
-    "pyyaml>=6",
     # Built-in Docs and Measurement agents ingest PDF manuals. PyMuPDF makes
     # drawings and scanned pages available to vision models as page images.
     "pypdf>=4",
@@ -79,7 +79,6 @@ viewer = [
     "websockets>=12",
 ]
 dev = [
-    "httpx>=0.27",
     # Starlette's current TestClient prefers its supported httpx2 transport.
     "httpx2>=2,<3",
     "ifc-console-viewer>=0.1,<0.2",

@@ -15,6 +15,18 @@ from ifc_console.core.revisions import RevisionRef
 IfcScalar = str | int | float | bool | None
 
 
+class PropertyPreview(BaseModel):
+    """One property assignment requested inside an atomic preview."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    pset_name: str = Field(min_length=1, max_length=255)
+    property_name: str = Field(min_length=1, max_length=255)
+    value: IfcScalar
+    create_missing: bool = False
+    nominal_type: str | None = Field(default=None, min_length=1, max_length=255)
+
+
 class PropertyValueChange(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 

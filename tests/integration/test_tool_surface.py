@@ -153,7 +153,7 @@ async def test_list_ifc_files_scans_off_the_event_loop(ask_harness, monkeypatch)
     event_loop_thread = threading.get_ident()
     scanned_on: list[int] = []
 
-    def scan(_roots, _recursive, _recent_paths):
+    def scan(_roots, _recursive, _recent_paths, _follow_symlinks):
         scanned_on.append(threading.get_ident())
         return []
 
@@ -163,6 +163,48 @@ async def test_list_ifc_files_scans_off_the_event_loop(ask_harness, monkeypatch)
 
     assert out["ok"] is True
     assert scanned_on and scanned_on[0] != event_loop_thread
+
+
+async def test_file_listing_never_follows_a_symlink_outside_its_root(
+    tmp_path, minimal_ifc4_path
+) -> None:
+    from ifc_console.mcp.tools_files import _scan_ifc_files
+
+    root = tmp_path / "allowed"
+    outside = tmp_path / "outside"
+    root.mkdir()
+    outside.mkdir()
+    secret = outside / "secret.ifc"
+    secret.write_bytes(minimal_ifc4_path.read_bytes())
+    link = root / "outside.ifc"
+    try:
+        link.symlink_to(secret)
+    except OSError as exc:
+        pytest.skip(f"file symlinks are unavailable: {exc}")
+
+    assert _scan_ifc_files([root], False, set(), False) == []
+    assert _scan_ifc_files([root], True, set(), True) == []
+
+
+async def test_file_listing_follows_only_enabled_in_root_symlinks(
+    tmp_path, minimal_ifc4_path
+) -> None:
+    from ifc_console.mcp.tools_files import _scan_ifc_files
+
+    root = tmp_path / "allowed"
+    nested = root / "nested"
+    nested.mkdir(parents=True)
+    target = nested / "model.ifc"
+    target.write_bytes(minimal_ifc4_path.read_bytes())
+    link = root / "model.ifc"
+    try:
+        link.symlink_to(target)
+    except OSError as exc:
+        pytest.skip(f"file symlinks are unavailable: {exc}")
+
+    assert _scan_ifc_files([root], False, set(), False) == []
+    followed = _scan_ifc_files([root], False, set(), True)
+    assert [row["path"] for row in followed] == [str(target.resolve())]
 
 
 async def test_open_ifc_file_works_in_ask_mode(

@@ -68,6 +68,8 @@
 
 ### Agent panel and runtime
 
+- Make bare `/agent` open the General assistant on the first Enter. Use
+  `/agent list` when the full built-in and custom assistant catalog is wanted.
 - Always offer retry, add continue after a length-capped answer, and add
   edit-and-resend.
 - Move the readable proposal card to approval time and persist the decision, so the

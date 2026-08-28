@@ -89,7 +89,7 @@ def _resolve(name: str) -> commands.Command | None:
 
 # Commands that do something useful with no argument, so Enter runs them even
 # though Tab can still complete an argument. /file opens the file picker.
-_RUN_ON_ENTER = frozenset({"file", "tools"})
+_RUN_ON_ENTER = frozenset({"agent", "file", "tools"})
 
 
 # ------------------------------------------------------------- command names

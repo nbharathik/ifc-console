@@ -20,6 +20,7 @@ from ifc_console.core.results import ToolError
 from ifc_console.knowledge.ingest import IMAGE_SUFFIXES, SUPPORTED_SUFFIXES
 
 MAX_REFERENCE_BYTES = 25 * 1024 * 1024
+MAX_PROMPT_IMAGE_BYTES = 4 * 1024 * 1024
 REFERENCES_DIR = Path(".ifc-console") / "agents" / "references"
 TURN_REFERENCES_DIR = REFERENCES_DIR / ".turns"
 
@@ -196,9 +197,7 @@ class AgentReferenceStore:
             self._digests.pop(stale, None)
         return rows
 
-    def library_entries(
-        self, indexed_sources: list[dict[str, Any]] = ()
-    ) -> list[dict[str, Any]]:
+    def library_entries(self, indexed_sources: list[dict[str, Any]] = ()) -> list[dict[str, Any]]:
         """Describe managed uploads and other project-local indexed content."""
         rows = self.entries(indexed_sources)
         known = {str(row["path"]).replace("\\", "/") for row in rows}
@@ -242,8 +241,19 @@ class AgentReferenceStore:
     def sync(self, knowledge: Any) -> dict[str, Any]:
         """Index changed files, including files copied into the folder by hand."""
         paths = self.paths()
-        before = self.entries(knowledge.sources())
-        if not paths or all(entry["indexed"] for entry in before):
+        sources = knowledge.sources()
+        before = self.entries(sources)
+        current = {path.relative_to(self.project_dir).as_posix() for path in paths}
+        managed_prefix = REFERENCES_DIR.as_posix().rstrip("/") + "/"
+        indexed_managed = {
+            str(source.get("path") or "").replace("\\", "/")
+            for source in sources
+            if str(source.get("path") or "").replace("\\", "/").startswith(managed_prefix)
+            and not is_turn_reference_path(str(source.get("path") or ""))
+        }
+        stale = indexed_managed - current
+        needs_repair = bool(sources) and not bool(getattr(knowledge, "ready", True))
+        if not stale and not needs_repair and all(entry["indexed"] for entry in before):
             return {
                 "changed": False,
                 "directory": str(self.directory),
@@ -275,11 +285,11 @@ class AgentReferenceStore:
         silently becoming different evidence after ingestion.
         """
         indexed = {
-            str(entry.get("path", "")).replace("\\", "/"): entry
-            for entry in indexed_sources
+            str(entry.get("path", "")).replace("\\", "/"): entry for entry in indexed_sources
         }
         images: list[AgentImage] = []
         seen: set[str] = set()
+        total_bytes = 0
         managed = self.directory.resolve()
         for raw in paths[:8]:
             normalized = str(raw).replace("\\", "/")
@@ -297,19 +307,23 @@ class AgentReferenceStore:
                 target.relative_to(managed)
             except ValueError:
                 continue
+            if not target.is_file() or target.suffix.lower() not in IMAGE_SUFFIXES:
+                continue
+            size = target.stat().st_size
             if (
-                not target.is_file()
-                or target.suffix.lower() not in IMAGE_SUFFIXES
-                or target.stat().st_size > MAX_REFERENCE_BYTES
+                size > MAX_PROMPT_IMAGE_BYTES
+                or total_bytes + size > MAX_PROMPT_IMAGE_BYTES
                 or sha256_file(target) != entry.get("sha256")
             ):
                 continue
             images.append(AgentImage.from_file(target))
+            total_bytes += size
         return tuple(images)
 
 
 __all__ = [
     "MAX_REFERENCE_BYTES",
+    "MAX_PROMPT_IMAGE_BYTES",
     "REFERENCES_DIR",
     "TURN_REFERENCES_DIR",
     "AgentReferenceStore",

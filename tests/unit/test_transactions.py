@@ -11,6 +11,7 @@ import pytest
 
 from ifc_console.app import AppCore
 from ifc_console.automation.files import sha256_file
+from ifc_console.core.changes import PropertyPreview
 from ifc_console.core.results import ToolError
 from ifc_console.policy.modes import Mode
 from ifc_console.settings import SettingsStore
@@ -154,6 +155,48 @@ async def test_create_missing_property_set_commits_and_restores(
         core.shutdown()
 
 
+async def test_atomic_preview_creates_two_properties_in_one_missing_pset(
+    tmp_path: Path, minimal_ifc4_path: Path
+) -> None:
+    core = await _core(tmp_path, minimal_ifc4_path, mode=Mode.EDIT)
+    try:
+        assert core.session.path is not None
+        global_id, _property_id = _target(core)
+        preview = await core.transactions.preview_property_values(
+            global_ids=[global_id],
+            properties=[
+                PropertyPreview(
+                    pset_name="Company_QA",
+                    property_name="ReviewStatus",
+                    value="Checked",
+                    create_missing=True,
+                    nominal_type="IfcLabel",
+                ),
+                PropertyPreview(
+                    pset_name="Company_QA",
+                    property_name="Reviewer",
+                    value="Ada",
+                    create_missing=True,
+                    nominal_type="IfcText",
+                ),
+            ],
+        )
+
+        assert len(preview.change_set.changes) == 2
+        assert all(change.kind == "property_create" for change in preview.change_set.changes)
+        assert all(change.pset_id is None for change in preview.change_set.changes)
+        approval = core.transactions.approve(preview.change_set_id, approved_by="test")
+        await core.transactions.commit(preview.change_set_id, approval_id=approval.approval_id)
+
+        reopened = ifcopenshell.open(str(core.session.path))
+        psets = _occurrence_psets(reopened.by_guid(global_id), "Company_QA")
+        assert len(psets) == 1
+        values = {prop.Name: prop.NominalValue.wrappedValue for prop in psets[0].HasProperties}
+        assert values == {"ReviewStatus": "Checked", "Reviewer": "Ada"}
+    finally:
+        core.shutdown()
+
+
 async def test_create_missing_property_in_existing_pset_preserves_explicit_type(
     tmp_path: Path, minimal_ifc4_path: Path
 ) -> None:
@@ -260,7 +303,9 @@ async def test_classification_assignment_creates_reuses_commits_and_restores(
 
         assert preview.change_set.operation == "classification.assign"
         assert len(preview.change_set.changes) == len(global_ids)
-        assert all(change.kind == "classification_assignment" for change in preview.change_set.changes)
+        assert all(
+            change.kind == "classification_assignment" for change in preview.change_set.changes
+        )
         assert all(change.classification_id is None for change in preview.change_set.changes)
         assert all(change.reference_id is None for change in preview.change_set.changes)
 
@@ -559,9 +604,7 @@ async def test_schema_regression_is_rejected_before_target_replacement(
 
         monkeypatch.setattr(core.transactions, "_run_worker", report_regression)
         with pytest.raises(ToolError) as failed:
-            await core.transactions.commit(
-                preview.change_set_id, approval_id=approval.approval_id
-            )
+            await core.transactions.commit(preview.change_set_id, approval_id=approval.approval_id)
 
         assert failed.value.code == "COMMIT_FAILED"
         assert "new schema validation" in failed.value.message
@@ -635,9 +678,7 @@ async def test_receipt_failure_rolls_back_and_records_terminal_journal(
 
         monkeypatch.setattr(core.artifacts, "put_text", fail_receipt)
         with pytest.raises(ToolError) as failed:
-            await core.transactions.commit(
-                preview.change_set_id, approval_id=approval.approval_id
-            )
+            await core.transactions.commit(preview.change_set_id, approval_id=approval.approval_id)
 
         assert failed.value.code == "COMMIT_FAILED"
         assert sha256_file(core.session.path) == original_sha
@@ -669,9 +710,7 @@ async def test_cancellation_during_finalization_rolls_back_before_propagating(
 
         monkeypatch.setattr(core.session, "reload", cancel_first_reload)
         with pytest.raises(asyncio.CancelledError):
-            await core.transactions.commit(
-                preview.change_set_id, approval_id=approval.approval_id
-            )
+            await core.transactions.commit(preview.change_set_id, approval_id=approval.approval_id)
 
         assert sha256_file(core.session.path) == original_sha
         assert core.transactions.journals.list()[-1].phase.value == "rolled_back"
@@ -704,9 +743,7 @@ async def test_failed_rollback_blocks_later_writes(
         monkeypatch.setattr(core.artifacts, "put_text", fail_receipt)
         monkeypatch.setattr(core.transactions, "_replace_file", fail_rollback)
         with pytest.raises(ToolError) as failed:
-            await core.transactions.commit(
-                preview.change_set_id, approval_id=approval.approval_id
-            )
+            await core.transactions.commit(preview.change_set_id, approval_id=approval.approval_id)
 
         assert failed.value.code == "COMMIT_FAILED"
         assert sha256_file(core.session.path) != original_sha

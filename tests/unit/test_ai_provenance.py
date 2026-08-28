@@ -15,6 +15,7 @@ from ifc_console.agents.provenance import (
     Provenance,
     is_ai_authored,
     measurement_property,
+    provenance_property_name,
     read_ai_properties,
     validate_property_name,
     validate_pset,
@@ -95,9 +96,7 @@ class TestProvenanceRecord:
 
     def test_empty_fields_are_left_out_rather_than_stored_as_blanks(self):
         payload = json.loads(
-            Provenance(
-                agent="a", property_name="P", pset=PROPERTY_PSET, method="m"
-            ).to_json()
+            Provenance(agent="a", property_name="P", pset=PROPERTY_PSET, method="m").to_json()
         )
         assert "source" not in payload
         assert "confidence" not in payload
@@ -113,6 +112,15 @@ class TestProvenanceRecord:
             ).to_json()
         )
         assert len(payload["instructions"]) == 240
+
+    def test_proposal_id_is_distinct_from_the_legacy_change_set_reference(self):
+        payload = json.loads(
+            Provenance(agent="a", property_name="P", pset=PROPERTY_PSET, method="m")
+            .with_proposal("proposal-123")
+            .to_json()
+        )
+        assert payload["proposal_id"] == "proposal-123"
+        assert "change_set" not in payload
 
 
 class TestAudit:
@@ -163,14 +171,92 @@ class TestAudit:
         row = read_ai_properties(ifc)["elements"][0]
         assert row["provenance"]["raw"] == "not json"
 
+    def test_each_target_property_keeps_an_independent_provenance_record(self):
+        import ifcopenshell.api.root
+
+        ifc = _model()
+        wall = ifcopenshell.api.root.create_entity(ifc, ifc_class="IfcWall", name="W")
+        target_name = "MeasuredThickness"
+        _pset(ifc, wall, MEASUREMENT_PSET, {target_name: 0.24})
+        _pset(ifc, wall, PROPERTY_PSET, {target_name: "from schedule"})
+        measured = Provenance(
+            agent="measurement-agent",
+            property_name=target_name,
+            pset=MEASUREMENT_PSET,
+            method="geometry_extent",
+            written_at="2026-01-01T00:00:00+00:00",
+        )
+        scheduled = Provenance(
+            agent="property-agent",
+            property_name=target_name,
+            pset=PROPERTY_PSET,
+            method="schedule_lookup",
+            written_at="2026-01-02T00:00:00+00:00",
+        )
+        measured_marker = provenance_property_name(MEASUREMENT_PSET, target_name)
+        scheduled_marker = provenance_property_name(PROPERTY_PSET, target_name)
+        assert measured_marker != scheduled_marker
+        _pset(
+            ifc,
+            wall,
+            PROVENANCE_PSET,
+            {
+                measured_marker: measured.to_json(),
+                scheduled_marker: scheduled.to_json(),
+            },
+        )
+
+        row = read_ai_properties(ifc)["elements"][0]
+        measured_key = f"{MEASUREMENT_PSET}.{target_name}"
+        scheduled_key = f"{PROPERTY_PSET}.{target_name}"
+        assert row["properties"][measured_key] == 0.24
+        assert row["properties"][scheduled_key] == "from schedule"
+        assert row["provenance_by_property"][measured_key]["method"] == "geometry_extent"
+        assert row["provenance_by_property"][scheduled_key]["method"] == "schedule_lookup"
+        assert row["provenance"]["agent"] == "property-agent"
+        assert not any(key.startswith(f"{PROVENANCE_PSET}.") for key in row["properties"])
+
+    def test_newer_per_property_marker_supersedes_a_legacy_record(self):
+        import ifcopenshell.api.root
+
+        ifc = _model()
+        wall = ifcopenshell.api.root.create_entity(ifc, ifc_class="IfcWall", name="W")
+        target = f"{MEASUREMENT_PSET}.MeasuredThickness"
+        old = Provenance(
+            agent="old-agent",
+            property_name="MeasuredThickness",
+            pset=MEASUREMENT_PSET,
+            method="old",
+            written_at="2025-01-01T00:00:00+00:00",
+        )
+        new = Provenance(
+            agent="new-agent",
+            property_name="MeasuredThickness",
+            pset=MEASUREMENT_PSET,
+            method="new",
+            written_at="2026-01-01T00:00:00+00:00",
+        )
+        _pset(ifc, wall, MEASUREMENT_PSET, {"MeasuredThickness": 0.3})
+        _pset(
+            ifc,
+            wall,
+            PROVENANCE_PSET,
+            {
+                PROVENANCE_PROPERTY: old.to_json(),
+                provenance_property_name(MEASUREMENT_PSET, "MeasuredThickness"): new.to_json(),
+            },
+        )
+
+        row = read_ai_properties(ifc)["elements"][0]
+        assert row["provenance"]["agent"] == "new-agent"
+        assert row["provenance_by_property"][target]["agent"] == "new-agent"
+
     def test_the_report_is_bounded(self):
         import ifcopenshell.api.root
 
         ifc = _model()
         for index in range(6):
-            wall = ifcopenshell.api.root.create_entity(
-                ifc, ifc_class="IfcWall", name=f"W{index}"
-            )
+            wall = ifcopenshell.api.root.create_entity(ifc, ifc_class="IfcWall", name=f"W{index}")
             _pset(ifc, wall, MEASUREMENT_PSET, {"MeasuredThickness": 1.0})
         report = read_ai_properties(ifc, limit=3)
         assert len(report["elements"]) == 3

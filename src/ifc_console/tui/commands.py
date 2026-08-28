@@ -323,7 +323,7 @@ async def _help(console: ConsoleScreen, args: str) -> None:
         "pick, Enter selects, Esc closes"
     )
     lines.append(
-        "  a bare path to an .ifc file opens it Â· Up/Down recall history Â· "
+        "  a bare path to an .ifc file opens it | Up/Down recall history | "
         "PgUp/PgDn scroll the feed"
     )
     console.print("\n".join(lines))
@@ -432,8 +432,8 @@ async def _models(console: ConsoleScreen, _args: str) -> None:
                 f"[dim]({attachment.kind}, {used})[/dim]"
             )
     lines.append(
-        f"[dim]resident {len(core.models.sessions)}/{core.models.max_resident} Â· "
-        "/use <id> switches the active model Â· /detach <id> frees one[/dim]"
+        f"[dim]resident {len(core.models.sessions)}/{core.models.max_resident} | "
+        "/use <id> switches the active model | /detach <id> frees one[/dim]"
     )
     console.print("\n".join(lines))
 
@@ -835,7 +835,7 @@ async def _status(console: ConsoleScreen, _args: str) -> None:
         lines.append("  viewer   off (/viewer to start)")
     if core.chat.enabled:
         model = core.chat.model or "no model chosen"
-        lines.append(f"  chat     on  {core.chat.provider} Â· {model}")
+        lines.append(f"  chat     on  {core.chat.provider} | {model}")
     else:
         lines.append("  chat     off (/chat to start)")
     sandbox = core.sandbox.status()
@@ -932,7 +932,7 @@ async def _model(console: ConsoleScreen, _args: str) -> None:
         rows.append(("IfcProduct (total)", len(ifc.by_type("IfcProduct"))))
         return rows
 
-    console.print("[dim]counting entitiesâ€¦[/dim]")
+    console.print("[dim]counting entities...[/dim]")
     try:
         rows = await core.session.run(job, timeout=60)
     except Exception as exc:
@@ -968,7 +968,7 @@ async def _save(console: ConsoleScreen, args: str) -> None:
         )
     ):
         return
-    console.print(f"[dim]saving {escape(target.name)}â€¦[/dim]")
+    console.print(f"[dim]saving {escape(target.name)}...[/dim]")
     try:
         result = await core.session.save(target, core.backups)
     except Exception as exc:
@@ -999,7 +999,7 @@ async def _reload(console: ConsoleScreen, _args: str) -> None:
         return
     if core.session.dirty and not await console.confirm("Reload and discard unsaved changes?"):
         return
-    console.print(f"[dim]reloading {escape(core.session.name or 'model')} from diskâ€¦[/dim]")
+    console.print(f"[dim]reloading {escape(core.session.name or 'model')} from disk...[/dim]")
     try:
         if core.session.poisoned:
             await core.session.recover()
@@ -1251,9 +1251,15 @@ async def _agent_pick(console: ConsoleScreen) -> None:
 @command(
     "agent",
     "/agent [name|new|list|files]",
-    "open a built-in or custom agent, or compose one from capability blocks",
+    "open General or a named agent, or compose one from capability blocks",
     "connect",
-    examples=("/agent", "/agent measurement", "/agent new", "/agent files"),
+    examples=(
+        "/agent",
+        "/agent list",
+        "/agent measurement",
+        "/agent new",
+        "/agent files",
+    ),
 )
 async def _agent(console: ConsoleScreen, args: str) -> None:
     core = console.core
@@ -1296,7 +1302,7 @@ async def _agent(console: ConsoleScreen, args: str) -> None:
         return
 
     if not parts:
-        await _agent_pick(console)
+        await _agent_open(console, "general")
         return
 
     infos = registry.installed()
@@ -1310,8 +1316,8 @@ async def _agent(console: ConsoleScreen, args: str) -> None:
             f"{escape(info.description)}"
         )
     lines.append(
-        "[dim]/agent picks one with the arrow keys; /agent <name> opens it "
-        "directly; /agent new builds one from blocks; /agent files shows references[/dim]"
+        "[dim]/agent opens General; /agent <name> opens another directly; "
+        "/agent new builds one from blocks; /agent files shows references[/dim]"
     )
     console.print("\n".join(lines))
 

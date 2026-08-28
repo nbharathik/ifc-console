@@ -622,6 +622,7 @@ def test_ask_runs_a_tool_and_returns_the_answer(wb: Workbench, monkeypatch):
     rounds = iter(
         [
             [
+                {"type": "usage", "in": 30, "out": 2},
                 {
                     "type": "tool_calls",
                     "calls": [
@@ -644,7 +645,7 @@ def test_ask_runs_a_tool_and_returns_the_answer(wb: Workbench, monkeypatch):
     assert result["text"] == "The model has three walls."
     assert result["tool_calls"][0]["name"] == "query_elements"
     assert result["tool_calls"][0]["ok"] is True
-    assert result["usage"] == {"in": 120, "out": 8}
+    assert result["usage"] == {"in": 150, "out": 10}
     assert [turn["role"] for turn in result["turns"]] == ["user", "assistant"]
 
 

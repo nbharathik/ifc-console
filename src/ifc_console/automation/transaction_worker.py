@@ -195,9 +195,7 @@ def _find_classification(ifc: Any, name: str) -> Any | None:
 
 
 def _reference_identification(reference: Any) -> str | None:
-    return getattr(reference, "ItemReference", None) or getattr(
-        reference, "Identification", None
-    )
+    return getattr(reference, "ItemReference", None) or getattr(reference, "Identification", None)
 
 
 def _find_classification_reference(
@@ -358,13 +356,70 @@ def _preview_classification(payload: dict[str, Any], ifcopenshell: Any) -> dict[
     return {"changes": [item.model_dump(mode="json") for item in changes]}
 
 
+def _preview_properties(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    raw = payload.get("properties")
+    if raw is None:
+        raw = [
+            {
+                "pset_name": payload.get("pset_name"),
+                "property_name": payload.get("property_name"),
+                "value": payload.get("value"),
+                "create_missing": payload.get("create_missing", False),
+                "nominal_type": payload.get("nominal_type"),
+            }
+        ]
+    if not isinstance(raw, list) or not 1 <= len(raw) <= 16:
+        raise ToolError(
+            "INVALID_INPUT",
+            "an atomic property preview must contain between 1 and 16 properties.",
+            "Split larger edits into smaller reviewable ChangeSets.",
+        )
+    properties: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for item in raw:
+        if not isinstance(item, dict):
+            raise ToolError("INVALID_INPUT", "property previews must be objects.", "Use the SDK.")
+        pset_name = str(item.get("pset_name") or "").strip()
+        property_name = str(item.get("property_name") or "").strip()
+        key = (pset_name, property_name)
+        if not pset_name or not property_name or key in seen:
+            raise ToolError(
+                "INVALID_INPUT",
+                "property previews need unique, non-empty property set and property names.",
+                "Include each property only once.",
+            )
+        seen.add(key)
+        nominal_type = item.get("nominal_type")
+        if nominal_type is not None and not isinstance(nominal_type, str):
+            raise ToolError(
+                "INVALID_INPUT",
+                "nominal_type must be an IFC type name.",
+                "Use a type such as IfcText or omit it.",
+            )
+        create_missing = item.get("create_missing", False)
+        if not isinstance(create_missing, bool):
+            raise ToolError(
+                "INVALID_INPUT",
+                "create_missing must be a boolean.",
+                "Pass true or false, without quotes.",
+            )
+        properties.append(
+            {
+                "pset_name": pset_name,
+                "property_name": property_name,
+                "after": _scalar(item.get("value")),
+                "create_missing": create_missing,
+                "nominal_type": nominal_type,
+            }
+        )
+    return properties
+
+
 def _preview(payload: dict[str, Any], ifcopenshell: Any) -> dict[str, Any]:
     source = SourceFileRef.model_validate(payload["source"])
     _verify_source(source)
     ifc = ifcopenshell.open(source.path)
-    after = _scalar(payload.get("value"))
-    create_missing = bool(payload.get("create_missing", False))
-    requested_nominal_type = payload.get("nominal_type")
+    properties = _preview_properties(payload)
     global_ids = tuple(dict.fromkeys(str(item) for item in payload["global_ids"]))
     if not global_ids:
         raise ToolError(
@@ -372,75 +427,82 @@ def _preview(payload: dict[str, Any], ifcopenshell: Any) -> dict[str, Any]:
         )
     changes: list[PropertyValueChange | PropertyCreateChange] = []
     for global_id in global_ids:
-        pset_name = str(payload["pset_name"])
-        property_name = str(payload["property_name"])
         element = _find_element(ifc, global_id)
-        pset = _find_pset(element, pset_name)
-        prop = _find_property(pset, property_name) if pset is not None else None
-        if prop is None:
-            if not create_missing:
-                location = (
-                    f"no occurrence property set {pset_name!r}"
-                    if pset is None
-                    else f"no property {pset_name}.{property_name}"
+        source_psets = {
+            item["pset_name"]: _find_pset(element, item["pset_name"]) for item in properties
+        }
+        for requested in properties:
+            pset_name = requested["pset_name"]
+            property_name = requested["property_name"]
+            after = requested["after"]
+            requested_nominal_type = requested["nominal_type"]
+            pset = _find_pset(element, pset_name)
+            prop = _find_property(pset, property_name) if pset is not None else None
+            if prop is None:
+                if not requested["create_missing"]:
+                    location = (
+                        f"no occurrence property set {pset_name!r}"
+                        if pset is None
+                        else f"no property {pset_name}.{property_name}"
+                    )
+                    raise ToolError(
+                        "PROPERTY_NOT_FOUND",
+                        f"{global_id} has {location}.",
+                        "Pass create_missing=true to preview occurrence-level creation.",
+                    )
+                nominal_type = str(requested_nominal_type or _infer_nominal_type(after))
+                source_pset = source_psets[pset_name]
+                existing_pset_id = source_pset.id() if source_pset is not None else None
+                _created_pset, _created_prop, applied = _create_property(
+                    ifc,
+                    element,
+                    pset,
+                    pset_name,
+                    property_name,
+                    nominal_type,
+                    after,
                 )
+                changes.append(
+                    PropertyCreateChange(
+                        global_id=global_id,
+                        entity_type=element.is_a(),
+                        entity_name=getattr(element, "Name", None),
+                        pset_name=pset_name,
+                        property_name=property_name,
+                        pset_id=existing_pset_id,
+                        nominal_type=nominal_type,
+                        after=applied,
+                    )
+                )
+                continue
+            nominal_type, before = _read_nominal(prop)
+            if requested_nominal_type is not None and requested_nominal_type != nominal_type:
                 raise ToolError(
-                    "PROPERTY_NOT_FOUND",
-                    f"{global_id} has {location}.",
-                    "Pass create_missing=true to preview occurrence-level creation.",
+                    "CHANGESET_INVALID",
+                    f"{pset.Name}.{prop.Name} uses {nominal_type}, not {requested_nominal_type}.",
+                    "Omit nominal_type for existing properties or pass its exact current IFC type.",
                 )
-            nominal_type = str(requested_nominal_type or _infer_nominal_type(after))
-            existing_pset_id = pset.id() if pset is not None else None
-            _created_pset, _created_prop, applied = _create_property(
-                ifc,
-                element,
-                pset,
-                pset_name,
-                property_name,
-                nominal_type,
-                after,
-            )
+            applied = _assign(ifc, prop, nominal_type, after)
+            if _same(before, applied):
+                raise ToolError(
+                    "CHANGESET_INVALID",
+                    f"{pset.Name}.{prop.Name} on {global_id} already has that value.",
+                    "Choose a different value or remove this element from the preview.",
+                )
             changes.append(
-                PropertyCreateChange(
+                PropertyValueChange(
                     global_id=global_id,
                     entity_type=element.is_a(),
                     entity_name=getattr(element, "Name", None),
-                    pset_name=pset_name,
-                    property_name=property_name,
-                    pset_id=existing_pset_id,
+                    pset_name=pset.Name,
+                    property_name=prop.Name,
+                    pset_id=pset.id(),
+                    property_id=prop.id(),
                     nominal_type=nominal_type,
+                    before=before,
                     after=applied,
                 )
             )
-            continue
-        nominal_type, before = _read_nominal(prop)
-        if requested_nominal_type is not None and requested_nominal_type != nominal_type:
-            raise ToolError(
-                "CHANGESET_INVALID",
-                f"{pset.Name}.{prop.Name} uses {nominal_type}, not {requested_nominal_type}.",
-                "Omit nominal_type for existing properties or pass its exact current IFC type.",
-            )
-        applied = _assign(ifc, prop, nominal_type, after)
-        if _same(before, applied):
-            raise ToolError(
-                "CHANGESET_INVALID",
-                f"{pset.Name}.{prop.Name} on {global_id} already has that value.",
-                "Choose a different value or remove this element from the preview.",
-            )
-        changes.append(
-            PropertyValueChange(
-                global_id=global_id,
-                entity_type=element.is_a(),
-                entity_name=getattr(element, "Name", None),
-                pset_name=pset.Name,
-                property_name=prop.Name,
-                pset_id=pset.id(),
-                property_id=prop.id(),
-                nominal_type=nominal_type,
-                before=before,
-                after=applied,
-            )
-        )
     _verify_source(source)
     return {"changes": [item.model_dump(mode="json") for item in changes]}
 
@@ -483,13 +545,12 @@ def _apply(payload: dict[str, Any], ifcopenshell: Any) -> dict[str, Any]:
     ifc = ifcopenshell.open(change_set.source.path)
     created_classifications: set[str] = set()
     created_references: set[tuple[str, str]] = set()
+    created_psets: set[tuple[str, str]] = set()
     for change in change_set.changes:
         element = _find_element(ifc, change.global_id)
         if isinstance(change, ClassificationAssignmentChange):
             classification = _find_classification(ifc, change.classification_name)
-            reference = _find_classification_reference(
-                ifc, classification, change.identification
-            )
+            reference = _find_classification_reference(ifc, classification, change.identification)
             classification_conflict = (
                 classification is not None
                 and change.classification_name not in created_classifications
@@ -533,8 +594,9 @@ def _apply(payload: dict[str, Any], ifcopenshell: Any) -> dict[str, Any]:
             continue
         pset = _find_pset(element, change.pset_name)
         if isinstance(change, PropertyCreateChange):
+            pset_key = (change.global_id, change.pset_name)
             if change.pset_id is None:
-                conflict = pset is not None
+                conflict = pset is not None and pset_key not in created_psets
             else:
                 conflict = pset is None or pset.id() != change.pset_id
             prop = _find_property(pset, change.property_name) if pset is not None else None
@@ -544,6 +606,7 @@ def _apply(payload: dict[str, Any], ifcopenshell: Any) -> dict[str, Any]:
                     f"{change.pset_name}.{change.property_name} changed after preview.",
                     "Discard this ChangeSet and preview the creation again.",
                 )
+            pset_was_missing = pset is None
             _create_property(
                 ifc,
                 element,
@@ -553,6 +616,8 @@ def _apply(payload: dict[str, Any], ifcopenshell: Any) -> dict[str, Any]:
                 change.nominal_type,
                 change.after,
             )
+            if pset_was_missing:
+                created_psets.add(pset_key)
             continue
         if pset is None:
             raise ToolError(

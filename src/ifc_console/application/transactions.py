@@ -11,7 +11,6 @@ import secrets
 import shutil
 import time
 from collections.abc import Callable
-from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -19,7 +18,7 @@ from typing import TYPE_CHECKING, Any
 from pydantic import BaseModel, ValidationError
 
 from ifc_console.application.artifacts import ArtifactService
-from ifc_console.application.locks import process_is_running
+from ifc_console.application.locks import async_exclusive_file_lock
 from ifc_console.application.transaction_journals import TransactionJournalStore
 from ifc_console.automation.files import describe_source, sha256_file, source_matches
 from ifc_console.core.capabilities import Capability
@@ -31,6 +30,7 @@ from ifc_console.core.changes import (
     CommitRecord,
     CommitResult,
     IfcScalar,
+    PropertyPreview,
     RestoreRecord,
     RestoreResult,
 )
@@ -43,8 +43,8 @@ from ifc_console.core.transaction_journal import (
     TransactionPhase,
 )
 from ifc_console.policy.modes import Mode
-from ifc_console.sandbox.client import _child_env, worker_executable
-from ifc_console.sandbox.limits import ProcessJail
+from ifc_console.sandbox.client import _child_env, worker_command
+from ifc_console.sandbox.limits import ProcessJail, isolated_process_kwargs
 from ifc_console.sandbox.policy import SandboxPolicy
 
 if TYPE_CHECKING:
@@ -96,6 +96,36 @@ class TransactionService:
                     nominal_type=nominal_type,
                     expected_revision=expected_revision,
                 )
+        return await self.preview_property_values(
+            global_ids=global_ids,
+            properties=(
+                PropertyPreview.model_construct(
+                    pset_name=pset_name,
+                    property_name=property_name,
+                    value=value,
+                    create_missing=create_missing,
+                    nominal_type=nominal_type,
+                ),
+            ),
+            expected_revision=expected_revision,
+        )
+
+    async def preview_property_values(
+        self,
+        *,
+        global_ids: tuple[str, ...] | list[str],
+        properties: tuple[PropertyPreview, ...] | list[PropertyPreview],
+        expected_revision: str | None = None,
+    ) -> ChangeSetRecord:
+        if current_operation_context() is None:
+            with self.core.operation_service.invocation(
+                "preview_property_changes", authority="caller", client=self.core.transport
+            ):
+                return await self.preview_property_values(
+                    global_ids=global_ids,
+                    properties=properties,
+                    expected_revision=expected_revision,
+                )
         context = current_operation_context()
         assert context is not None
         self.core.policy.require(
@@ -103,20 +133,55 @@ class TransactionService:
             authority=context.authority,
             action="preview property change",
         )
-        if not pset_name.strip() or not property_name.strip():
+        if not properties or len(properties) > 16:
             raise ToolError(
                 "INVALID_INPUT",
-                "property set and property names must not be empty.",
-                "Pass exact names such as Pset_WallCommon and FireRating.",
+                "an atomic property preview must contain between 1 and 16 properties.",
+                "Split larger edits into smaller reviewable ChangeSets.",
             )
-        clean_nominal_type = nominal_type.strip() if nominal_type is not None else None
-        if clean_nominal_type == "" or (
-            clean_nominal_type is not None and len(clean_nominal_type) > 255
-        ):
-            raise ToolError(
-                "INVALID_INPUT",
-                "nominal_type must be a non-empty IFC type name of at most 255 characters.",
-                "Use a schema value type such as IfcLabel or IfcLengthMeasure.",
+        normalized: list[PropertyPreview] = []
+        seen: set[tuple[str, str]] = set()
+        for requested in properties:
+            pset_name = requested.pset_name.strip()
+            property_name = requested.property_name.strip()
+            if (
+                not pset_name
+                or not property_name
+                or len(pset_name) > 255
+                or len(property_name) > 255
+            ):
+                raise ToolError(
+                    "INVALID_INPUT",
+                    "property set and property names must contain 1 to 255 characters.",
+                    "Pass exact names such as Pset_WallCommon and FireRating.",
+                )
+            clean_nominal_type = (
+                requested.nominal_type.strip() if requested.nominal_type is not None else None
+            )
+            if clean_nominal_type == "" or (
+                clean_nominal_type is not None and len(clean_nominal_type) > 255
+            ):
+                raise ToolError(
+                    "INVALID_INPUT",
+                    "nominal_type must be a non-empty IFC type name of at most 255 characters.",
+                    "Use a schema value type such as IfcLabel or IfcLengthMeasure.",
+                )
+            key = (pset_name, property_name)
+            if key in seen:
+                raise ToolError(
+                    "INVALID_INPUT",
+                    f"the atomic preview repeats {pset_name}.{property_name}.",
+                    "Include each property only once.",
+                )
+            seen.add(key)
+            normalized.append(
+                requested.model_copy(
+                    update={
+                        "pset_name": pset_name,
+                        "property_name": property_name,
+                        "nominal_type": clean_nominal_type,
+                    }
+                )
             )
         ids = tuple(dict.fromkeys(item.strip() for item in global_ids if item.strip()))
         if not ids:
@@ -136,11 +201,7 @@ class TransactionService:
                         "action": "preview",
                         "source": source.model_dump(mode="json"),
                         "global_ids": ids,
-                        "pset_name": pset_name.strip(),
-                        "property_name": property_name.strip(),
-                        "value": value,
-                        "create_missing": create_missing,
-                        "nominal_type": clean_nominal_type,
+                        "properties": [item.model_dump(mode="json") for item in normalized],
                     },
                     work,
                     read_dirs=[session.path.parent],
@@ -189,7 +250,7 @@ class TransactionService:
                 model_id=revision.model_id,
                 revision_id=revision.revision_id,
                 change_count=len(change_set.changes),
-                global_ids=[change.global_id for change in change_set.changes],
+                global_ids=list(dict.fromkeys(change.global_id for change in change_set.changes)),
             )
             self.core.events.emit(
                 "changeset_previewed",
@@ -601,9 +662,7 @@ class TransactionService:
                     "the target changed after the recorded commit.",
                     "Do not overwrite later work. Review the model and restore manually if needed.",
                 )
-            backup = self.artifacts.verify(
-                commit_record.result.backup_artifact.artifact_id
-            )
+            backup = self.artifacts.verify(commit_record.result.backup_artifact.artifact_id)
             if backup.sha256 != commit_record.result.previous_sha256:
                 raise ToolError(
                     "ARTIFACT_CORRUPT",
@@ -770,7 +829,9 @@ class TransactionService:
                 context=current_operation_context(),
             )
             receipt_text = result.model_dump_json(indent=2)
-            expected_receipt_id = f"sha256:{hashlib.sha256(receipt_text.encode('utf-8')).hexdigest()}"
+            expected_receipt_id = (
+                f"sha256:{hashlib.sha256(receipt_text.encode('utf-8')).hexdigest()}"
+            )
             journal = self._journal_phase(
                 journal,
                 TransactionPhase.RECEIPT_PREPARED,
@@ -961,7 +1022,9 @@ class TransactionService:
                 context=current_operation_context(),
             )
             receipt_text = result.model_dump_json(indent=2)
-            expected_receipt_id = f"sha256:{hashlib.sha256(receipt_text.encode('utf-8')).hexdigest()}"
+            expected_receipt_id = (
+                f"sha256:{hashlib.sha256(receipt_text.encode('utf-8')).hexdigest()}"
+            )
             journal = self._journal_phase(
                 journal,
                 TransactionPhase.RECEIPT_PREPARED,
@@ -1098,9 +1161,7 @@ class TransactionService:
                 )
                 return ""
             if current_sha != journal.desired_after_sha256:
-                raise OSError(
-                    "target checksum matches neither the expected source nor candidate"
-                )
+                raise OSError("target checksum matches neither the expected source nor candidate")
             journal = self._journal_phase(
                 journal,
                 TransactionPhase.ROLLBACK_STARTED,
@@ -1285,6 +1346,7 @@ class TransactionService:
             stderr=asyncio.subprocess.PIPE,
             cwd=work,
             env=_child_env(work),
+            **isolated_process_kwargs(),
         )
         jail = ProcessJail(self.core.settings.sandbox.memory_mb)
         jail.attach(process.pid)
@@ -1348,14 +1410,7 @@ class TransactionService:
 
     @staticmethod
     def _worker_command(input_path: Path) -> tuple[str, ...]:
-        return (
-            worker_executable(),
-            "-s",
-            "-B",
-            "-m",
-            "ifc_console.automation.transaction_worker",
-            str(input_path),
-        )
+        return worker_command("ifc_console.automation.transaction_worker", input_path)
 
     def _new_work(self, prefix: str) -> Path:
         work = self.work_dir / f"{prefix}-{secrets.token_hex(8)}"
@@ -1400,59 +1455,13 @@ class TransactionService:
                     raise
                 time.sleep(0.01)
 
-    @asynccontextmanager
-    async def _target_lock(self, target: Path):
+    def _target_lock(self, target: Path):
         lock = target.with_name(f".{target.name}.ifc-console.lock")
-        token = secrets.token_hex(16)
-        deadline = time.monotonic() + float(
-            self.core.settings.automation.transaction_lock_timeout_s
+        return async_exclusive_file_lock(
+            lock,
+            timeout_s=float(self.core.settings.automation.transaction_lock_timeout_s),
+            error_code="MODEL_BUSY",
         )
-        while True:
-            try:
-                fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-                with os.fdopen(fd, "w", encoding="utf-8") as handle:
-                    json.dump({"pid": os.getpid(), "token": token}, handle)
-                    handle.flush()
-                    os.fsync(handle.fileno())
-                break
-            except (FileExistsError, PermissionError):
-                stale = False
-                try:
-                    owner = json.loads(lock.read_text(encoding="utf-8"))
-                    stale = not self._pid_exists(int(owner.get("pid", 0)))
-                except (OSError, ValueError, json.JSONDecodeError):
-                    try:
-                        stale = time.time() - lock.stat().st_mtime >= 1.0
-                    except OSError:
-                        stale = False
-                if stale:
-                    stale_path = lock.with_name(f"{lock.name}.{secrets.token_hex(4)}.stale")
-                    try:
-                        os.replace(lock, stale_path)
-                        stale_path.unlink()
-                        continue
-                    except OSError:
-                        pass
-                if time.monotonic() >= deadline:
-                    raise ToolError(
-                        "MODEL_BUSY",
-                        f"timed out waiting for the transaction lock on {target.name}.",
-                        "Wait for the other commit or restore to finish, then retry.",
-                    ) from None
-                await asyncio.sleep(0.05)
-        try:
-            yield
-        finally:
-            try:
-                owner = json.loads(lock.read_text(encoding="utf-8"))
-                if owner.get("token") == token:
-                    lock.unlink()
-            except (OSError, json.JSONDecodeError):
-                pass
-
-    @staticmethod
-    def _pid_exists(pid: int) -> bool:
-        return process_is_running(pid)
 
     @staticmethod
     def _fsync_directory(path: Path) -> None:

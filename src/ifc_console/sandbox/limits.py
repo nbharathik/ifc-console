@@ -27,7 +27,9 @@ def apply_self_limits(memory_mb: int) -> list[str]:
     applied: list[str] = []
     with contextlib.suppress(Exception):
         if hasattr(os, "setsid"):
-            os.setsid()
+            getsid = getattr(os, "getsid", None)
+            if getsid is None or getsid(0) != os.getpid():
+                os.setsid()
             applied.append("process-group")
     try:
         import resource
@@ -48,11 +50,16 @@ def apply_self_limits(memory_mb: int) -> list[str]:
     return applied
 
 
+def isolated_process_kwargs() -> dict[str, bool]:
+    """Start a POSIX worker outside the console's process group."""
+    return {"start_new_session": True} if os.name == "posix" else {}
+
+
 class ProcessJail:
     """Parent-side containment for one worker process.
 
     On Windows this is a real job object. Elsewhere it is a thin wrapper that
-    kills the worker's process group, which the worker created for itself.
+    kills the isolated process group created when the parent starts the worker.
     """
 
     def __init__(self, memory_mb: int, *, single_process: bool = True) -> None:
@@ -170,7 +177,9 @@ class ProcessJail:
             import signal
 
             with contextlib.suppress(OSError, ProcessLookupError):
-                os.killpg(os.getpgid(self._pid), signal.SIGKILL)
+                group = os.getpgid(self._pid)
+                if group == self._pid and group != os.getpgrp():
+                    os.killpg(group, signal.SIGKILL)
         self.close()
 
     def close(self) -> None:

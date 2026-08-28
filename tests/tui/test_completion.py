@@ -35,6 +35,7 @@ def test_command_flags_decide_enter_behavior(core) -> None:
     assert by_insert["/help"].terminal and not by_insert["/help"].advance
     assert by_insert["/status"].terminal
     assert by_insert["/tools"].terminal  # bare /tools opens its overview
+    assert by_insert["/agent"].terminal  # bare /agent opens General
     # argument values exist: Enter advances to them instead of running
     assert not by_insert["/mode"].terminal and by_insert["/mode"].advance
     assert not by_insert["/use"].terminal

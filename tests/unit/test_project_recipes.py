@@ -87,6 +87,74 @@ class TestLookup:
         result = find_recipe(project_dir, ifc_class="ifcwall", property_name="Thickness")
         assert result["recipe"]["property"] == "thickness"
 
+    def test_predefined_type_matches_and_beats_the_class_recipe(self, project_dir: Path):
+        (recipes_dir(project_dir) / "predefined.yaml").write_text(
+            """
+- applies_to: {class: IfcWall, predefined_type: SHEAR}
+  property: thickness
+  method: stored_qto
+  params: {quantity: Width}
+""",
+            encoding="utf-8",
+        )
+
+        result = find_recipe(
+            project_dir,
+            ifc_class="IfcWall",
+            property_name="thickness",
+            predefined_type="shear",
+        )
+
+        assert result["matched"]["specificity"] == "predefined_type"
+        assert result["recipe"]["method"] == "stored_qto"
+        assert result["suggested_arguments"]["quantity"] == "Width"
+
+    def test_recipe_requiring_type_and_predefined_type_is_most_specific(self, project_dir: Path):
+        (recipes_dir(project_dir) / "combined.yaml").write_text(
+            """
+- applies_to:
+    class: IfcWall
+    type_name: "Basic Wall: Interior*"
+    predefined_type: SHEAR
+  property: thickness
+  method: stored_qto
+  params: {quantity: CombinedWidth}
+""",
+            encoding="utf-8",
+        )
+
+        result = find_recipe(
+            project_dir,
+            ifc_class="IfcWall",
+            property_name="thickness",
+            type_name="Basic Wall: Interior - 138mm",
+            predefined_type="SHEAR",
+        )
+
+        assert result["matched"]["specificity"] == "type+predefined_type"
+        assert result["suggested_arguments"]["quantity"] == "CombinedWidth"
+
+    def test_predefined_type_mismatch_falls_back_to_class_recipe(self, project_dir: Path):
+        (recipes_dir(project_dir) / "predefined.yaml").write_text(
+            """
+- applies_to: {class: IfcWall, predefined_type: SHEAR}
+  property: thickness
+  method: stored_qto
+  params: {quantity: Width}
+""",
+            encoding="utf-8",
+        )
+
+        result = find_recipe(
+            project_dir,
+            ifc_class="IfcWall",
+            property_name="thickness",
+            predefined_type="SOLIDWALL",
+        )
+
+        assert result["matched"]["specificity"] == "class"
+        assert result["recipe"]["method"] == "geometry_extent"
+
     def test_miss_points_at_project_search(self, project_dir: Path):
         with pytest.raises(ToolError) as excinfo:
             find_recipe(project_dir, ifc_class="IfcSlab", property_name="depth")

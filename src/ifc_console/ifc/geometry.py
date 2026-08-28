@@ -152,6 +152,12 @@ def resolve_targets(
             f"offset {offset} is negative",
             "offset counts elements to skip; the first page is offset=0.",
         )
+    if isinstance(max_elements, bool) or not isinstance(max_elements, int) or max_elements < 1:
+        raise ToolError(
+            "INVALID_INPUT",
+            "max_elements must be a positive integer",
+            "Use max_elements as the page size and offset to request later pages.",
+        )
     if (selector is None) == (not global_ids):
         raise ToolError(
             "INVALID_INPUT",
@@ -182,8 +188,7 @@ def resolve_targets(
         # filter_elements returns a set; keep results reproducible
         elements.sort(key=lambda e: e.id())
     matched = len(elements)
-    if offset:
-        elements = elements[offset:]
+    elements = elements[offset : offset + max_elements]
     if not elements:
         if matched:
             raise ToolError(
@@ -196,13 +201,6 @@ def resolve_targets(
             f"selector {selector!r} matched no measurable elements",
             "Check it with query_elements; voids and spaces are excluded "
             "unless physical_only=false.",
-        )
-    if len(elements) > max_elements:
-        raise ToolError(
-            "TOO_MANY_ELEMENTS",
-            f"matched {matched} elements, {len(elements)} over the {max_elements} cap",
-            "Narrow the selector, raise max_elements if you accept the cost, or "
-            "walk the match with offset.",
         )
     return elements
 

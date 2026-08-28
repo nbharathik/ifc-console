@@ -12,7 +12,6 @@ import json
 import os
 import secrets
 import stat
-import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -292,33 +291,12 @@ def _valid_token(path: Path) -> str | None:
 
 @contextmanager
 def _token_lock(path: Path) -> Iterator[None]:
+    from ifc_console.application.locks import exclusive_file_lock
+
     lock_path = path.with_name(path.name + ".lock")
     path.parent.mkdir(parents=True, exist_ok=True)
-    deadline = time.monotonic() + 5
-    fd: int | None = None
-    while fd is None:
-        try:
-            fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-        # Windows reports a concurrent unlink as EACCES (delete pending),
-        # not EEXIST; both mean the lock is (or just was) held, so retry.
-        except (FileExistsError, PermissionError):
-            with contextlib.suppress(OSError):
-                if time.time() - lock_path.stat().st_mtime > 30:
-                    # rename first so two waiters cannot both judge the lock
-                    # stale and the loser unlink the winner's fresh lock
-                    stale = lock_path.with_name(lock_path.name + ".stale")
-                    os.replace(lock_path, stale)
-                    stale.unlink()
-                    continue
-            if time.monotonic() >= deadline:
-                raise TimeoutError(f"timed out waiting for {lock_path}") from None
-            time.sleep(0.01)
-    try:
+    with exclusive_file_lock(lock_path, timeout_s=5):
         yield
-    finally:
-        os.close(fd)
-        with contextlib.suppress(OSError):
-            lock_path.unlink()
 
 
 class SettingsStore:
@@ -493,7 +471,17 @@ class SettingsStore:
                         f"{label}: {key!r} may not be set from project files; ignored"
                     )
                     continue
+                previous = _get_dot(merged, key)
                 _set_dot(merged, key, value)
+                try:
+                    Settings.model_validate(merged)
+                except ValidationError as exc:
+                    _set_dot(merged, key, previous)
+                    self.warnings.append(
+                        f"{label}: invalid settings value for {key!r} ignored "
+                        f"({exc.error_count()} errors)"
+                    )
+                    continue
                 provenance[key] = label
 
         apply(_flatten(self._read_layer(self.user_file, "user")), "user", safe_only=False)
@@ -516,12 +504,7 @@ class SettingsStore:
         apply(env_flat, "env", safe_only=False)
         apply(dict(self._flags), "flag", safe_only=False)
 
-        try:
-            self.settings = Settings.model_validate(merged)
-        except ValidationError as exc:
-            self.warnings.append(f"invalid settings ({exc.error_count()} errors); using defaults")
-            self.settings = Settings()
-            provenance = {k: "default" for k in known}
+        self.settings = Settings.model_validate(merged)
         self.provenance = provenance
 
     # -- user-file editing (`ifc-console settings set/unset`) -----------------

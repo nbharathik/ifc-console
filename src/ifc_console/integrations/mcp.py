@@ -232,12 +232,6 @@ class McpToolSource:
 
     async def call_tool(self, name: str, arguments: Mapping[str, Any]) -> dict[str, Any]:
         result = await self.session.call_tool(name, dict(arguments))
-        structured = result.structuredContent
-        if isinstance(structured, Mapping) and "ok" in structured:
-            return dict(structured)
-        text_envelope = _envelope_from_content(result.content)
-        if text_envelope is not None:
-            return text_envelope
         if result.isError:
             text = "\n".join(
                 str(getattr(item, "text", ""))
@@ -253,6 +247,12 @@ class McpToolSource:
                 },
                 "meta": {"tool_source": self.source_id},
             }
+        structured = result.structuredContent
+        if isinstance(structured, Mapping) and isinstance(structured.get("ok"), bool):
+            return dict(structured)
+        text_envelope = _envelope_from_content(result.content)
+        if text_envelope is not None:
+            return text_envelope
         data: Any = (
             _json_value(structured) if structured is not None else _content_data(result.content)
         )
@@ -265,9 +265,9 @@ class McpToolSource:
     async def aclose(self) -> None:
         if self._closed:
             return
-        self._closed = True
         if self._stack is not None:
             await self._stack.aclose()
+        self._closed = True
 
 
 __all__ = ["McpToolSource"]

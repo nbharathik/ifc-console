@@ -1,48 +1,41 @@
 # MCP tools
 
-Use `/tools ai` for the live tool list and exact input schemas. It reflects the
-current mode, plugins, and viewer state. This page explains what each built-in
-tool is for.
-
-Start a new session with `orient`, then use narrower tools as needed.
+Use `/tools ai` for the live catalog and exact input schemas. It reflects the
+current mode, optional dependencies, plugins, models, and viewer state. Start a
+new session with `orient`, then use the narrowest operation that fits.
 
 ## Response format
 
-Every tool returns the same envelope:
+Operations return one envelope:
 
 ```json
 {"ok": true, "data": {}, "meta": {"mode": "ask", "model": "x.ifc"}}
 ```
 
-Failures return data rather than protocol errors:
-
 ```json
 {"ok": false, "error": {"code": "ASK_MODE_BLOCKED", "message": "...", "hint": "..."}}
 ```
 
-Large results may set `meta.truncated=true`. Narrow the query or use pagination.
-`get_viewer_screenshot` is the only tool that returns image content instead of
-the normal structured envelope.
+Large results may set `meta.truncated=true`; narrow or paginate the request.
+`get_viewer_screenshot` returns image content in addition to structured data.
 
-## Model queries
+## Session and model queries
 
-| tool | main input | result |
-| ---- | ---------- | ------ |
-| `get_session_status` | none | version, model, mode, dirty state, and viewer status |
-| `orient` | none | status, project summary, and a shallow spatial tree |
-| `describe_capabilities` | none | live tools, permissions, and examples |
-| `get_ifc_project_info` | optional `model` | schema, units, project counts, materials, classifications, and header data |
-| `get_spatial_structure` | root, depth, counts | Project to Site to Building to Storey to Space tree |
-| `search_elements` | name, GlobalId, text, or simple selector | human-friendly element matches |
-| `query_elements` | selector, limit, offset, fields, order | paged element summaries |
-| `get_element` | up to 50 GlobalIds | attributes, properties, quantities, materials, type, and container |
-| `get_psets` | up to 100 GlobalIds | property and quantity sets only |
-| `get_schema_docs` | entity, pset, or property | schema definitions; works without an open model |
+| tool | purpose |
+| ---- | ------- |
+| `get_session_status` | version, model, mode, dirty state, and viewer state |
+| `orient` | status, project summary, and shallow spatial tree |
+| `describe_capabilities` | live operations, permissions, availability, and examples |
+| `get_ifc_project_info` | schema, units, counts, materials, classifications, and header |
+| `get_spatial_structure` | Project to Site to Building to Storey to Space tree |
+| `search_elements` | search names, GlobalIds, text, or simple selectors |
+| `query_elements` | paged selector results with chosen fields and ordering |
+| `get_element` | attributes, properties, type, materials, and container |
+| `get_psets` | property and quantity sets |
+| `get_schema_docs` | IFC entity, pset, or property definitions |
 
-Use `search_elements` when the user says a name such as `Wall-1` or supplies a
-GlobalId. It performs case-insensitive text matching; a bare IFC class or input
-containing `=` is treated as a selector. Use `query_elements` when the agent
-already has deliberate IfcOpenShell selector syntax:
+Use `search_elements` for user-facing names and GlobalIds. Use
+`query_elements` for deliberate IfcOpenShell selectors:
 
 ```text
 IfcWall
@@ -52,339 +45,220 @@ IfcWall, Pset_WallCommon.FireRating=F30
 IfcElement, Name=/W.*1/
 ```
 
-The default page size is 50. Syntax errors return `INVALID_QUERY` with a short
-selector guide.
+The default page is 50 rows. IFC read operations accept an optional resident
+`model` ID; omit it to use the active model.
 
-Model-reading tools such as project info, spatial structure, element queries,
-validation, quantities, clashes, and georeferencing accept an optional resident
-`model` ID. Omit it to use the active model.
+## Knowledge and project evidence
 
-## Knowledge
+| tool | purpose |
+| ---- | ------- |
+| `search_ifc_knowledge` | search IFC references, APIs, recipes, and project documents |
+| `get_knowledge_record` | read one result by key |
+| `list_project_documents` | list indexed documents and images with hashes |
+| `get_project_reference_image` | load one indexed image as vision input |
+| `get_project_document_page` | render one PDF page as vision input |
+| `get_api_docs` | inspect an `ifcopenshell.api` signature or search API names |
+| `get_measurement_recipe` | resolve the project method and citation for one property |
 
-The knowledge index is local and built from the installed IfcOpenShell package.
+`search_ifc_knowledge` accepts `corpus="builtin"`, `"project"`, or `"all"`.
+See [Knowledge](knowledge.md) and [Measurement recipes](agents.md#measurement-recipes).
 
-| tool | use |
-| ---- | --- |
-| `search_ifc_knowledge` | search entities, property sets, properties, types, APIs, recipes, and ingested project documents |
-| `get_knowledge_record` | read one result by its returned key |
-| `list_project_documents` | list indexed project documents and images with provenance and hashes |
-| `get_project_reference_image` | load one indexed project image as native vision input |
-| `get_project_document_page` | render one indexed PDF page as native vision input for diagrams, scans, and layout |
-| `get_api_docs` | get an exact `ifcopenshell.api` signature or search API names |
-| `get_measurement_recipe` | the project's measurement method for one class and property, with its citation |
+## Analysis and measurement
 
-`search_ifc_knowledge` accepts plain words, an optional kind and schema, a
-result limit, and a `corpus` (`builtin`, `project`, or `all`). See
-[Knowledge index](knowledge.md) for the project document corpus and
-[Building agent applications](agents.md#measurement-recipes) for recipes.
+| tool | purpose |
+| ---- | ------- |
+| `validate_model` | schema validation and grouped issues |
+| `validate_ids` | buildingSMART IDS validation; requires `[validation]` |
+| `compute_quantities` | stored or geometry-derived quantities by group |
+| `detect_clashes` | sampled mesh or bounding-box overlap and clearance |
+| `get_element_geometry` | SI bounding box, axes, footprint, volume, and confidence |
+| `inspect_element_mesh` | raw mesh topology and health evidence |
+| `analyze_element_geometry` | IFC profile parameters cross-checked with mesh sections |
+| `measure_elements` | stored quantity, layer sum, or geometry extent |
+| `measure_directional_extent` | support extent along a world, local, or principal direction |
+| `measure_local_thickness` | ordered material and void intervals through one point |
+| `slice_element_mesh` | arbitrary mesh cut with outline, area, and reconstruction frame |
+| `measure_distance` | centroid, box gap, and sampled surface distance |
+| `get_georeferencing` | CRS, map conversion, and north directions |
+| `export_csv` | audited CSV inside an allowed directory |
+| `export_measurement_report` | audited Markdown report registered as an artifact |
 
-## Analysis
+`analyze_element_geometry` is the broad single-element probe. It reports exact
+profile values where available, measured mesh values, their sources, and
+mismatch flags. Dedicated measurement tools are better for repeatable batches.
 
-| tool | key inputs | result |
-| ---- | ---------- | ------ |
-| `validate_model` | `express_rules=false`, `max_issues=200` | schema validity and grouped issues |
-| `validate_ids` | IDS path, failure limit | buildingSMART IDS results; needs the validation extra |
-| `compute_quantities` | selector, grouping, quantity names, `source` | stored `Qto_*` totals in model units; `source="derived"` fills missing values from geometry |
-| `detect_clashes` | two selectors, tolerance, precision, optional model IDs | overlap or clearance pairs |
-| `get_element_geometry` | selector or GlobalIds | per-element mesh geometry in SI metres: bounding box, placement-axis extents, footprint, volume, confidence |
-| `inspect_element_mesh` | selector or GlobalIds, backend, tessellation profile | health of the untouched mesh: components, watertight/winding/volume gates, problem-face/edge counts, source hash and settings |
-| `analyze_element_geometry` | selector or GlobalIds, stations, `include_outline` | the full probe for a few elements: exact profile parameters from the IFC definition plus measured mesh cross sections (width, height, wall thickness distribution, perimeter, area), merged into `dimensions` with a named source per value |
-| `measure_elements` | selector or GlobalIds, method, method params | one metric per element by an explicit method (`stored_qto`, `layer_sum`, `geometry_extent`), in file units and SI |
-| `measure_directional_extent` | selector or GlobalIds, direction, world/local/principal frame | outside-to-outside support extent with normalized direction, basis, support points and mesh hash |
-| `measure_local_thickness` | one GlobalId, world origin, direction and frame | ordered line/mesh hits plus every material and void/gap interval; refuses interval pairing when topology is unsafe |
-| `slice_element_mesh` | one GlobalId, plane origin/normal and frame | arbitrary mesh cut with closure/area/perimeter, bounded outline, world reconstruction frame, health and source evidence |
-| `measure_distance` | two selectors or GlobalId lists | centroid distance, bounding-box gap, and a named sampled surface-distance upper bound; solid overlap needs valid meshes plus occupancy evidence |
-| `get_georeferencing` | none | CRS, map conversion, and north directions |
-| `export_csv` | selector, path, fields, properties | audited CSV report inside an allowed directory |
-| `export_measurement_report` | selector or GlobalIds, path, title, notes | audited markdown measurement report, registered as an artifact |
+Mesh analysis uses the opt-in analysis tessellation profile and records its
+settings and source hash. It does not repair the source mesh. Invalid,
+non-manifold, or inconsistently wound geometry may return observable evidence
+without claiming reliable volume or material intervals.
 
-`analyze_element_geometry` is the "measure everything about this object" tool.
-It reads parameterized profiles (I, U, Z, C, T, L, rectangle, circle, hollow
-variants) and arbitrary profile outlines from the file, slices the triangle
-mesh across the element's long axis, and reports both sides: agreement is the
-cross-check, disagreement over 5% raises a `mismatch:*` flag, and a wall-style
-element whose extrusion axis is not its long axis is flagged
-`profile_plane_differs` instead of being force-compared. Thickness comes as a
-distribution (median and quartiles) plus a two-group split when flange and web
-plates differ, matching the `t_f`/`t_w` convention of profile drawings.
+`inspect_element_mesh`, `slice_element_mesh`, and `measure_local_thickness`
+support `backend="auto"`. Install `ifc-console[geometry]` for Trimesh health
+predicates; built-in NumPy checks remain available.
 
-Mesh-specific analysis uses an opt-in `analysis` tessellation profile (0.5 mm
-linear deflection, 0.25 rad angular deflection, 100,000 triangles per element)
-instead of silently reusing the standard 20,000-triangle viewer/takeoff mesh.
-The profile and triangle budget are part of the cache key and every evidence
-record. Shell reorientation and mesh repair remain disabled so a bad source
-mesh is reported, not hidden.
+Clash precision is `sampled` by default. `fast` uses bounding boxes and can
+produce false positives. Clearance always reports its bounding-box method.
 
-`inspect_element_mesh`, `slice_element_mesh`, and `measure_local_thickness` accept
-`backend="auto"`: the optional Trimesh adapter supplies its standard health
-predicates when installed, with `process=False` on independent array copies;
-otherwise the built-in NumPy checks run. Install it with:
+## Whole-model insight
 
-```bash
-uv tool install "ifc-console[geometry]"
-```
+| tool | purpose |
+| ---- | ------- |
+| `compare_models` | changes between two open revisions |
+| `query_spatial` | geometric relations to an element or box |
+| `check_model_health` | duplicate IDs, orphaning, geometry, placement, storey, and type findings |
 
-The source hierarchy remains: exact IFC profile or stored material layer,
-then the exact swept/parametric representation exposed by IfcOpenShell, then a
-validated analysis mesh, and finally bounding extents. A directional extent is
-never labelled material thickness. Likewise, an open, inward-wound,
-non-manifold, or unbalanced-intersection mesh returns its observable hits but
-does not invent material intervals or a reliable volume.
+`compare_models` pairs by GlobalId, then falls back to class, type, and name.
+It reports added, removed, moved, geometry, property, type, and container
+changes. Attach the newer file, then pass its ID as `other_model`.
 
-Clash precision choices:
+`query_spatial` supports `inside`, `crosses`, `above`, `below`,
+`within_distance`, and `within_box`. Results include method and confidence;
+mesh-dependent confidence drops when the target is not watertight.
 
-- `sampled` (default) checks triangle meshes and estimates overlap;
-- `fast` uses bounding boxes and may report false positives;
-- clearance always measures bounding-box gaps.
-
-Openings, spaces, grids, annotations, and virtual elements are skipped unless
-`physical_only=false`. Cross-model checks use `model` and `other_model`.
-
-## Model insight
-
-Whole-model questions rather than per-element ones. All three are reads and work
-in `ask` mode.
-
-| tool | key inputs | result |
-| ---- | ---------- | ------ |
-| `compare_models` | `other_model`, optional selector and tolerances | what changed between two open revisions, grouped by change kind and class |
-| `query_spatial` | relation, target GlobalId or box, candidate selector | elements standing in a geometric relation to that target |
-| `check_model_health` | optional `checks`, `max_findings`, `max_elements` | data-quality findings grouped by check, with severities and GlobalIds |
-
-### `compare_models`
-
-`model` is the older baseline, `other_model` the newer revision, so a reported
-move is where the element went. Attach the second file first:
-
-```text
-attach path=... -> list_models -> compare_models other_model=<model_id>
-```
-
-Elements are paired by GlobalId. When the two files barely share ids, which is
-what happens when an exporter regenerates them, the diff falls back to matching
-on class, type, and name and reports `matcher="signature"` with a note. Change
-kinds are `added`, `removed`, `moved`, `geometry_changed`, `property_changed`,
-`type_changed`, and `container_changed`; one element can be in several at once.
-Positions and volumes come from the triangle meshes in SI metres, so a move is a
-real move rather than an edited placement, and `move_tolerance` (metres) and
-`volume_tolerance` (a fraction) set what counts. Property comparison uses each
-element's own property sets, not the values it inherits from its type, so a type
-swap is reported once instead of once per property. `global_ids` groups the
-change set per kind, ready for `apply_color_theme`.
-
-### `query_spatial`
-
-Answers containment that the selector's `location=` facet cannot, because most
-exporters contain elements in the storey rather than the space:
-
-| relation | question | method |
-| -------- | -------- | ------ |
-| `inside` | what is in this space or room | point-in-solid on the candidate's centroid and box corners |
-| `crosses` | what this duct or pipe passes through | sampled solid occupancy, with `enclosed` marking what only sits inside |
-| `above`, `below` | what sits directly over or under it | plan overlap of bounding boxes, nearest gap first |
-| `within_distance` | what is within N metres | closest-point surface distance |
-| `within_box` | what falls inside these bounds | bounding-box containment, exact bounds or the target's own box |
-
-Every result names the `method` it used and a `confidence`. Point-in-solid tests
-are unreliable on meshes that are not closed, so the `target` block reports
-`watertight` and the result drops to low confidence when it is false. `distance`
-is the reach for `within_distance` and the gap cap for `above` and `below`.
-
-### `check_model_health`
-
-Checks, in report order: `duplicate_global_ids`, `orphaned_elements`,
-`degenerate_solids`, `placement_outliers`, `duplicate_placements`,
-`model_extent`, `empty_storeys`, `unused_types`. Each finding carries a
-severity, a count, examples, and `global_ids` for `highlight_elements`.
-
-This is not `validate_model`. That one runs the schema: attribute types,
-cardinality, uniqueness, and where-rules. A file can satisfy all of it and still
-have elements in no spatial container, representations with no solid, a beam
-forty kilometres from site, the same wall modelled twice, or an extent that
-contradicts its declared length unit.
-
-The four geometry checks tessellate the model. Above `max_elements` they are
-skipped and say so in `checks`, rather than silently sampling. Pass `checks` to
-run only the cheap ones.
+`check_model_health` complements `validate_model`: it finds modeling defects
+that may still satisfy the IFC schema. Geometry checks are skipped, never
+silently sampled, when the model exceeds `max_elements`.
 
 ## Jobs and artifacts
 
-Use jobs for validation that should not block a client connection.
+Validation jobs run outside the client connection:
 
 ```text
 submit_validation_job -> get_job -> artifact metadata
                               \-> cancel_job
 ```
 
-| tool | use |
-| ---- | --- |
-| `submit_validation_job` | start schema and optional IDS validation in a restricted worker |
-| `get_job` | read state, phase, progress, events, failures, and artifacts |
-| `list_jobs` | list recent durable jobs |
-| `cancel_job` | request cancellation before a transaction commit point |
-| `list_artifacts` | list content-addressed output metadata |
-| `get_artifact` | verify one artifact's metadata |
+| tool | purpose |
+| ---- | ------- |
+| `submit_validation_job` | start schema and optional IDS validation |
+| `get_job` / `list_jobs` | inspect durable job state and output |
+| `cancel_job` | request cancellation before a commit point |
+| `list_artifacts` / `get_artifact` | inspect verified output metadata |
 
-Validation jobs require a clean model because the worker verifies the file on
-disk. MCP returns artifact metadata only; export bytes through the SDK or
-`ifc-console artifacts export`.
+Jobs require a clean model because workers verify the file on disk. Export
+artifact bytes with the SDK or `ifc-console artifacts export`.
 
 ## Structured change previews
 
 ```text
-AI tool: preview -> inspect ChangeSet
-Human SDK/CLI: approve -> commit -> optional restore
+AI operation: preview -> inspect ChangeSet
+Host SDK/CLI: approve -> commit -> optional restore
 ```
 
-| tool | use |
-| ---- | --- |
-| `preview_property_change` | preview one property value across selected elements |
+| tool | purpose |
+| ---- | ------- |
+| `preview_property_change` | preview one property value on selected elements |
 | `preview_classification_assignment` | preview a direct classification assignment |
-| `get_change_set` | inspect a stored revision-bound ChangeSet |
-| `list_ai_authored_properties` | inventory every AI-authored value in the model |
+| `get_change_set` | inspect a revision-bound ChangeSet |
+| `list_ai_authored_properties` | inventory values under `IfcConsole_AI_` |
 
-Previewing changes does not modify the model. AI-visible tools cannot approve,
-commit, restore, or change the mode. Those actions remain direct SDK and CLI
-operations.
-
-Property creation requires `create_missing=true`. Set `nominal_type` when the
-exact IFC value type cannot be inferred.
-
-Values written on an agent's behalf go only into the reserved `IfcConsole_AI_`
-property sets and carry an `AI_Provenance` record naming the agent, model,
-method, and source document. `list_ai_authored_properties` returns that
-inventory, so the AI-assisted layer stays separable from the authored model by
-prefix match. See [Marking what the model wrote](agents.md#marking-what-the-model-wrote).
+Preview does not modify the model. AI-visible operations cannot approve,
+commit, restore, save, or change mode. Agent proposal tools bundle each value
+with its per-property provenance record in one ChangeSet. See
+[AI-marked proposals](agents.md#ai-marked-proposals).
 
 ## Generated Python
 
-### `execute_ifc_code`
+`execute_ifc_code` accepts `code` and an audited `description`. The environment
+provides `ifc`, `ifcopenshell`, `ifc_api`, common utilities,
+`query(selector)`, and `get_ifc_file()`.
 
-Inputs:
-
-- `code`: Python source;
-- `description`: a short intent recorded in the activity feed and audit log.
-
-The environment provides `ifc`, `ifcopenshell`, `ifc_api`, common IfcOpenShell
-utilities, `query(selector)`, and `get_ifc_file()`.
-
-Query code runs in `ask` or `edit`. Mutating code requires `edit`. Eligible
-read-only code uses the sandbox; the response reports `sandboxed` and explains
-any fallback. See [Safety](safety.md) and [Code sandbox](sandbox.md).
-
-The result includes stdout, the final expression, classification, mutation
-state, sandbox state, duration, and any note.
+Read-only code is allowed in `ask` or `edit`; mutations require `edit`.
+Eligible reads use the generated-code sandbox. Results include stdout, final
+expression, classification, mutation state, sandbox state, and duration. See
+[Safety](safety.md) and [Code sandbox](sandbox.md).
 
 ## Files and workspace
 
-| tool | use |
-| ---- | --- |
-| `list_ifc_files` | list IFC files in allowed directories and recents |
-| `open_ifc_file` | replace the active model; refuses unsaved changes |
-| `save_ifc_file` | atomic save with backup; requires edit mode and AI-save opt-in |
-| `find_files` | search supported files without opening them |
-| `list_models` | list resident models, companion files, and memory budget |
-| `attach` | add a read-only IFC or companion IDS, BCF, or CSV |
-| `detach` | release an attachment; refuses dirty models |
-| `set_active_model` | move the writable focus to another resident model |
+| tool | purpose |
+| ---- | ------- |
+| `list_ifc_files` | allowed IFC files and recents |
+| `open_ifc_file` | replace the active model, refusing unsaved changes |
+| `save_ifc_file` | atomic save with backup and AI-save policy |
+| `find_files` | find supported files without opening them |
+| `list_models` | resident models, companions, and memory budget |
+| `attach` / `detach` | add or release IFC, IDS, BCF, or CSV attachments |
+| `set_active_model` | move writable focus to a resident model |
 
-Only the active model is writable. Attached IFC files remain read-only.
-`detect_clashes` can compare two resident models, and `validate_ids` accepts an
-attached IDS alias.
+Only the active model is writable. Paths must remain inside the launch
+directory, model directory, or an explicitly allowed root.
 
-Paths must stay inside the launch directory, model directory, or an explicitly
-allowed root.
+## Agent skills
 
-## Skill tools
+Skills are Markdown procedures in `.ifc-console/agents/skills/`.
 
-Skills are reusable procedures saved as markdown in
-`.ifc-console/agents/skills/`, one file per skill with a small front-matter
-header (`name`, `description`, `applies_to`). Agents check them at the start
-of a task and follow the one that matches instead of rediscovering a method;
-after solving a novel task, an agent can offer to record the method. The
-files are plain markdown, so they can also be written and reviewed by hand,
-and they appear in the panel's Skills tab.
+| tool | purpose |
+| ---- | ------- |
+| `list_agent_skills` | names, descriptions, and applicability |
+| `get_agent_skill` | one complete procedure |
+| `save_agent_skill` | create or update a skill with host approval |
 
-| tool | use |
-| ---- | --- |
-| `list_agent_skills` | the saved skills with descriptions and applicability |
-| `get_agent_skill` | one skill's full markdown procedure |
-| `save_agent_skill` | record a new skill, or update one with `overwrite=true` |
+## Viewer operations
 
-`save_agent_skill` carries the `file:write` capability, so agent surfaces ask
-the user for approval before a skill lands on disk.
+Viewer operations remain discoverable even when assets or a browser tab are
+not ready:
 
-## Viewer tools
-
-These tools are always discoverable. Their live availability depends on the
-optional viewer and a connected browser tab; the stable catalog lets MCP
-clients that cache `tools/list` activate the viewer without reconnecting:
-
-| tool | use |
-| ---- | --- |
-| `open_viewer` | enable the viewer, open it in the local browser, and optionally wait for the tab to connect |
-| `get_viewer_selection` | read the user's selected elements |
-| `get_viewer_measurements` | read every measurement taken, by the user or by you |
-| `highlight_elements` | color, isolate, clear, or frame up to 500 elements |
+| tool | purpose |
+| ---- | ------- |
+| `open_viewer` | enable and open the local browser surface |
+| `get_viewer_selection` | selected elements by model |
+| `get_viewer_measurements` | measurements from user or agent |
+| `highlight_elements` | color, isolate, clear, or frame elements |
 | `apply_color_theme` | paint labeled groups and show a legend |
-| `get_viewer_screenshot` | capture a preset or current view as JPEG or PNG |
-| `control_viewer` | section, orient, select, isolate, hide, focus, measure, and save viewpoints |
+| `get_viewer_screenshot` | capture a preset or current view |
+| `control_viewer` | orient, section, select, focus, measure, and save viewpoints |
 
-All viewer tools are visual and allowed in either mode. `control_viewer`
-measures against the geometry on screen, which answers questions the schema
-does not: a rotated wall's real thickness, the clear distance between two
-elements, the area inside an outline. Its `focus` action isolates and frames
-elements directly, so the user and agent see the same thing; `unfocus` returns
-to the model without creating a history row. See
-[3D viewer](viewer.md).
-
-`describe_capabilities` is the live compatibility report. For every shared
-operation it reports required capabilities, whether session policy permits the
-call, and availability such as `ready`, `call_open_viewer`,
-`waiting_for_viewer_tab`, `viewer_extra_missing`, or
-`unavailable_on_transport`. The same operation registry powers MCP, built-in chat,
-the agent runtime, and the Python SDK, so shared tools do not drift between
-interfaces.
+The handlers report states such as `ready`, `call_open_viewer`,
+`waiting_for_viewer_tab`, `viewer_extra_missing`, and
+`unavailable_on_transport`. See [3D viewer](viewer.md).
 
 ## Error codes
 
-Every failure includes a `hint`. The table groups codes with the same recovery.
+Every error includes a recovery `hint`. The stable registry is grouped below
+for clients that branch on `code`:
 
-| code | meaning |
-| ---- | ------- |
-| `APPROVAL_MISMATCH` / `APPROVAL_NOT_FOUND` / `APPROVAL_REQUIRED` | approval is missing or does not match the ChangeSet |
-| `ARTIFACT_CORRUPT` / `ARTIFACT_NOT_FOUND` / `ARTIFACT_EXPORT_FAILED` | artifact is missing, invalid, or cannot be exported |
-| `ARTIFACT_GC_CONFLICT` / `ARTIFACT_GC_FAILED` / `ARTIFACT_STORE_BUSY` / `ARTIFACT_STORE_CORRUPT` | artifact storage or collection failed safely |
-| `ASK_MODE_BLOCKED` / `AI_SAVE_DISABLED` / `CAPABILITY_DENIED` | current mode, save policy, or authority does not allow the operation |
-| `BATCH_NOT_FOUND` / `BATCH_NOT_RESUMABLE` / `BATCH_SERVICE_CLOSED` / `BATCH_STORE_FAILED` / `BATCH_SOURCE_CHANGED` / `BATCH_TIMEOUT` | batch is unavailable, stale, or failed |
-| `CHANGESET_INVALID` / `CHANGESET_NOT_FOUND` | ChangeSet is invalid or unknown |
-| `CHAT_FAILED` | provider, stream, or chat tool loop failed |
-| `COMMIT_FAILED` / `COMMIT_NOT_FOUND` | commit failed or is unknown |
-| `CONSOLE_AUTH_FAILED` / `CONSOLE_NOT_RUNNING` | bridge cannot authenticate to or reach the console |
-| `EXEC_BLOCKED` / `EXEC_ERROR` / `EXEC_TIMEOUT` | generated code was denied, failed, or timed out |
-| `EXTRA_NOT_INSTALLED` | an optional dependency is missing |
-| `FILE_EXISTS` / `FILE_NOT_FOUND` | destination exists or source is missing |
-| `FRAME_UNAVAILABLE` | requested local or principal geometry frame cannot be derived; retry in the world frame |
-| `GEOMETRY_ANALYSIS_FAILED` | selected geometry backend could not inspect the mesh; retry with the built-in backend |
-| `INTERNAL_ERROR` | unexpected product error; inspect local logs |
-| `INVALID_GEOMETRY` | geometry input is empty, non-finite, degenerate, or otherwise unsuitable for the requested analysis |
-| `INVALID_INPUT` / `INVALID_OUTPUT` / `INVALID_QUERY` | arguments, output, or selector syntax is invalid |
-| `JOB_CANCELLED` / `JOB_NOT_CANCELLABLE` / `JOB_NOT_FOUND` / `JOB_RESULT_INVALID` / `JOB_SPEC_INVALID` / `JOB_SERVICE_CLOSED` / `JOB_WORKER_FAILED` / `JOB_TIMEOUT` | durable job was cancelled, unavailable, invalid, or failed |
-| `KNOWLEDGE_DISABLED` / `KNOWLEDGE_NOT_READY` | knowledge search is disabled or still building |
-| `MODEL_BUSY` | timed-out model worker requires `/reload` |
-| `MODEL_NOT_FOUND` / `NO_MODEL_LOADED` / `MODEL_READ_ONLY` / `MODEL_TOO_LARGE` | requested model is missing, read-only, or over budget |
-| `NOT_FOUND` / `PROPERTY_NOT_FOUND` / `NO_GEOMETRY` / `NO_MATCH` | requested data or usable geometry was not found |
-| `PATH_NOT_ALLOWED` | path is outside allowed directories |
-| `RESTORE_CONFLICT` / `RESTORE_NOT_FOUND` | restore is stale or unknown |
-| `RESULT_TOO_LARGE` / `TOO_MANY_ELEMENTS` | narrow the request |
-| `REVISION_CONFLICT` / `SOURCE_CHANGED` | source changed after planning |
-| `SANDBOX_UNAVAILABLE` | strict sandbox worker is unavailable |
-| `TRANSACTION_INTERRUPTED` / `TRANSACTION_RECOVERY_REQUIRED` / `TRANSACTION_JOURNAL_BUSY` / `TRANSACTION_JOURNAL_CORRUPT` / `TRANSACTION_JOURNAL_INVALID` | transaction stopped or its journal needs recovery |
-| `UNSAVED_CHANGES` | operation would discard dirty model state |
-| `VALIDATION_FAILED` | validation could not complete |
-| `VIEWER_BUSY` / `VIEWER_ERROR` / `VIEWER_NOT_CONNECTED` / `VIEWER_TIMEOUT` / `VIEWER_UNAVAILABLE` | viewer is reloading the model, unavailable, off this transport, or failed to answer |
-| `WORKFLOW_CANCELLED` / `WORKFLOW_NOT_FOUND` / `WORKFLOW_NOT_RESUMABLE` / `WORKFLOW_DEPENDENCY_FAILED` / `WORKFLOW_STEP_FAILED` / `WORKFLOW_SUPERVISOR_FAILED` / `WORKFLOW_INPUT_EMPTY` / `WORKFLOW_INPUT_LIMIT` / `WORKFLOW_INTERRUPTED` / `WORKFLOW_TIMEOUT` / `WORKFLOW_MANIFEST_INVALID` / `WORKFLOW_MANIFEST_TOO_LARGE` / `WORKFLOW_PATH_INVALID` / `WORKFLOW_SERVICE_CLOSED` / `WORKFLOW_STORE_CORRUPT` / `WORKFLOW_STORE_FAILED` / `WORKFLOW_SOURCE_CHANGED` | workflow is invalid, stale, unavailable, or failed |
-| `WORKSPACE_BUDGET` / `WORKSPACE_DISABLED` | workspace indexing is disabled or over budget |
+- Policy and session: `AI_SAVE_DISABLED`, `ASK_MODE_BLOCKED`,
+  `CAPABILITY_DENIED`, `CONSOLE_AUTH_FAILED`, `CONSOLE_NOT_RUNNING`.
+- Approval and changes: `APPROVAL_MISMATCH`, `APPROVAL_NOT_FOUND`,
+  `APPROVAL_REQUIRED`, `CHANGESET_INVALID`, `CHANGESET_NOT_FOUND`,
+  `COMMIT_FAILED`, `COMMIT_NOT_FOUND`, `RESTORE_CONFLICT`,
+  `RESTORE_NOT_FOUND`, `REVISION_CONFLICT`.
+- Input and queries: `INVALID_INPUT`, `INVALID_OUTPUT`, `INVALID_QUERY`,
+  `NOT_FOUND`, `NO_MATCH`, `PROPERTY_NOT_FOUND`, `RESULT_TOO_LARGE`,
+  `TOO_MANY_ELEMENTS`.
+- Models and files: `FILE_EXISTS`, `FILE_NOT_FOUND`, `MODEL_BUSY`,
+  `MODEL_NOT_FOUND`, `MODEL_READ_ONLY`, `MODEL_TOO_LARGE`,
+  `NO_MODEL_LOADED`, `PATH_NOT_ALLOWED`, `SOURCE_CHANGED`,
+  `UNSAVED_CHANGES`.
+- Runtime: `CHAT_FAILED`, `EXEC_BLOCKED`, `EXEC_ERROR`, `EXEC_TIMEOUT`,
+  `EXTRA_NOT_INSTALLED`, `INTERNAL_ERROR`, `SANDBOX_UNAVAILABLE`,
+  `STORE_BUSY`, `VALIDATION_FAILED`.
+- Geometry: `FRAME_UNAVAILABLE`, `GEOMETRY_ANALYSIS_FAILED`,
+  `INVALID_GEOMETRY`, `NO_GEOMETRY`.
+- Knowledge and workspace: `KNOWLEDGE_DISABLED`, `KNOWLEDGE_NOT_READY`,
+  `WORKSPACE_BUDGET`, `WORKSPACE_DISABLED`.
+- Viewer: `VIEWER_BUSY`, `VIEWER_ERROR`, `VIEWER_NOT_CONNECTED`,
+  `VIEWER_TIMEOUT`, `VIEWER_UNAVAILABLE`.
+- Artifacts: `ARTIFACT_CORRUPT`, `ARTIFACT_EXPORT_FAILED`,
+  `ARTIFACT_GC_CONFLICT`, `ARTIFACT_GC_FAILED`, `ARTIFACT_NOT_FOUND`,
+  `ARTIFACT_STORE_BUSY`, `ARTIFACT_STORE_CORRUPT`.
+- Transactions: `TRANSACTION_INTERRUPTED`, `TRANSACTION_JOURNAL_BUSY`,
+  `TRANSACTION_JOURNAL_CORRUPT`, `TRANSACTION_JOURNAL_INVALID`,
+  `TRANSACTION_RECOVERY_REQUIRED`.
+- Jobs: `JOB_CANCELLED`, `JOB_NOT_CANCELLABLE`, `JOB_NOT_FOUND`,
+  `JOB_RESULT_INVALID`, `JOB_SERVICE_CLOSED`, `JOB_SPEC_INVALID`,
+  `JOB_TIMEOUT`, `JOB_WORKER_FAILED`.
+- Batches: `BATCH_CANCELLED`, `BATCH_CHILD_FAILED`, `BATCH_INTERRUPTED`,
+  `BATCH_NOT_FOUND`, `BATCH_NOT_RESUMABLE`, `BATCH_SERVICE_CLOSED`,
+  `BATCH_SOURCE_CHANGED`, `BATCH_STORE_FAILED`, `BATCH_SUPERVISOR_FAILED`,
+  `BATCH_TIMEOUT`.
+- Workflows: `WORKFLOW_CANCELLED`, `WORKFLOW_DEPENDENCY_FAILED`,
+  `WORKFLOW_INPUT_EMPTY`, `WORKFLOW_INPUT_LIMIT`, `WORKFLOW_INTERRUPTED`,
+  `WORKFLOW_MANIFEST_INVALID`, `WORKFLOW_MANIFEST_TOO_LARGE`,
+  `WORKFLOW_NOT_FOUND`, `WORKFLOW_NOT_RESUMABLE`, `WORKFLOW_PATH_INVALID`,
+  `WORKFLOW_SERVICE_CLOSED`, `WORKFLOW_SOURCE_CHANGED`,
+  `WORKFLOW_STEP_FAILED`, `WORKFLOW_STORE_CORRUPT`, `WORKFLOW_STORE_FAILED`,
+  `WORKFLOW_SUPERVISOR_FAILED`, `WORKFLOW_TIMEOUT`.
 
 ## Resources and prompts
 

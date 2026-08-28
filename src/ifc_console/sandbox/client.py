@@ -11,6 +11,7 @@ from __future__ import annotations
 import contextlib
 import importlib.util
 import itertools
+import json
 import os
 import queue
 import subprocess
@@ -21,12 +22,19 @@ from pathlib import Path
 from typing import Any
 
 from ifc_console.sandbox import protocol
-from ifc_console.sandbox.limits import ProcessJail
+from ifc_console.sandbox.limits import ProcessJail, isolated_process_kwargs
 from ifc_console.sandbox.policy import SandboxPolicy
 
 _STARTUP_TIMEOUT = 120.0
 _STDERR_KEEP = 16
 _STDERR_CHUNK = 4096
+_WORKER_BOOTSTRAP = (
+    "import json,runpy,sys;"
+    "paths,module,*args=sys.argv[1:];"
+    "sys.path.extend(json.loads(paths));"
+    "sys.argv=[module,*args];"
+    "runpy.run_module(module,run_name='__main__')"
+)
 
 
 class SandboxError(RuntimeError):
@@ -51,7 +59,7 @@ def worker_executable() -> str:
     A Windows venv `python.exe` is a trampoline that re-launches the base
     interpreter as a child process, which the sandbox job object forbids.
     Starting the base interpreter directly keeps the one-process limit usable;
-    the venv's packages still come in through PYTHONPATH.
+    the venv's packages are added by the isolated worker bootstrap.
     """
     base = getattr(sys, "_base_executable", None)
     if base and base != sys.executable and os.path.isfile(base):
@@ -83,16 +91,31 @@ def worker_path(narrow: bool = True) -> list[str]:
     return list(dict.fromkeys(resolved)) or entries
 
 
-def _child_env(scratch: Path, *, narrow_path: bool = True) -> dict[str, str]:
+def worker_command(
+    module: str,
+    *args: str | os.PathLike[str],
+    narrow_path: bool = True,
+) -> tuple[str, ...]:
+    """Run a worker after the standard library, without site customisation."""
+    return (
+        worker_executable(),
+        "-I",
+        "-S",
+        "-B",
+        "-u",
+        "-X",
+        "utf8",
+        "-c",
+        _WORKER_BOOTSTRAP,
+        json.dumps(worker_path(narrow_path)),
+        module,
+        *(os.fspath(arg) for arg in args),
+    )
+
+
+def _child_env(scratch: Path) -> dict[str, str]:
     """A minimal environment. Nothing is inherited that was not put here."""
-    paths = worker_path(narrow_path)
     env = {
-        "PYTHONPATH": os.pathsep.join(paths),
-        "PYTHONNOUSERSITE": "1",
-        "PYTHONDONTWRITEBYTECODE": "1",
-        "PYTHONUNBUFFERED": "1",
-        "PYTHONSAFEPATH": "1",
-        "PYTHONUTF8": "1",
         "TMPDIR": str(scratch),
         "TEMP": str(scratch),
         "TMP": str(scratch),
@@ -153,15 +176,15 @@ class SandboxProcess:
     def _spawn(self, timeout: float, *, single_process: bool, narrow_path: bool) -> dict[str, Any]:
         self.scratch.mkdir(parents=True, exist_ok=True)
         self.jail = ProcessJail(self.policy.memory_mb, single_process=single_process)
-        kwargs: dict[str, Any] = {}
+        kwargs: dict[str, Any] = isolated_process_kwargs()
         if sys.platform == "win32":
             kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
         self.proc = subprocess.Popen(
-            [worker_executable(), "-s", "-B", "-m", "ifc_console.sandbox.worker"],
+            worker_command("ifc_console.sandbox.worker", narrow_path=narrow_path),
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            env=_child_env(self.scratch, narrow_path=narrow_path),
+            env=_child_env(self.scratch),
             cwd=str(self.scratch),
             close_fds=True,
             **kwargs,

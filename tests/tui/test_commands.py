@@ -523,6 +523,35 @@ async def test_status_reports_the_chat_panel(console) -> None:
     assert "chat     off" in console.text
 
 
+# ----------------------------------------------------------- the agent launcher
+async def test_bare_agent_opens_general_directly(
+    console: FakeConsole, no_browser: list[str]
+) -> None:
+    console.core.server_running = True
+
+    await commands.dispatch(console, "/agent")
+
+    assert len(no_browser) == 1
+    assert "agent=general" in no_browser[0]
+    assert console.clipboard == no_browser[0]
+    assert console.core.viewer.enabled is True
+    assert console.core.chat.enabled is True
+    assert "General" in console.text
+    assert "available agents" not in console.text
+
+
+async def test_agent_list_prints_every_agent_without_opening_one(
+    console: FakeConsole, no_browser: list[str]
+) -> None:
+    await commands.dispatch(console, "/agent list")
+
+    assert "available agents" in console.text
+    for info in console.core.agent_packs.installed():
+        assert info.name in console.text
+    assert no_browser == []
+    assert console.clipboard == ""
+
+
 # ------------------------------------------------ when the server never bound
 async def test_browser_commands_explain_a_port_conflict(console) -> None:
     """"server is not running" is useless on its own; say what is holding it."""

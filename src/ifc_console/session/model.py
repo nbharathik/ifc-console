@@ -48,6 +48,8 @@ class ModelSession:
         self.dirty: bool = False
         self.tainted: bool = False
         self.poisoned: bool = False
+        self._timeout_poisoned = False
+        self._cancelled_jobs = 0
         # Monotonic change counter: bumped on load, save, and every mutation.
         # fingerprint+revision is the viewer's ETag for the in-memory model.
         self.revision: int = 0
@@ -124,11 +126,24 @@ class ModelSession:
                 "Ask the user to run /reload in the ifc-console terminal, then retry.",
             )
         loop = asyncio.get_running_loop()
-        future = loop.run_in_executor(self._pool, fn)
+        work = self._pool.submit(fn)
+        future = asyncio.wrap_future(work, loop=loop)
         try:
             return await asyncio.wait_for(future, timeout=timeout)
+        except asyncio.CancelledError:
+            self.poisoned = True
+            self._cancelled_jobs += 1
+            generation = self._generation
+
+            def completed(_future: object) -> None:
+                with contextlib.suppress(RuntimeError):
+                    loop.call_soon_threadsafe(self._finish_cancelled_job, generation)
+
+            work.add_done_callback(completed)
+            raise
         except asyncio.TimeoutError:
             self.poisoned = True
+            self._timeout_poisoned = True
             hint = (
                 "The worker is still running and the session is paused; ask the user "
                 "to run /reload in the ifc-console terminal."
@@ -138,6 +153,13 @@ class ModelSession:
             else:
                 message = f"the operation exceeded {timeout:.0f}s."
             raise ToolError(timeout_code, message, hint) from None
+
+    def _finish_cancelled_job(self, generation: int) -> None:
+        if generation != self._generation:
+            return
+        self._cancelled_jobs = max(0, self._cancelled_jobs - 1)
+        if not self._cancelled_jobs and not self._timeout_poisoned:
+            self.poisoned = False
 
     # -- lifecycle -------------------------------------------------------------
     def _load_sync(self, path: Path, generation: int) -> None:
@@ -216,6 +238,8 @@ class ModelSession:
         old = self._pool
         self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ifc-model")
         old.shutdown(wait=False, cancel_futures=True)
+        self._timeout_poisoned = False
+        self._cancelled_jobs = 0
         self.poisoned = False
         if self.path is not None:
             await self.open(self.path)

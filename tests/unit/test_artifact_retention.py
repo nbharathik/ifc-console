@@ -186,6 +186,51 @@ def test_gc_deletes_only_reviewed_unreachable_artifacts(tmp_path: Path) -> None:
     assert missing.value.code == "ARTIFACT_NOT_FOUND"
 
 
+def test_failed_content_deletion_restores_artifact_metadata(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    artifacts = ArtifactService(tmp_path / "artifacts")
+    candidate = _put(artifacts, "candidate")
+    content = artifacts._content_path(candidate.sha256)
+    original_unlink = Path.unlink
+
+    def fail_content(path: Path, *args, **kwargs) -> None:
+        if path == content:
+            raise PermissionError("content is busy")
+        original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", fail_content)
+    with pytest.raises(ToolError) as failed:
+        artifacts.delete(candidate.artifact_id)
+
+    assert failed.value.code == "ARTIFACT_GC_FAILED"
+    assert artifacts.get(candidate.artifact_id) == candidate
+    assert not artifacts._deletion_path(candidate.sha256).exists()
+
+
+def test_interrupted_artifact_deletions_recover_on_open(tmp_path: Path) -> None:
+    root = tmp_path / "artifacts"
+    artifacts = ArtifactService(root)
+    retained = _put(artifacts, "retained")
+    completed = _put(artifacts, "completed")
+
+    artifacts._metadata_path(retained.sha256).replace(
+        artifacts._deletion_path(retained.sha256)
+    )
+    artifacts._metadata_path(completed.sha256).replace(
+        artifacts._deletion_path(completed.sha256)
+    )
+    artifacts._content_path(completed.sha256).unlink()
+
+    reopened = ArtifactService(root)
+
+    assert reopened.get(retained.artifact_id) == retained
+    with pytest.raises(ToolError) as missing:
+        reopened.get(completed.artifact_id)
+    assert missing.value.code == "ARTIFACT_NOT_FOUND"
+    assert not reopened._deletion_path(completed.sha256).exists()
+
+
 def test_transaction_artifact_kinds_are_protected_roots(tmp_path: Path) -> None:
     artifacts = ArtifactService(tmp_path / "artifacts")
     retention = ArtifactRetentionService(artifacts, tmp_path / "jobs")

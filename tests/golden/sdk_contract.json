@@ -14768,6 +14768,18 @@
       },
       "additionalProperties": false,
       "properties": {
+        "base_dir": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Base Dir"
+        },
         "generated_at": {
           "format": "date-time",
           "title": "Generated At",
@@ -15459,6 +15471,18 @@
         "WorkflowPlan": {
           "additionalProperties": false,
           "properties": {
+            "base_dir": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Base Dir"
+            },
             "generated_at": {
               "format": "date-time",
               "title": "Generated At",

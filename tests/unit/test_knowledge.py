@@ -7,13 +7,24 @@ from pathlib import Path
 
 import pytest
 
+import ifc_console.knowledge as knowledge_module
 from ifc_console.knowledge import KnowledgeBase, _collapse_schemas
-from ifc_console.knowledge.records import expand_terms
+from ifc_console.knowledge.records import Record, expand_terms
+from ifc_console.knowledge.store import build as build_store
 from ifc_console.knowledge.store import name_boost, query_tokens
 
 # The full three-schema build takes seconds; one schema is enough to prove the
 # pipeline and keeps the suite quick.
 _SCHEMAS = ("IFC4",)
+
+
+def _repair_records(_schemas: tuple[str, ...]):
+    yield Record(
+        kind="recipe",
+        key="recipe:test:repair",
+        name="repair-marker",
+        summary="repaired knowledge index",
+    )
 
 
 @pytest.fixture(scope="module")
@@ -38,7 +49,9 @@ def test_query_tokens_drop_stopwords_and_expand_phrases():
 
 
 def test_name_boost_prefers_exact_names():
-    exact = name_boost("material.assign_material", "material assign material", ["assign", "material"])
+    exact = name_boost(
+        "material.assign_material", "material assign material", ["assign", "material"]
+    )
     other = name_boost("material.assign_profile", "material assign profile", ["assign", "material"])
     assert exact > other
 
@@ -111,6 +124,39 @@ def test_missing_index_searches_empty_instead_of_raising(tmp_path: Path):
     assert base.ready is False
     assert base.search("anything") == []
     assert base.stats()["ready"] is False
+
+
+def test_corrupt_index_is_not_ready_and_build_repairs_it(tmp_path: Path, monkeypatch):
+    base = KnowledgeBase(tmp_path / "home", schemas=_SCHEMAS)
+    base.path.parent.mkdir(parents=True)
+    base.path.write_bytes(b"not a sqlite database")
+    monkeypatch.setattr(knowledge_module, "_iter_records", _repair_records)
+
+    assert base.ready is False
+    assert base.last_error
+    assert base.build()["built"] is True
+
+    assert base.ready is True
+    assert base.get("recipe:test:repair") is not None
+    base.close()
+
+
+def test_incompatible_metadata_is_not_ready_and_build_repairs_it(tmp_path: Path, monkeypatch):
+    base = KnowledgeBase(tmp_path / "home", schemas=_SCHEMAS)
+    build_store(
+        base.path,
+        _repair_records(_SCHEMAS),
+        {"ifcopenshell": "different-version", "schemas": list(_SCHEMAS)},
+    )
+    monkeypatch.setattr(knowledge_module, "_iter_records", _repair_records)
+
+    assert base.ready is False
+    assert "metadata" in (base.last_error or "")
+    assert base.build()["built"] is True
+
+    assert base.ready is True
+    assert base.get("recipe:test:repair") is not None
+    base.close()
 
 
 def test_collapse_schemas_keeps_one_row_per_name():

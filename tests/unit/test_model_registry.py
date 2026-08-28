@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import shutil
+import threading
 from pathlib import Path
 
 import pytest
@@ -130,6 +131,38 @@ async def test_drop_refuses_dirty_unless_forced() -> None:
     assert excinfo.value.code == "UNSAVED_CHANGES"
     registry.drop("arch", force=True)
     assert registry.sessions == {}
+    registry.close_all()
+
+
+async def test_cancelled_worker_fences_lifecycle_changes_until_recovery() -> None:
+    registry = ModelRegistry()
+    session = ModelSession()
+    registry.add("arch", session, active=True)
+    registry.add("struct", _fake("struct"), active=False)
+    started = threading.Event()
+    release = threading.Event()
+
+    def blocking() -> None:
+        started.set()
+        release.wait(10)
+
+    running = asyncio.create_task(session.run(blocking))
+    assert await asyncio.to_thread(started.wait, 10)
+    running.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await running
+
+    with pytest.raises(ToolError, match="still fenced") as switching:
+        registry.set_active("struct")
+    assert switching.value.code == "MODEL_BUSY"
+    with pytest.raises(ToolError, match="still fenced") as dropping:
+        registry.drop("arch", force=True)
+    assert dropping.value.code == "MODEL_BUSY"
+
+    release.set()
+    await session.recover()
+    registry.set_active("struct")
+    registry.drop("arch", force=True)
     registry.close_all()
 
 

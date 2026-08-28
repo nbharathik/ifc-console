@@ -10,11 +10,12 @@ import sys
 import textwrap
 import time
 from pathlib import Path
+from threading import Lock, Thread
 
 import pytest
 
 from ifc_console.application.artifacts import ArtifactService
-from ifc_console.application.locks import owned_file_lock
+from ifc_console.application.locks import exclusive_file_lock
 from ifc_console.application.transaction_journals import TransactionJournalStore
 from ifc_console.automation.files import sha256_file
 from ifc_console.core.results import ToolError
@@ -31,9 +32,7 @@ def _store(tmp_path: Path) -> tuple[TransactionJournalStore, ArtifactService]:
     return TransactionJournalStore(tmp_path / "transactions", artifacts), artifacts
 
 
-def test_recovery_aborts_a_pre_commit_journal_without_touching_target(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_recovery_aborts_a_pre_commit_journal_without_touching_target(tmp_path: Path) -> None:
     store, _artifacts = _store(tmp_path)
     target = tmp_path / "model.ifc"
     candidate = tmp_path / "candidate.ifc"
@@ -47,8 +46,6 @@ def test_recovery_aborts_a_pre_commit_journal_without_touching_target(
         candidate=candidate,
     )
     store.update(journal.transaction_id, TransactionPhase.CANDIDATE_VERIFIED)
-    monkeypatch.setattr(store, "_pid_exists", lambda _pid: False)
-
     recovered = store.recover_incomplete()
 
     assert recovered[0].phase is TransactionPhase.ABORTED
@@ -56,9 +53,7 @@ def test_recovery_aborts_a_pre_commit_journal_without_touching_target(
     store.ensure_target_ready(target)
 
 
-def test_recovery_rolls_back_verified_candidate_bytes(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_recovery_rolls_back_verified_candidate_bytes(tmp_path: Path) -> None:
     store, artifacts = _store(tmp_path)
     target = tmp_path / "model.ifc"
     candidate = tmp_path / "candidate.ifc"
@@ -88,8 +83,6 @@ def test_recovery_rolls_back_verified_candidate_bytes(
         rollback_artifact_id=backup.artifact_id,
     )
     store.update(journal.transaction_id, TransactionPhase.COMMIT_POINT)
-    monkeypatch.setattr(store, "_pid_exists", lambda _pid: False)
-
     recovered = store.recover_incomplete()
 
     assert recovered[0].phase is TransactionPhase.ROLLED_BACK
@@ -97,9 +90,7 @@ def test_recovery_rolls_back_verified_candidate_bytes(
     store.ensure_target_ready(target)
 
 
-def test_recovery_accepts_a_durable_receipt_after_target_replacement(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_recovery_accepts_a_durable_receipt_after_target_replacement(tmp_path: Path) -> None:
     store, artifacts = _store(tmp_path)
     target = tmp_path / "model.ifc"
     candidate = tmp_path / "candidate.ifc"
@@ -129,8 +120,6 @@ def test_recovery_accepts_a_durable_receipt_after_target_replacement(
         TransactionPhase.RECEIPT_PREPARED,
         expected_receipt_id=receipt.artifact_id,
     )
-    monkeypatch.setattr(store, "_pid_exists", lambda _pid: False)
-
     recovered = store.recover_incomplete()
 
     assert recovered[0].phase is TransactionPhase.RECEIPT_PERSISTED
@@ -138,9 +127,7 @@ def test_recovery_accepts_a_durable_receipt_after_target_replacement(
     assert sha256_file(target) == after
 
 
-def test_unknown_target_hash_requires_manual_recovery_and_blocks_writes(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_unknown_target_hash_requires_manual_recovery_and_blocks_writes(tmp_path: Path) -> None:
     store, _artifacts = _store(tmp_path)
     target = tmp_path / "model.ifc"
     candidate = tmp_path / "candidate.ifc"
@@ -157,8 +144,6 @@ def test_unknown_target_hash_requires_manual_recovery_and_blocks_writes(
     store.update(journal.transaction_id, TransactionPhase.CANDIDATE_VERIFIED)
     store.update(journal.transaction_id, TransactionPhase.BACKUP_VERIFIED)
     store.update(journal.transaction_id, TransactionPhase.COMMIT_POINT)
-    monkeypatch.setattr(store, "_pid_exists", lambda _pid: False)
-
     recovered = store.recover_incomplete()
 
     assert recovered[0].phase is TransactionPhase.RECOVERY_FAILED
@@ -178,17 +163,52 @@ def test_corrupt_journal_blocks_new_writes(tmp_path: Path) -> None:
     assert excinfo.value.code == "TRANSACTION_JOURNAL_CORRUPT"
 
 
-def test_old_truncated_owner_lock_is_recovered(tmp_path: Path) -> None:
+def test_legacy_owner_lock_is_serialized_without_stale_takeover(tmp_path: Path) -> None:
     lock = tmp_path / ".model.ifc.ifc-console.lock"
     lock.write_text("{", encoding="utf-8")
-    old = time.time() - 2
-    os.utime(lock, (old, old))
+    state_lock = Lock()
+    active = 0
+    peak = 0
 
-    with owned_file_lock(lock, timeout_s=0.2):
-        owner = json.loads(lock.read_text(encoding="utf-8"))
-        assert owner["pid"] == os.getpid()
+    def contend() -> None:
+        nonlocal active, peak
+        with exclusive_file_lock(lock, timeout_s=2):
+            with state_lock:
+                active += 1
+                peak = max(peak, active)
+            time.sleep(0.05)
+            with state_lock:
+                active -= 1
 
-    assert not lock.exists()
+    contenders = [Thread(target=contend) for _ in range(2)]
+    for contender in contenders:
+        contender.start()
+    for contender in contenders:
+        contender.join(timeout=5)
+
+    assert peak == 1
+    assert all(not contender.is_alive() for contender in contenders)
+    assert lock.exists()
+
+
+def test_transaction_lock_refuses_a_symlink_without_touching_its_target(tmp_path: Path) -> None:
+    outside = tmp_path / "outside"
+    outside.write_bytes(b"do not change")
+    lock = tmp_path / ".model.ifc.ifc-console.lock"
+    try:
+        lock.symlink_to(outside)
+    except OSError as exc:
+        pytest.skip(f"file symlinks are unavailable: {exc}")
+
+    with (
+        pytest.raises(ToolError) as excinfo,
+        exclusive_file_lock(lock, timeout_s=0, error_code="MODEL_BUSY"),
+    ):
+        pass
+
+    assert excinfo.value.code == "MODEL_BUSY"
+    assert "unsafe lock file" in excinfo.value.message
+    assert outside.read_bytes() == b"do not change"
 
 
 def test_journal_rejects_skipped_or_reversed_phases(tmp_path: Path) -> None:

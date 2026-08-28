@@ -5,10 +5,15 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
+import ifc_console.ifc.clash as clash_module
 from ifc_console.ifc.clash import (
+    _BROAD_PHASE_COLUMNS,
+    _INSIDE_POINT_ROWS,
+    _INSIDE_TRIANGLE_ROWS,
     NON_PHYSICAL,
     _boxes,
     _candidates,
+    _inside,
     _sample_grid,
     _solid_overlap,
     compare_sets,
@@ -19,9 +24,18 @@ from ifc_console.mcp.envelope import ToolError
 
 _BOX_FACES = np.array(
     [
-        [0, 2, 1], [0, 3, 2], [4, 5, 6], [4, 6, 7],
-        [0, 1, 5], [0, 5, 4], [1, 2, 6], [1, 6, 5],
-        [2, 3, 7], [2, 7, 6], [3, 0, 4], [3, 4, 7],
+        [0, 2, 1],
+        [0, 3, 2],
+        [4, 5, 6],
+        [4, 6, 7],
+        [0, 1, 5],
+        [0, 5, 4],
+        [1, 2, 6],
+        [1, 6, 5],
+        [2, 3, 7],
+        [2, 7, 6],
+        [3, 0, 4],
+        [3, 4, 7],
     ]
 )
 
@@ -32,10 +46,14 @@ def box(low, high) -> np.ndarray:
     hi = np.asarray(high, dtype=float)
     corners = np.array(
         [
-            [lo[0], lo[1], lo[2]], [hi[0], lo[1], lo[2]],
-            [hi[0], hi[1], lo[2]], [lo[0], hi[1], lo[2]],
-            [lo[0], lo[1], hi[2]], [hi[0], lo[1], hi[2]],
-            [hi[0], hi[1], hi[2]], [lo[0], hi[1], hi[2]],
+            [lo[0], lo[1], lo[2]],
+            [hi[0], lo[1], lo[2]],
+            [hi[0], hi[1], lo[2]],
+            [lo[0], hi[1], lo[2]],
+            [lo[0], lo[1], hi[2]],
+            [hi[0], lo[1], hi[2]],
+            [hi[0], hi[1], hi[2]],
+            [lo[0], hi[1], hi[2]],
         ]
     )
     return corners[_BOX_FACES]
@@ -106,17 +124,57 @@ class TestBroadPhase:
         hi_a = np.array([[1.0, 1.0, 1.0]])
         lo_b = np.array([[1.0, 0.0, 0.0]])
         hi_b = np.array([[2.0, 1.0, 1.0]])
-        pairs, _ = _candidates(lo_a, hi_a, lo_b, hi_b, "overlap", 0.01)
-        assert len(pairs) == 0
+        assert list(_candidates(lo_a, hi_a, lo_b, hi_b, "overlap", 0.01)) == []
 
     def test_clearance_mode_finds_near_neighbours(self):
         lo_a = np.array([[0.0, 0.0, 0.0]])
         hi_a = np.array([[1.0, 1.0, 1.0]])
         lo_b = np.array([[1.02, 0.0, 0.0]])
         hi_b = np.array([[2.0, 1.0, 1.0]])
-        pairs, worst = _candidates(lo_a, hi_a, lo_b, hi_b, "clearance", 0.05)
-        assert len(pairs) == 1
-        assert worst[0, 0] == pytest.approx(0.02)
+        candidates = list(_candidates(lo_a, hi_a, lo_b, hi_b, "clearance", 0.05))
+        assert len(candidates) == 1
+        assert candidates[0][:2] == (0, 0)
+        assert candidates[0][2] == pytest.approx(0.02)
+
+    def test_candidates_are_chunked_and_row_major(self, monkeypatch):
+        columns = _BROAD_PHASE_COLUMNS + 7
+        lo_a = np.zeros((2, 3))
+        hi_a = np.ones((2, 3))
+        lo_b = np.zeros((columns, 3))
+        hi_b = np.ones((columns, 3))
+        original_maximum = np.maximum
+        shapes: list[tuple[int, ...]] = []
+
+        def tracking_maximum(left, right):
+            result = original_maximum(left, right)
+            shapes.append(result.shape)
+            return result
+
+        monkeypatch.setattr(clash_module.np, "maximum", tracking_maximum)
+        candidates = list(_candidates(lo_a, hi_a, lo_b, hi_b, "overlap", 0.0))
+
+        assert [(i, j) for i, j, _ in candidates[: columns + 1]] == [
+            *((0, j) for j in range(columns)),
+            (1, 0),
+        ]
+        assert shapes
+        assert max(shape[0] for shape in shapes) <= _BROAD_PHASE_COLUMNS
+
+    def test_self_check_can_stream_only_the_upper_triangle(self):
+        lows = np.zeros((3, 3))
+        highs = np.ones((3, 3))
+
+        candidates = _candidates(
+            lows,
+            highs,
+            lows,
+            highs,
+            "overlap",
+            0.0,
+            upper_triangle=True,
+        )
+
+        assert [(i, j) for i, j, _ in candidates] == [(0, 1), (0, 2), (1, 2)]
 
     def test_boxes_come_from_the_mesh(self):
         verts = np.array([[0.0, 0.0, 0.0], [2.0, 3.0, 4.0]])
@@ -124,6 +182,30 @@ class TestBroadPhase:
         low, high = _boxes({7: (verts, faces)}, [7])
         assert low[0].tolist() == [0.0, 0.0, 0.0]
         assert high[0].tolist() == [2.0, 3.0, 4.0]
+
+
+class TestInsideMemory:
+    def test_point_triangle_masks_are_bounded(self, monkeypatch):
+        seed_points = np.array([[0.25, 0.24, 0.31], [1.25, 0.24, 0.31]])
+        points = np.tile(seed_points, (_INSIDE_POINT_ROWS + 1, 1))
+        triangles = np.tile(box([0, 0, 0], [1, 1, 1]), (_INSIDE_TRIANGLE_ROWS // 12 + 1, 1, 1))
+        expected = np.tile([True, False], _INSIDE_POINT_ROWS + 1)
+        original_nonzero = np.nonzero
+        shapes: list[tuple[int, ...]] = []
+
+        def tracking_nonzero(values):
+            shapes.append(values.shape)
+            return original_nonzero(values)
+
+        monkeypatch.setattr(clash_module.np, "nonzero", tracking_nonzero)
+        result = _inside(points, triangles)
+
+        assert result.tolist() == expected.tolist()
+        assert shapes
+        assert all(
+            rows <= _INSIDE_POINT_ROWS and columns <= _INSIDE_TRIANGLE_ROWS
+            for rows, columns in shapes
+        )
 
 
 class TestAgainstAModel:
@@ -235,3 +317,56 @@ class TestAgainstAModel:
         )
         assert report["returned"] == 1
         assert report["truncated"] is (report["total"] > 1)
+
+    def test_truncation_retains_stable_best_results_and_full_counts(self):
+        count = 50
+
+        def mesh(low, high):
+            return np.array([low, high], dtype=float), np.array([[0, 1, 0]])
+
+        prep_a = {
+            "selector": "a",
+            "ids": [1],
+            "info": {1: {"global_id": "A", "class": "IfcWall", "name": "A"}},
+            "meshes": {1: mesh([0, 0, 0], [1, 1, 1])},
+            "without_geometry": 0,
+            "dropped_non_physical": 0,
+        }
+        ids_b = list(range(100, 100 + count))
+        prep_b = {
+            "selector": "b",
+            "ids": ids_b,
+            "info": {
+                element_id: {
+                    "global_id": f"B{position}",
+                    "class": "IfcWall",
+                    "name": f"B{position}",
+                }
+                for position, element_id in enumerate(ids_b)
+            },
+            "meshes": {
+                element_id: mesh(
+                    [1 + (position // 5) * 0.01, 0, 0],
+                    [2 + (position // 5) * 0.01, 1, 1],
+                )
+                for position, element_id in enumerate(ids_b)
+            },
+            "without_geometry": 0,
+            "dropped_non_physical": 0,
+        }
+
+        report = compare_sets(
+            prep_a,
+            prep_b,
+            same_model=False,
+            mode="clearance",
+            tolerance=1.0,
+            max_results=3,
+        )
+
+        assert report["candidate_pairs"] == count
+        assert report["total"] == count
+        assert report["returned"] == 3
+        assert report["truncated"] is True
+        assert [item["b"]["global_id"] for item in report["clashes"]] == ["B0", "B1", "B2"]
+        assert report["by_class_pair"] == [{"pair": "IfcWall / IfcWall", "count": count}]

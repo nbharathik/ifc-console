@@ -243,12 +243,34 @@ class Store:
         self._conn = sqlite3.connect(
             f"file:{path.as_posix()}?mode=ro", uri=True, check_same_thread=False
         )
-        self._conn.row_factory = sqlite3.Row
-        self.meta = {
-            row["key"]: json.loads(row["value"])
-            for row in self._conn.execute("SELECT key, value FROM kb_meta")
-        }
-        self.fts = bool(self.meta.get("fts"))
+        try:
+            self._conn.row_factory = sqlite3.Row
+            self.meta = {
+                row["key"]: json.loads(row["value"])
+                for row in self._conn.execute("SELECT key, value FROM kb_meta")
+            }
+            version = self.meta.get("schema_version")
+            if version != SCHEMA_VERSION:
+                raise ValueError(
+                    f"knowledge index schema {version!r} is incompatible with "
+                    f"schema {SCHEMA_VERSION}"
+                )
+            # Touch every required table, including FTS when the metadata says it
+            # was built. This makes an existing but partial database fail closed
+            # instead of looking ready and returning empty searches forever.
+            self._conn.execute(
+                "SELECT key, kind, schema, name, terms, summary, body, meta FROM record LIMIT 0"
+            ).fetchall()
+            self.fts = bool(self.meta.get("fts"))
+            if self.fts:
+                self._conn.execute("SELECT rowid FROM record_fts LIMIT 0").fetchall()
+            check = self._conn.execute("PRAGMA quick_check(1)").fetchone()
+            if check is None or check[0] != "ok":
+                detail = check[0] if check is not None else "no result"
+                raise sqlite3.DatabaseError(f"knowledge index integrity check failed: {detail}")
+        except BaseException:
+            self._conn.close()
+            raise
 
     def close(self) -> None:
         self._conn.close()

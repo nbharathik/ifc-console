@@ -21,11 +21,15 @@ ERROR_CODES = (
     "ARTIFACT_STORE_BUSY",
     "ARTIFACT_STORE_CORRUPT",
     "ASK_MODE_BLOCKED",
+    "BATCH_CANCELLED",
+    "BATCH_CHILD_FAILED",
+    "BATCH_INTERRUPTED",
     "BATCH_NOT_FOUND",
     "BATCH_NOT_RESUMABLE",
     "BATCH_SERVICE_CLOSED",
     "BATCH_SOURCE_CHANGED",
     "BATCH_STORE_FAILED",
+    "BATCH_SUPERVISOR_FAILED",
     "BATCH_TIMEOUT",
     "CAPABILITY_DENIED",
     "CHANGESET_INVALID",
@@ -74,6 +78,7 @@ ERROR_CODES = (
     "REVISION_CONFLICT",
     "SANDBOX_UNAVAILABLE",
     "SOURCE_CHANGED",
+    "STORE_BUSY",
     "TOO_MANY_ELEMENTS",
     "TRANSACTION_INTERRUPTED",
     "TRANSACTION_JOURNAL_BUSY",
@@ -225,10 +230,15 @@ def _previewed(
     """
     source = dump(payload)
     meta = {**merged, "truncated": True}
+    pinned: dict[str, Any] = {}
+    change_set = payload.get("change_set")
+    if isinstance(change_set, dict) and isinstance(change_set.get("change_set_id"), str):
+        # Keep the approval handle even when the inline ChangeSet does not fit.
+        pinned["change_set"] = {"change_set_id": change_set["change_set_id"]}
 
     def build(kept: int) -> tuple[dict[str, Any], dict[str, Any]]:
         head = {"truncation": {"kept_chars": kept, "of_chars": len(source), "note": _PREVIEW_NOTE}}
-        return {**head, "preview": source[:kept]}, meta
+        return {**head, **pinned, "preview": source[:kept]}, meta
 
     return _largest_fitting(build, len(source), char_limit) or build(0)
 

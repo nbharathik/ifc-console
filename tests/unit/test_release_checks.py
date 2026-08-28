@@ -179,6 +179,13 @@ def test_viewer_static_allowlist_rejects_unexpected_public_files() -> None:
     assert _unexpected_viewer_static([*expected, "ifc_console_viewer/not-public.txt"]) == []
 
 
+def test_viewer_static_allowlist_matches_the_shipped_tree() -> None:
+    static = ROOT / "packages" / "ifc-console-viewer" / "src" / "ifc_console_viewer" / "static"
+    shipped = {path.relative_to(static).as_posix() for path in static.rglob("*") if path.is_file()}
+
+    assert shipped == set(REQUIRED_ASSETS)
+
+
 def test_core_wheel_rejects_all_browser_assets() -> None:
     assert _unexpected_base_browser_assets([]) == []
     assert _unexpected_base_browser_assets(

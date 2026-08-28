@@ -237,6 +237,62 @@ async def test_mcp_source_recovers_an_unstructured_ifc_console_envelope():
 
 
 @pytest.mark.asyncio
+async def test_mcp_transport_error_wins_over_a_contradictory_success_envelope():
+    class Session:
+        async def call_tool(self, _name, _arguments):
+            return SimpleNamespace(
+                structuredContent={"ok": True, "data": {"unsafe": True}},
+                content=[SimpleNamespace(text="remote failure")],
+                isError=True,
+            )
+
+    result = await McpToolSource(Session()).call_tool("unsafe", {})
+
+    assert result["ok"] is False
+    assert result["error"]["code"] == "MCP_TOOL_ERROR"
+    assert "remote failure" in result["error"]["message"]
+
+
+@pytest.mark.asyncio
+async def test_mcp_non_boolean_ok_field_remains_ordinary_structured_data():
+    class Session:
+        async def call_tool(self, _name, _arguments):
+            return SimpleNamespace(
+                structuredContent={"ok": "pending", "record": 42},
+                content=[],
+                isError=False,
+            )
+
+    result = await McpToolSource(Session()).call_tool("status", {})
+
+    assert result["ok"] is True
+    assert result["data"] == {"ok": "pending", "record": 42}
+
+
+@pytest.mark.asyncio
+async def test_mcp_close_can_retry_after_a_transport_cleanup_failure():
+    class Stack:
+        def __init__(self):
+            self.calls = 0
+
+        async def aclose(self):
+            self.calls += 1
+            if self.calls == 1:
+                raise RuntimeError("cleanup failed")
+
+    stack = Stack()
+    source = McpToolSource(SimpleNamespace(), stack=stack)
+
+    with pytest.raises(RuntimeError, match="cleanup failed"):
+        await source.aclose()
+    assert source._closed is False
+
+    await source.aclose()
+    assert source._closed is True
+    assert stack.calls == 2
+
+
+@pytest.mark.asyncio
 async def test_mcp_source_normalizes_native_images_for_agent_vision():
     class Session:
         async def call_tool(self, name, arguments):

@@ -16,6 +16,7 @@ from threading import RLock
 from typing import TYPE_CHECKING, Any
 
 import yaml
+from pydantic import ValidationError
 
 from ifc_console.application.artifacts import ArtifactService
 from ifc_console.application.locks import process_is_running
@@ -242,6 +243,7 @@ class WorkflowService:
             plan_id=WorkflowPlan.compute_plan_id(spec, planned_steps),
             generated_at=_now(),
             manifest_path=str(manifest_path) if manifest_path is not None else None,
+            base_dir=str(base),
             spec=spec,
             steps=planned_steps,
             total_children=sum(len(item.batch_spec.inputs) for item in plans),
@@ -270,6 +272,15 @@ class WorkflowService:
                 "the local workflow service is shutting down.",
                 "Create a new workbench before submitting more work.",
             )
+        try:
+            plan = WorkflowPlan.model_validate(plan.model_dump(mode="json"))
+        except (TypeError, ValueError, ValidationError) as exc:
+            raise ToolError(
+                "INVALID_INPUT",
+                f"workflow plan integrity validation failed: {exc}",
+                "Generate and review a new workflow plan before submitting.",
+            ) from exc
+        self._validate_plan_bindings(plan)
         sources = self._plan_sources(plan)
         for source in sources:
             self.core.require_path_allowed(Path(source.path))
@@ -1052,6 +1063,50 @@ class WorkflowService:
                         "Use narrower glob patterns or split the workflow.",
                     )
         return tuple(dict.fromkeys(resolved))
+
+    def _validate_plan_bindings(self, plan: WorkflowPlan) -> None:
+        if plan.base_dir is None:
+            raise ToolError(
+                "INVALID_INPUT",
+                "workflow plan does not identify its input base directory.",
+                "Generate and review a new workflow plan before submitting.",
+            )
+        base = self.core.require_path_allowed(Path(plan.base_dir))
+        groups = {
+            item.id: self._resolve_patterns(base, item.paths, kind="ifc")
+            for item in plan.spec.inputs
+        }
+        for declared, planned in zip(plan.spec.steps, plan.steps, strict=True):
+            expected_inputs = tuple(
+                dict.fromkeys(
+                    path
+                    for input_id in declared.input_ids
+                    for path in groups[input_id]
+                )
+            )
+            actual_inputs = tuple(Path(source.path) for source in planned.batch_spec.inputs)
+            if actual_inputs != expected_inputs:
+                raise ToolError(
+                    "INVALID_INPUT",
+                    f"workflow plan inputs differ for step {declared.id!r}.",
+                    "Generate and review a new workflow plan before submitting.",
+                )
+            operation = declared.operation
+            batch_operation = planned.batch_spec.operation
+            if isinstance(operation, WorkflowValidationOperation):
+                assert isinstance(batch_operation, ValidationBatchOperation)
+                expected_ids = (
+                    self._resolve_patterns(base, operation.ids_paths, kind="ids")
+                    if operation.ids_paths
+                    else ()
+                )
+                actual_ids = tuple(Path(source.path) for source in batch_operation.ids_files)
+                if actual_ids != expected_ids:
+                    raise ToolError(
+                        "INVALID_INPUT",
+                        f"workflow plan IDS inputs differ for step {declared.id!r}.",
+                        "Generate and review a new workflow plan before submitting.",
+                    )
 
     @staticmethod
     def _plan_sources(plan: WorkflowPlan) -> tuple[SourceFileRef, ...]:

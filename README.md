@@ -8,13 +8,12 @@
   </a>
 </p>
 
-**A terminal interface that connects IFC files to LLMs.** `ifc-console` loads
-your model with IfcOpenShell and serves it over MCP. Claude, Cursor, VS Code,
-Codex, and other MCP clients can inspect or edit the model while you keep
-control from the terminal.
+**Connect IFC models to LLMs without a host BIM application.** `ifc-console`
+loads a model with IfcOpenShell and exposes it through MCP, Python, a terminal,
+and built-in agent workflows. Claude, Cursor, VS Code, Codex, and other MCP
+clients can inspect or edit the model while you keep control from the console.
 
-No Blender or host BIM application is required. It runs locally on Windows,
-macOS, and Linux.
+It runs locally on Windows, macOS, and Linux.
 
 <div align="center">
   <table align="center" width="90%">
@@ -31,96 +30,70 @@ macOS, and Linux.
   </table>
 </div>
 
-## Why ifc-console
-
-LLMs are good at BIM data work: finding elements, auditing properties, writing
-IfcOpenShell scripts, and explaining schema quirks. ifc-console is the safe,
-zero-setup bridge between an LLM client and an IFC file.
-
-- **You stay in control.** The `ask`/`edit` switch decides whether the LLM may
-  change the in-memory model. AI saving is disabled by default, so only you
-  persist reviewed changes with `/save`.
-- **It runs anywhere.** The core Python package runs on Windows, macOS, and
-  Linux. The local 3D viewer is an optional install.
-- **It is honest.** Errors include useful hints. Mutations are audited, saves
-  are atomic with backups, and the docs state what the sandbox does and does
-  not guarantee.
-
 ## Install and run
+
+| install | includes |
+| ------- | -------- |
+| `ifc-console` | terminal, MCP, SDK, agents, workflows, chat runtime, and IFC operations |
+| `ifc-console[viewer]` | everything above plus the local 3D viewer and browser chat assets |
+| `ifc-console[validation]` | IDS validation support |
+| `ifc-console[geometry]` | Trimesh-backed raw-mesh health checks |
 
 ```bash
 uv tool install ifc-console
-# Include the optional 3D viewer and browser chat:
+# Or include the browser workspace:
 uv tool install "ifc-console[viewer]"
-# Add Trimesh-backed raw-mesh health checks:
-uv tool install "ifc-console[geometry]"
-```
 
-You can use pip instead, or try the core application once with
-`uvx ifc-console`.
-
-Start it in the folder containing your models:
-
-```bash
 cd path/to/your/models
 ifc-console
 ```
 
-Then:
+You can use `pip` instead, or run the core application once with
+`uvx ifc-console`. In the console:
 
 ```text
 > /file             choose an IFC model
 > /connect codex    copy one-time client setup
-> /viewer           open the optional 3D viewer
+> /viewer           open the optional browser workspace
 ```
 
-Paste the copied setup into your AI client and restart that client once. Future
-sessions are simply: start ifc-console, choose a file, and chat.
+The `[viewer]` extra installs `ifc-console-viewer`, an asset-only wheel that
+contains Three.js, web-ifc, and the browser application. All MCP, SDK, chat,
+agent, and workflow code remains in `ifc-console`.
 
-## Ask or edit
+## Safety
 
-| mode | what the AI can do |
-| ---- | ------------------ |
-| `ask` (default) | inspect and analyze the model |
-| `edit` | also change the model in memory |
+`ask` mode is read-only. Use `/mode edit` to allow in-memory changes, review
+them, then `/save` to keep them or `/reload` to discard them. The AI cannot
+change the mode and cannot save unless you enable `files.allow_ai_save`.
 
-Use `/mode edit` only when you want changes. Review them, then `/save` to keep
-them or `/reload` to discard them. The AI cannot change the mode, and AI tools
-cannot save unless you explicitly enable `files.allow_ai_save`.
+Eligible read-only generated code runs in a restricted process on CPython
+3.12+. Python 3.10 and 3.11 use the documented `auto` fallback, while `strict`
+refuses an unavailable boundary. Read the [safety model](https://nbharathik.github.io/ifc-console/safety/)
+before editing untrusted files or prompts.
 
-On CPython 3.12+, eligible read-only generated code normally runs in a
-restricted process without network or subprocess access. Python 3.10 and 3.11
-remain supported, but cannot provide that complete audit-hook boundary; `auto`
-reports a guarded fallback and `strict` refuses it. Mutating code runs in the
-main process because it must reach the live model. Read
-[Safety](https://nbharathik.github.io/ifc-console/safety/) before editing
-untrusted files or prompts.
+## Included features
 
-## What it includes
-
-- IFC queries, validation, clash detection, quantities, properties, CSV export, and multi-model coordination.
-- Framework-neutral SDK with selectable tools, MCP support, approvals, and embeddable interfaces.
-- Ready-made assistants for general, measurement, document, and review workflows.
-- PDF and image vision, cited retrieval, and reviewable AI-marked IFC changes.
-- Agent workspace with tool, file, workflow, and settings visibility.
-- Optional 3D viewer, chat panel, trusted plugins, conversation history, Markdown export, and secure API-key storage.
+- IFC queries, schema and IDS validation, clashes, quantities, geometry, CSV export, and multi-model review.
+- A typed, framework-neutral SDK with scoped toolsets, MCP sources, approvals, jobs, artifacts, and workflows.
+- General, measurement, document, and model-review agents in the main package.
+- Project document retrieval, PDF and image vision, recipes, skills, and reviewable AI-marked changes.
+- Optional local 3D viewing, browser chat, selection-aware tools, plugins, and conversation history.
 
 ## Documentation
 
 - [Getting started](https://nbharathik.github.io/ifc-console/getting-started/)
 - [Console and client setup](https://nbharathik.github.io/ifc-console/console/)
-- [Safety model](https://nbharathik.github.io/ifc-console/safety/)
-- [Python SDK](https://nbharathik.github.io/ifc-console/sdk/)
-- [MCP tools](https://nbharathik.github.io/ifc-console/tools/) and [CLI](https://nbharathik.github.io/ifc-console/cli/)
-- [Agent applications](https://nbharathik.github.io/ifc-console/agents/) and [testing the panel](https://nbharathik.github.io/ifc-console/testing/)
+- [Python SDK](https://nbharathik.github.io/ifc-console/sdk/) and [agent applications](https://nbharathik.github.io/ifc-console/agents/)
+- [MCP tools](https://nbharathik.github.io/ifc-console/tools/) and [workflows](https://nbharathik.github.io/ifc-console/workflows/)
+- [3D viewer](https://nbharathik.github.io/ifc-console/viewer/) and [browser chat](https://nbharathik.github.io/ifc-console/chat/)
 - [Troubleshooting](https://nbharathik.github.io/ifc-console/troubleshooting/)
 
-For development setup and tests, see the [contributing guide](docs/contributing.md).
+For development setup and tests, see [Contributing](docs/contributing.md).
 
 ## License
 
-The core package is Apache-2.0 and uses IfcOpenShell (LGPL-3.0-or-later). The
-optional geometry backend uses Trimesh (MIT). The optional viewer includes
-Three.js (MIT) and web-ifc (MPL-2.0).
+The core and viewer asset packages are Apache-2.0. IfcOpenShell is
+LGPL-3.0-or-later, Trimesh is MIT, Three.js is MIT, and web-ifc is MPL-2.0.
 
 Inspired by [Bonsai MCP](https://github.com/Show2Instruct/bonsai-mcp).

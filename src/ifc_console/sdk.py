@@ -1116,7 +1116,10 @@ class AsyncWorkbench:
                     {"name": event["name"], "ok": event["ok"], "summary": event["summary"]}
                 )
             elif kind == "usage":
-                usage = {"in": event.get("in"), "out": event.get("out")}
+                for key in ("in", "out"):
+                    value = event.get(key)
+                    if value is not None:
+                        usage[key] = usage.get(key, 0) + value
             elif kind == "error":
                 error = event["text"]
         text = "".join(parts).strip()

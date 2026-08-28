@@ -9,6 +9,7 @@ nothing here can change an IFC file.
 
 from __future__ import annotations
 
+import uuid
 from typing import Annotated, Any, Literal
 
 from pydantic import Field
@@ -17,10 +18,10 @@ from ifc_console.agents.provenance import (
     MEASUREMENT_PROPERTIES,
     MEASUREMENT_PSET,
     PROPERTY_PSET,
-    PROVENANCE_PROPERTY,
     PROVENANCE_PSET,
     Provenance,
     measurement_property,
+    provenance_property_name,
     stamp,
     validate_property_name,
 )
@@ -64,44 +65,56 @@ async def _propose(
     provenance: Provenance,
     proposals: list[str],
 ) -> dict[str, Any]:
-    """One value plus its provenance marker, as two bound previews."""
+    """Preview one value and its provenance marker as one approval unit."""
     unique = list(dict.fromkeys(global_ids))
+    marker_name = provenance_property_name(pset, property_name)
     result = await runtime.call(
-        "preview_property_change",
+        "preview_property_changes",
         global_ids=unique,
-        pset_name=pset,
-        property_name=property_name,
-        value=value,
-        create_missing=True,
-        nominal_type=nominal_type,
+        properties=[
+            {
+                "pset_name": pset,
+                "property_name": property_name,
+                "value": value,
+                "create_missing": True,
+                "nominal_type": nominal_type,
+            },
+            {
+                "pset_name": PROVENANCE_PSET,
+                "property_name": marker_name,
+                "value": provenance.with_proposal(uuid.uuid4().hex).to_json(),
+                "create_missing": True,
+                "nominal_type": "IfcText",
+            },
+        ],
     )
     change_set_id = _change_set_id(result)
     if not change_set_id:
         return result
     proposals.append(change_set_id)
-    marker = await runtime.call(
-        "preview_property_change",
-        global_ids=unique,
-        pset_name=PROVENANCE_PSET,
-        property_name=PROVENANCE_PROPERTY,
-        value=provenance.with_change_set(change_set_id).to_json(),
-        create_missing=True,
-        nominal_type="IfcText",
-    )
-    marker_id = _change_set_id(marker)
-    if marker_id:
-        proposals.append(marker_id)
     data = dict(result.get("data") or {})
-    data["provenance_change_set"] = marker_id
-    data["ai_marked"] = bool(marker_id)
+    preview = data.get("change_set")
+    if isinstance(preview, dict) and not isinstance(preview.get("change_set"), dict):
+        # Oversized operation results retain only the artifact ID. Keep the
+        # established first-change shape used by proposal UIs; the full,
+        # verified record remains available through get_change_set.
+        data["change_set"] = {
+            **preview,
+            "change_set": {
+                "changes": [
+                    {
+                        "pset_name": pset,
+                        "property_name": property_name,
+                        "after": value,
+                    }
+                ]
+            },
+        }
+    data["provenance_change_set"] = change_set_id
+    data["ai_marked"] = True
     data["pset_name"] = pset
     data["property_name"] = property_name
     data["elements"] = len(unique)
-    if not marker_id:
-        data["warning"] = (
-            "the value preview was created but its provenance marker was not; "
-            "do not approve it until the marker succeeds"
-        )
     return {**result, "data": data}
 
 

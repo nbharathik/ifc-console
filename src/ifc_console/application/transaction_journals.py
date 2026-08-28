@@ -14,11 +14,7 @@ from threading import RLock
 from typing import Any
 
 from ifc_console.application.artifacts import ArtifactService
-from ifc_console.application.locks import (
-    exclusive_file_lock,
-    owned_file_lock,
-    process_is_running,
-)
+from ifc_console.application.locks import exclusive_file_lock
 from ifc_console.automation.files import sha256_file
 from ifc_console.core.context import OperationContext
 from ifc_console.core.results import ToolError
@@ -214,19 +210,19 @@ class TransactionJournalStore:
         for journal in self.list():
             if journal.phase in TERMINAL_TRANSACTION_PHASES:
                 continue
-            if self._pid_exists(journal.owner_pid):
-                continue
-            recovered.append(self._recover(journal))
+            result = self._recover(journal)
+            if result is not None:
+                recovered.append(result)
         return tuple(recovered)
 
-    def _recover(self, journal: TransactionJournal) -> TransactionJournal:
+    def _recover(self, journal: TransactionJournal) -> TransactionJournal | None:
         target = Path(journal.target_path)
         lock_path = target.with_name(f".{target.name}.ifc-console.lock")
         try:
-            with owned_file_lock(
+            with exclusive_file_lock(
                 lock_path,
-                timeout_s=self.lock_timeout_s,
-                error_code="TRANSACTION_RECOVERY_REQUIRED",
+                timeout_s=0.0,
+                error_code="MODEL_BUSY",
             ):
                 current_sha = sha256_file(target) if target.is_file() else None
                 if journal.phase in PRE_COMMIT_PHASES:
@@ -280,6 +276,10 @@ class TransactionJournalStore:
                     journal,
                     "target hash matches neither the expected source nor candidate",
                 )
+        except ToolError as exc:
+            if exc.code == "MODEL_BUSY":
+                return None
+            return self._recovery_failed(journal, f"{type(exc).__name__}: {exc}")
         except Exception as exc:
             return self._recovery_failed(journal, f"{type(exc).__name__}: {exc}")
 
@@ -381,11 +381,6 @@ class TransactionJournalStore:
         finally:
             with contextlib.suppress(OSError):
                 temp.unlink()
-
-    @staticmethod
-    def _pid_exists(pid: int) -> bool:
-        return process_is_running(pid)
-
 
 class _CombinedLock:
     def __init__(self, thread_lock: RLock, file_lock: Any) -> None:

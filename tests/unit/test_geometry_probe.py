@@ -90,15 +90,21 @@ class TestResolveTargets:
         got = geometry.resolve_targets(ifc4, global_ids=[space.GlobalId])
         assert got[0].GlobalId == space.GlobalId
 
-    def test_selector_results_are_sorted_and_capped(self, ifc4):
-        with pytest.raises(ToolError) as excinfo:
-            geometry.resolve_targets(ifc4, selector="IfcWall", max_elements=1)
-        assert excinfo.value.code == "TOO_MANY_ELEMENTS"
+    def test_selector_results_are_sorted_and_paged(self, ifc4):
+        every = geometry.resolve_targets(ifc4, selector="IfcWall")
+        first = geometry.resolve_targets(ifc4, selector="IfcWall", max_elements=1)
+        assert [element.id() for element in first] == [every[0].id()]
 
     def test_offset_skips_the_head_of_the_sorted_match(self, ifc4):
         every = geometry.resolve_targets(ifc4, selector="IfcWall")
-        page = geometry.resolve_targets(ifc4, selector="IfcWall", offset=1)
-        assert [e.id() for e in page] == [e.id() for e in every[1:]]
+        page = geometry.resolve_targets(ifc4, selector="IfcWall", offset=1, max_elements=1)
+        assert [e.id() for e in page] == [every[1].id()]
+
+    @pytest.mark.parametrize("limit", [0, -1, True, 1.5])
+    def test_page_size_must_be_a_positive_integer(self, ifc4, limit):
+        with pytest.raises(ToolError) as excinfo:
+            geometry.resolve_targets(ifc4, selector="IfcWall", max_elements=limit)
+        assert excinfo.value.code == "INVALID_INPUT"
 
     def test_offset_past_the_match_names_the_offset(self, ifc4):
         with pytest.raises(ToolError) as excinfo:

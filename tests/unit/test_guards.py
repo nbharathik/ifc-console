@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import hashlib
 import os
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import ifcopenshell
@@ -50,6 +52,43 @@ def _run_locked(code: str, ifc, *, allowed=()):
 
 def _digest(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _assert_contexts_can_overlap(first_context, second_context, first_probe, second_probe) -> None:
+    """Hold the second context open while the first exits out of order."""
+    first_entered = threading.Event()
+    second_entered = threading.Event()
+    second_checked = threading.Event()
+    first_exited = threading.Event()
+
+    def run_first() -> None:
+        try:
+            with first_context():
+                first_probe()
+                first_entered.set()
+                assert second_checked.wait(5), "second guard did not run"
+                first_probe()
+        finally:
+            first_exited.set()
+
+    def run_second() -> None:
+        assert first_entered.wait(5), "first guard did not start"
+        with second_context():
+            second_entered.set()
+            try:
+                second_probe()
+            finally:
+                second_checked.set()
+            assert first_exited.wait(5), "first guard did not exit"
+            second_probe()
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(run_first)
+        assert first_entered.wait(5), "first guard did not start"
+        second = pool.submit(run_second)
+        assert second_entered.wait(5), "second guard could not overlap the first"
+        first.result(timeout=5)
+        second.result(timeout=5)
 
 
 MUTATION_BLOCKED = [
@@ -126,6 +165,58 @@ def test_entity_lock_restores_mutation_after_run(work_model: Path) -> None:
     assert wall.Name == "renamed-after"
 
 
+def test_entity_guards_overlap_across_threads_and_restore(work_model: Path) -> None:
+    first_ifc = ifcopenshell.open(str(work_model))
+    second_ifc = ifcopenshell.open(str(work_model))
+    first_wall = first_ifc.by_type("IfcWall")[0]
+    second_wall = second_ifc.by_type("IfcWall")[0]
+    cls = ifcopenshell.entity_instance
+    originals = (cls.__setattr__, cls.__setitem__, cls.file)
+
+    def first_blocked() -> None:
+        with pytest.raises(GuardError):
+            first_wall.Name = "blocked-first"
+
+    def second_blocked() -> None:
+        with pytest.raises(GuardError):
+            second_wall.Name = "blocked-second"
+
+    _assert_contexts_can_overlap(
+        entity_mutation_lock,
+        entity_mutation_lock,
+        first_blocked,
+        second_blocked,
+    )
+
+    assert (cls.__setattr__, cls.__setitem__, cls.file) == originals
+
+
+def test_entity_guard_does_not_block_an_unlocked_thread(work_model: Path) -> None:
+    guarded_ifc = ifcopenshell.open(str(work_model))
+    allowed_ifc = ifcopenshell.open(str(work_model))
+    guarded_wall = guarded_ifc.by_type("IfcWall")[0]
+    allowed_wall = allowed_ifc.by_type("IfcWall")[0]
+    cls = ifcopenshell.entity_instance
+    originals = (cls.__setattr__, cls.__setitem__, cls.file)
+
+    def blocked() -> None:
+        with pytest.raises(GuardError):
+            guarded_wall.Name = "blocked"
+
+    def allowed() -> None:
+        allowed_wall.Name = "allowed"
+        assert allowed_wall.Name == "allowed"
+
+    _assert_contexts_can_overlap(
+        entity_mutation_lock,
+        lambda: entity_mutation_lock(enabled=False),
+        blocked,
+        allowed,
+    )
+
+    assert (cls.__setattr__, cls.__setitem__, cls.file) == originals
+
+
 def test_io_data_classes_still_available(ifc4) -> None:
     result = _run_locked("import io\nbuf = io.StringIO()\nbuf.write('q')\nbuf.getvalue()", ifc4)
     assert result.result_repr == "'q'"
@@ -191,6 +282,63 @@ def test_model_write_lock_allows_memory_edits_but_blocks_ifc_serialization(
     assert len(ifc.by_type("IfcWall")) == 4
     ifc.write(str(output))
     assert output.exists()
+
+
+def test_model_write_guards_overlap_across_threads_and_restore(
+    work_model: Path, tmp_path: Path
+) -> None:
+    first_ifc = ifcopenshell.open(str(work_model))
+    second_ifc = ifcopenshell.open(str(work_model))
+    first_output = tmp_path / "first-blocked.ifc"
+    second_output = tmp_path / "second-blocked.ifc"
+    original = ifcopenshell.file.write
+
+    def first_blocked() -> None:
+        with pytest.raises(GuardError):
+            first_ifc.write(str(first_output))
+
+    def second_blocked() -> None:
+        with pytest.raises(GuardError):
+            second_ifc.write(str(second_output))
+
+    _assert_contexts_can_overlap(
+        model_write_lock,
+        model_write_lock,
+        first_blocked,
+        second_blocked,
+    )
+
+    assert ifcopenshell.file.write is original
+    assert not first_output.exists()
+    assert not second_output.exists()
+
+
+def test_model_write_guard_does_not_block_an_unlocked_thread(
+    work_model: Path, tmp_path: Path
+) -> None:
+    guarded_ifc = ifcopenshell.open(str(work_model))
+    allowed_ifc = ifcopenshell.open(str(work_model))
+    blocked_output = tmp_path / "blocked.ifc"
+    allowed_output = tmp_path / "allowed.ifc"
+    original = ifcopenshell.file.write
+
+    def blocked() -> None:
+        with pytest.raises(GuardError):
+            guarded_ifc.write(str(blocked_output))
+
+    def allowed() -> None:
+        allowed_ifc.write(str(allowed_output))
+
+    _assert_contexts_can_overlap(
+        model_write_lock,
+        lambda: model_write_lock(enabled=False),
+        blocked,
+        allowed,
+    )
+
+    assert ifcopenshell.file.write is original
+    assert not blocked_output.exists()
+    assert allowed_output.exists()
 
 
 def test_system_import_allowed_only_with_system_flag(ifc4) -> None:

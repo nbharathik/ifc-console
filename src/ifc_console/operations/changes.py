@@ -7,7 +7,8 @@ from typing import TYPE_CHECKING, Annotated
 from pydantic import Field
 
 from ifc_console.application.operations import enveloped
-from ifc_console.core.changes import IfcScalar
+from ifc_console.core.capabilities import Capability
+from ifc_console.core.changes import IfcScalar, PropertyPreview
 from ifc_console.core.operation_data import ChangeSetData
 from ifc_console.core.operations import OperationAnnotations, OperationRegistry
 from ifc_console.core.results import Envelope, ok
@@ -62,6 +63,33 @@ def register(registry: OperationRegistry, core: AppCore) -> None:
             value=value,
             create_missing=create_missing,
             nominal_type=nominal_type,
+            expected_revision=expected_revision,
+        )
+        return ok(
+            {"change_set": record.model_dump(mode="json")},
+            core.session_meta(),
+            char_limit=char_limit,
+        )
+
+    @registry.tool(
+        annotations=PREVIEW_ANN,
+        data_model=ChangeSetData,
+        required_capabilities=(Capability.MODEL_PREVIEW, Capability.ARTIFACT_WRITE),
+        description=(
+            "[PREVIEW] Build one revision-bound ChangeSet containing multiple "
+            "occurrence-level property assignments for the same elements. The live model "
+            "and source IFC are untouched; approval and commit remain explicit caller actions."
+        ),
+    )
+    @enveloped(core, "preview_property_changes")
+    async def preview_property_changes(
+        global_ids: Annotated[list[str], Field(min_length=1, max_length=500)],
+        properties: Annotated[list[PropertyPreview], Field(min_length=1, max_length=16)],
+        expected_revision: str | None = None,
+    ) -> Envelope:
+        record = await core.transactions.preview_property_values(
+            global_ids=global_ids,
+            properties=properties,
             expected_revision=expected_revision,
         )
         return ok(

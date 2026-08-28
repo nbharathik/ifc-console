@@ -19,6 +19,12 @@ from ifc_console.agents.builtin.measure import (
     report_to_csv,
 )
 from ifc_console.agents.proposals import PROPOSAL_TOOLS
+from ifc_console.agents.provenance import (
+    MEASUREMENT_PSET,
+    PROPERTY_PSET,
+    PROVENANCE_PSET,
+    provenance_property_name,
+)
 from ifc_console.agents.runner import resolve_model_file
 from ifc_console.testing import ScriptedAgentModel, text_round, tool_call_round
 
@@ -186,16 +192,113 @@ async def test_measurement_proposals_are_marked_as_ai_assisted(tmp_path: Path, m
         model_file, home=tmp_path / "home", project_dir=model_file.parent
     ) as runtime:
         wall = (await runtime.workbench.query("IfcWall"))[0]
-        source = build_proposal_source(runtime, [])
+        proposals: list[str] = []
+        source = build_proposal_source(runtime, proposals)
         tools = await runtime.tools("measure__propose_measured_value", sources=(source,))
         result = await tools.call(
             "measure__propose_measured_value",
             {"global_ids": [wall["global_id"]], "metric": "thickness", "value": 200.0},
         )
 
-    change = result["data"]["change_set"]["change_set"]["changes"][0]
-    assert change["pset_name"] == "IfcConsole_AI_Measurements"
-    assert change["property_name"] == "MeasuredThickness"
+    record = result["data"]["change_set"]
+    changes = record["change_set"]["changes"]
+    assert len(changes) == 2
+    assert changes[0]["pset_name"] == MEASUREMENT_PSET
+    assert changes[0]["property_name"] == "MeasuredThickness"
+    assert changes[1]["pset_name"] == PROVENANCE_PSET
+    assert changes[1]["property_name"] == provenance_property_name(
+        MEASUREMENT_PSET, "MeasuredThickness"
+    )
+    marker = json.loads(changes[1]["after"])
+    assert marker["property"] == f"{MEASUREMENT_PSET}.MeasuredThickness"
+    assert marker["proposal_id"]
+    assert result["data"]["provenance_change_set"] == record["change_set_id"]
+    assert result["data"]["ai_marked"] is True
+    assert proposals == [record["change_set_id"]]
+
+
+@pytest.mark.asyncio
+async def test_truncated_proposal_result_keeps_atomic_change_set_id(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("IFC_CONSOLE_HOME", str(tmp_path / "home"))
+    model_file = build_project(tmp_path / "project")
+    async with await LocalRuntime.open(
+        model_file,
+        home=tmp_path / "home",
+        project_dir=model_file.parent,
+        settings={"exec.output_char_limit": 1000},
+    ) as runtime:
+        wall = (await runtime.workbench.query("IfcWall"))[0]
+        proposals: list[str] = []
+        source = build_proposal_source(runtime, proposals)
+        tools = await runtime.tools("measure__propose_measured_value", sources=(source,))
+        result = await tools.call(
+            "measure__propose_measured_value",
+            {"global_ids": [wall["global_id"]], "metric": "thickness", "value": 200.0},
+        )
+        identifier = result["data"]["change_set"]["change_set_id"]
+        stored = runtime.workbench.change_set(identifier)
+
+    assert result["meta"]["truncated"] is True
+    assert result["data"]["ai_marked"] is True
+    assert result["data"]["provenance_change_set"] == identifier
+    assert proposals == [identifier]
+    assert len(stored.change_set.changes) == 2
+
+
+@pytest.mark.asyncio
+async def test_multiple_ai_properties_keep_provenance_when_one_is_updated(
+    tmp_path: Path, monkeypatch
+):
+    monkeypatch.setenv("IFC_CONSOLE_HOME", str(tmp_path / "home"))
+    model_file = build_project(tmp_path / "project")
+    async with await LocalRuntime.open(
+        model_file,
+        mode="edit",
+        home=tmp_path / "home",
+        project_dir=model_file.parent,
+    ) as runtime:
+        wall = (await runtime.workbench.query("IfcWall"))[0]
+        global_id = wall["global_id"]
+        proposals: list[str] = []
+        source = build_proposal_source(runtime, proposals)
+        tools = await runtime.tools(*PROPOSAL_TOOLS, sources=(source,))
+
+        async def propose_commit(tool_name: str, arguments: dict) -> str:
+            result = await tools.call(tool_name, arguments)
+            assert result["ok"] is True
+            identifier = result["data"]["change_set"]["change_set_id"]
+            approval = runtime.workbench.approve_change_set(identifier, approved_by="test")
+            await runtime.workbench.commit_change_set(identifier, approval_id=approval.approval_id)
+            return identifier
+
+        first = await propose_commit(
+            "measure__propose_measured_value",
+            {"global_ids": [global_id], "metric": "thickness", "value": 200.0},
+        )
+        second = await propose_commit(
+            "measure__propose_property_value",
+            {
+                "global_ids": [global_id],
+                "property_name": "ReviewSource",
+                "value": "schedule A",
+                "method": "schedule_lookup",
+            },
+        )
+        third = await propose_commit(
+            "measure__propose_measured_value",
+            {"global_ids": [global_id], "metric": "thickness", "value": 250.0},
+        )
+        inventory = await runtime.call("list_ai_authored_properties")
+
+    assert proposals == [first, second, third]
+    row = inventory["data"]["elements"][0]
+    measured_key = f"{MEASUREMENT_PSET}.MeasuredThickness"
+    property_key = f"{PROPERTY_PSET}.ReviewSource"
+    assert row["properties"][measured_key] == 250.0
+    assert row["properties"][property_key] == "schedule A"
+    assert set(row["provenance_by_property"]) == {measured_key, property_key}
+    assert row["provenance_by_property"][property_key]["method"] == "schedule_lookup"
+    assert isinstance(row["provenance"], dict)
 
 
 @pytest.mark.asyncio

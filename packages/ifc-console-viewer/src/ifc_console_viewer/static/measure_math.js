@@ -75,53 +75,6 @@ export function geometryMass(positions, indices) {
   return { area: area2 / 2, volume: Math.abs(volume6) / 6 };
 }
 
-/**
- * The eight corners of an element's own box, in scene coordinates.
- *
- * The oriented box is the local box the parser shipped, still attached to the
- * placement that put it in the model. A wall at forty degrees has its corners
- * where its corners are; the world-axis box only ever agrees with it by luck.
- */
-export function obbCorners(rec, out) {
-  const obb = rec && rec.obb;
-  if (obb) {
-    const b = obb.box;
-    const m = obb.m;
-    for (let c = 0; c < 8; c++) {
-      const x = b[c & 1 ? 3 : 0];
-      const y = b[c & 2 ? 4 : 1];
-      const z = b[c & 4 ? 5 : 2];
-      out[c].set(
-        m[0] * x + m[4] * y + m[8] * z + m[12],
-        m[1] * x + m[5] * y + m[9] * z + m[13],
-        m[2] * x + m[6] * y + m[10] * z + m[14]);
-    }
-    return true;
-  }
-  const b = rec && rec.box;
-  if (!b || !Number.isFinite(b[0])) return false;
-  for (let c = 0; c < 8; c++) {
-    out[c].set(b[c & 1 ? 3 : 0], b[c & 2 ? 4 : 1], b[c & 4 ? 5 : 2]);
-  }
-  return true;
-}
-
-/** Closest point on segment a-b to `ray`, clamped to the segment. */
-export function closestOnSegmentToRay(a, b, ray, target) {
-  const ux = b.x - a.x, uy = b.y - a.y, uz = b.z - a.z;
-  const wx = a.x - ray.origin.x, wy = a.y - ray.origin.y, wz = a.z - ray.origin.z;
-  const d = ray.direction;
-  const uu = ux * ux + uy * uy + uz * uz;
-  const ud = ux * d.x + uy * d.y + uz * d.z;
-  const denom = uu - ud * ud;
-  let t = denom > 1e-12
-    ? (ud * (wx * d.x + wy * d.y + wz * d.z) - (ux * wx + uy * wy + uz * wz)) / denom
-    : 0;
-  t = t < 0 ? 0 : t > 1 ? 1 : t;
-  target.set(a.x + ux * t, a.y + uy * t, a.z + uz * t);
-  return target;
-}
-
 /** Signed area vector of a closed polygon (Newell), which is 2A along n. */
 export function polygonNormal(points) {
   let nx = 0, ny = 0, nz = 0;
@@ -233,25 +186,6 @@ export function outlinePoints(points, minEdgeSq) {
 function distanceSq(a, b) {
   const dx = a.x - b.x, dy = a.y - b.y, dz = a.z - b.z;
   return dx * dx + dy * dy + dz * dz;
-}
-
-/**
- * The model axis a rubber band is close enough to be running along, or "".
- *
- * SketchUp's inference: a line within a few degrees of an axis meant that
- * axis, and saying so is better than letting the user aim by hand.
- */
-export function inferAxis(anchor, raw, axisFrame, cosLimit) {
-  const dx = raw.x - anchor.x;
-  const dy = raw.y - anchor.y;
-  const dz = raw.z - anchor.z;
-  const length = norm3(dx, dy, dz);
-  if (length < 1e-6) return "";
-  for (const name of AXES3) {
-    const along = { x: dx, y: dy, z: dz }[axisFrame[name].axis];
-    if (Math.abs(along) / length >= cosLimit) return name;
-  }
-  return "";
 }
 
 /**

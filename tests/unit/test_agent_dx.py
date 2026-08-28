@@ -85,14 +85,22 @@ class TestResponseModel:
         tools = await build_tools()
         model = ScriptedAgentModel(
             [
-                text_round('{"element": "Wall-1", "value": -5, "unit": "mm"}'),
-                text_round('{"element": "Wall-1", "value": 5, "unit": "mm"}'),
+                [
+                    *text_round('{"element": "Wall-1", "value": -5, "unit": "mm"}'),
+                    {"type": "usage", "in": 10, "out": 2},
+                ],
+                [
+                    *text_round('{"element": "Wall-1", "value": 5, "unit": "mm"}'),
+                    {"type": "usage", "in": 4, "out": 1},
+                ],
             ]
         )
         result = await agent_for(model, tools).run("measure", response_model=Report)
         assert result.data.value == 5
         assert len(model.turns) == 2
         assert "did not validate" in model.turns[1]["messages"][-1].text
+        assert result.usage.input_tokens == 14
+        assert result.usage.output_tokens == 3
 
     async def test_two_bad_answers_fail_clearly(self):
         tools = await build_tools()
@@ -100,6 +108,28 @@ class TestResponseModel:
         with pytest.raises(AgentRunError) as excinfo:
             await agent_for(model, tools).run("measure", response_model=Report)
         assert "Report" in str(excinfo.value)
+
+
+async def test_thread_store_failure_becomes_a_run_failure_event():
+    class FailingStore:
+        async def load(self, _thread_id):
+            return ()
+
+        async def save(self, _thread_id, _messages):
+            raise RuntimeError("store full")
+
+    tools = await build_tools()
+    model = ScriptedAgentModel([text_round("unused")])
+    events = [
+        event
+        async for event in agent_for(model, tools, thread_store=FailingStore()).stream(
+            "measure"
+        )
+    ]
+
+    assert [event.type for event in events] == ["run_started", "run_failed"]
+    assert "RuntimeError" in (events[-1].text or "")
+    assert model.turns == []
 
 
 class TestParallelReadOnly:

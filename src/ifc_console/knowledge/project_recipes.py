@@ -102,19 +102,33 @@ def load_recipes(project_dir: Path) -> tuple[list[LoadedRecipe], list[str]]:
     return recipes, problems
 
 
-def _matches(loaded: LoadedRecipe, ifc_class: str, prop: str, type_name: str | None) -> int:
-    """Match specificity: 0 no match, 1 class match, 2 class and type match."""
+def _matches(
+    loaded: LoadedRecipe,
+    ifc_class: str,
+    prop: str,
+    type_name: str | None,
+    predefined_type: str | None,
+) -> int:
+    """Match specificity, with type names preferred over predefined types."""
     recipe = loaded.recipe
     if recipe.property.casefold() != prop.casefold():
         return 0
     if recipe.applies_to.ifc_class.casefold() != ifc_class.casefold():
         return 0
-    pattern = recipe.applies_to.type_name
-    if pattern is None:
-        return 1
-    if type_name is None:
-        return 0
-    return 2 if fnmatch.fnmatch(type_name.casefold(), pattern.casefold()) else 0
+    specificity = 1
+    predefined_pattern = recipe.applies_to.predefined_type
+    if predefined_pattern is not None:
+        if predefined_type is None or not fnmatch.fnmatch(
+            predefined_type.casefold(), predefined_pattern.casefold()
+        ):
+            return 0
+        specificity += 1
+    type_pattern = recipe.applies_to.type_name
+    if type_pattern is not None:
+        if type_name is None or not fnmatch.fnmatch(type_name.casefold(), type_pattern.casefold()):
+            return 0
+        specificity += 2
+    return specificity
 
 
 def find_recipe(
@@ -123,12 +137,19 @@ def find_recipe(
     ifc_class: str,
     property_name: str,
     type_name: str | None = None,
+    predefined_type: str | None = None,
 ) -> dict[str, Any]:
-    """The most specific recipe for (class, property, type), or a clear miss."""
+    """The most specific recipe for class, property, and optional type data."""
     recipes, problems = load_recipes(project_dir)
     scored = []
     for loaded in recipes:
-        specificity = _matches(loaded, ifc_class, property_name, type_name)
+        specificity = _matches(
+            loaded,
+            ifc_class,
+            property_name,
+            type_name,
+            predefined_type,
+        )
         if specificity:
             scored.append((specificity, loaded))
     if not scored:
@@ -166,7 +187,13 @@ def find_recipe(
         "matched": {
             "class": ifc_class,
             "type_name": type_name,
-            "specificity": "type" if specificity == 2 else "class",
+            "predefined_type": predefined_type,
+            "specificity": {
+                1: "class",
+                2: "predefined_type",
+                3: "type",
+                4: "type+predefined_type",
+            }[specificity],
         },
         "file": best.file,
         "suggested_arguments": arguments,
@@ -201,6 +228,8 @@ def recipe_records(project_dir: Path) -> list[Record]:
             "method": recipe.method,
             "aliases": [recipe.property, recipe.applies_to.ifc_class],
         }
+        if recipe.applies_to.predefined_type is not None:
+            meta["predefined_type"] = recipe.applies_to.predefined_type
         if source is not None:
             meta["source"] = source.model_dump(mode="json", exclude_none=True)
         records.append(
@@ -210,6 +239,11 @@ def recipe_records(project_dir: Path) -> list[Record]:
                 name=name,
                 summary=f"{recipe.method} for {recipe.applies_to.ifc_class}"
                 + (f" type {recipe.applies_to.type_name}" if recipe.applies_to.type_name else "")
+                + (
+                    f" predefined type {recipe.applies_to.predefined_type}"
+                    if recipe.applies_to.predefined_type
+                    else ""
+                )
                 + cite,
                 body=body,
                 meta=meta,

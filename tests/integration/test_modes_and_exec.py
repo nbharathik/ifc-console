@@ -113,7 +113,12 @@ async def test_cancelled_mutation_still_marks_the_model_dirty(
     release.set()
     with pytest.raises(asyncio.CancelledError):
         await call
-    await session.run(lambda: None, timeout=30)  # let the worker finish the edit
+    for _ in range(3000):
+        if not session.poisoned:
+            break
+        await asyncio.sleep(0.01)
+    else:
+        pytest.fail("cancelled model worker did not finish")
 
     assert session.dirty is True
     assert session.ifc.by_type("IfcWall")

@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import json
-from collections.abc import AsyncIterator
 from pathlib import Path
 
 import pytest_asyncio
@@ -60,14 +61,27 @@ async def _make_core(
 
 @pytest_asyncio.fixture
 async def harness_factory(tmp_path: Path):
-    created: list[AppCore] = []
+    created: list[tuple[AppCore, asyncio.Event, asyncio.Task[None]]] = []
+
+    async def serve(mcp, ready: asyncio.Future, stop: asyncio.Event) -> None:
+        try:
+            async with create_connected_server_and_client_session(
+                mcp, raise_exceptions=True
+            ) as session:
+                await session.initialize()
+                ready.set_result(session)
+                await stop.wait()
+        except BaseException as exc:
+            if not ready.done():
+                ready.set_exception(exc)
+            raise
 
     async def factory(
         model: Path | None = None,
         mode: Mode = Mode.ASK,
         *,
         allow_ai_save: bool = False,
-    ) -> AsyncIterator[Harness]:
+    ) -> Harness:
         home = tmp_path / "home"
         core = await _make_core(
             home,
@@ -76,20 +90,28 @@ async def harness_factory(tmp_path: Path):
             mode,
             allow_ai_save=allow_ai_save,
         )
-        created.append(core)
         from ifc_console.mcp.server import build_mcp
 
         mcp = build_mcp(core)
-        cm = create_connected_server_and_client_session(mcp, raise_exceptions=True)
-        session = await cm.__aenter__()
-        await session.initialize()
-        harness = Harness(core, session)
-        harness._cm = cm  # keep the context manager alive
-        return harness
+        ready = asyncio.get_running_loop().create_future()
+        stop = asyncio.Event()
+        task = asyncio.create_task(serve(mcp, ready, stop))
+        try:
+            session = await ready
+        except BaseException:
+            stop.set()
+            with contextlib.suppress(BaseException):
+                await task
+            await core.ashutdown()
+            raise
+        created.append((core, stop, task))
+        return Harness(core, session)
 
     yield factory
-    for core in created:
-        core.shutdown()
+    for core, stop, task in reversed(created):
+        stop.set()
+        await task
+        await core.ashutdown()
 
 
 @pytest_asyncio.fixture

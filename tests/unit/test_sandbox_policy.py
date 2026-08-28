@@ -4,12 +4,19 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
 from pathlib import Path
 
 from ifc_console.sandbox import protocol
-from ifc_console.sandbox.client import _child_env, worker_executable, worker_path
+from ifc_console.sandbox.client import (
+    _child_env,
+    worker_command,
+    worker_executable,
+    worker_path,
+)
 from ifc_console.sandbox.hooks import _under
+from ifc_console.sandbox.limits import ProcessJail, isolated_process_kwargs
 from ifc_console.sandbox.policy import SandboxPolicy, runtime_roots
 
 
@@ -72,12 +79,6 @@ def test_child_env_carries_no_credentials(tmp_path: Path, monkeypatch) -> None:
 def test_child_env_keeps_only_what_the_interpreter_needs(tmp_path: Path) -> None:
     env = _child_env(tmp_path)
     allowed = {
-        "PYTHONPATH",
-        "PYTHONNOUSERSITE",
-        "PYTHONDONTWRITEBYTECODE",
-        "PYTHONUNBUFFERED",
-        "PYTHONSAFEPATH",
-        "PYTHONUTF8",
         "TMPDIR",
         "TEMP",
         "TMP",
@@ -95,6 +96,39 @@ def test_child_env_keeps_only_what_the_interpreter_needs(tmp_path: Path) -> None
     assert set(env) <= allowed
 
 
+def test_worker_bootstrap_keeps_dependency_paths_after_the_standard_library(
+    tmp_path: Path, monkeypatch
+) -> None:
+    fake_site = tmp_path / "site-packages"
+    fake_site.mkdir()
+    for module in ("asyncio", "json"):
+        (fake_site / f"{module}.py").write_text(
+            f"raise RuntimeError('{module} was shadowed')\n", encoding="utf-8"
+        )
+    (fake_site / "bootstrap_probe.py").write_text(
+        "import asyncio, json\n"
+        "print(json.dumps({'asyncio': asyncio.__file__, 'json': json.__file__}))\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "ifc_console.sandbox.client.worker_path", lambda _narrow=True: [str(fake_site)]
+    )
+
+    completed = subprocess.run(
+        worker_command("bootstrap_probe"),
+        cwd=tmp_path,
+        env=_child_env(tmp_path),
+        capture_output=True,
+        check=True,
+        text=True,
+        timeout=30,
+    )
+    imported = json.loads(completed.stdout)
+
+    assert Path(imported["asyncio"]).resolve() != (fake_site / "asyncio.py").resolve()
+    assert Path(imported["json"]).resolve() != (fake_site / "json.py").resolve()
+
+
 def test_worker_path_is_narrower_than_sys_path() -> None:
     narrow = worker_path(narrow=True)
     assert narrow, "the worker still needs somewhere to import from"
@@ -105,6 +139,56 @@ def test_worker_path_is_narrower_than_sys_path() -> None:
 
 def test_worker_executable_is_a_real_interpreter() -> None:
     assert os.path.isfile(worker_executable())
+
+
+def test_posix_workers_start_in_an_isolated_session() -> None:
+    expected = {"start_new_session": True} if os.name == "posix" else {}
+    assert isolated_process_kwargs() == expected
+
+
+def test_process_jail_never_kills_the_console_group(monkeypatch) -> None:
+    from ifc_console.sandbox import limits
+
+    killed: list[tuple[int, int]] = []
+    monkeypatch.setattr(limits.sys, "platform", "linux")
+    monkeypatch.setattr(limits.os, "getpgid", lambda _pid: 42, raising=False)
+    monkeypatch.setattr(limits.os, "getpgrp", lambda: 42, raising=False)
+    monkeypatch.setattr(
+        limits.os,
+        "killpg",
+        lambda group, signal: killed.append((group, signal)),
+        raising=False,
+    )
+
+    jail = ProcessJail(0)
+    jail.attach(123)
+    jail.kill()
+
+    assert killed == []
+
+
+def test_process_jail_kills_only_the_worker_owned_group(monkeypatch) -> None:
+    import signal
+
+    from ifc_console.sandbox import limits
+
+    killed: list[tuple[int, int]] = []
+    monkeypatch.setattr(limits.sys, "platform", "linux")
+    monkeypatch.setattr(limits.os, "getpgrp", lambda: 42, raising=False)
+    monkeypatch.setattr(limits.os, "killpg", lambda group, sig: killed.append((group, sig)), raising=False)
+    monkeypatch.setattr(signal, "SIGKILL", 9, raising=False)
+
+    jail = ProcessJail(0)
+    jail.attach(123)
+    monkeypatch.setattr(limits.os, "getpgid", lambda _pid: 777, raising=False)
+    jail.kill()
+    assert killed == []
+
+    jail = ProcessJail(0)
+    jail.attach(123)
+    monkeypatch.setattr(limits.os, "getpgid", lambda _pid: 123, raising=False)
+    jail.kill()
+    assert killed == [(123, 9)]
 
 
 def test_worst_case_configured_output_fits_one_protocol_frame() -> None:

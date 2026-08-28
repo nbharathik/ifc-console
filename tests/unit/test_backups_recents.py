@@ -1,8 +1,9 @@
-"""Backups + recents (plan 04 §7, 07 §5)."""
+"""Backup and recent-model store tests."""
 
 from __future__ import annotations
 
 import json
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from ifc_console.recents import RecentsStore
@@ -86,3 +87,22 @@ def test_recents_dedupes_and_counts_opens(tmp_path: Path) -> None:
     assert len(entries) == 1
     assert entries[0]["opens"] == 2
     assert entries[0]["last_mode"] == "ask"
+
+
+def test_recents_updates_from_multiple_store_instances_are_serialized(tmp_path: Path) -> None:
+    recents = tmp_path / "recents.json"
+
+    def touch(index: int) -> None:
+        RecentsStore(recents, max_entries=64).touch(
+            tmp_path / f"{index}.ifc",
+            size_bytes=index,
+            schema="IFC4",
+            mode="ask",
+        )
+
+    with ThreadPoolExecutor(max_workers=16) as pool:
+        list(pool.map(touch, range(32)))
+
+    assert {Path(item["path"]).name for item in RecentsStore(recents).entries()} == {
+        f"{index}.ifc" for index in range(32)
+    }

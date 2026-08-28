@@ -22,7 +22,9 @@ PREFIX = "IfcConsole_AI_"
 MEASUREMENT_PSET = f"{PREFIX}Measurements"
 PROPERTY_PSET = f"{PREFIX}Properties"
 PROVENANCE_PSET = f"{PREFIX}Provenance"
+# Kept for models written by releases that stored one marker per element.
 PROVENANCE_PROPERTY = "AI_Provenance"
+PROVENANCE_PROPERTY_PREFIX = f"{PROVENANCE_PROPERTY}_"
 MARKER_PROPERTY = "AI_Generated"
 
 # Property names an agent may create. Deliberately conservative: no colons, no
@@ -73,6 +75,20 @@ def validate_pset(name: str) -> str:
     return cleaned
 
 
+def provenance_property_name(pset_name: str, property_name: str) -> str:
+    """Stable marker name for one AI-authored target property."""
+    clean_pset = validate_pset(pset_name)
+    clean_property = validate_property_name(property_name)
+    scope = "M" if clean_pset == MEASUREMENT_PSET else "P"
+    return f"{PROVENANCE_PROPERTY_PREFIX}{scope}_{clean_property}"
+
+
+def is_provenance_property(name: str) -> bool:
+    """True for legacy and per-property provenance markers."""
+    clean = str(name)
+    return clean == PROVENANCE_PROPERTY or clean.startswith(PROVENANCE_PROPERTY_PREFIX)
+
+
 @dataclass(frozen=True)
 class Provenance:
     """The record stored beside every AI-assisted value."""
@@ -88,9 +104,14 @@ class Provenance:
     instructions: str = ""
     change_set: str = ""
     written_at: str = ""
+    proposal_id: str = ""
 
     def with_change_set(self, change_set_id: str) -> Provenance:
         return Provenance(**{**self.__dict__, "change_set": change_set_id})
+
+    def with_proposal(self, proposal_id: str) -> Provenance:
+        """Bind the record to one preview without creating a hash cycle."""
+        return Provenance(**{**self.__dict__, "proposal_id": proposal_id})
 
     def to_json(self) -> str:
         """Compact, stable, and short enough for an IfcText property."""
@@ -107,6 +128,7 @@ class Provenance:
             "instructions": self.instructions[:240],
             "change_set": self.change_set,
             "written_at": self.written_at or stamp(),
+            "proposal_id": self.proposal_id,
             "tool": "ifc-console",
         }
         return json.dumps({k: v for k, v in payload.items() if v not in ("", None)})
@@ -149,19 +171,43 @@ def read_ai_properties(ifc: Any, *, limit: int = 500) -> dict[str, Any]:
             truncated = True
             break
         provenance: dict[str, Any] | None = None
+        provenance_records: list[tuple[str, dict[str, Any]]] = []
+        provenance_by_property: dict[str, dict[str, Any]] = {}
+        provenance_ranks: dict[str, tuple[str, bool, int]] = {}
         properties: dict[str, Any] = {}
         for name, values in marked.items():
             psets_seen[name] = psets_seen.get(name, 0) + 1
             for key, value in values.items():
                 if key == "id":
                     continue
-                if name == PROVENANCE_PSET and key == PROVENANCE_PROPERTY:
+                if name == PROVENANCE_PSET and is_provenance_property(key):
                     try:
-                        provenance = json.loads(str(value))
+                        parsed = json.loads(str(value))
+                        record = parsed if isinstance(parsed, dict) else {"raw": str(value)[:400]}
                     except (ValueError, TypeError):
-                        provenance = {"raw": str(value)[:400]}
+                        record = {"raw": str(value)[:400]}
+                    target = record.get("property")
+                    target_key = target if isinstance(target, str) and target else key
+                    rank = (
+                        str(record.get("written_at", "")),
+                        key != PROVENANCE_PROPERTY,
+                        len(provenance_records),
+                    )
+                    if rank > provenance_ranks.get(target_key, ("", False, -1)):
+                        provenance_by_property[target_key] = record
+                        provenance_ranks[target_key] = rank
+                    provenance_records.append((key, record))
                     continue
                 properties[f"{name}.{key}"] = value
+        if provenance_records:
+            provenance = max(
+                enumerate(provenance_records),
+                key=lambda item: (
+                    str(item[1][1].get("written_at", "")),
+                    item[1][0] != PROVENANCE_PROPERTY,
+                    item[0],
+                ),
+            )[1][1]
         rows.append(
             {
                 "global_id": getattr(element, "GlobalId", None),
@@ -169,6 +215,7 @@ def read_ai_properties(ifc: Any, *, limit: int = 500) -> dict[str, Any]:
                 "name": getattr(element, "Name", None),
                 "properties": properties,
                 "provenance": provenance,
+                "provenance_by_property": provenance_by_property,
             }
         )
     return {
@@ -188,10 +235,13 @@ __all__ = [
     "PREFIX",
     "PROPERTY_PSET",
     "PROVENANCE_PROPERTY",
+    "PROVENANCE_PROPERTY_PREFIX",
     "PROVENANCE_PSET",
     "Provenance",
     "is_ai_authored",
+    "is_provenance_property",
     "measurement_property",
+    "provenance_property_name",
     "read_ai_properties",
     "stamp",
     "validate_property_name",

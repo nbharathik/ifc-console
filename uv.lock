@@ -540,6 +540,7 @@ wheels = [
 name = "ifc-console"
 source = { editable = "." }
 dependencies = [
+    { name = "httpx" },
     { name = "ifcopenshell" },
     { name = "keyring" },
     { name = "mcp" },
@@ -558,7 +559,6 @@ dependencies = [
 
 [package.optional-dependencies]
 dev = [
-    { name = "httpx" },
     { name = "httpx2" },
     { name = "ifc-console-viewer" },
     { name = "ifctester" },
@@ -589,7 +589,7 @@ viewer = [
 
 [package.metadata]
 requires-dist = [
-    { name = "httpx", marker = "extra == 'dev'", specifier = ">=0.27" },
+    { name = "httpx", specifier = ">=0.27" },
     { name = "httpx2", marker = "extra == 'dev'", specifier = ">=2,<3" },
     { name = "ifc-console-viewer", marker = "extra == 'dev'", editable = "packages/ifc-console-viewer" },
     { name = "ifc-console-viewer", marker = "extra == 'viewer'", editable = "packages/ifc-console-viewer" },
@@ -608,7 +608,6 @@ requires-dist = [
     { name = "pypdf", specifier = ">=4" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23" },
-    { name = "pyyaml", specifier = ">=6" },
     { name = "pyyaml", specifier = ">=6,<7" },
     { name = "rich", specifier = ">=13" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.5" },

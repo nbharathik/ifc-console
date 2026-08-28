@@ -18,6 +18,7 @@ import builtins as _builtins
 import contextlib
 import os
 import sys
+import threading
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
@@ -233,6 +234,103 @@ _ENTITY_LOCKED_MSG = (
     "ifc-console terminal, then resubmit."
 )
 
+# Both guards below temporarily patch IfcOpenShell classes. Those classes are
+# process-global, while ModelSession serialization only covers one AppCore.
+# Install dispatching wrappers once and keep their policy thread-local: guarded
+# runs stay blocked, while unrelated runtimes continue to use the real methods.
+# A user count makes overlapping exits restore the exact originals only once.
+_IFCOPENSHELL_PATCH_LOCK = threading.RLock()
+_IFCOPENSHELL_GUARD_STATE = threading.local()
+_IFCOPENSHELL_PATCH_USERS = 0
+_IFCOPENSHELL_ORIGINALS: tuple[Any, ...] | None = None
+
+
+def _guard_depth(kind: str) -> int:
+    return int(getattr(_IFCOPENSHELL_GUARD_STATE, kind, 0))
+
+
+def _enter_ifcopenshell_guard(kind: str) -> None:
+    global _IFCOPENSHELL_ORIGINALS, _IFCOPENSHELL_PATCH_USERS
+
+    with _IFCOPENSHELL_PATCH_LOCK:
+        if _IFCOPENSHELL_PATCH_USERS == 0:
+            entity_cls = ifcopenshell.entity_instance
+            file_cls = ifcopenshell.file
+            entity_setattr = entity_cls.__setattr__
+            entity_setitem = entity_cls.__setitem__
+            entity_file = entity_cls.file
+            file_write = file_cls.write
+            _IFCOPENSHELL_ORIGINALS = (
+                entity_cls,
+                entity_setattr,
+                entity_setitem,
+                entity_file,
+                file_cls,
+                file_write,
+            )
+
+            def guarded_setattr(self: Any, name: str, value: Any) -> None:
+                if _guard_depth("entity"):
+                    raise GuardError(
+                        _ENTITY_LOCKED_MSG.format(what="assigning entity attributes")
+                    )
+                entity_setattr(self, name, value)
+
+            def guarded_setitem(self: Any, index: Any, value: Any) -> None:
+                if _guard_depth("entity"):
+                    raise GuardError(
+                        _ENTITY_LOCKED_MSG.format(
+                            what="assigning entity attributes by index"
+                        )
+                    )
+                entity_setitem(self, index, value)
+
+            def guarded_file(self: Any) -> Any:
+                real = entity_file.fget(self)
+                return GuardedFile(real) if _guard_depth("entity") else real
+
+            def guarded_write(self: Any, *args: Any, **kwargs: Any) -> Any:
+                if _guard_depth("write"):
+                    raise GuardError(
+                        "writing an IFC file is disabled by files.allow_ai_save; changes "
+                        "remain in memory until the user runs /save"
+                    )
+                return file_write(self, *args, **kwargs)
+
+            entity_cls.__setattr__ = guarded_setattr
+            entity_cls.__setitem__ = guarded_setitem
+            entity_cls.file = property(
+                guarded_file, entity_file.fset, entity_file.fdel, entity_file.__doc__
+            )
+            file_cls.write = guarded_write
+
+        _IFCOPENSHELL_PATCH_USERS += 1
+        setattr(_IFCOPENSHELL_GUARD_STATE, kind, _guard_depth(kind) + 1)
+
+
+def _exit_ifcopenshell_guard(kind: str) -> None:
+    global _IFCOPENSHELL_ORIGINALS, _IFCOPENSHELL_PATCH_USERS
+
+    with _IFCOPENSHELL_PATCH_LOCK:
+        depth = _guard_depth(kind) - 1
+        if depth:
+            setattr(_IFCOPENSHELL_GUARD_STATE, kind, depth)
+        else:
+            with contextlib.suppress(AttributeError):
+                delattr(_IFCOPENSHELL_GUARD_STATE, kind)
+
+        _IFCOPENSHELL_PATCH_USERS -= 1
+        if _IFCOPENSHELL_PATCH_USERS == 0:
+            assert _IFCOPENSHELL_ORIGINALS is not None
+            entity_cls, entity_setattr, entity_setitem, entity_file, file_cls, file_write = (
+                _IFCOPENSHELL_ORIGINALS
+            )
+            entity_cls.__setattr__ = entity_setattr
+            entity_cls.__setitem__ = entity_setitem
+            entity_cls.file = entity_file
+            file_cls.write = file_write
+            _IFCOPENSHELL_ORIGINALS = None
+
 
 @contextlib.contextmanager
 def entity_mutation_lock(enabled: bool = True) -> Iterator[None]:
@@ -242,33 +340,17 @@ def entity_mutation_lock(enabled: bool = True) -> Iterator[None]:
     impractical), which leaves three accident-level routes around GuardedFile:
     `e.Name = x`, `e[2] = x`, and the `e.file` property handing back the
     unguarded model. While the lock is held, the entity class's setters raise
-    and `.file` returns a GuardedFile. Class-level patching is safe here
-    because the session serializes execute_ifc_code jobs, and concurrent
-    readers only ever traverse; they never assign.
+    and `.file` returns a GuardedFile. Process-global wrappers consult
+    thread-local state so independent model sessions cannot interfere.
     """
     if not enabled:
         yield
         return
-    cls = ifcopenshell.entity_instance
-    orig_setattr = cls.__setattr__
-    orig_setitem = cls.__setitem__
-    orig_file = cls.file
-
-    def blocked_setattr(_self: Any, _name: str, _value: Any) -> None:
-        raise GuardError(_ENTITY_LOCKED_MSG.format(what="assigning entity attributes"))
-
-    def blocked_setitem(_self: Any, _idx: Any, _value: Any) -> None:
-        raise GuardError(_ENTITY_LOCKED_MSG.format(what="assigning entity attributes by index"))
-
-    cls.__setattr__ = blocked_setattr
-    cls.__setitem__ = blocked_setitem
-    cls.file = property(lambda self: GuardedFile(orig_file.fget(self)))
+    _enter_ifcopenshell_guard("entity")
     try:
         yield
     finally:
-        cls.__setattr__ = orig_setattr
-        cls.__setitem__ = orig_setitem
-        cls.file = orig_file
+        _exit_ifcopenshell_guard("entity")
 
 
 @contextlib.contextmanager
@@ -282,20 +364,11 @@ def model_write_lock(enabled: bool = True) -> Iterator[None]:
     if not enabled:
         yield
         return
-    cls = ifcopenshell.file
-    original = cls.write
-
-    def blocked_write(_self: Any, *_args: Any, **_kwargs: Any) -> None:
-        raise GuardError(
-            "writing an IFC file is disabled by files.allow_ai_save; changes "
-            "remain in memory until the user runs /save"
-        )
-
-    cls.write = blocked_write
+    _enter_ifcopenshell_guard("write")
     try:
         yield
     finally:
-        cls.write = original
+        _exit_ifcopenshell_guard("write")
 
 
 def _normalized(path: Path) -> str:

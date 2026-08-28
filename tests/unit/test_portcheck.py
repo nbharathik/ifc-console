@@ -13,15 +13,9 @@ from ifc_console.portcheck import (
     FREE,
     IFC_CONSOLE,
     IFC_CONSOLE_OTHER,
-    classify_http,
     conflict_hint,
     find_free_port,
     port_status,
-)
-
-STATUS_BODY = json.dumps({"server": {"name": "ifc-console"}, "model": None})
-UNAUTHORIZED_BODY = json.dumps(
-    {"error": "unauthorized", "hint": "the token is shown in the ifc-console terminal"}
 )
 
 
@@ -46,23 +40,6 @@ def test_find_free_port_skips_an_occupied_one() -> None:
 
 def test_find_free_port_gives_up_inside_its_window() -> None:
     assert find_free_port(65535, tries=5) is None
-
-
-# ------------------------------------------------------------- classification
-def test_classify_running_session() -> None:
-    kind, _ = classify_http(200, STATUS_BODY)
-    assert kind == IFC_CONSOLE
-
-
-def test_classify_ifc_code_with_other_token() -> None:
-    kind, _ = classify_http(401, UNAUTHORIZED_BODY)
-    assert kind == IFC_CONSOLE_OTHER
-
-
-def test_classify_foreign_app() -> None:
-    kind, detail = classify_http(404, "<html>totally different app</html>")
-    assert kind == FOREIGN
-    assert "404" in detail
 
 
 # ------------------------------------------------------------------- probing

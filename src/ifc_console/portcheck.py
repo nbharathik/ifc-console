@@ -28,16 +28,6 @@ IFC_CONSOLE_OTHER = "ifc-console-other"  # ifc-console, but a different/unknown 
 FOREIGN = "foreign"  # something else entirely
 
 
-def classify_http(status_code: int, body: str) -> tuple[str, str]:
-    """Classify an HTTP answer from 127.0.0.1:<port>/api/status."""
-    is_ours = "ifc-console" in body
-    if status_code == 200 and is_ours:
-        return IFC_CONSOLE, "your running ifc-console session (same token)"
-    if is_ours:
-        return IFC_CONSOLE_OTHER, "an ifc-console session with a different token"
-    return FOREIGN, f"an application that is not ifc-console (HTTP {status_code})"
-
-
 def find_free_port(start: int, tries: int = 15) -> int | None:
     """The first bindable port after `start`, or None within the window."""
     for candidate in range(start + 1, min(start + 1 + tries, 65536)):
@@ -127,7 +117,6 @@ __all__ = [
     "IFC_CONSOLE",
     "IFC_CONSOLE_OTHER",
     "FOREIGN",
-    "classify_http",
     "conflict_hint",
     "port_status",
 ]

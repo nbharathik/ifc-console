@@ -107,7 +107,13 @@ class ModelRegistry:
         """Clean, non-active models, least recently used first."""
         order = [mid for mid in self._order if mid in self.sessions]
         order += [mid for mid in self.sessions if mid not in order]
-        return [mid for mid in order if mid != self.active_id and not self.sessions[mid].dirty]
+        return [
+            mid
+            for mid in order
+            if mid != self.active_id
+            and not self.sessions[mid].dirty
+            and not self.sessions[mid].poisoned
+        ]
 
     def plan_room(self, incoming_bytes: int, *, replacing: Iterable[str] = ()) -> list[str]:
         """Return the clean models to evict so a newcomer fits.
@@ -176,6 +182,16 @@ class ModelRegistry:
         if model_id not in self.sessions:
             self.require(model_id)
         previous = self.active_id
+        if self.sessions[model_id].poisoned or (
+            previous is not None
+            and previous != model_id
+            and self.sessions[previous].poisoned
+        ):
+            raise ToolError(
+                "MODEL_BUSY",
+                "a cancelled or timed-out model operation is still fenced.",
+                "Reload that model before changing the active model.",
+            )
         if previous is not None and previous in self.sessions:
             self.sessions[previous].read_only = True
         self.active_id = model_id
@@ -186,6 +202,12 @@ class ModelRegistry:
         """Free a resident model. force discards unsaved changes, which only
         the replace-the-active-model path does (the user confirmed it there)."""
         session = self.require(model_id)
+        if session.poisoned:
+            raise ToolError(
+                "MODEL_BUSY",
+                f"{model_id} has a cancelled or timed-out operation still fenced.",
+                "Reload the model before detaching or replacing it.",
+            )
         if session.dirty and not force:
             raise ToolError(
                 "UNSAVED_CHANGES",

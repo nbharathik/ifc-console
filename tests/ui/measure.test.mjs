@@ -12,17 +12,14 @@ import {
   angleMeasure,
   boxExtents,
   clearanceAxes,
-  closestOnSegmentToRay,
   emptyBox,
   formatArea,
   formatFeetInches,
   formatLength,
   formatVolume,
   geometryMass,
-  inferAxis,
   LENGTH_UNITS,
   norm3,
-  obbCorners,
   outlinePoints,
   planSpatialGrid,
   polylineMeasure,
@@ -211,27 +208,6 @@ test("straight and folded-back angles do not overflow acos", () => {
   near(collapsed.legs[0], 0);
 });
 
-test("axis inference snaps at seven degrees and lets go at nine", () => {
-  const cosLimit = Math.cos((8 * Math.PI) / 180);
-  const anchor = v3(0, 0, 0);
-  const off = (degrees) => {
-    const a = (degrees * Math.PI) / 180;
-    // Along the scene's X, tilted towards the scene's Z.
-    return v3(Math.cos(a) * 10, 0, Math.sin(a) * 10);
-  };
-  assert.equal(inferAxis(anchor, off(0), FRAME, cosLimit), "x");
-  assert.equal(inferAxis(anchor, off(7), FRAME, cosLimit), "x");
-  assert.equal(inferAxis(anchor, off(9), FRAME, cosLimit), "");
-  assert.equal(inferAxis(anchor, off(45), FRAME, cosLimit), "");
-  // Backwards along an axis is still that axis.
-  assert.equal(inferAxis(anchor, v3(-10, 0, 0), FRAME, cosLimit), "x");
-  // The model's Z runs along the scene's Y, and is named as the model has it.
-  assert.equal(inferAxis(anchor, v3(0, 4, 0), FRAME, cosLimit), "z");
-  assert.equal(inferAxis(anchor, v3(0, 0, 4), FRAME, cosLimit), "y");
-  // A click on top of its own anchor infers nothing.
-  assert.equal(inferAxis(anchor, v3(1e-9, 0, 0), FRAME, cosLimit), "");
-});
-
 test("a world box is measured on the model's axes, longest first", () => {
   // Scene spans x 3, y 5, z 4; the model's Y is the scene's Z.
   const sized = boxExtents([0, 0, 0, 3, 5, 4], null, FRAME);
@@ -315,54 +291,6 @@ test("clearance stops at its reach and ignores an unmeasured box", () => {
   near(axes.z.negative.distance, 1);
   assert.equal(axes.z.positive, null);
   assert.equal(axes.z.span, null);
-});
-
-test("an oriented box gives its own eight corners", () => {
-  const out = Array.from({ length: 8 }, () => v3());
-  const obb = { box: [0, 0, 0, 2, 1, 4], m: rotationY(90, 1, [5, 0, 0]) };
-  assert.equal(obbCorners({ obb }, out), true);
-  // A quarter turn about Y sends local +x to scene -z and local +z to scene +x.
-  near(out[0].x, 5, 1e-6);
-  near(out[0].z, 0, 1e-6);
-  near(out[1].x, 5, 1e-6);
-  near(out[1].z, -2, 1e-6);
-  near(out[4].x, 9, 1e-6);
-  near(out[4].z, 0, 1e-6);
-  // Eight distinct corners, no duplicates from a bit-mask slip.
-  const seen = new Set(out.map((p) => `${p.x.toFixed(4)},${p.y},${p.z.toFixed(4)}`));
-  assert.equal(seen.size, 8);
-});
-
-test("without a placement the corners fall back to the world box", () => {
-  const out = Array.from({ length: 8 }, () => v3());
-  assert.equal(obbCorners({ box: [0, 0, 0, 1, 2, 3] }, out), true);
-  assert.deepEqual([out[0].x, out[0].y, out[0].z], [0, 0, 0]);
-  assert.deepEqual([out[7].x, out[7].y, out[7].z], [1, 2, 3]);
-  // An element the batcher never measured has no corners to offer.
-  assert.equal(obbCorners({ box: [Infinity, Infinity, Infinity, -1, -1, -1] }, out), false);
-  assert.equal(obbCorners(null, out), false);
-});
-
-test("a point along an edge is clamped to the edge", () => {
-  const ray = { origin: v3(0, 5, 0), direction: v3(0, -1, 0) };
-  const target = v3();
-  // The ray passes over the middle of the segment.
-  closestOnSegmentToRay(v3(-2, 0, 0), v3(2, 0, 0), ray, target);
-  near(target.x, 0, 1e-9);
-  // And past its end, where the answer is the end rather than a point in space.
-  const past = { origin: v3(9, 5, 0), direction: v3(0, -1, 0) };
-  closestOnSegmentToRay(v3(-2, 0, 0), v3(2, 0, 0), past, target);
-  near(target.x, 2, 1e-9);
-  const before = { origin: v3(-9, 5, 0), direction: v3(0, -1, 0) };
-  closestOnSegmentToRay(v3(-2, 0, 0), v3(2, 0, 0), before, target);
-  near(target.x, -2, 1e-9);
-});
-
-test("a segment parallel to the ray answers with its own start", () => {
-  const ray = { origin: v3(0, 5, 0), direction: v3(1, 0, 0) };
-  const target = v3();
-  closestOnSegmentToRay(v3(-2, 0, 0), v3(2, 0, 0), ray, target);
-  near(target.x, -2, 1e-9);
 });
 
 test("an outline drops the points a double-click added twice", () => {

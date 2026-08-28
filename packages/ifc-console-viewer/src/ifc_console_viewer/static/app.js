@@ -24,16 +24,13 @@ import {
   angleMeasure as angleCore,
   boxExtents,
   clearanceAxes,
-  closestOnSegmentToRay,
   emptyBox,
   formatArea as formatAreaIn,
   formatLength as formatLengthIn,
   formatVolume as formatVolumeIn,
   geometryMass,
-  inferAxis,
   LENGTH_UNITS,
   norm3,
-  obbCorners,
   outlinePoints,
   planSpatialGrid,
   polylineMeasure as polylineCore,
@@ -1977,7 +1974,6 @@ function disposeModel() {
   instancedTransparentMaterials.clear();
   elements.clear();
   elementsByIndex.length = 0;
-  elementGrid = null;
   registry.clear();
   geomUse.clear();
   accumulators = new Map();
@@ -2000,80 +1996,6 @@ function disposeModel() {
   updateSelectionInfo();
   updateHighlightInfo();
   clearProperties();
-}
-
-// ------------------------------------------------------------ spatial index
-// Snapping asks "what is near this point" on every hover frame, and scanning
-// every element to answer it does not survive a large model. A uniform grid
-// over the boxes the viewer already keeps answers it in the cells it touches.
-const GRID_CELL_BUDGET = 512;
-let elementGrid = null;
-
-function buildElementGrid() {
-  elementGrid = null;
-  if (!modelBox || !elements.size) return;
-  const divisions = Math.max(8, Math.min(128, Math.round(Math.cbrt(elements.size) * 2)));
-  const size = Math.max(sceneSpan() / divisions, 1e-6);
-  const map = new Map();
-  const oversized = [];
-  for (const [id, rec] of elements) {
-    const b = rec.box;
-    if (!Number.isFinite(b[0])) continue;
-    const x0 = Math.floor((b[0] - modelBox[0]) / size);
-    const y0 = Math.floor((b[1] - modelBox[1]) / size);
-    const z0 = Math.floor((b[2] - modelBox[2]) / size);
-    const x1 = Math.floor((b[3] - modelBox[0]) / size);
-    const y1 = Math.floor((b[4] - modelBox[1]) / size);
-    const z1 = Math.floor((b[5] - modelBox[2]) / size);
-    // A site or a roof slab reaches across most of the grid, and writing it
-    // into every cell it touches costs more than testing it every time.
-    if ((x1 - x0 + 1) * (y1 - y0 + 1) * (z1 - z0 + 1) > GRID_CELL_BUDGET) {
-      oversized.push(id);
-      continue;
-    }
-    for (let x = x0; x <= x1; x++) {
-      for (let y = y0; y <= y1; y++) {
-        for (let z = z0; z <= z1; z++) {
-          const key = `${x},${y},${z}`;
-          const bucket = map.get(key);
-          if (bucket) bucket.push(id);
-          else map.set(key, [id]);
-        }
-      }
-    }
-  }
-  elementGrid = { size, map, oversized };
-}
-
-/** Element ids whose box comes within `radius` of `point`. */
-function elementsNear(point, radius, out) {
-  out.clear();
-  if (!elementGrid || !modelBox) return out;
-  const test = (id) => {
-    const b = elements.get(id)?.box;
-    if (!b || !Number.isFinite(b[0])) return;
-    if (point.x < b[0] - radius || point.x > b[3] + radius) return;
-    if (point.y < b[1] - radius || point.y > b[4] + radius) return;
-    if (point.z < b[2] - radius || point.z > b[5] + radius) return;
-    out.add(id);
-  };
-  for (const id of elementGrid.oversized) test(id);
-  const size = elementGrid.size;
-  const x0 = Math.floor((point.x - radius - modelBox[0]) / size);
-  const y0 = Math.floor((point.y - radius - modelBox[1]) / size);
-  const z0 = Math.floor((point.z - radius - modelBox[2]) / size);
-  const x1 = Math.floor((point.x + radius - modelBox[0]) / size);
-  const y1 = Math.floor((point.y + radius - modelBox[1]) / size);
-  const z1 = Math.floor((point.z + radius - modelBox[2]) / size);
-  for (let x = x0; x <= x1; x++) {
-    for (let y = y0; y <= y1; y++) {
-      for (let z = z0; z <= z1; z++) {
-        const bucket = elementGrid.map.get(`${x},${y},${z}`);
-        if (bucket) for (const id of bucket) test(id);
-      }
-    }
-  }
-  return out;
 }
 
 function updateStats() {
@@ -2477,7 +2399,6 @@ async function buildScene(buffer) {
     }
   }
   renderTree(parsed.tree);
-  buildElementGrid();
   registry.clear();
   geomUse.clear();
   updateGround();
@@ -3940,6 +3861,46 @@ function depthPickRange() {
   return { near, far, forward: _depthForward.clone() };
 }
 
+function beginSceneProbe(scaled) {
+  const state = {
+    scaled,
+    background: scene.background,
+    override: scene.overrideMaterial,
+    gridWasVisible: grid.visible,
+    axesWasVisible: axes ? axes.visible : false,
+    measureWasVisible: measureGroup.visible,
+    snapWasVisible: snapGroup.visible,
+    edgesWereVisible: edgeRoot.visible,
+    sectionHelperWasVisible: sectionHelperRoot.visible,
+    target: renderer.getRenderTarget(),
+    clearColor: renderer.getClearColor(new THREE.Color()).clone(),
+    clearAlpha: renderer.getClearAlpha(),
+  };
+  scene.background = null;
+  grid.visible = false;
+  if (axes) axes.visible = false;
+  measureGroup.visible = false;
+  snapGroup.visible = false;
+  edgeRoot.visible = false;
+  sectionHelperRoot.visible = false;
+  return state;
+}
+
+function endSceneProbe(state) {
+  renderer.setRenderTarget(state.target);
+  renderer.setClearColor(state.clearColor, state.clearAlpha);
+  camera.clearViewOffset();
+  scene.overrideMaterial = state.override;
+  scene.background = state.background;
+  grid.visible = state.gridWasVisible;
+  if (axes) axes.visible = state.axesWasVisible;
+  measureGroup.visible = state.measureWasVisible;
+  snapGroup.visible = state.snapWasVisible;
+  edgeRoot.visible = state.edgesWereVisible;
+  sectionHelperRoot.visible = state.sectionHelperWasVisible;
+  if (state.scaled) invalidate();
+}
+
 /**
  * Draw the depth of one pixel into pickTarget, and remember what to put back.
  *
@@ -3969,8 +3930,8 @@ function beginDepthProbe(clientX, clientY) {
   raycaster.setFromCamera(_ndc, camera);
   const range = depthPickRange();
   const state = {
+    ...beginSceneProbe(scaled),
     rect,
-    scaled,
     near: range.near,
     far: range.far,
     forward: range.forward,
@@ -3978,27 +3939,9 @@ function beginDepthProbe(clientX, clientY) {
     rayOrigin: raycaster.ray.origin.clone(),
     rayDirection: raycaster.ray.direction.clone(),
     serial: cameraSerial,
-    background: scene.background,
-    override: scene.overrideMaterial,
-    gridWasVisible: grid.visible,
-    axesWasVisible: axes ? axes.visible : false,
-    measureWasVisible: measureGroup.visible,
-    snapWasVisible: snapGroup.visible,
-    edgesWereVisible: edgeRoot.visible,
-    sectionHelperWasVisible: sectionHelperRoot.visible,
-    target: renderer.getRenderTarget(),
-    clearColor: renderer.getClearColor(new THREE.Color()).clone(),
-    clearAlpha: renderer.getClearAlpha(),
   };
-  scene.background = null;
-  grid.visible = false;
-  if (axes) axes.visible = false;
   // the preview glyph would otherwise be the nearest surface to itself
-  measureGroup.visible = false;
-  snapGroup.visible = false;
   // A line drawn on a surface would be measured instead of the surface.
-  edgeRoot.visible = false;
-  sectionHelperRoot.visible = false;
   depthMaterial.uniforms.uStateTex.value = stateTex;
   depthMaterial.uniforms.uStateSize.value.set(STATE_W, stateH);
   depthMaterial.uniforms.uNear.value = state.near;
@@ -4011,23 +3954,6 @@ function beginDepthProbe(clientX, clientY) {
   renderer.clear();
   renderer.render(scene, camera);
   return state;
-}
-
-function endDepthProbe(state) {
-  renderer.setRenderTarget(state.target);
-  renderer.setClearColor(state.clearColor, state.clearAlpha);
-  camera.clearViewOffset();
-  scene.overrideMaterial = state.override;
-  scene.background = state.background;
-  grid.visible = state.gridWasVisible;
-  if (axes) axes.visible = state.axesWasVisible;
-  measureGroup.visible = state.measureWasVisible;
-  snapGroup.visible = state.snapWasVisible;
-  edgeRoot.visible = state.edgesWereVisible;
-  sectionHelperRoot.visible = state.sectionHelperWasVisible;
-  // The probe renders into pickTarget and never touches the canvas, so only a
-  // resolution change owes the screen a redraw.
-  if (state.scaled) invalidate();
 }
 
 /** The encoded view depth as a point on the exact sampled ray. */
@@ -4051,7 +3977,7 @@ function surfacePointAt(clientX, clientY) {
   try {
     renderer.readRenderTargetPixels(pickTarget, 0, 0, 1, 1, pickBuffer);
   } finally {
-    endDepthProbe(state);
+    endSceneProbe(state);
   }
   return depthPointFrom(state, pickBuffer);
 }
@@ -4078,7 +4004,7 @@ async function surfacePointAsync(clientX, clientY) {
   try {
     read = renderer.readRenderTargetPixelsAsync(pickTarget, 0, 0, 1, 1, probeBuffer);
   } finally {
-    endDepthProbe(state);
+    endSceneProbe(state);
   }
   try {
     await read;
@@ -4120,6 +4046,7 @@ function beginSnapCandidateProbe(clientX, clientY) {
     Math.ceil(SNAP_REACH_PX * scale), Math.floor((SNAP_PATCH - 1) / 2));
   const span = half * 2 + 1;
   const state = {
+    ...beginSceneProbe(scaled),
     rect,
     drawingWidth: size.x,
     drawingHeight: size.y,
@@ -4127,27 +4054,8 @@ function beginSnapCandidateProbe(clientX, clientY) {
     py,
     half,
     span,
-    scaled,
     serial: cameraSerial,
-    background: scene.background,
-    override: scene.overrideMaterial,
-    gridWasVisible: grid.visible,
-    axesWasVisible: axes ? axes.visible : false,
-    measureWasVisible: measureGroup.visible,
-    snapWasVisible: snapGroup.visible,
-    edgesWereVisible: edgeRoot.visible,
-    sectionHelperWasVisible: sectionHelperRoot.visible,
-    target: renderer.getRenderTarget(),
-    clearColor: renderer.getClearColor(new THREE.Color()).clone(),
-    clearAlpha: renderer.getClearAlpha(),
   };
-  scene.background = null;
-  grid.visible = false;
-  if (axes) axes.visible = false;
-  measureGroup.visible = false;
-  snapGroup.visible = false;
-  edgeRoot.visible = false;
-  sectionHelperRoot.visible = false;
   scene.overrideMaterial = pickMaterial;
   camera.setViewOffset(size.x, size.y, px - half, py - half, span, span);
   renderer.setRenderTarget(snapCandidateTarget);
@@ -4155,21 +4063,6 @@ function beginSnapCandidateProbe(clientX, clientY) {
   renderer.clear();
   renderer.render(scene, camera);
   return state;
-}
-
-function endSnapCandidateProbe(state) {
-  renderer.setRenderTarget(state.target);
-  renderer.setClearColor(state.clearColor, state.clearAlpha);
-  camera.clearViewOffset();
-  scene.overrideMaterial = state.override;
-  scene.background = state.background;
-  grid.visible = state.gridWasVisible;
-  if (axes) axes.visible = state.axesWasVisible;
-  measureGroup.visible = state.measureWasVisible;
-  snapGroup.visible = state.snapWasVisible;
-  edgeRoot.visible = state.edgesWereVisible;
-  sectionHelperRoot.visible = state.sectionHelperWasVisible;
-  if (state.scaled) invalidate();
 }
 
 function decodeSnapCandidates(buffer, state) {
@@ -4230,7 +4123,7 @@ function snapCandidatesAt(clientX, clientY) {
     renderer.readRenderTargetPixels(
       snapCandidateTarget, 0, 0, SNAP_PATCH, SNAP_PATCH, snapCandidateBuffer);
   } finally {
-    endSnapCandidateProbe(state);
+    endSceneProbe(state);
   }
   return decodeSnapCandidates(snapCandidateBuffer, state);
 }
@@ -4246,7 +4139,7 @@ async function snapCandidatesAsync(clientX, clientY) {
     read = renderer.readRenderTargetPixelsAsync(
       snapCandidateTarget, 0, 0, SNAP_PATCH, SNAP_PATCH, snapCandidateAsyncBuffer);
   } finally {
-    endSnapCandidateProbe(state);
+    endSceneProbe(state);
   }
   try {
     await read;
@@ -7225,7 +7118,6 @@ function closePopovers(exceptId, restoreFocus = false) {
 }
 
 function togglePopover(btnId, panelId) {
-  const button = $(btnId);
   const panel = $(panelId);
   const open = panel.hidden;
   if (open) closePopovers(panelId);

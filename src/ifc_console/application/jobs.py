@@ -36,8 +36,8 @@ from ifc_console.core.jobs import (
 from ifc_console.core.results import ToolError
 from ifc_console.core.revisions import RevisionRef
 from ifc_console.core.transaction_journal import TransactionKind, TransactionPhase
-from ifc_console.sandbox.client import _child_env, worker_executable
-from ifc_console.sandbox.limits import ProcessJail
+from ifc_console.sandbox.client import _child_env, worker_command
+from ifc_console.sandbox.limits import ProcessJail, isolated_process_kwargs
 from ifc_console.sandbox.policy import SandboxPolicy
 
 if TYPE_CHECKING:
@@ -661,6 +661,7 @@ class JobService:
                 stderr=asyncio.subprocess.PIPE,
                 cwd=work,
                 env=_child_env(work),
+                **isolated_process_kwargs(),
             )
             self._processes[job_id] = process
             jail = ProcessJail(self.core.settings.sandbox.memory_mb)
@@ -826,6 +827,7 @@ class JobService:
                 stderr=asyncio.subprocess.PIPE,
                 cwd=work,
                 env=_child_env(work),
+                **isolated_process_kwargs(),
             )
             self._processes[job_id] = process
             jail = ProcessJail(self.core.settings.sandbox.memory_mb)
@@ -1214,20 +1216,10 @@ class JobService:
             return None
 
     def _worker_command(self, input_path: Path) -> tuple[str, ...]:
-        return (
-            worker_executable(),
-            "-m",
-            "ifc_console.automation.validation_worker",
-            str(input_path),
-        )
+        return worker_command("ifc_console.automation.validation_worker", input_path)
 
     def _query_worker_command(self, input_path: Path) -> tuple[str, ...]:
-        return (
-            worker_executable(),
-            "-m",
-            "ifc_console.automation.query_worker",
-            str(input_path),
-        )
+        return worker_command("ifc_console.automation.query_worker", input_path)
 
     def _cancel_path(self, job_id: str) -> Path:
         return self.cancel_dir / job_id

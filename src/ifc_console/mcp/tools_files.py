@@ -36,8 +36,32 @@ def _peek_schema(path: Path) -> str | None:
     return match.group(1) if match else None
 
 
+def _passes_link_policy(path: Path, root: Path, *, follow_symlinks: bool) -> Path | None:
+    if not follow_symlinks:
+        current = root
+        try:
+            parts = path.relative_to(root).parts
+        except ValueError:
+            return None
+        for part in parts:
+            current /= part
+            is_junction = getattr(current, "is_junction", None)
+            if current.is_symlink() or (is_junction is not None and is_junction()):
+                return None
+    try:
+        resolved_root = root.resolve(strict=True)
+        resolved = path.resolve(strict=True)
+        resolved.relative_to(resolved_root)
+    except (OSError, RuntimeError, ValueError):
+        return None
+    return resolved
+
+
 def _scan_ifc_files(
-    roots: list[Path], recursive: bool, recent_paths: set[str]
+    roots: list[Path],
+    recursive: bool,
+    recent_paths: set[str],
+    follow_symlinks: bool = False,
 ) -> list[dict[str, Any]]:
     seen: set[str] = set()
     rows: list[dict[str, Any]] = []
@@ -49,14 +73,17 @@ def _scan_ifc_files(
                 scanned += 1
                 if scanned > _SCAN_CAP:
                     break
-                if path.suffix.lower() not in _IFC_SUFFIXES or not path.is_file():
+                if path.suffix.lower() not in _IFC_SUFFIXES:
                     continue
-                key = str(path.resolve())
+                resolved = _passes_link_policy(path, root, follow_symlinks=follow_symlinks)
+                if resolved is None or not resolved.is_file():
+                    continue
+                key = str(resolved)
                 if key in seen:
                     continue
                 seen.add(key)
                 try:
-                    stat = path.stat()
+                    stat = resolved.stat()
                     rows.append(
                         {
                             "path": key,
@@ -64,7 +91,7 @@ def _scan_ifc_files(
                             "mtime": datetime.fromtimestamp(
                                 stat.st_mtime, tz=timezone.utc
                             ).isoformat(),
-                            "schema": _peek_schema(path),
+                            "schema": _peek_schema(resolved),
                             "recent": key in recent_paths,
                         }
                     )
@@ -107,7 +134,13 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
             roots = list(core.allowed_dirs)
 
         recent_paths = {e["path"] for e in core.recents.entries()}
-        rows = await asyncio.to_thread(_scan_ifc_files, roots, recursive, recent_paths)
+        rows = await asyncio.to_thread(
+            _scan_ifc_files,
+            roots,
+            recursive,
+            recent_paths,
+            core.settings.files.follow_symlinks,
+        )
         total = len(rows)
         rows = rows[:limit]
         return ok(

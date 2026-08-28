@@ -204,6 +204,7 @@ class WorkflowPlan(BaseModel):
     plan_id: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
     generated_at: datetime
     manifest_path: str | None = None
+    base_dir: str | None = None
     spec: WorkflowSpec
     steps: tuple[WorkflowStepPlan, ...]
     total_children: int = Field(ge=1)

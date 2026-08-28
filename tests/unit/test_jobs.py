@@ -153,6 +153,8 @@ async def test_running_worker_can_be_cancelled(
             if submitted.job_id in core.jobs._processes:
                 break
             await asyncio.sleep(0.01)
+        else:
+            pytest.fail("validation worker did not start")
         cancelled = await core.jobs.cancel(submitted.job_id)
         assert cancelled.state is JobState.CANCELLED
         assert cancelled.cancel_requested is True
@@ -212,6 +214,8 @@ async def test_second_local_context_can_request_cancellation(
             if submitted.job_id in core.jobs._processes:
                 break
             await asyncio.sleep(0.01)
+        else:
+            pytest.fail("validation worker did not start")
         observer = AppCore(
             SettingsStore(home=tmp_path / "home", project_dir=tmp_path, env={}),
             transport="cli",
