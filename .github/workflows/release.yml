@@ -72,7 +72,7 @@ jobs:
           AUDIT_PYTHON: ${{ matrix.python }}
         run: |
           uv export --package ifc-console --no-dev --no-emit-workspace --extra validation --extra documents --format requirements.txt --output-file audit-core.txt --quiet
-          uv export --package ifc-console-agents --no-dev --no-emit-workspace --extra full --format requirements.txt --output-file audit-agents.txt --quiet
+          uv export --package ifc-console-agents --no-dev --no-emit-workspace --format requirements.txt --output-file audit-agents.txt --quiet
           uvx --python "$AUDIT_PYTHON" --from pip-audit==2.10.1 pip-audit -r audit-core.txt --disable-pip
           uvx --python "$AUDIT_PYTHON" --from pip-audit==2.10.1 pip-audit -r audit-agents.txt --disable-pip
 

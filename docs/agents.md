@@ -8,14 +8,12 @@ browser panel through `ifc_console.extensions`.
 
 ```bash
 pip install ifc-console-agents
-pip install "ifc-console-agents[documents]"  # PDF text and rendered pages
-pip install "ifc-console-agents[graph]"      # LangGraph and checkpoints
-pip install "ifc-console-agents[full]"       # both optional integrations
 ```
 
 `ifc-console-agents` also owns built-in and custom packs, provider chat,
-devkit/rehearsal tools, and provider-free testing helpers. The core viewer and
-its MCP controls continue to work when this package is absent.
+PDF text and page rendering, LangGraph checkpoints, devkit/rehearsal tools,
+and provider-free testing helpers. The core viewer and its MCP controls
+continue to work when this package is absent.
 
 ```text
 runtime -> scoped Toolset -> Agent -> typed events
@@ -238,8 +236,8 @@ agent = create_agent(
 ```
 
 Implement `AgentModel` for another provider library and `ThreadStore` for your
-database. `JsonThreadStore(path)` suits small local applications. The optional
-`ifc-console-agents[graph]` extra adds the LangGraph adapter described in the
+database. `JsonThreadStore(path)` suits small local applications. The LangGraph
+adapter ships with `ifc-console-agents` and is described in the
 [SDK guide](sdk.md#langchain-and-langgraph).
 
 ## Built-in agents

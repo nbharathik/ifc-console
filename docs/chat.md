@@ -15,8 +15,6 @@ opened.
 
 ```bash
 pip install ifc-console-agents
-# Add PDF/document processing when needed:
-pip install "ifc-console-agents[documents]"
 
 # Existing uv tool installation:
 uv tool install --with ifc-console-agents ifc-console

@@ -9,9 +9,9 @@ How to work on ifc-console itself. To report a bug or a security issue, see
 git clone https://github.com/nbharathik/ifc-console && cd ifc-console
 uv sync --package ifc-console              # core runtime only
 uv sync --all-packages --all-extras       # complete core + agents workspace
-uv run ifc-console doctor
-uv run pytest          # full suite; see the test summary for expected xfails
-uv run ruff check src tests packages scripts
+uv run --all-packages --all-extras ifc-console doctor
+uv run --all-packages --all-extras pytest  # full suite; see the test summary for expected xfails
+uv run --all-packages --all-extras ruff check src tests packages scripts
 ```
 
 The uv workspace contains two active hatchling distributions:
@@ -58,14 +58,14 @@ styling-only dependency.
 
 The rehearsal provider uses no API key and makes no network requests. For a
 custom model or port, call the underlying command directly, for example
-`uv run --frozen ifc-console dev --open none --port 8394 --file path/to/model.ifc`.
+`uv run --frozen --all-packages ifc-console dev --open none --port 8394 --file path/to/model.ifc`.
 
 ## Tests
 
 ```bash
-uv run pytest tests/unit           # pure logic: classifier, guards, envelope, hub
-uv run pytest tests/integration    # in-memory MCP client + HTTP/WS TestClient
-uv run pytest tests/tui            # Textual Pilot: console, commands, completion
+uv run --all-packages --all-extras pytest tests/unit
+uv run --all-packages --all-extras pytest tests/integration
+uv run --all-packages --all-extras pytest tests/tui
 ```
 
 Conventions worth knowing:
@@ -78,7 +78,7 @@ Conventions worth knowing:
 - Fixtures regenerate deterministically:
 
 ```bash
-uv run python tests/fixtures/make_fixtures.py
+uv run --all-packages --all-extras python tests/fixtures/make_fixtures.py
 ```
 
 This produces minimal IFC4, IFC2X3, and IFC4X3 models whose walls carry real
@@ -92,7 +92,7 @@ three.js and web-ifc exactly as shipped on npm (one import specifier is rewritte
 in OrbitControls.js so no import map is needed). `VENDORED.md` in that folder
 records versions, licenses, hashes, and the upgrade procedure. Do not edit
 `web-ifc-api.js` or the WASM: MPL-2.0 files ship unmodified. Verify the bundle
-with `uv run python scripts/check_vendor_assets.py`.
+with `uv run --all-packages --all-extras python scripts/check_vendor_assets.py`.
 
 ## Style
 
@@ -110,8 +110,8 @@ with `uv run python scripts/check_vendor_assets.py`.
 
 ```bash
 uv sync --extra docs
-uv run mkdocs serve    # live preview at 127.0.0.1:8000
-uv run mkdocs build --strict    # static site into site/
+uv run --all-packages --all-extras mkdocs serve
+uv run --all-packages --all-extras mkdocs build --strict
 ```
 
 ## CI and releases
@@ -144,7 +144,9 @@ then hand that artifact to a minimal deployment job. Only that job has
 environment branch or tag rules, allow `main` and the intended `v*` release
 tags.
 
-Before a release, `uv run python scripts/check_release.py --tag vX.Y.Z` verifies
+Before a release,
+`uv run --all-packages --all-extras python scripts/check_release.py --tag vX.Y.Z`
+verifies
 that the tag, both package versions, their compatibility range, and the
 changelog agree. Releases are cut by the maintainer pushing that tag: CI
 re-runs the tests, validates both wheels and source archives, publishes core

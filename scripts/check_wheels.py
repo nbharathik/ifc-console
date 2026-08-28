@@ -235,6 +235,30 @@ def _requirement_name(requirement: str) -> str:
 def _check_agent_metadata(metadata: Message, expected_range: str, wheel_name: str) -> None:
     raw_requirements = metadata.get_all("Requires-Dist", [])
     requirements = [raw.partition(";")[0].strip() for raw in raw_requirements]
+    base_names = {
+        _requirement_name(raw.partition(";")[0])
+        for raw in raw_requirements
+        if not raw.partition(";")[1].strip()
+    }
+    required_names = {
+        "ifc-console",
+        "keyring",
+        "langgraph",
+        "langgraph-checkpoint-sqlite",
+        "pydantic",
+        "pymupdf",
+        "pypdf",
+        "starlette",
+        "typing-extensions",
+    }
+    missing = sorted(required_names - base_names)
+    if missing:
+        raise CheckError(
+            f"{wheel_name} does not include every agents dependency by default: {missing}"
+        )
+    extras = sorted(metadata.get_all("Provides-Extra", []))
+    if extras:
+        raise CheckError(f"{wheel_name} must not publish feature extras: {extras}")
     core_requirements = [
         requirement
         for requirement in requirements

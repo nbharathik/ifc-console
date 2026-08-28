@@ -63,7 +63,7 @@ def test_main_package_does_not_install_agent_credential_storage() -> None:
     extras = extras.casefold()
 
     assert '"keyring>=24"' not in dependencies
-    assert 'graph = ["ifc-console-agents[graph]>=0.1.4,<0.2"]' in extras
+    assert 'graph = ["ifc-console-agents>=0.1.4,<0.2"]' in extras
     assert 'keys = ["ifc-console-agents>=0.1.4,<0.2"]' in extras
 
 
@@ -91,20 +91,15 @@ def test_agent_package_owns_agent_dependencies_and_a_separate_namespace() -> Non
     if not project.is_dir():
         pytest.skip("the agents workspace package is not in this source archive")
     metadata = (project / "pyproject.toml").read_text(encoding="utf-8").casefold()
-    dependencies, extras = metadata.split("[project.optional-dependencies]", 1)
-    documents = extras.split("documents = [", 1)[1].split("]", 1)[0]
-    full = extras.split("full = [", 1)[1].split("]", 1)[0]
+    dependencies = metadata.split("[project.urls]", 1)[0]
 
     assert '"ifc-console>=0.1.4,<0.2"' in dependencies
     assert '"keyring>=24"' in dependencies
-    assert '"pypdf>=4"' not in dependencies
-    assert '"pymupdf>=1.24,<2"' not in dependencies
-    assert '"pypdf>=4"' in documents
-    assert '"pymupdf>=1.24,<2"' in documents
-    assert '"pypdf>=4"' in full
-    assert '"pymupdf>=1.24,<2"' in full
-    assert '"langgraph>=1,<2"' in full
-    assert '"langgraph-checkpoint-sqlite>=3,<4"' in full
+    assert '"pypdf>=4"' in dependencies
+    assert '"pymupdf>=1.24,<2"' in dependencies
+    assert '"langgraph>=1,<2"' in dependencies
+    assert '"langgraph-checkpoint-sqlite>=3,<4"' in dependencies
+    assert "[project.optional-dependencies]" not in metadata
     assert not (project / "src" / "ifc_console").exists()
 
 
@@ -148,7 +143,7 @@ def _project(
     )
     (root / "pyproject.toml").write_text(
         'requires-python = ">=3.10,<3.15"\n'
-        f'graph = ["ifc-console-agents[graph]{agent_requirement}"]\n'
+        f'graph = ["ifc-console-agents{agent_requirement}"]\n'
         "viewer = []\n"
         f'keys = ["ifc-console-agents{agent_requirement}"]\n',
         encoding="utf-8",

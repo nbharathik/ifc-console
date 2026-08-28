@@ -80,7 +80,7 @@ def release_issues(root: Path, *, tag: str | None = None) -> tuple[str, list[str
     ).replace(" ", "")
     graph_bridge_requirement = _match(
         core_project,
-        r'^\s*graph\s*=\s*\[\s*"ifc-console-agents\[graph\]([^"]+)"\s*\]\s*$',
+        r'^\s*graph\s*=\s*\[\s*"ifc-console-agents([^"]+)"\s*\]\s*$',
         "legacy graph bridge range",
     ).replace(" ", "")
     keys_bridge_requirement = _match(

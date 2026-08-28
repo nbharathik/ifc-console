@@ -12,9 +12,11 @@
   panel, devkit/testing helpers, document/vision support, and LangGraph
   integration. Agent code uses the canonical `ifc_console_agents` namespace
   and registers with core through `ifc_console.extensions`.
-- Add `ifc-console-agents[documents]`, `[graph]`, and `[full]` extras. Keep
-  `ifc-console[viewer]` and `ifc-console-viewer` as one-release compatibility
-  no-ops/shims so existing install commands do not fail abruptly.
+- Make `ifc-console-agents` batteries-included: PDF text and page rendering,
+  LangGraph, and SQLite checkpoints are normal dependencies with no agent
+  feature extras to discover. Keep `ifc-console[viewer]` and
+  `ifc-console-viewer` as one-release compatibility no-ops/shims so existing
+  install commands do not fail abruptly.
 - Keep the core viewer free of dead agent UI: an installed agent extension
   contributes its browser panel declaratively, and the shell loads that
   panel's JavaScript and CSS only when it is available and opened.
@@ -65,6 +67,8 @@
 - Turn GlobalIds in Agent output into direct model navigation: a click opens the
   containing IFC and frames the element, while selecting an id and pressing I
   opens and isolates it.
+- Keep the Agent panel's transcript isolate shortcut inside the panel, so pressing
+  I after clicking an object in the 3D view isolates that object again.
 - Draw silhouette edges, and ghost the surrounding context instead of hiding it
   outright, so an isolated element keeps the spatial reference that makes it legible.
 - Let the user choose units and precision, defaulting to the file's own unit. The
@@ -88,6 +92,10 @@
 
 ### Agent panel and runtime
 
+- Keep transient failures out of the conversation: compact, dismissible notices now
+  overlay the panel header, strip developer stack locations, and explain IFC elements
+  with no viewable geometry in plain language. Move the live-run Enter/Escape reminder
+  behind a keyboard icon so starting and stopping a response never shifts the composer.
 - Make bare `/agent` open the General assistant on the first Enter. Use
   `/agent list` when the full built-in and custom assistant catalog is wanted.
 - Always offer retry, add continue after a length-capped answer, and add

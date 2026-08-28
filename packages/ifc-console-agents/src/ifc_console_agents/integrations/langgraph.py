@@ -1,4 +1,4 @@
-"""Optional LangGraph orchestration behind IFC Console's agent event contract.
+"""LangGraph orchestration behind IFC Console's agent event contract.
 
 The built-in agent loop remains the default. Applications can opt into this
 adapter for checkpointed, multi-stage workflows while continuing to expose
@@ -45,7 +45,7 @@ _GRAPH_EVENT_TYPES = Literal[
 
 
 class LangGraphUnavailable(ImportError):
-    """The optional graph dependency is not installed in this environment."""
+    """A required graph dependency is not installed in this environment."""
 
 
 class GraphWorkflowError(RuntimeError):
@@ -157,8 +157,8 @@ def _load_langgraph() -> tuple[Any, Any, Any, CommandFactory]:
         types_module = import_module("langgraph.types")
     except ImportError:
         raise LangGraphUnavailable(
-            "LangGraph orchestration is optional. Install it with "
-            "`pip install 'ifc-console-agents[graph]'` or `uv add 'ifc-console-agents[graph]'`."
+            "LangGraph ships with ifc-console-agents, but is missing from this "
+            "environment. Reinstall or upgrade ifc-console-agents."
         ) from None
     return (
         graph_module.StateGraph,

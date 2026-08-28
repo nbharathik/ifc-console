@@ -75,12 +75,12 @@ per-project corpus answers "what does our company say": measurement
 conventions, submission requirements, naming rules, delivered as the
 documents they already live in.
 
-Markdown, plain text, and images work with the core installation. Add the
-agents distribution's document support for PDF text and page rendering:
+Markdown, plain text, and images work with the core installation. Install the
+complete agents distribution to add PDF text and page rendering:
 
 ```bash
-pip install "ifc-console-agents[documents]"
-# uv tool: uv tool install --with "ifc-console-agents[documents]" ifc-console
+pip install ifc-console-agents
+# uv tool: uv tool install --with ifc-console-agents ifc-console
 ```
 
 ```bash
@@ -91,7 +91,7 @@ ifc-console knowledge ingest --replace docs/
 Markdown and plain text index natively, split per heading section. PDF text
 indexes per page with `pypdf`, and any page can be rendered with PyMuPDF for a
 vision model to inspect drawings, tables, or scans. Those two dependencies are
-provided by `ifc-console-agents[documents]`, not the base agent install.
+provided by the normal `ifc-console-agents` installation.
 Scanned PDFs carry no searchable text and are reported as visual-only rather
 than OCRed. Images
 (png, jpg) are registered so search can find and cite them, while their pixels

@@ -51,9 +51,8 @@ The default page is 50 rows. IFC read operations accept an optional resident
 ## Knowledge and project evidence
 
 The built-in IFC reference and deterministic project index belong to
-`ifc-console`. Install `ifc-console-agents[documents]` when agents need PDF
-text extraction and page rendering; Markdown and plain-text indexing needs no
-LLM.
+`ifc-console`. Installing `ifc-console-agents` adds PDF text extraction and
+page rendering for agents; Markdown and plain-text indexing needs no LLM.
 
 | tool | purpose |
 | ---- | ------- |

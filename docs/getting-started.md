@@ -18,21 +18,17 @@ versions support the documented `auto` fallback.
 | install | includes |
 | ------- | -------- |
 | `ifc-console` | console/TUI, MCP, deterministic SDK and workflows, IFC operations, and local viewer |
-| `ifc-console-agents` | agent SDK, providers/chat, built-in and custom packs, browser panel, devkit, and testing helpers; installs a compatible core |
-| `ifc-console-agents[documents]` | agent PDF/document processing |
-| `ifc-console-agents[graph]` | agent LangGraph integration |
-| `ifc-console-agents[full]` | all optional agent integrations |
+| `ifc-console-agents` | complete agent SDK, providers/chat, built-in and custom packs, browser panel, PDF/document processing, LangGraph checkpoints, devkit, and testing helpers; installs a compatible core |
 | `ifc-console[validation]` | the core package plus IDS validation |
 
 ```bash
-# uv: choose core, or core plus every agent integration
+# uv: choose core, or core plus the complete agents product
 uv tool install ifc-console
-uv tool install --with "ifc-console-agents[full]" ifc-console
+uv tool install --with ifc-console-agents ifc-console
 
-# pip: install core, then optionally add agents
+# pip: install core alone, or install the complete agents product and compatible core
 pip install ifc-console
-pip install ifc-console-agents           # base agent product
-pip install "ifc-console-agents[full]"  # agent product plus all integrations
+pip install ifc-console-agents
 ```
 
 For a one-time core run, use `uvx ifc-console`. Upgrade an installed uv tool
@@ -40,7 +36,8 @@ with `uv tool upgrade ifc-console`.
 
 !!! note "Working on the source code?"
     Clone the repository, run `uv sync --all-packages --all-extras`, then use
-    `uv run ifc-console`. See [Development](development.md).
+    `uv run --all-packages --all-extras ifc-console`. See
+    [Development](development.md).
 
 Verify the install:
 

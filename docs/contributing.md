@@ -3,8 +3,10 @@
 ## Contributing
 
 Setup, tests, and style live on the [Development](development.md) page. The short
-version: `uv sync --all-packages --all-extras`, then `uv run pytest` and
-`uv run ruff check src tests packages scripts` must both be green.
+version: `uv sync --all-packages --all-extras`, then
+`uv run --all-packages --all-extras pytest` and
+`uv run --all-packages --all-extras ruff check src tests packages scripts` must
+both be green.
 
 - **Bugs and ideas.** Open a
   [GitHub issue](https://github.com/nbharathik/ifc-console/issues). For bugs,

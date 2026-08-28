@@ -68,14 +68,14 @@ documents = [
 ]
 # Compatibility names retained for one release. They forward old install
 # commands to the companion distribution that now owns these capabilities.
-graph = ["ifc-console-agents[graph]>=0.1.4,<0.2"]
+graph = ["ifc-console-agents>=0.1.4,<0.2"]
 # Compatibility for existing install commands. The viewer is bundled in the
 # main wheel now, so this extra intentionally adds nothing.
 viewer = []
 dev = [
     # Starlette's current TestClient prefers its supported httpx2 transport.
     "httpx2>=2,<3",
-    "ifc-console-agents[full]>=0.1.4,<0.2",
+    "ifc-console-agents>=0.1.4,<0.2",
     "ifctester>=0.8",
     "pytest>=8",
     "pytest-asyncio>=0.23",

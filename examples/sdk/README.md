@@ -13,8 +13,6 @@ Installed applications need the optional product first:
 
 ```bash
 pip install ifc-console-agents
-# Add PDF/project-document support when the agent uses it:
-pip install "ifc-console-agents[documents]"
 ```
 
 The example imports the deterministic `LocalRuntime` from `ifc_console` and

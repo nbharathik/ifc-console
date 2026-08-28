@@ -8,9 +8,6 @@ providers/chat, packs, testing/devkit helpers, and agent browser panel:
 ```bash
 pip install ifc-console
 pip install ifc-console-agents
-pip install "ifc-console-agents[documents]"
-pip install "ifc-console-agents[graph]"
-pip install "ifc-console-agents[full]"
 ```
 
 | interface | use |
@@ -106,7 +103,8 @@ async with await LocalRuntime.open("tower.ifc") as runtime:
 Use LangChain's async APIs so model sessions and tools stay on one event loop.
 Structured IFC envelopes remain available as tool-message artifacts.
 
-For a checkpointed outer workflow, install `ifc-console-agents[graph]`:
+The standard `ifc-console-agents` installation includes checkpointed outer
+workflows:
 
 ```python
 from ifc_console_agents.integrations.langgraph import create_langgraph_workflow, graph_update
@@ -183,8 +181,8 @@ The context manager closes model and worker resources.
 
 Core knowledge methods include `search_knowledge()`, `knowledge_record()`, and
 `api_docs()` over deterministic IFC schema/API references. Project document
-and image retrieval belongs to `ifc-console-agents`; install its `documents`
-extra for PDF text and rendered pages. Agent search hits retain document and
+and image retrieval belongs to `ifc-console-agents`, whose standard install
+includes PDF text and rendered pages. Agent search hits retain document and
 page provenance.
 
 Geometry and measurement operations such as `get_element_geometry`,

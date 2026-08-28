@@ -144,6 +144,11 @@ const I = {
   user: svg('<circle cx="8" cy="5.2" r="2.3"/><path d="M3.6 13c.3-2.5 2-3.8 4.4-3.8s4.1 1.3 4.4 3.8"/>', 15),
   up: svg('<path d="M8 12.6V3.8M8 3.8 4.6 7.2M8 3.8l3.4 3.4"/>', 13),
   down: svg('<path d="M8 3.4v8.8M8 12.2 4.6 8.8M8 12.2l3.4-3.4"/>', 13),
+  keyboard: svg(
+    '<rect x="1.8" y="3.2" width="12.4" height="9.6" rx="1.2"/><path d="M4 6h.1M6.6 6h.1M9.2 6h.1M11.8 6h.1M4 8.5h.1M6.6 8.5h.1M9.2 8.5h.1M11.8 8.5h.1M5.2 10.7h5.6"/>',
+    15,
+  ),
+  warning: svg('<path d="M8 2.2 14 13H2zM8 5.7v3.6M8 11.4h.01"/>', 15),
 };
 
 // -------------------------------------------------------------------- markup
@@ -217,6 +222,8 @@ const TEMPLATE = `
 
   <div class="chat-alert t-reveal" data-role="alert" hidden role="status"></div>
 
+  <div class="chat-notifications" data-role="notifications" aria-label="Notifications"></div>
+
   <div class="chat-log" data-role="log" role="log" aria-label="Conversation" aria-live="off"></div>
 
   <footer class="chat-composer">
@@ -257,6 +264,23 @@ const TEMPLATE = `
         <div class="chat-plus-menu" id="chat-plus-menu" data-role="plus-menu" role="menu" hidden></div>
         <div class="chat-suggest" id="chat-suggest" data-role="suggest" role="listbox"
              aria-label="Message suggestions" hidden></div>
+        <button class="chat-icon chat-shortcuts-toggle t-press" data-act="shortcuts" type="button"
+                title="Keyboard shortcuts" aria-label="Show keyboard shortcuts"
+                aria-haspopup="dialog" aria-expanded="false" aria-controls="chat-shortcuts">${I.keyboard}</button>
+        <div class="chat-shortcuts" id="chat-shortcuts" data-role="shortcuts"
+             role="dialog" aria-label="Keyboard shortcuts" hidden>
+          <header>
+            <b>Keyboard shortcuts</b>
+            <button class="chat-icon t-press" data-act="close-shortcuts" type="button"
+                    aria-label="Close keyboard shortcuts">${I.close}</button>
+          </header>
+          <dl>
+            <div><dt><kbd>Enter</kbd></dt><dd>Send a message</dd></div>
+            <div><dt><kbd>Shift</kbd> + <kbd>Enter</kbd></dt><dd>Start a new line</dd></div>
+            <div><dt><kbd>Enter</kbd></dt><dd>Queue a message while a response is running</dd></div>
+            <div><dt><kbd>Esc</kbd></dt><dd>Stop the active response</dd></div>
+          </dl>
+        </div>
         <!-- Save is the one action no assistant can take, so it never scrolls
              off the end of the context rail: it sits beside Send. -->
         <button class="chat-composer-pill chat-save-pill t-press" data-act="save-model"
@@ -688,6 +712,11 @@ export function mountChat(root, options = {}) {
       && log.contains(textSelection.anchorNode)
       ? globalIdsIn(textSelection.toString())
       : [];
+    // The viewer owns I over its canvas, tree and search results. Without this
+    // boundary a remembered transcript id (or a slightly stale viewer-status
+    // selection) consumes the event before the viewer can isolate the object
+    // the user just clicked.
+    if (!root.contains(target) && !selectedText.length) return;
     if (editing && !selectedText.length) return;
     const current = viewerSelections().find(
       (row) => row.model_id === sessionStatus.view_model_id,
@@ -1354,7 +1383,6 @@ export function mountChat(root, options = {}) {
     else if (!model) el("hint").innerHTML = 'choose a model in <b>Agent workspace</b>';
     else if (!hasKey(p)) el("hint").innerHTML = 'add an API key in <b>Agent workspace</b>';
     else if (uploadsInFlight()) el("hint").textContent = "indexing the attachment...";
-    else if (busy) el("hint").innerHTML = "<b>Enter</b> queues · <b>Esc</b> stops";
     else el("hint").textContent = "";
     renderContext();
   }
@@ -1852,6 +1880,25 @@ export function mountChat(root, options = {}) {
     if (restoreFocus) focusQuietly(act("plus"));
   }
 
+  function closeShortcuts({ restoreFocus = false } = {}) {
+    const panel = el("shortcuts");
+    if (panel.hidden) return;
+    panel.hidden = true;
+    act("shortcuts")?.setAttribute("aria-expanded", "false");
+    if (restoreFocus) focusQuietly(act("shortcuts"));
+  }
+
+  function openShortcuts() {
+    closePlusMenu();
+    closeSuggest();
+    const panel = el("shortcuts");
+    panel.hidden = false;
+    act("shortcuts")?.setAttribute("aria-expanded", "true");
+    requestAnimationFrame(() => {
+      panel.querySelector('[data-act="close-shortcuts"]')?.focus({ preventScroll: true });
+    });
+  }
+
   function openPlusMenu() {
     const menu = el("plus-menu");
     menu.innerHTML = "";
@@ -2193,10 +2240,59 @@ export function mountChat(root, options = {}) {
     }
   }
 
+  function failureCopy(value) {
+    let text = String(value || "The action could not be completed.").trim();
+    // Viewer command failures include a JavaScript stack location for the
+    // developer console. It is noise (and often a very long local URL) in UI.
+    text = text.replace(/\s+\(at [\s\S]+\)\s*$/, "").trim();
+    const parts = text.match(/^(Could not [^:]+):\s*([\s\S]+)$/i);
+    const title = parts ? parts[1] : "Action could not be completed";
+    let message = (parts ? parts[2] : text).replace(/^Error:\s*/i, "").trim();
+    if (/^That IFC element has no geometry to show in the 3D viewer\.?$/i.test(message)) {
+      message = "This IFC element has no geometry in the model, so the 3D viewer cannot display it.";
+      return { title: "Element can't be shown", message };
+    }
+    return { title, message };
+  }
+
+  function dismissNotification(notification) {
+    if (!notification) return;
+    clearTimeout(Number(notification.dataset.timeout || 0));
+    notification.remove();
+  }
+
+  function notifyFailure(text) {
+    const tray = el("notifications");
+    const copy = failureCopy(text);
+    // Repeated clicks on the same non-geometric element should refresh one
+    // notice, not build a wall of identical errors over the conversation.
+    for (const current of tray.querySelectorAll(".chat-notification")) {
+      if (current.dataset.message === copy.message) dismissNotification(current);
+    }
+    while (tray.children.length >= 3) dismissNotification(tray.firstElementChild);
+    const notification = document.createElement("section");
+    notification.className = "chat-notification bad t-reveal";
+    notification.dataset.message = copy.message;
+    notification.setAttribute("role", "alert");
+    notification.innerHTML = `
+      <i class="chat-notification-mark">${I.warning}</i>
+      <span class="chat-notification-copy"><b></b><small></small></span>
+      <button class="chat-icon t-press" data-act="dismiss-notification" type="button"
+              aria-label="Dismiss notification">${I.close}</button>`;
+    notification.querySelector("b").textContent = copy.title;
+    notification.querySelector("small").textContent = copy.message;
+    tray.appendChild(notification);
+    notification.dataset.timeout = String(setTimeout(() => dismissNotification(notification), 12_000));
+  }
+
   function note(text, tone = false) {
+    const kind = tone === true ? "bad" : tone === false ? "" : String(tone);
+    if (kind === "bad") {
+      notifyFailure(text);
+      return;
+    }
     if (!turns.length && log.querySelector(".chat-empty")) log.innerHTML = "";
     const line = document.createElement("div");
-    const kind = tone === true ? "bad" : tone === false ? "" : String(tone);
     line.className = "chat-note" + (kind ? ` ${kind}` : "");
     line.setAttribute("role", "status");
     line.textContent = text;
@@ -4765,8 +4861,8 @@ export function mountChat(root, options = {}) {
     send.title = "Stop";
     send.setAttribute("aria-label", "Stop response");
     aborter = runIdentity.controller;
-    // Enter means something else while a run is live, and the composer hint is
-    // the only place that says so.
+    // Enter means something else while a run is live. The stable keyboard popover
+    // explains that shortcut without adding and removing a row below input.
     render();
     // One run object holds every derived fact about this turn: the ordered
     // blocks, which stage is live, which tools ran, what came back. The view
@@ -5196,6 +5292,7 @@ export function mountChat(root, options = {}) {
     }
     if (event.key !== "Escape") return;
     if (suggestState) closeSuggest();
+    else if (!el("shortcuts").hidden) closeShortcuts({ restoreFocus: true });
     else if (!el("plus-menu").hidden) closePlusMenu({ restoreFocus: true });
     else if (armedDelete) disarmDelete();
     else if (!el("modal").hidden) closeSettings();
@@ -5213,6 +5310,7 @@ export function mountChat(root, options = {}) {
     // Anything that is not the armed button itself cancels the pending delete.
     if (!event.target.closest(".chat-side-delete")) disarmDelete();
     if (!event.target.closest(".chat-plus-menu, .chat-plus")) closePlusMenu();
+    if (!event.target.closest(".chat-shortcuts, .chat-shortcuts-toggle")) closeShortcuts();
     const workspaceNav = event.target.closest("[data-workspace-view]");
     if (workspaceNav) {
       setWorkspaceView(workspaceNav.dataset.workspaceView, { focus: true });
@@ -5274,6 +5372,14 @@ export function mountChat(root, options = {}) {
     else if (action === "plus") {
       if (el("plus-menu").hidden) openPlusMenu();
       else closePlusMenu({ restoreFocus: true });
+    }
+    else if (action === "shortcuts") {
+      if (el("shortcuts").hidden) openShortcuts();
+      else closeShortcuts({ restoreFocus: true });
+    }
+    else if (action === "close-shortcuts") closeShortcuts({ restoreFocus: true });
+    else if (action === "dismiss-notification") {
+      dismissNotification(actionButton.closest(".chat-notification"));
     }
     else if (action === "drop-selection") {
       document.dispatchEvent(new CustomEvent("ifc-console:viewer-command", {

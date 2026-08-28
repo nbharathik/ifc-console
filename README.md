@@ -36,10 +36,7 @@ It runs locally on Windows, macOS, and Linux.
 | install | includes |
 | ------- | -------- |
 | `ifc-console` | console/TUI, deterministic IFC operations and workflows, MCP, Python SDK, and the local 3D viewer |
-| `ifc-console-agents` | compatible core plus the agent SDK, providers and chat, built-in/custom packs, browser panel, devkit, and testing helpers |
-| `ifc-console-agents[documents]` | agent document/PDF ingestion and page rendering |
-| `ifc-console-agents[graph]` | agent LangGraph integration and SQLite checkpoints |
-| `ifc-console-agents[full]` | all optional agent integrations |
+| `ifc-console-agents` | compatible core plus the complete agent SDK, providers/chat, built-in/custom packs, browser panel, PDF ingestion/rendering, LangGraph checkpoints, devkit, and testing helpers |
 | `ifc-console[validation]` | IDS validation support |
 | `ifc-console[geometry]` | Trimesh-backed raw-mesh health checks |
 
@@ -47,8 +44,8 @@ It runs locally on Windows, macOS, and Linux.
 # Core product:
 uv tool install ifc-console
 
-# Or core plus every optional agent integration:
-uv tool install --with "ifc-console-agents[full]" ifc-console
+# Or core plus the complete agents product:
+uv tool install --with ifc-console-agents ifc-console
 
 cd path/to/your/models
 ifc-console

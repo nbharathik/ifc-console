@@ -30,25 +30,13 @@ classifiers = [
 dependencies = [
     "ifc-console>=0.1.4,<0.2",
     "keyring>=24",
+    "langgraph>=1,<2",
+    "langgraph-checkpoint-sqlite>=3,<4",
     "pydantic>=2.7,<3",
+    "pypdf>=4",
+    "PyMuPDF>=1.24,<2",
     "starlette>=0.37",
     "typing-extensions>=4.12",
-]
-
-[project.optional-dependencies]
-documents = [
-    "pypdf>=4",
-    "PyMuPDF>=1.24,<2",
-]
-graph = [
-    "langgraph>=1,<2",
-    "langgraph-checkpoint-sqlite>=3,<4",
-]
-full = [
-    "pypdf>=4",
-    "PyMuPDF>=1.24,<2",
-    "langgraph>=1,<2",
-    "langgraph-checkpoint-sqlite>=3,<4",
 ]
 
 [project.urls]

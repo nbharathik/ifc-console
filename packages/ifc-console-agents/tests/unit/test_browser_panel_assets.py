@@ -568,6 +568,48 @@ def test_escape_closes_the_dialog_before_stopping_the_stream(chat_js: str):
     assert chain.index("closeWorkspace()") < chain.index("aborter?.abort()")
 
 
+def test_composer_shortcuts_live_behind_a_stable_keyboard_control(
+    chat_js: str, chat_css: str
+) -> None:
+    assert '<b>Enter</b> queues' not in chat_js
+    assert "keyboard: svg(" in chat_js
+    assert "${I.keyboard}</button>" in chat_js
+    assert 'data-act="shortcuts"' in chat_js
+    assert 'aria-controls="chat-shortcuts"' in chat_js
+    for copy in (
+        "Send a message",
+        "Start a new line",
+        "Queue a message while a response is running",
+        "Stop the active response",
+    ):
+        assert copy in chat_js
+    assert ".chat-shortcuts[hidden] { display: none; }" in chat_css
+    assert '.chat-shortcuts-toggle[aria-expanded="true"]' in chat_css
+    chain = chat_js.split('if (event.key !== "Escape") return;', 1)[1].split(
+        "event.stopPropagation();", 1
+    )[0]
+    assert chain.index("closeShortcuts") < chain.index("aborter?.abort()")
+
+
+def test_errors_use_top_notifications_instead_of_transcript_notes(
+    chat_js: str, chat_css: str
+) -> None:
+    assert 'data-role="notifications"' in chat_js
+    assert 'notification.setAttribute("role", "alert")' in chat_js
+    assert 'data-act="dismiss-notification"' in chat_js
+    assert 'text.replace(/\\s+\\(at [\\s\\S]+\\)\\s*$/, "")' in chat_js
+    assert "This IFC element has no geometry in the model" in chat_js
+    note = chat_js.split("function note(text, tone = false)", 1)[1].split(
+        "async function uploadFiles", 1
+    )[0]
+    assert 'if (kind === "bad")' in note
+    assert "notifyFailure(text);" in note
+    assert note.index("notifyFailure(text);") < note.index('line.className = "chat-note"')
+    assert ".chat-notifications" in chat_css
+    assert "position: absolute;" in chat_css.split(".chat-notifications", 1)[1].split("}", 1)[0]
+    assert "pointer-events: auto;" in chat_css.split(".chat-notification {", 1)[1].split("}", 1)[0]
+
+
 def test_stopping_before_content_keeps_an_alternating_visible_transcript(
     chat_js: str, chat_css: str
 ) -> None:
@@ -1341,6 +1383,9 @@ def test_guids_in_answers_open_frame_and_isolate_their_ifc(
     )[0]
     assert 'event.key.toLowerCase() !== "i"' in shortcut
     assert "globalIdsIn(textSelection.toString())" in shortcut
+    panel_scope = "if (!root.contains(target) && !selectedText.length) return;"
+    assert panel_scope in shortcut
+    assert shortcut.index(panel_scope) < shortcut.index("event.preventDefault();")
     assert "selectInViewer(guids, { isolate: true" in shortcut
 
     resolver = script.split("async function modelContainingGuid", 1)[1].split(

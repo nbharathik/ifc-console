@@ -1,8 +1,8 @@
 """Agent capabilities and precise repair hints for the active interpreter.
 
-The credential store is part of the base agents distribution. PDF extraction
-and page rendering are optional document capabilities so applications that do
-not ingest manuals keep a smaller environment.
+Every capability probed here is part of the complete ``ifc-console-agents``
+installation. A missing dependency therefore means that the active environment
+is stale or damaged, not that the user needs to discover another package extra.
 """
 
 from __future__ import annotations
@@ -16,11 +16,27 @@ from typing import Literal
 # (id, label, import name, distribution, required, consequence)
 _CAPABILITIES: tuple[tuple[str, str, str, str, bool, str], ...] = (
     (
+        "graph",
+        "LangGraph",
+        "langgraph",
+        "langgraph",
+        True,
+        "checkpointed agent workflows cannot run",
+    ),
+    (
+        "graph_checkpoints",
+        "SQLite checkpoints",
+        "langgraph.checkpoint.sqlite",
+        "langgraph-checkpoint-sqlite",
+        True,
+        "durable graph checkpoints cannot be stored",
+    ),
+    (
         "pdf_text",
         "PDF text",
         "pypdf",
         "pypdf",
-        False,
+        True,
         "PDF uploads cannot be indexed or searched",
     ),
     (
@@ -28,7 +44,7 @@ _CAPABILITIES: tuple[tuple[str, str, str, str, bool, str], ...] = (
         "PDF page images",
         "pymupdf",
         "PyMuPDF",
-        False,
+        True,
         "drawings and scanned pages cannot be shown to a vision model",
     ),
     (
@@ -62,7 +78,7 @@ class Capability:
             "version": self.version,
             "required": self.required,
             "consequence": self.consequence,
-            "install": None if self.required else "ifc-console-agents[documents]",
+            "install": None,
         }
 
 
@@ -97,28 +113,27 @@ def install_kind() -> Literal["uv-tool", "venv", "system"]:
 
 
 def repair_command() -> str:
-    """Repair a stale base agents installation in this interpreter."""
+    """Repair a stale complete agents installation in this interpreter."""
     kind = install_kind()
     if kind == "uv-tool":
-        return "uv tool upgrade ifc-console --reinstall"
+        return "uv tool install --with ifc-console-agents ifc-console --force"
     if kind == "venv":
+        if not _probe("pip"):
+            return (
+                f'uv pip install --python "{sys.executable}" '
+                "--upgrade ifc-console-agents"
+            )
         return f'"{sys.executable}" -m pip install --upgrade ifc-console-agents'
     return f'"{sys.executable}" -m pip install --user --upgrade ifc-console-agents'
 
 
 def documents_install_command() -> str:
-    """Install optional agent document support in this interpreter."""
-    if install_kind() == "uv-tool":
-        return 'uv tool install ifc-console --with "ifc-console-agents[documents]" --force'
-    user = " --user" if install_kind() == "system" else ""
-    return (
-        f'"{sys.executable}" -m pip install{user} --upgrade '
-        '"ifc-console-agents[documents]"'
-    )
+    """Compatibility alias for repairing the complete agents installation."""
+    return repair_command()
 
 
 def capabilities() -> list[Capability]:
-    """Report base requirements and optional agent document capabilities."""
+    """Report requirements of the complete agents installation."""
     found: list[Capability] = []
     for identifier, label, module, distribution, required, consequence in _CAPABILITIES:
         present = _probe(module)
@@ -145,14 +160,11 @@ def report() -> dict[str, object]:
     missing = [*missing_required, *missing_optional]
     if missing_required:
         hint = (
-            f"{', '.join(missing_required)} missing from the base ifc-console-agents "
+            f"{', '.join(missing_required)} missing from the ifc-console-agents "
             f"installation. Repair it with: {repair_command()}"
         )
     elif missing_optional:
-        hint = (
-            f"Optional document support is unavailable ({', '.join(missing_optional)}). "
-            "Install ifc-console-agents[documents] to enable PDF ingestion and page images."
-        )
+        hint = f"Agent capabilities are unavailable ({', '.join(missing_optional)})."
     else:
         hint = "All agent capabilities are installed."
     return {
@@ -171,11 +183,6 @@ def report() -> dict[str, object]:
 
 def missing_dependency_hint(distribution: str) -> str:
     """The hint attached to a runtime error naming one missing distribution."""
-    if distribution.casefold() in {"fitz", "pymupdf", "pypdf"}:
-        return (
-            f"Install optional PDF support with ifc-console-agents[documents]: "
-            f"{documents_install_command()}."
-        )
     return (
         f"{distribution} ships inside ifc-console-agents, so this console is "
         f"running from a stale environment ({sys.executable}). Reinstall or upgrade "

@@ -22,7 +22,7 @@ minor and patch releases will not break you.
    deterministic IFC knowledge surface remains under `ifc_console.knowledge`.
 7. **The documented agent SDK**: names exported from `ifc_console_agents`,
    including the provider-neutral loop, events, approvals, storage, testing
-   helpers, pack contracts, and documented optional integrations. New code
+   helpers, pack contracts, and documented integrations. New code
    uses this namespace rather than the transitional core aliases.
 8. **Plugin API version 1**: `PluginManifest`, `PluginAPI`,
    `OperationPlugin`, synchronous registration and shutdown, structured
@@ -75,15 +75,15 @@ agent wheel owns only `ifc_console_agents` and declares a compatible core range.
 
 Capabilities that need an ecosystem package degrade, never break. Calling
 `validate_ids` without `ifctester` returns `EXTRA_NOT_INSTALLED`. Agent PDF
-features require `ifc-console-agents[documents]`; LangGraph adapters require
-`ifc-console-agents[graph]`; `[full]` installs both. The viewer has no runtime
-extra: `ifc-console[viewer]` and `ifc-console-viewer` are one-release no-op/shim
+features, LangGraph adapters, and SQLite checkpoints all ship in the normal
+`ifc-console-agents` installation. The viewer has no runtime extra:
+`ifc-console[viewer]` and `ifc-console-viewer` are one-release no-op/shim
 compatibility paths only.
 
 For the same one-release transition, the former `ifc-console[graph]` and
-`ifc-console[keys]` install commands forward to the matching
-`ifc-console-agents` capability. New installations should use the agents
-package directly.
+`ifc-console[keys]` install commands forward to the complete
+`ifc-console-agents` package. New installations should use the agents package
+directly.
 
 For the initial split, core and agents release together and agents declares a
 compatible core minor range. Core publishes first. A future independent agent

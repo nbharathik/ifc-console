@@ -57,15 +57,13 @@ jobs:
         shell: bash
         run: |
           uv export --package ifc-console --no-dev --no-emit-workspace --extra geometry --extra validation --format requirements-txt --output-file audit-core.txt --quiet
-          uv export --package ifc-console-agents --no-dev --no-emit-workspace --format requirements-txt --output-file audit-agents-base.txt --quiet
-          uv export --package ifc-console-agents --no-dev --no-emit-workspace --extra documents --format requirements-txt --output-file audit-agents-documents.txt --quiet
-          uv export --package ifc-console-agents --no-dev --no-emit-workspace --extra graph --format requirements-txt --output-file audit-agents-graph.txt --quiet
+          uv export --package ifc-console-agents --no-dev --no-emit-workspace --format requirements-txt --output-file audit-agents.txt --quiet
       - name: Audit each runtime dependency boundary
         shell: bash
         env:
           AUDIT_PYTHON: ${{ matrix.python }}
         run: |
-          for requirements in audit-core.txt audit-agents-base.txt audit-agents-documents.txt audit-agents-graph.txt; do
+          for requirements in audit-core.txt audit-agents.txt; do
             echo "Auditing $requirements"
             uvx --python "$AUDIT_PYTHON" --from pip-audit==2.10.1 pip-audit -r "$requirements" --disable-pip
           done

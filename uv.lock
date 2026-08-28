@@ -559,7 +559,7 @@ dependencies = [
 [package.optional-dependencies]
 dev = [
     { name = "httpx2" },
-    { name = "ifc-console-agents", extra = ["full"] },
+    { name = "ifc-console-agents" },
     { name = "ifctester" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
@@ -578,7 +578,7 @@ geometry = [
     { name = "trimesh" },
 ]
 graph = [
-    { name = "ifc-console-agents", extra = ["graph"] },
+    { name = "ifc-console-agents" },
 ]
 keys = [
     { name = "ifc-console-agents" },
@@ -595,9 +595,9 @@ validation = [
 requires-dist = [
     { name = "httpx", specifier = ">=0.27" },
     { name = "httpx2", marker = "extra == 'dev'", specifier = ">=2,<3" },
+    { name = "ifc-console-agents", marker = "extra == 'dev'", editable = "packages/ifc-console-agents" },
+    { name = "ifc-console-agents", marker = "extra == 'graph'", editable = "packages/ifc-console-agents" },
     { name = "ifc-console-agents", marker = "extra == 'keys'", editable = "packages/ifc-console-agents" },
-    { name = "ifc-console-agents", extras = ["full"], marker = "extra == 'dev'", editable = "packages/ifc-console-agents" },
-    { name = "ifc-console-agents", extras = ["graph"], marker = "extra == 'graph'", editable = "packages/ifc-console-agents" },
     { name = "ifcopenshell", specifier = ">=0.8.1,<0.9" },
     { name = "ifctester", marker = "extra == 'dev'", specifier = ">=0.8" },
     { name = "ifctester", marker = "extra == 'validation'", specifier = ">=0.8" },
@@ -630,44 +630,27 @@ source = { editable = "packages/ifc-console-agents" }
 dependencies = [
     { name = "ifc-console" },
     { name = "keyring" },
+    { name = "langgraph" },
+    { name = "langgraph-checkpoint-sqlite" },
     { name = "pydantic" },
+    { name = "pymupdf" },
+    { name = "pypdf" },
     { name = "starlette" },
     { name = "typing-extensions" },
-]
-
-[package.optional-dependencies]
-documents = [
-    { name = "pymupdf" },
-    { name = "pypdf" },
-]
-full = [
-    { name = "langgraph" },
-    { name = "langgraph-checkpoint-sqlite" },
-    { name = "pymupdf" },
-    { name = "pypdf" },
-]
-graph = [
-    { name = "langgraph" },
-    { name = "langgraph-checkpoint-sqlite" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "ifc-console", editable = "." },
     { name = "keyring", specifier = ">=24" },
-    { name = "langgraph", marker = "extra == 'full'", specifier = ">=1,<2" },
-    { name = "langgraph", marker = "extra == 'graph'", specifier = ">=1,<2" },
-    { name = "langgraph-checkpoint-sqlite", marker = "extra == 'full'", specifier = ">=3,<4" },
-    { name = "langgraph-checkpoint-sqlite", marker = "extra == 'graph'", specifier = ">=3,<4" },
+    { name = "langgraph", specifier = ">=1,<2" },
+    { name = "langgraph-checkpoint-sqlite", specifier = ">=3,<4" },
     { name = "pydantic", specifier = ">=2.7,<3" },
-    { name = "pymupdf", marker = "extra == 'documents'", specifier = ">=1.24,<2" },
-    { name = "pymupdf", marker = "extra == 'full'", specifier = ">=1.24,<2" },
-    { name = "pypdf", marker = "extra == 'documents'", specifier = ">=4" },
-    { name = "pypdf", marker = "extra == 'full'", specifier = ">=4" },
+    { name = "pymupdf", specifier = ">=1.24,<2" },
+    { name = "pypdf", specifier = ">=4" },
     { name = "starlette", specifier = ">=0.37" },
     { name = "typing-extensions", specifier = ">=4.12" },
 ]
-provides-extras = ["documents", "full", "graph"]
 
 [[package]]
 name = "ifc-console-viewer"

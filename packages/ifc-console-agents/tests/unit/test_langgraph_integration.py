@@ -51,27 +51,24 @@ def test_importing_adapter_does_not_import_langgraph() -> None:
     assert result.stdout.strip() == "False"
 
 
-def test_factory_has_a_clear_optional_dependency_error(monkeypatch) -> None:
+def test_factory_has_a_clear_missing_dependency_error(monkeypatch) -> None:
     def missing(name: str):
         raise ImportError(name)
 
     monkeypatch.setattr(integration, "import_module", missing)
 
-    with pytest.raises(
-        integration.LangGraphUnavailable, match=r"ifc-console-agents\[graph\]"
-    ):
+    with pytest.raises(integration.LangGraphUnavailable, match="ships with ifc-console-agents"):
         integration.create_langgraph_workflow(lambda *_args: None)
 
 
-def test_graph_extra_is_optional() -> None:
+def test_graph_dependencies_are_part_of_the_base_install() -> None:
     root = Path(__file__).resolve().parents[2]
-    metadata = (root / "pyproject.toml").read_text(encoding="utf-8")
-    base, optional = metadata.split("[project.optional-dependencies]", 1)
-    graph = optional.split("graph = [", 1)[1].split("]", 1)[0]
+    metadata = (root / "pyproject.toml").read_text(encoding="utf-8").casefold()
+    base = metadata.split("[project.urls]", 1)[0]
 
-    assert "langgraph" not in base.casefold()
-    assert '"langgraph>=1,<2"' in graph
-    assert '"langgraph-checkpoint-sqlite>=3,<4"' in graph
+    assert '"langgraph>=1,<2"' in base
+    assert '"langgraph-checkpoint-sqlite>=3,<4"' in base
+    assert "[project.optional-dependencies]" not in metadata
 
 
 def test_factory_compiles_the_shared_state_lazily(monkeypatch) -> None:
@@ -240,9 +237,7 @@ def test_graph_updates_must_be_json_safe_and_lifecycle_free() -> None:
 
 
 @pytest.mark.asyncio
-async def test_real_langgraph_update_round_trip_when_extra_is_installed() -> None:
-    pytest.importorskip("langgraph")
-
+async def test_real_langgraph_update_round_trip() -> None:
     async def inspect(_state):
         return integration.graph_update(
             events=[{"type": "text_delta", "text": "Inspected."}],
@@ -266,8 +261,7 @@ async def test_real_langgraph_update_round_trip_when_extra_is_installed() -> Non
 
 
 @pytest.mark.asyncio
-async def test_real_langgraph_interrupt_round_trip_when_extra_is_installed() -> None:
-    pytest.importorskip("langgraph")
+async def test_real_langgraph_interrupt_round_trip() -> None:
     if sys.version_info < (3, 11):
         pytest.skip("async LangGraph interrupts require Python 3.11 or newer")
     from langgraph.checkpoint.memory import InMemorySaver
