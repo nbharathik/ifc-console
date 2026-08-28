@@ -37,8 +37,8 @@ These flags work with the interactive command and `serve` where applicable:
 | `--file PATH` | open a model at startup |
 | `--mode ask\|edit` | set the starting mode |
 | `--port N` | set the HTTP port; default `8383` |
-| `--viewer` | enable the optional browser viewer |
-| `--chat` | enable the browser chat panel |
+| `--viewer` | enable the bundled browser viewer |
+| `--chat` | enable the agents extension's browser chat panel; requires `ifc-console-agents` |
 | `--allow-dir PATH` | add a readable root; repeatable |
 | `--log-level LEVEL` | `debug`, `info`, `warning`, or `error` |
 | `--no-tui` | run a headless HTTP server |
@@ -66,8 +66,8 @@ ifc-console doctor --file model.ifc --json
 ```
 
 Checks Python, dependencies, settings, port availability, viewer assets, and
-optionally model parsing. A core-only install reports viewer assets as
-`optional`, not failed.
+optionally model parsing. Viewer assets ship in `ifc-console`; missing assets
+indicate an incomplete installation rather than an omitted extra.
 
 ### `check`
 
@@ -90,7 +90,8 @@ ifc-console dev --open chat
 Rehearses the browser panel against a generated demo project with an offline
 model, so no API key is needed. `--check` runs the headless feature checklist
 and never opens a browser tab; without it, at most one tab opens and only when
-a terminal asked for it. See [Testing the panel](testing.md).
+a terminal asked for it. This command is supplied by the optional
+`ifc-console-agents` devkit. See [Testing the panel](testing.md).
 
 | Flag | Effect |
 | --- | --- |
@@ -222,6 +223,10 @@ on a copied or version-controlled model.
 | `knowledge build|status|search|ingest` | manage the reference index and the project document corpus |
 | `agents list|blocks|run|files` | list agents and the capability blocks they are built from, run one, and manage project-local references |
 | `keys set|list|delete` | provider API keys in the system keyring, never plain text |
+
+The `agents` and `keys` commands, provider chat, and the `dev` rehearsal need
+`ifc-console-agents`. The main console, deterministic MCP/SDK, and browser
+viewer do not need that package or an LLM.
 
 Examples:
 

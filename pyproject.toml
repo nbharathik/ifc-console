@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "ifc-console"
 dynamic = ["version"]
-description = "A local IFC workbench with MCP, SDK, guarded agents, workflows, and an optional 3D viewer."
+description = "A local IFC workbench with a terminal, 3D viewer, MCP, SDK, and guarded workflows."
 readme = "README.md"
 requires-python = ">=3.10,<3.15"
 license = "Apache-2.0"
@@ -39,19 +39,14 @@ dependencies = [
     "starlette>=0.37",
     # McpToolSource constructs the HTTP transport directly.
     "httpx>=0.27",
+    # The bundled browser viewer communicates with the local application over
+    # a WebSocket. It is standard IFC Console functionality, not an extra.
+    "websockets>=12",
     # detect_clashes does its broad phase and occupancy sampling in numpy;
     # rich renders the console feed. Both arrive transitively today, but the
     # imports are ours, so the dependency is ours.
     "numpy>=1.24",
     "rich>=13",
-    # Built-in Docs and Measurement agents ingest PDF manuals. PyMuPDF makes
-    # drawings and scanned pages available to vision models as page images.
-    "pypdf>=4",
-    "PyMuPDF>=1.24,<2",
-    # The bundled chat panel can save provider credentials in the operating
-    # system credential store. This is core agent functionality: keeping it
-    # optional made the default UI offer a path that failed at runtime.
-    "keyring>=24",
 ]
 
 [project.optional-dependencies]
@@ -65,41 +60,35 @@ validation = [
     # and `ifc-console check --ids`.
     "ifctester>=0.8",
 ]
-graph = [
-    # Opt-in durable orchestration for applications that build LangGraph
-    # workflows over IFC Console's existing agents and toolsets.
-    "langgraph>=1,<2",
-    "langgraph-checkpoint-sqlite>=3,<4",
+documents = [
+    # Project-document extraction is useful to integrations but not required
+    # by the console, viewer, MCP server, or deterministic SDK.
+    "pypdf>=4",
+    "PyMuPDF>=1.24,<2",
 ]
-viewer = [
-    # The browser bundle is a separate wheel so the base install contains no
-    # three.js, web-ifc JavaScript, or WASM. Its WebSocket transport is needed
-    # only when that viewer is used.
-    "ifc-console-viewer>=0.1,<0.2",
-    "websockets>=12",
-]
+# Compatibility names retained for one release. They forward old install
+# commands to the companion distribution that now owns these capabilities.
+graph = ["ifc-console-agents[graph]>=0.1.4,<0.2"]
+# Compatibility for existing install commands. The viewer is bundled in the
+# main wheel now, so this extra intentionally adds nothing.
+viewer = []
 dev = [
     # Starlette's current TestClient prefers its supported httpx2 transport.
     "httpx2>=2,<3",
-    "ifc-console-viewer>=0.1,<0.2",
+    "ifc-console-agents[full]>=0.1.4,<0.2",
     "ifctester>=0.8",
     "pytest>=8",
     "pytest-asyncio>=0.23",
     "ruff>=0.5",
     "trimesh>=5.0.0,<5.1",
-    "websockets>=12",
 ]
 docs = [
     "mkdocs>=1.6",
     "mkdocs-material>=9.5",
 ]
-# Kept as a compatibility extra for existing install commands. PDF support is
-# part of the base package because the bundled agents depend on it.
-pdf = []
-# Compatibility extras retained for existing installation commands. PDF and
-# credential-store support are part of the base package because bundled agents
-# and the panel use them directly.
-keys = []
+# Compatibility extras retained for existing installation commands.
+pdf = ["pypdf>=4", "PyMuPDF>=1.24,<2"]
+keys = ["ifc-console-agents>=0.1.4,<0.2"]
 
 [project.urls]
 Homepage = "https://github.com/nbharathik/ifc-console"
@@ -133,9 +122,10 @@ exclude = [
 ]
 
 [tool.uv.workspace]
-members = ["packages/*"]
+members = ["packages/ifc-console-agents", "packages/ifc-console-viewer"]
 
 [tool.uv.sources]
+ifc-console-agents = { workspace = true }
 ifc-console-viewer = { workspace = true }
 
 [tool.ruff]

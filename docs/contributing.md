@@ -3,18 +3,22 @@
 ## Contributing
 
 Setup, tests, and style live on the [Development](development.md) page. The short
-version: `uv sync --extra dev`, then `uv run pytest` and
+version: `uv sync --all-packages --all-extras`, then `uv run pytest` and
 `uv run ruff check src tests packages scripts` must both be green.
 
 - **Bugs and ideas.** Open a
   [GitHub issue](https://github.com/nbharathik/ifc-console/issues). For bugs,
   include `ifc-console doctor` output. Never upload confidential models.
-- **Scope.** ifc-console is deliberately small: a safe MCP bridge to IfcOpenShell
-  with a console and an optional viewer. Anything that widens the
-  `execute_ifc_code` attack surface, weakens the mode model, or adds network
-  calls needs a strong case.
+- **Scope.** `ifc-console` stays deterministic: a safe IFC/MCP/SDK workbench,
+  console, and bundled viewer that needs no LLM. Provider chat, built-in and
+  custom packs, the agent panel, devkit, testing helpers, and graph adapters
+  belong to `ifc-console-agents`. Anything that widens the `execute_ifc_code`
+  attack surface, weakens the mode model, or adds network calls needs a strong
+  case.
 - **Compatibility.** The MCP tool names, their input schemas, and the response
-  envelope are the public API. Changing them needs a version bump.
+  envelope are public API. So are the `ifc_console.extensions` contract and
+  the canonical `ifc_console_agents` namespace. Changing them needs a version
+  bump.
 
 ## Security
 

@@ -15,7 +15,9 @@ import argparse
 import asyncio
 from pathlib import Path
 
-from ifc_console import Agent, AgentLimits, LocalRuntime, ProviderModel
+from ifc_console_agents import Agent, AgentLimits, ProviderModel
+
+from ifc_console import LocalRuntime
 
 
 async def run(args: argparse.Namespace) -> None:

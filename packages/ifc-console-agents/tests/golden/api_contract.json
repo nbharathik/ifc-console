@@ -1,0 +1,3785 @@
+{
+  "envelope": {
+    "$defs": {
+      "ErrorInfo": {
+        "properties": {
+          "code": {
+            "description": "Stable machine-readable code; see ERROR_CODES.",
+            "title": "Code",
+            "type": "string"
+          },
+          "hint": {
+            "description": "What to do next; follow it instead of retrying blindly.",
+            "title": "Hint",
+            "type": "string"
+          },
+          "message": {
+            "description": "What went wrong, in one sentence.",
+            "title": "Message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "hint"
+        ],
+        "title": "ErrorInfo",
+        "type": "object"
+      }
+    },
+    "description": "The public tool-result contract.",
+    "properties": {
+      "data": {
+        "anyOf": [
+          {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Data"
+      },
+      "error": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/ErrorInfo"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null
+      },
+      "meta": {
+        "additionalProperties": true,
+        "title": "Meta",
+        "type": "object"
+      },
+      "ok": {
+        "title": "Ok",
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "ok"
+    ],
+    "title": "Envelope",
+    "type": "object"
+  },
+  "error_codes": [
+    "AI_SAVE_DISABLED",
+    "APPROVAL_MISMATCH",
+    "APPROVAL_NOT_FOUND",
+    "APPROVAL_REQUIRED",
+    "ARTIFACT_CORRUPT",
+    "ARTIFACT_EXPORT_FAILED",
+    "ARTIFACT_GC_CONFLICT",
+    "ARTIFACT_GC_FAILED",
+    "ARTIFACT_NOT_FOUND",
+    "ARTIFACT_STORE_BUSY",
+    "ARTIFACT_STORE_CORRUPT",
+    "ASK_MODE_BLOCKED",
+    "BATCH_CANCELLED",
+    "BATCH_CHILD_FAILED",
+    "BATCH_INTERRUPTED",
+    "BATCH_NOT_FOUND",
+    "BATCH_NOT_RESUMABLE",
+    "BATCH_SERVICE_CLOSED",
+    "BATCH_SOURCE_CHANGED",
+    "BATCH_STORE_FAILED",
+    "BATCH_SUPERVISOR_FAILED",
+    "BATCH_TIMEOUT",
+    "CAPABILITY_DENIED",
+    "CHANGESET_INVALID",
+    "CHANGESET_NOT_FOUND",
+    "CHAT_FAILED",
+    "COMMIT_FAILED",
+    "COMMIT_NOT_FOUND",
+    "CONSOLE_AUTH_FAILED",
+    "CONSOLE_NOT_RUNNING",
+    "EXEC_BLOCKED",
+    "EXEC_ERROR",
+    "EXEC_TIMEOUT",
+    "EXTRA_NOT_INSTALLED",
+    "FILE_EXISTS",
+    "FILE_NOT_FOUND",
+    "FRAME_UNAVAILABLE",
+    "GEOMETRY_ANALYSIS_FAILED",
+    "INTERNAL_ERROR",
+    "INVALID_GEOMETRY",
+    "INVALID_INPUT",
+    "INVALID_OUTPUT",
+    "INVALID_QUERY",
+    "JOB_CANCELLED",
+    "JOB_NOT_CANCELLABLE",
+    "JOB_NOT_FOUND",
+    "JOB_RESULT_INVALID",
+    "JOB_SERVICE_CLOSED",
+    "JOB_SPEC_INVALID",
+    "JOB_TIMEOUT",
+    "JOB_WORKER_FAILED",
+    "KNOWLEDGE_DISABLED",
+    "KNOWLEDGE_NOT_READY",
+    "MODEL_BUSY",
+    "MODEL_NOT_FOUND",
+    "MODEL_READ_ONLY",
+    "MODEL_TOO_LARGE",
+    "NOT_FOUND",
+    "NO_GEOMETRY",
+    "NO_MATCH",
+    "NO_MODEL_LOADED",
+    "PATH_NOT_ALLOWED",
+    "PROPERTY_NOT_FOUND",
+    "RESTORE_CONFLICT",
+    "RESTORE_NOT_FOUND",
+    "RESULT_TOO_LARGE",
+    "REVISION_CONFLICT",
+    "SANDBOX_UNAVAILABLE",
+    "SOURCE_CHANGED",
+    "STORE_BUSY",
+    "TOO_MANY_ELEMENTS",
+    "TRANSACTION_INTERRUPTED",
+    "TRANSACTION_JOURNAL_BUSY",
+    "TRANSACTION_JOURNAL_CORRUPT",
+    "TRANSACTION_JOURNAL_INVALID",
+    "TRANSACTION_RECOVERY_REQUIRED",
+    "UNSAVED_CHANGES",
+    "VALIDATION_FAILED",
+    "VIEWER_BUSY",
+    "VIEWER_ERROR",
+    "VIEWER_NOT_CONNECTED",
+    "VIEWER_TIMEOUT",
+    "VIEWER_UNAVAILABLE",
+    "WORKFLOW_CANCELLED",
+    "WORKFLOW_DEPENDENCY_FAILED",
+    "WORKFLOW_INPUT_EMPTY",
+    "WORKFLOW_INPUT_LIMIT",
+    "WORKFLOW_INTERRUPTED",
+    "WORKFLOW_MANIFEST_INVALID",
+    "WORKFLOW_MANIFEST_TOO_LARGE",
+    "WORKFLOW_NOT_FOUND",
+    "WORKFLOW_NOT_RESUMABLE",
+    "WORKFLOW_PATH_INVALID",
+    "WORKFLOW_SERVICE_CLOSED",
+    "WORKFLOW_SOURCE_CHANGED",
+    "WORKFLOW_STEP_FAILED",
+    "WORKFLOW_STORE_CORRUPT",
+    "WORKFLOW_STORE_FAILED",
+    "WORKFLOW_SUPERVISOR_FAILED",
+    "WORKFLOW_TIMEOUT",
+    "WORKSPACE_BUDGET",
+    "WORKSPACE_DISABLED"
+  ],
+  "tools": [
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
+          "global_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 25,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Explicit GlobalIds, e.g. the viewer selection."
+          },
+          "include_outline": {
+            "default": false,
+            "description": "Return the 2D outline points of the measured section.",
+            "type": "boolean"
+          },
+          "max_elements": {
+            "default": 10,
+            "maximum": 25,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "model_id of an attached model (see list_models); omit for the active model."
+          },
+          "offset": {
+            "default": 0,
+            "description": "Elements to skip in the deterministic order, for paging a large match.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "physical_only": {
+            "default": true,
+            "type": "boolean"
+          },
+          "selector": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "IfcOpenShell selector; or pass global_ids."
+          },
+          "stations": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "number"
+                },
+                "maxItems": 7,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Cut positions as 0..1 fractions of the long axis; default 0.3, 0.5, 0.7."
+          }
+        },
+        "type": "object"
+      },
+      "name": "analyze_element_geometry",
+      "output_schema": null,
+      "read_only": true
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "$defs": {
+          "ColorGroup": {
+            "description": "One legend entry: a label, its elements, and an optional color.",
+            "properties": {
+              "color": {
+                "anyOf": [
+                  {
+                    "pattern": "^#[0-9a-fA-F]{6}$",
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Optional #rrggbb; a colorblind-safe palette color is assigned when omitted."
+              },
+              "global_ids": {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 5000,
+                "minItems": 1,
+                "type": "array"
+              },
+              "label": {
+                "description": "Legend label, e.g. 'F30' or 'Level 2'.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "label",
+              "global_ids"
+            ],
+            "title": "ColorGroup",
+            "type": "object"
+          }
+        },
+        "properties": {
+          "clear": {
+            "default": false,
+            "type": "boolean"
+          },
+          "groups": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/$defs/ColorGroup"
+                },
+                "maxItems": 24,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "The groups to paint, in legend order."
+          },
+          "model_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Resident IFC model, normally from get_viewer_selection.model_id."
+          },
+          "title": {
+            "default": "",
+            "description": "Legend title.",
+            "maxLength": 80,
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "apply_color_theme",
+      "output_schema": null,
+      "read_only": false
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
+          "alias": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Short name to refer to it by; defaults to the stem."
+          },
+          "path": {
+            "description": "Path to the file; see find_files.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "type": "object"
+      },
+      "name": "attach",
+      "output_schema": null,
+      "read_only": false
+    },
+    {
+      "destructive": true,
+      "input_schema": {
+        "properties": {
+          "job_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "job_id"
+        ],
+        "type": "object"
+      },
+      "name": "cancel_job",
+      "output_schema": null,
+      "read_only": false
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
+          "checks": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 8,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Run only these checks. Allowed: ['duplicate_global_ids', 'orphaned_elements', 'degenerate_solids', 'placement_outliers', 'duplicate_placements', 'model_extent', 'empty_storeys', 'unused_types']."
+          },
+          "max_elements": {
+            "default": 5000,
+            "description": "Above this the geometry checks are skipped.",
+            "maximum": 20000,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "max_findings": {
+            "default": 20,
+            "description": "Elements listed per check.",
+            "maximum": 200,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "model_id of an attached model (see list_models); omit for the active model."
+          }
+        },
+        "type": "object"
+      },
+      "name": "check_model_health",
+      "output_schema": null,
+      "read_only": true
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
+          "include_geometry": {
+            "default": true,
+            "description": "Compare meshes; false skips moves and reshapes but is far faster.",
+            "type": "boolean"
+          },
+          "include_properties": {
+            "default": true,
+            "description": "Compare each element's own property sets, type values excluded.",
+            "type": "boolean"
+          },
+          "max_changes": {
+            "default": 100,
+            "maximum": 1000,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "max_elements": {
+            "default": 5000,
+            "maximum": 20000,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "model_id of an attached model (see list_models); omit for the active model."
+          },
+          "move_tolerance": {
+            "default": 0.01,
+            "description": "Metres an element may shift before it counts as moved.",
+            "maximum": 100.0,
+            "minimum": 0.0,
+            "type": "number"
+          },
+          "other_model": {
+            "description": "model_id of the newer revision to compare against; see list_models.",
+            "type": "string"
+          },
+          "physical_only": {
+            "default": true,
+            "type": "boolean"
+          },
+          "selector": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Limit the diff to one set, e.g. `IfcWall`; omit for every element."
+          },
+          "volume_tolerance": {
+            "default": 0.01,
+            "description": "Fractional volume change before geometry counts as changed.",
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "type": "number"
+          }
+        },
+        "required": [
+          "other_model"
+        ],
+        "type": "object"
+      },
+      "name": "compare_models",
+      "output_schema": null,
+      "read_only": true
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
+          "aggregate_by": {
+            "default": "class",
+            "enum": [
+              "class",
+              "type",
+              "storey",
+              "material",
+              "none"
+            ],
+            "type": "string"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "model_id of an attached model (see list_models); omit for the active model."
+          },
+          "quantities": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Quantity names to include; omit for all numeric ones."
+          },
+          "selector": {
+            "description": "IfcOpenShell selector, e.g. `IfcWall` or `IfcSlab`.",
+            "type": "string"
+          },
+          "source": {
+            "default": "stored",
+            "enum": [
+              "stored",
+              "derived"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "selector"
+        ],
+        "type": "object"
+      },
+      "name": "compute_quantities",
+      "output_schema": null,
+      "read_only": true
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
+          "action": {
+            "description": "What to do to the viewport.",
+            "enum": [
+              "context",
+              "set_view",
+              "set_camera",
+              "fit",
+              "set_projection",
+              "section",
+              "select",
+              "isolate",
+              "hide",
+              "show_all",
+              "focus",
+              "unfocus",
+              "measure_elements",
+              "measure_clearance",
+              "measure_points",
+              "clear_measurements",
+              "save_view",
+              "restore_view",
+              "list_views"
+            ],
+            "type": "string"
+          },
+          "camera": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "For set_camera: {'position': [x, y, z], 'target': [x, y, z], 'up': [x, y, z], 'fov': 50, 'projection': 'perspective', 'transition': true}, every field optional. Coordinates are metres in the model's own axes (z up), the same frame measurements use. action='context' returns the current camera in this shape, so read it, change one field, send it back."
+          },
+          "clear": {
+            "default": false,
+            "description": "For section: turn every existing cut off first.",
+            "type": "boolean"
+          },
+          "guids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 500,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "GlobalIds for select, isolate, hide, focus, fit and measure_elements, and the element to shoot from for measure_clearance. All but select default to the user's viewer selection. Use selector instead of pasting a long list."
+          },
+          "model_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Resident IFC model to control. Pass model_id returned by get_viewer_selection. When omitted, selection-based actions follow the model the user selected in; other actions use the active console model."
+          },
+          "name": {
+            "anyOf": [
+              {
+                "maxLength": 80,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Viewpoint name for save_view and restore_view."
+          },
+          "padding": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0,
+                "maximum": 100,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "For fit: multiplier on the framed radius. 1.0 is snug, 1.5 leaves the element in its context."
+          },
+          "points": {
+            "anyOf": [
+              {
+                "items": {
+                  "items": {
+                    "type": "number"
+                  },
+                  "type": "array"
+                },
+                "maxItems": 200,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "For measure_points, in model axes (z up). Two points measure a distance, three the angle at the middle one, four or more the area of the outline they close."
+          },
+          "projection": {
+            "anyOf": [
+              {
+                "enum": [
+                  "perspective",
+                  "orthographic"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "For set_projection. Orthographic is parallel projection: use it whenever a length read off the screen has to mean the same thing anywhere in the frame."
+          },
+          "section": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "For section: {'z': {'at': 1.2, 'keep': 'below'}} cuts the model's z axis at 1.2 m and keeps what is below it. Axes are the model's own (z up), positions are metres, and {'z': false} turns that axis off."
+          },
+          "selection": {
+            "default": false,
+            "description": "For fit: frame the user's current viewer selection. Without it, and without guids or selector, fit frames the whole model.",
+            "type": "boolean"
+          },
+          "selector": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "query_elements selector standing in for guids on select, isolate, hide, focus and fit, resolved against the requested model here: selector='IfcDoor, location=Level 2' isolates a storey's doors in one call and is not capped at 500 ids."
+          },
+          "slice_depth": {
+            "anyOf": [
+              {
+                "maximum": 1000,
+                "minimum": 0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "For section: keep this many metres beyond each cut instead of everything, which is what turns a cut into a floor plan. 0 keeps everything."
+          },
+          "view": {
+            "anyOf": [
+              {
+                "enum": [
+                  "top",
+                  "bottom",
+                  "front",
+                  "back",
+                  "left",
+                  "right",
+                  "iso"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Camera direction for set_view, and optionally for fit."
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "type": "object"
+      },
+      "name": "control_viewer",
+      "output_schema": null,
+      "read_only": false
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {},
+        "type": "object"
+      },
+      "name": "describe_capabilities",
+      "output_schema": null,
+      "read_only": true
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
+          "id": {
+            "description": "A model_id or an attachment alias.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
+      "name": "detach",
+      "output_schema": null,
+      "read_only": false
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
+          "max_elements": {
+            "default": 1000,
+            "maximum": 5000,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "max_results": {
+            "default": 200,
+            "maximum": 1000,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "mode": {
+            "default": "overlap",
+            "enum": [
+              "overlap",
+              "clearance"
+            ],
+            "type": "string"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "model_id of an attached model (see list_models); omit for the active model."
+          },
+          "other_model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Model that set_b comes from; omit to use the same model."
+          },
+          "physical_only": {
+            "default": true,
+            "type": "boolean"
+          },
+          "precision": {
+            "default": "sampled",
+            "enum": [
+              "sampled",
+              "fast",
+              "exact"
+            ],
+            "type": "string"
+          },
+          "set_a": {
+            "description": "Selector for the first set, e.g. `IfcDuctSegment`.",
+            "type": "string"
+          },
+          "set_b": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Selector for the second set; omit to clash set_a with itself."
+          },
+          "tolerance": {
+            "default": 0.01,
+            "description": "Metres. Overlap tolerance, or the clearance gap.",
+            "maximum": 10.0,
+            "minimum": 0.0,
+            "type": "number"
+          }
+        },
+        "required": [
+          "set_a"
+        ],
+        "type": "object"
+      },
+      "name": "detect_clashes",
+      "output_schema": null,
+      "read_only": true
+    },
+    {
+      "destructive": true,
+      "input_schema": {
+        "properties": {
+          "code": {
+            "description": "Python source. No bpy; this is not Blender.",
+            "type": "string"
+          },
+          "description": {
+            "default": "",
+            "description": "One-line intent, shown in the user's terminal and audit log.",
+            "maxLength": 200,
+            "type": "string"
+          }
+        },
+        "required": [
+          "code"
+        ],
+        "type": "object"
+      },
+      "name": "execute_ifc_code",
+      "output_schema": null,
+      "read_only": false
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
+          "fields": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Row fields beyond global_id+class. Allowed: ['name', 'predefined_type', 'type_name', 'storey', 'description', 'tag']. Pass [] for the smallest row (global_id + class only)."
+          },
+          "limit": {
+            "default": 10000,
+            "maximum": 100000,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "overwrite": {
+            "default": false,
+            "type": "boolean"
+          },
+          "path": {
+            "description": "Target file path; must end in .csv.",
+            "type": "string"
+          },
+          "properties": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 20,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Dotted pset columns, e.g. ['Pset_WallCommon.FireRating']."
+          },
+          "selector": {
+            "description": "IfcOpenShell selector, e.g. `IfcWall`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "selector",
+          "path"
+        ],
+        "type": "object"
+      },
+      "name": "export_csv",
+      "output_schema": null,
+      "read_only": false
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
+          "global_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 25,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Explicit GlobalIds, e.g. the viewer selection."
+          },
+          "include_qtos": {
+            "default": true,
+            "description": "Include each element's stored quantity sets.",
+            "type": "boolean"
+          },
+          "notes": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Context to include, e.g. method or caveats."
+          },
+          "overwrite": {
+            "default": false,
+            "type": "boolean"
+          },
+          "path": {
+            "description": "Target file path; must end in .md.",
+            "type": "string"
+          },
+          "selector": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "IfcOpenShell selector; or pass global_ids."
+          },
+          "stations": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "number"
+                },
+                "maxItems": 7,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Cut positions as 0..1 fractions of the long axis."
+          },
+          "title": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Report title; defaults from the model."
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "type": "object"
+      },
+      "name": "export_measurement_report",
+      "output_schema": null,
+      "read_only": false
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
+          "kinds": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Restrict to these kinds. Allowed: ['ifc', 'ids', 'bcf', 'csv', 'ifcjson', 'pdf', 'md', 'txt', 'image']."
+          },
+          "limit": {
+            "default": 30,
+            "maximum": 200,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "query": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Free text, e.g. 'architecture', 'ids', 'rev3'. Omit to list."
+          },
+          "refresh": {
+            "default": false,
+            "description": "Re-walk the folders first.",
+            "type": "boolean"
+          }
+        },
+        "type": "object"
+      },
+      "name": "find_files",
+      "output_schema": null,
+      "read_only": true
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
+          "name": {
+            "description": "Skill name from list_agent_skills.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
+      "name": "get_agent_skill",
+      "output_schema": null,
+      "read_only": true
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
+          "function": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "module.function, e.g. pset.add_pset."
+          },
+          "search": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Plain-words search when you do not know the name."
+          }
+        },
+        "type": "object"
+      },
+      "name": "get_api_docs",
+      "output_schema": null,
+      "read_only": true
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
+          "artifact_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "artifact_id"
+        ],
+        "type": "object"
+      },
+      "name": "get_artifact",
+      "output_schema": {
+        "$defs": {
+          "ArtifactData": {
+            "additionalProperties": true,
+            "properties": {
+              "artifact": {
+                "$ref": "#/$defs/ArtifactRef"
+              }
+            },
+            "required": [
+              "artifact"
+            ],
+            "title": "ArtifactData",
+            "type": "object"
+          },
+          "ArtifactRef": {
+            "additionalProperties": false,
+            "properties": {
+              "artifact_id": {
+                "pattern": "^sha256:[0-9a-f]{64}$",
+                "type": "string"
+              },
+              "correlation_ids": {
+                "default": [],
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "created_at": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "kind": {
+                "type": "string"
+              },
+              "media_type": {
+                "type": "string"
+              },
+              "metadata": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "name": {
+                "type": "string"
+              },
+              "producer": {
+                "type": "string"
+              },
+              "references": {
+                "default": [],
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "revision": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/RevisionRef"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "sha256": {
+                "pattern": "^[0-9a-f]{64}$",
+                "type": "string"
+              },
+              "size_bytes": {
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "artifact_id",
+              "name",
+              "kind",
+              "media_type",
+              "size_bytes",
+              "sha256",
+              "created_at",
+              "producer"
+            ],
+            "title": "ArtifactRef",
+            "type": "object"
+          },
+          "ErrorInfo": {
+            "properties": {
+              "code": {
+                "description": "Stable machine-readable code; see ERROR_CODES.",
+                "type": "string"
+              },
+              "hint": {
+                "description": "What to do next; follow it instead of retrying blindly.",
+                "type": "string"
+              },
+              "message": {
+                "description": "What went wrong, in one sentence.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "code",
+              "message",
+              "hint"
+            ],
+            "title": "ErrorInfo",
+            "type": "object"
+          },
+          "RevisionRef": {
+            "additionalProperties": false,
+            "properties": {
+              "content_sha256": {
+                "anyOf": [
+                  {
+                    "pattern": "^[0-9a-f]{64}$",
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "model_id": {
+                "type": "string"
+              },
+              "revision_id": {
+                "minLength": 3,
+                "type": "string"
+              },
+              "workspace_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "workspace_id",
+              "model_id",
+              "revision_id"
+            ],
+            "title": "RevisionRef",
+            "type": "object"
+          }
+        },
+        "properties": {
+          "data": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "$ref": "#/$defs/ArtifactData"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ErrorInfo"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "meta": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "ok": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok"
+        ],
+        "title": "ArtifactDataEnvelope",
+        "type": "object"
+      },
+      "read_only": true
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
+          "change_set_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "change_set_id"
+        ],
+        "type": "object"
+      },
+      "name": "get_change_set",
+      "output_schema": null,
+      "read_only": true
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
+          "global_ids": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 50,
+            "minItems": 1,
+            "type": "array"
+          },
+          "include": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Sections to include. Allowed: ['attributes', 'psets', 'qtos', 'materials', 'type', 'container', 'openings', 'decomposition', 'classification']. Default: ['attributes', 'psets', 'type', 'container']. Pass [] for global_id + class only."
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "model_id of an attached model (see list_models); omit for the active model."
+          }
+        },
+        "required": [
+          "global_ids"
+        ],
+        "type": "object"
+      },
+      "name": "get_element",
+      "output_schema": null,
+      "read_only": true
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
+          "global_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 500,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Explicit GlobalIds to probe."
+          },
+          "max_elements": {
+            "default": 500,
+            "maximum": 2000,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "model_id of an attached model (see list_models); omit for the active model."
+          },
+          "offset": {
+            "default": 0,
+            "description": "Elements to skip in the deterministic order, for paging a large match.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "physical_only": {
+            "default": true,
+            "type": "boolean"
+          },
+          "selector": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "IfcOpenShell selector; or pass global_ids."
+          }
+        },
+        "type": "object"
+      },
+      "name": "get_element_geometry",
+      "output_schema": null,
+      "read_only": true
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "model_id of an attached model (see list_models); omit for the active model."
+          }
+        },
+        "type": "object"
+      },
+      "name": "get_georeferencing",
+      "output_schema": null,
+      "read_only": true
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "model_id of an attached model (see list_models); omit for the active model."
+          }
+        },
+        "type": "object"
+      },
+      "name": "get_ifc_project_info",
+      "output_schema": null,
+      "read_only": true
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
+          "job_id": {
+            "type": "string"
+          },
+          "wait_seconds": {
+            "default": 0,
+            "maximum": 3600,
+            "minimum": 0,
+            "type": "number"
+          }
+        },
+        "required": [
+          "job_id"
+        ],
+        "type": "object"
+      },
+      "name": "get_job",
+      "output_schema": null,
+      "read_only": true
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
+          "key": {
+            "description": "The key from a search hit.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "key"
+        ],
+        "type": "object"
+      },
+      "name": "get_knowledge_record",
+      "output_schema": null,
+      "read_only": true
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
+          "ifc_class": {
+            "description": "Element class, e.g. IfcWall.",
+            "type": "string"
+          },
+          "property_name": {
+            "description": "The measured property, e.g. 'thickness'.",
+            "type": "string"
+          },
+          "type_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "The element's type name, from get_element or query_elements."
+          }
+        },
+        "required": [
+          "ifc_class",
+          "property_name"
+        ],
+        "type": "object"
+      },
+      "name": "get_measurement_recipe",
+      "output_schema": null,
+      "read_only": true
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
+          "format": {
+            "default": "jpeg",
+            "enum": [
+              "jpeg",
+              "png"
+            ],
+            "type": "string"
+          },
+          "max_size": {
+            "default": 1600,
+            "maximum": 2048,
+            "minimum": 256,
+            "type": "integer"
+          },
+          "page": {
+            "minimum": 1,
+            "type": "integer"
+          },
+          "path": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          },
+          "quality": {
+            "default": 88,
+            "maximum": 100,
+            "minimum": 40,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "path",
+          "page"
+        ],
+        "type": "object"
+      },
+      "name": "get_project_document_page",
+      "output_schema": null,
+      "read_only": true
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
+          "path": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "type": "object"
+      },
+      "name": "get_project_reference_image",
+      "output_schema": null,
+      "read_only": true
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
+          "global_ids": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 100,
+            "minItems": 1,
+            "type": "array"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "model_id of an attached model (see list_models); omit for the active model."
+          },
+          "psets_only": {
+            "default": false,
+            "type": "boolean"
+          },
+          "qtos_only": {
+            "default": false,
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "global_ids"
+        ],
+        "type": "object"
+      },
+      "name": "get_psets",
+      "output_schema": null,
+      "read_only": true
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
+          "attribute": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional attribute name."
+          },
+          "entity": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "e.g. IfcWall"
+          },
+          "property": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Property name to look up, e.g. FireRating."
+          },
+          "pset": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Property or quantity set name, e.g. Pset_WallCommon."
+          },
+          "schema": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "IFC2X3, IFC4, or IFC4X3. Defaults to the loaded model."
+          }
+        },
+        "type": "object"
+      },
+      "name": "get_schema_docs",
+      "output_schema": null,
+      "read_only": true
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {},
+        "type": "object"
+      },
+      "name": "get_session_status",
+      "output_schema": {
+        "$defs": {
+          "ErrorInfo": {
+            "properties": {
+              "code": {
+                "description": "Stable machine-readable code; see ERROR_CODES.",
+                "type": "string"
+              },
+              "hint": {
+                "description": "What to do next; follow it instead of retrying blindly.",
+                "type": "string"
+              },
+              "message": {
+                "description": "What went wrong, in one sentence.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "code",
+              "message",
+              "hint"
+            ],
+            "title": "ErrorInfo",
+            "type": "object"
+          },
+          "SessionStatusData": {
+            "additionalProperties": true,
+            "properties": {
+              "dirty": {
+                "type": "boolean"
+              },
+              "mode": {
+                "type": "string"
+              },
+              "model": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "server": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "viewer": {
+                "additionalProperties": true,
+                "type": "object"
+              }
+            },
+            "required": [
+              "server",
+              "model",
+              "mode",
+              "dirty",
+              "viewer"
+            ],
+            "title": "SessionStatusData",
+            "type": "object"
+          }
+        },
+        "properties": {
+          "data": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "$ref": "#/$defs/SessionStatusData"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ErrorInfo"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "meta": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "ok": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok"
+        ],
+        "title": "SessionStatusDataEnvelope",
+        "type": "object"
+      },
+      "read_only": true
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
+          "depth": {
+            "default": 10,
+            "maximum": 20,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "include_element_counts": {
+            "default": true,
+            "type": "boolean"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "model_id of an attached model (see list_models); omit for the active model."
+          },
+          "root_global_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Start node GlobalId; omit for IfcProject."
+          }
+        },
+        "type": "object"
+      },
+      "name": "get_spatial_structure",
+      "output_schema": null,
+      "read_only": true
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {},
+        "type": "object"
+      },
+      "name": "get_viewer_measurements",
+      "output_schema": null,
+      "read_only": true
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
+          "fit": {
+            "anyOf": [
+              {
+                "enum": [
+                  "all",
+                  "selection",
+                  "highlighted"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "format": {
+            "default": "jpeg",
+            "enum": [
+              "jpeg",
+              "png"
+            ],
+            "type": "string"
+          },
+          "max_size": {
+            "default": 800,
+            "maximum": 2048,
+            "minimum": 64,
+            "type": "integer"
+          },
+          "model_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Resident IFC model, normally from get_viewer_selection.model_id."
+          },
+          "quality": {
+            "default": 85,
+            "maximum": 100,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "view": {
+            "default": "current",
+            "enum": [
+              "top",
+              "bottom",
+              "front",
+              "back",
+              "left",
+              "right",
+              "iso",
+              "current"
+            ],
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "get_viewer_screenshot",
+      "output_schema": null,
+      "read_only": true
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {},
+        "type": "object"
+      },
+      "name": "get_viewer_selection",
+      "output_schema": null,
+      "read_only": true
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
+          "clear": {
+            "default": false,
+            "type": "boolean"
+          },
+          "color": {
+            "default": "#ff3b30",
+            "pattern": "^#[0-9a-fA-F]{6}$",
+            "type": "string"
+          },
+          "fit": {
+            "default": true,
+            "type": "boolean"
+          },
+          "global_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 500,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "isolate": {
+            "default": false,
+            "type": "boolean"
+          },
+          "model_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Resident IFC model, normally from get_viewer_selection.model_id."
+          }
+        },
+        "type": "object"
+      },
+      "name": "highlight_elements",
+      "output_schema": null,
+      "read_only": false
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
+          "backend": {
+            "default": "auto",
+            "enum": [
+              "auto",
+              "builtin",
+              "trimesh"
+            ],
+            "type": "string"
+          },
+          "global_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 100,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Explicit GlobalIds to inspect."
+          },
+          "include_filtered_preview": {
+            "default": false,
+            "description": "Also inspect a copy with invalid, degenerate and duplicate faces removed.",
+            "type": "boolean"
+          },
+          "max_elements": {
+            "default": 25,
+            "maximum": 100,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "max_triangles": {
+            "anyOf": [
+              {
+                "maximum": 1000000,
+                "minimum": 1,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional per-element triangle budget; defaults to the profile cap."
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "model_id of an attached model (see list_models); omit for the active model."
+          },
+          "offset": {
+            "default": 0,
+            "description": "Elements to skip in the deterministic order, for paging a large match.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "physical_only": {
+            "default": true,
+            "type": "boolean"
+          },
+          "selector": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "IfcOpenShell selector; or pass global_ids."
+          },
+          "tessellation": {
+            "default": "analysis",
+            "enum": [
+              "standard",
+              "analysis"
+            ],
+            "type": "string"
+          },
+          "tolerance": {
+            "default": 1e-09,
+            "description": "SI-metre tolerance for degenerate geometry checks.",
+            "exclusiveMinimum": 0.0,
+            "maximum": 0.01,
+            "type": "number"
+          }
+        },
+        "type": "object"
+      },
+      "name": "inspect_element_mesh",
+      "output_schema": null,
+      "read_only": true
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {},
+        "type": "object"
+      },
+      "name": "list_agent_skills",
+      "output_schema": null,
+      "read_only": true
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
+          "limit": {
+            "default": 200,
+            "description": "Maximum elements.",
+            "maximum": 2000,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "model_id of an attached model (see list_models); omit for the active model."
+          }
+        },
+        "type": "object"
+      },
+      "name": "list_ai_authored_properties",
+      "output_schema": null,
+      "read_only": true
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
+          "limit": {
+            "default": 50,
+            "maximum": 500,
+            "minimum": 1,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "name": "list_artifacts",
+      "output_schema": null,
+      "read_only": true
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
+          "dir": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Restrict to one directory (must be inside allowed dirs)."
+          },
+          "limit": {
+            "default": 100,
+            "maximum": 500,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "recursive": {
+            "default": false,
+            "type": "boolean"
+          }
+        },
+        "type": "object"
+      },
+      "name": "list_ifc_files",
+      "output_schema": null,
+      "read_only": true
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
+          "limit": {
+            "default": 50,
+            "maximum": 500,
+            "minimum": 1,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "name": "list_jobs",
+      "output_schema": null,
+      "read_only": true
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {},
+        "type": "object"
+      },
+      "name": "list_models",
+      "output_schema": null,
+      "read_only": true
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
+          "media": {
+            "anyOf": [
+              {
+                "enum": [
+                  "document",
+                  "image",
+                  "pdf",
+                  "markdown",
+                  "text"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional media filter."
+          }
+        },
+        "type": "object"
+      },
+      "name": "list_project_documents",
+      "output_schema": null,
+      "read_only": true
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
+          "direction": {
+            "description": "Three-component direction vector.",
+            "items": {
+              "type": "number"
+            },
+            "maxItems": 3,
+            "minItems": 3,
+            "type": "array"
+          },
+          "frame": {
+            "default": "world",
+            "enum": [
+              "world",
+              "local",
+              "principal"
+            ],
+            "type": "string"
+          },
+          "global_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 100,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Explicit GlobalIds to measure."
+          },
+          "max_elements": {
+            "default": 25,
+            "maximum": 100,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "max_triangles": {
+            "anyOf": [
+              {
+                "maximum": 1000000,
+                "minimum": 1,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Per-element triangle budget."
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "model_id of an attached model (see list_models); omit for the active model."
+          },
+          "offset": {
+            "default": 0,
+            "description": "Elements to skip in the deterministic order, for paging a large match.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "physical_only": {
+            "default": true,
+            "type": "boolean"
+          },
+          "selector": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "IfcOpenShell selector; or pass global_ids."
+          },
+          "tessellation": {
+            "default": "analysis",
+            "enum": [
+              "standard",
+              "analysis"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "direction"
+        ],
+        "type": "object"
+      },
+      "name": "measure_directional_extent",
+      "output_schema": null,
+      "read_only": true
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
+          "global_ids_a": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 200,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "global_ids_b": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 200,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "max_elements": {
+            "default": 200,
+            "maximum": 1000,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "model_id of an attached model (see list_models); omit for the active model."
+          },
+          "physical_only": {
+            "default": true,
+            "type": "boolean"
+          },
+          "set_a": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Selector for side A; or pass global_ids_a."
+          },
+          "set_b": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Selector for side B; or pass global_ids_b."
+          }
+        },
+        "type": "object"
+      },
+      "name": "measure_distance",
+      "output_schema": null,
+      "read_only": true
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
+          "axis": {
+            "default": "local_y",
+            "enum": [
+              "local_x",
+              "local_y",
+              "local_z",
+              "world_x",
+              "world_y",
+              "world_z"
+            ],
+            "type": "string"
+          },
+          "exclude_layers": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 20,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "layer_sum: drop layers matching these globs."
+          },
+          "global_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 500,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Explicit GlobalIds to measure."
+          },
+          "include_layers": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 20,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "layer_sum: keep only layers matching these globs."
+          },
+          "max_elements": {
+            "default": 500,
+            "maximum": 2000,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "method": {
+            "enum": [
+              "stored_qto",
+              "layer_sum",
+              "geometry_extent"
+            ],
+            "type": "string"
+          },
+          "metric": {
+            "anyOf": [
+              {
+                "maxLength": 80,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Label for the report, e.g. 'thickness'."
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "model_id of an attached model (see list_models); omit for the active model."
+          },
+          "offset": {
+            "default": 0,
+            "description": "Elements to skip in the deterministic order, for paging a large match.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "physical_only": {
+            "default": true,
+            "type": "boolean"
+          },
+          "qto_set": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "stored_qto: restrict to one quantity set, e.g. 'Qto_WallBaseQuantities'."
+          },
+          "quantity": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "stored_qto: the quantity name, e.g. 'Width'."
+          },
+          "selector": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "IfcOpenShell selector; or pass global_ids."
+          }
+        },
+        "required": [
+          "method"
+        ],
+        "type": "object"
+      },
+      "name": "measure_elements",
+      "output_schema": null,
+      "read_only": true
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
+          "backend": {
+            "default": "auto",
+            "enum": [
+              "auto",
+              "builtin",
+              "trimesh"
+            ],
+            "type": "string"
+          },
+          "direction": {
+            "description": "Three-component line direction.",
+            "items": {
+              "type": "number"
+            },
+            "maxItems": 3,
+            "minItems": 3,
+            "type": "array"
+          },
+          "frame": {
+            "default": "world",
+            "enum": [
+              "world",
+              "local",
+              "principal"
+            ],
+            "type": "string"
+          },
+          "global_id": {
+            "maxLength": 64,
+            "minLength": 1,
+            "type": "string"
+          },
+          "max_intersections": {
+            "default": 64,
+            "description": "Safety cap for compact line-intersection evidence.",
+            "maximum": 128,
+            "minimum": 2,
+            "type": "integer"
+          },
+          "max_triangles": {
+            "anyOf": [
+              {
+                "maximum": 1000000,
+                "minimum": 1,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Per-element triangle budget."
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "model_id of an attached model (see list_models); omit for the active model."
+          },
+          "origin": {
+            "description": "World point [x,y,z] in SI metres.",
+            "items": {
+              "type": "number"
+            },
+            "maxItems": 3,
+            "minItems": 3,
+            "type": "array"
+          },
+          "tessellation": {
+            "default": "analysis",
+            "enum": [
+              "standard",
+              "analysis"
+            ],
+            "type": "string"
+          },
+          "tolerance": {
+            "default": 1e-06,
+            "description": "SI-metre hit merge tolerance.",
+            "exclusiveMinimum": 0.0,
+            "maximum": 0.01,
+            "type": "number"
+          }
+        },
+        "required": [
+          "global_id",
+          "origin",
+          "direction"
+        ],
+        "type": "object"
+      },
+      "name": "measure_local_thickness",
+      "output_schema": null,
+      "read_only": true
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
+          "path": {
+            "description": "Path to an .ifc/.ifczip/.ifcxml file.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "type": "object"
+      },
+      "name": "open_ifc_file",
+      "output_schema": null,
+      "read_only": false
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
+          "open_browser": {
+            "default": true,
+            "description": "Also open the viewer in the local browser; the user can instead run /viewer.",
+            "type": "boolean"
+          },
+          "wait_for_connection_s": {
+            "default": 8.0,
+            "description": "Wait this many seconds for the browser tab to connect before returning. Use 10 for an agent-driven visual workflow; use 0 to return immediately.",
+            "maximum": 30,
+            "minimum": 0,
+            "type": "number"
+          }
+        },
+        "type": "object"
+      },
+      "name": "open_viewer",
+      "output_schema": null,
+      "read_only": false
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {},
+        "type": "object"
+      },
+      "name": "orient",
+      "output_schema": null,
+      "read_only": true
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
+          "classification_name": {
+            "maxLength": 255,
+            "minLength": 1,
+            "type": "string"
+          },
+          "expected_revision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "global_ids": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 500,
+            "minItems": 1,
+            "type": "array"
+          },
+          "identification": {
+            "maxLength": 255,
+            "minLength": 1,
+            "type": "string"
+          },
+          "reference_name": {
+            "maxLength": 255,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "global_ids",
+          "classification_name",
+          "identification",
+          "reference_name"
+        ],
+        "type": "object"
+      },
+      "name": "preview_classification_assignment",
+      "output_schema": null,
+      "read_only": false
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
+          "create_missing": {
+            "default": false,
+            "type": "boolean"
+          },
+          "expected_revision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "global_ids": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 500,
+            "minItems": 1,
+            "type": "array"
+          },
+          "nominal_type": {
+            "anyOf": [
+              {
+                "maxLength": 255,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "property_name": {
+            "maxLength": 255,
+            "minLength": 1,
+            "type": "string"
+          },
+          "pset_name": {
+            "maxLength": 255,
+            "minLength": 1,
+            "type": "string"
+          },
+          "value": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "integer"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "global_ids",
+          "pset_name",
+          "property_name",
+          "value"
+        ],
+        "type": "object"
+      },
+      "name": "preview_property_change",
+      "output_schema": null,
+      "read_only": false
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "$defs": {
+          "PropertyPreview": {
+            "additionalProperties": false,
+            "description": "One property assignment requested inside an atomic preview.",
+            "properties": {
+              "create_missing": {
+                "default": false,
+                "type": "boolean"
+              },
+              "nominal_type": {
+                "anyOf": [
+                  {
+                    "maxLength": 255,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "property_name": {
+                "maxLength": 255,
+                "minLength": 1,
+                "type": "string"
+              },
+              "pset_name": {
+                "maxLength": 255,
+                "minLength": 1,
+                "type": "string"
+              },
+              "value": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "boolean"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "pset_name",
+              "property_name",
+              "value"
+            ],
+            "title": "PropertyPreview",
+            "type": "object"
+          }
+        },
+        "properties": {
+          "expected_revision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "global_ids": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 500,
+            "minItems": 1,
+            "type": "array"
+          },
+          "properties": {
+            "items": {
+              "$ref": "#/$defs/PropertyPreview"
+            },
+            "maxItems": 16,
+            "minItems": 1,
+            "type": "array"
+          }
+        },
+        "required": [
+          "global_ids",
+          "properties"
+        ],
+        "type": "object"
+      },
+      "name": "preview_property_changes",
+      "output_schema": null,
+      "read_only": false
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
+          "fields": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Extra columns beyond global_id+class. Allowed: ['name', 'predefined_type', 'type_name', 'storey', 'description', 'tag']. Default: ['name', 'storey', 'type_name']. Pass [] for the smallest row (global_id + class only)."
+          },
+          "limit": {
+            "default": 50,
+            "maximum": 500,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "model_id of an attached model (see list_models); omit for the active model."
+          },
+          "offset": {
+            "default": 0,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "order_by": {
+            "default": "class",
+            "enum": [
+              "class",
+              "name",
+              "storey"
+            ],
+            "type": "string"
+          },
+          "properties": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 20,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Dotted Pset_Name.Property columns, e.g. ['Pset_WallCommon.FireRating']. Missing values come back as null."
+          },
+          "query": {
+            "description": "IfcOpenShell selector expression.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "type": "object"
+      },
+      "name": "query_elements",
+      "output_schema": null,
+      "read_only": true
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
+          "box": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "number"
+                },
+                "maxItems": 6,
+                "minItems": 6,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "within_box only: [min_x, min_y, min_z, max_x, max_y, max_z] in SI metres."
+          },
+          "distance": {
+            "default": 1.0,
+            "description": "Metres: the reach for within_distance, the gap cap for above/below.",
+            "maximum": 1000.0,
+            "minimum": 0.0,
+            "type": "number"
+          },
+          "max_elements": {
+            "default": 1000,
+            "maximum": 5000,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "max_results": {
+            "default": 100,
+            "maximum": 500,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "model_id of an attached model (see list_models); omit for the active model."
+          },
+          "physical_only": {
+            "default": true,
+            "type": "boolean"
+          },
+          "relation": {
+            "enum": [
+              "inside",
+              "crosses",
+              "above",
+              "below",
+              "within_distance",
+              "within_box"
+            ],
+            "type": "string"
+          },
+          "selector": {
+            "default": "IfcElement",
+            "description": "The candidate set to test, e.g. `IfcSprinkler` or `IfcWall`.",
+            "type": "string"
+          },
+          "target_global_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "The element the relation is about, e.g. the space or the duct."
+          },
+          "tolerance": {
+            "default": 0.01,
+            "description": "Metres of slack on a boundary.",
+            "maximum": 10.0,
+            "minimum": 0.0,
+            "type": "number"
+          }
+        },
+        "required": [
+          "relation"
+        ],
+        "type": "object"
+      },
+      "name": "query_spatial",
+      "output_schema": null,
+      "read_only": true
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
+          "applies_to": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Classes or tasks it fits, e.g. 'IfcMember sheet piles'."
+          },
+          "content": {
+            "description": "Markdown body: when to use, steps, checks.",
+            "maxLength": 60000,
+            "type": "string"
+          },
+          "description": {
+            "description": "One line: what the skill does.",
+            "maxLength": 200,
+            "type": "string"
+          },
+          "name": {
+            "description": "Lowercase slug, e.g. 'sheet-pile-profile'.",
+            "maxLength": 64,
+            "type": "string"
+          },
+          "overwrite": {
+            "default": false,
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "name",
+          "description",
+          "content"
+        ],
+        "type": "object"
+      },
+      "name": "save_agent_skill",
+      "output_schema": null,
+      "read_only": false
+    },
+    {
+      "destructive": true,
+      "input_schema": {
+        "properties": {
+          "output_path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Save-as path; omit to save in place."
+          },
+          "overwrite": {
+            "default": false,
+            "type": "boolean"
+          }
+        },
+        "type": "object"
+      },
+      "name": "save_ifc_file",
+      "output_schema": null,
+      "read_only": false
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
+          "limit": {
+            "default": 50,
+            "maximum": 500,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "model_id of an attached model (see list_models); omit for the active model."
+          },
+          "offset": {
+            "default": 0,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "term": {
+            "maxLength": 500,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "term"
+        ],
+        "type": "object"
+      },
+      "name": "search_elements",
+      "output_schema": null,
+      "read_only": true
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
+          "corpus": {
+            "default": "all",
+            "description": "Which corpus to search; results are never score-merged.",
+            "enum": [
+              "builtin",
+              "project",
+              "all"
+            ],
+            "type": "string"
+          },
+          "kind": {
+            "anyOf": [
+              {
+                "items": {
+                  "enum": [
+                    "entity",
+                    "pset",
+                    "property",
+                    "type",
+                    "api",
+                    "recipe",
+                    "doc"
+                  ],
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Restrict to these record kinds."
+          },
+          "limit": {
+            "default": 10,
+            "description": "Maximum hits.",
+            "maximum": 50,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "query": {
+            "description": "What you want to know, in plain words.",
+            "type": "string"
+          },
+          "schema": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "IFC2X3, IFC4, or IFC4X3. Defaults to the loaded model."
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "type": "object"
+      },
+      "name": "search_ifc_knowledge",
+      "output_schema": null,
+      "read_only": true
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
+          "model_id": {
+            "description": "A model_id from list_models.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "model_id"
+        ],
+        "type": "object"
+      },
+      "name": "set_active_model",
+      "output_schema": null,
+      "read_only": false
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
+          "backend": {
+            "default": "auto",
+            "enum": [
+              "auto",
+              "builtin",
+              "trimesh"
+            ],
+            "type": "string"
+          },
+          "frame": {
+            "default": "world",
+            "enum": [
+              "world",
+              "local",
+              "principal"
+            ],
+            "type": "string"
+          },
+          "global_id": {
+            "maxLength": 64,
+            "minLength": 1,
+            "type": "string"
+          },
+          "include_outline": {
+            "default": true,
+            "type": "boolean"
+          },
+          "max_triangles": {
+            "anyOf": [
+              {
+                "maximum": 1000000,
+                "minimum": 1,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Per-element triangle budget."
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "model_id of an attached model (see list_models); omit for the active model."
+          },
+          "normal": {
+            "description": "Three-component plane normal.",
+            "items": {
+              "type": "number"
+            },
+            "maxItems": 3,
+            "minItems": 3,
+            "type": "array"
+          },
+          "origin": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "number"
+                },
+                "maxItems": 3,
+                "minItems": 3,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "World plane origin [x,y,z] in SI metres; omit for mesh centroid."
+          },
+          "outline_points": {
+            "default": 160,
+            "maximum": 256,
+            "minimum": 12,
+            "type": "integer"
+          },
+          "tessellation": {
+            "default": "analysis",
+            "enum": [
+              "standard",
+              "analysis"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "global_id",
+          "normal"
+        ],
+        "type": "object"
+      },
+      "name": "slice_element_mesh",
+      "output_schema": null,
+      "read_only": true
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
+          "expected_revision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "express_rules": {
+            "default": false,
+            "type": "boolean"
+          },
+          "ids_paths": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "max_issues": {
+            "default": 200,
+            "maximum": 2000,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "type": "object"
+      },
+      "name": "submit_validation_job",
+      "output_schema": null,
+      "read_only": false
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
+          "ids_path": {
+            "description": "Path to an IDS XML file, or the alias of an attached one.",
+            "type": "string"
+          },
+          "max_failures": {
+            "default": 50,
+            "description": "Failing elements kept per requirement.",
+            "maximum": 500,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "model_id of an attached model (see list_models); omit for the active model."
+          }
+        },
+        "required": [
+          "ids_path"
+        ],
+        "type": "object"
+      },
+      "name": "validate_ids",
+      "output_schema": null,
+      "read_only": true
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
+          "express_rules": {
+            "default": false,
+            "type": "boolean"
+          },
+          "max_issues": {
+            "default": 200,
+            "maximum": 2000,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "model_id of an attached model (see list_models); omit for the active model."
+          }
+        },
+        "type": "object"
+      },
+      "name": "validate_model",
+      "output_schema": null,
+      "read_only": true
+    }
+  ]
+}

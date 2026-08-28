@@ -1,19 +1,19 @@
-# ifc-console viewer
+# ifc-console-viewer compatibility shim
 
-Static browser assets for the local 3D viewer and chat panel provided by
-[`ifc-console`](https://pypi.org/project/ifc-console/).
+The local 3D viewer, Three.js, and web-ifc assets are now bundled directly with
+[`ifc-console`](https://pypi.org/project/ifc-console/). New installations only
+need:
 
-Install both the core application and this matching asset bundle through the
-public extra:
-
-```bash
-pip install "ifc-console[viewer]"
+```console
+pip install ifc-console
 ```
 
-This asset-only package contains the browser application, Three.js, and the
-web-ifc JavaScript/WASM parser. MCP, SDK, agents, chat, and workflows remain in
-`ifc-console`. This wheel makes no network requests by itself and is not a
-standalone application.
+This package is a temporary compatibility shim for applications that installed
+`ifc-console-viewer` or imported `ifc_console_viewer.static_dir()` directly.
+It depends on a compatible `ifc-console` and forwards `static_dir()` to the
+main package. It contains no browser assets and is not a standalone
+application.
 
-The package is Apache-2.0. Its `static/vendor` directory carries the upstream
-license and provenance files for the vendored third-party components.
+Existing `pip install "ifc-console[viewer]"` commands remain valid because the
+main distribution retains an empty compatibility extra. This shim is intended
+for one release cycle and may then be removed.

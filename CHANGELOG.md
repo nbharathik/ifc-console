@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+### Packaging and product boundaries
+
+- Make `ifc-console` the complete deterministic IFC product: console/TUI,
+  MCP, SDK, operations, workflows, and the local Three.js/web-ifc browser
+  viewer now ship together and work without an LLM or provider credentials.
+- Split LLM orchestration into the optional `ifc-console-agents` distribution,
+  including the agent SDK, providers/chat, built-in and custom packs, browser
+  panel, devkit/testing helpers, document/vision support, and LangGraph
+  integration. Agent code uses the canonical `ifc_console_agents` namespace
+  and registers with core through `ifc_console.extensions`.
+- Add `ifc-console-agents[documents]`, `[graph]`, and `[full]` extras. Keep
+  `ifc-console[viewer]` and `ifc-console-viewer` as one-release compatibility
+  no-ops/shims so existing install commands do not fail abruptly.
+- Keep the core viewer free of dead agent UI: an installed agent extension
+  contributes its browser panel declaratively, and the shell loads that
+  panel's JavaScript and CSS only when it is available and opened.
+- Enforce release budgets of 2.5 MB for the core wheel and 1.0 MB for the
+  agent wheel, plus a 3.0 MB combined cap, alongside content allowlists and
+  dependency-boundary checks.
+
 ### New capabilities
 
 - Add `compare_models`: diff two open IFC revisions and report what was added,

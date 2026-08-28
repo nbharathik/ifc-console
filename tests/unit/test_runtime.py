@@ -8,14 +8,6 @@ from ifc_console.runtime import LocalRuntime
 from ifc_console.toolsets import FunctionToolSource, IfcToolProfile
 
 
-class _AnswerModel:
-    provider_id = "test"
-    model_id = "answer"
-
-    async def stream(self, **_kwargs):
-        yield {"type": "content", "text": "Reviewed."}
-
-
 @pytest.mark.asyncio
 async def test_local_runtime_reuses_workbench_operations(
     tmp_path: Path,
@@ -134,7 +126,7 @@ async def test_workspace_search_uses_the_same_runtime_boundary(
 
 
 @pytest.mark.asyncio
-async def test_runtime_builds_agent_and_embeddable_viewer_surface(
+async def test_runtime_builds_embeddable_viewer_surface(
     tmp_path: Path,
     minimal_ifc4_path: Path,
 ):
@@ -144,18 +136,8 @@ async def test_runtime_builds_agent_and_embeddable_viewer_surface(
         settings={"server.port": 8877},
     ) as runtime:
         viewer_url = runtime.enable_viewer()
-        agent = await runtime.create_agent(
-            name="reviewer",
-            model=_AnswerModel(),
-            instructions="Review the model.",
-            tool_profile="inspect",
-        )
         surface = runtime.build_web_app()
-        result = await agent.run("Review it")
 
-        assert result.text == "Reviewed."
-        assert "get_viewer_selection" in agent.tools
-        assert "execute_ifc_code" not in agent.tools
         assert surface.app is not None
         assert surface.viewer_url == viewer_url
         assert surface.browser_url("custom-chat").startswith("http://127.0.0.1:8877/custom-chat#t=")

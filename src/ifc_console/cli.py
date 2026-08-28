@@ -673,12 +673,6 @@ def _make_core(args: argparse.Namespace, store: SettingsStore, transport: str) -
     chat_flag = True if getattr(args, "chat", False) else None
     if transport == "stdio":
         chat_flag = False
-    browser_requested = viewer_flag is True or chat_flag is True
-    if browser_requested:
-        from ifc_console.viewer import assets
-
-        if not assets.available():
-            print(f"note: {assets.INSTALL_HINT}", file=sys.stderr)
     from ifc_console.app import AppCore
 
     return AppCore(
@@ -2234,13 +2228,15 @@ def _cmd_dev(args: argparse.Namespace) -> int:
     import json as _json
     import tempfile
 
-    from ifc_console.devkit.serve import DEFAULT_PORT, build_dev_core, run_dev, start
+    serve = _agent_module("devkit.serve")
+    if serve is None:
+        return _agents_missing()
 
     temp_root = Path(tempfile.gettempdir()).resolve()
     default_project = temp_root / "ifc-console-dev-project"
     explicit_project = args.project is not None
     project = Path(args.project).expanduser().resolve() if explicit_project else default_project
-    port = args.port or DEFAULT_PORT
+    port = args.port or serve.DEFAULT_PORT
     if args.fresh:
         if explicit_project:
             print(
@@ -2279,24 +2275,26 @@ def _cmd_dev(args: argparse.Namespace) -> int:
         open_target = "none" if (args.check or not sys.stdout.isatty()) else "chat"
 
     if not args.check:
-        return run_dev(
+        return serve.run_dev(
             project_dir=project,
             port=port,
             model=args.file,
             open_target=open_target,
         )
 
-    from ifc_console.devkit.checks import render, run_checks
+    checks = _agent_module("devkit.checks")
+    if checks is None:
+        return _agents_missing()
 
-    core, scenario = build_dev_core(project, port=port, model=args.file)
+    core, scenario = serve.build_dev_core(project, port=port, model=args.file)
     try:
-        dev = start(core)
+        dev = serve.start(core)
     except RuntimeError as exc:
         print(f"error: {exc}", file=sys.stderr)
         core.shutdown()
         return 2
     try:
-        run = run_checks(dev.base_url, dev.token)
+        run = checks.run_checks(dev.base_url, dev.token)
         if args.json:
             print(
                 _json.dumps(
@@ -2316,7 +2314,7 @@ def _cmd_dev(args: argparse.Namespace) -> int:
             for note in scenario.notes:
                 print(f"note   : {note}")
             print()
-            print(render(run))
+            print(checks.render(run))
         if args.keep:
             print(f"\nserving: {dev.chat_url}\nCtrl+C to stop.")
             try:
@@ -2354,10 +2352,25 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
         except Exception as exc:
             check(mod, "FAIL", str(exc))
             rc = 2
-    for label, module_name, distribution in (
-        ("PDF text", "pypdf", "pypdf"),
-        ("PDF vision", "pymupdf", "PyMuPDF"),
-        ("secure keys", "keyring", "keyring"),
+    from importlib.util import find_spec
+
+    agents_installed = find_spec("ifc_console_agents") is not None
+    for label, module_name, distribution, required, install_hint in (
+        ("PDF text", "pypdf", "pypdf", False, "pip install 'ifc-console[documents]'"),
+        (
+            "PDF vision",
+            "pymupdf",
+            "PyMuPDF",
+            False,
+            "pip install 'ifc-console[documents]'",
+        ),
+        (
+            "secure keys",
+            "keyring",
+            "keyring",
+            agents_installed,
+            "pip install ifc-console-agents",
+        ),
     ):
         try:
             from importlib import import_module
@@ -2366,12 +2379,15 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
             import_module(module_name)
             check(label, "ok", version(distribution))
         except Exception as exc:
+            availability = "required dependency missing" if required else "not installed"
+            action = "repair with" if required else "optional"
             check(
                 label,
-                "FAIL",
-                f"{exc} (reinstall or upgrade ifc-console in this environment)",
+                "FAIL" if required else "warn",
+                f"{availability} ({exc}); {action}: {install_hint}",
             )
-            rc = 2
+            if required:
+                rc = 2
 
     store = _new_store()
     try:
@@ -2398,13 +2414,11 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
 
     static_dir = viewer_assets.static_dir()
     wanted = ("index.html", "app.js", "vendor/web-ifc.wasm", "vendor/three.module.min.js")
-    if static_dir is None:
-        check("viewer assets", "optional", viewer_assets.INSTALL_HINT)
-    elif missing := [n for n in wanted if not (static_dir / n).exists()]:
+    if missing := [n for n in wanted if not (static_dir / n).exists()]:
         check(
             "viewer assets",
             "FAIL",
-            f"missing: {', '.join(missing)}; reinstall the viewer extra",
+            f"missing: {', '.join(missing)}; reinstall ifc-console",
         )
         rc = rc or 2
     else:
@@ -2740,14 +2754,38 @@ def _cmd_knowledge_search(args: argparse.Namespace) -> int:
 
 
 # --------------------------------------------------------------------------- agents
-def _agents_registry():
-    from ifc_console.agents.packs import AgentPackRegistry
+_AGENTS_INSTALL_HINT = "install the optional agent product with: pip install ifc-console-agents"
 
-    return AgentPackRegistry(_new_store().project_dir)
+
+def _agents_missing() -> int:
+    print("ifc-console-agents is not installed")
+    print(_AGENTS_INSTALL_HINT)
+    return 1
+
+
+def _agent_module(name: str):
+    """Import one agent module without making normal CLI startup depend on it."""
+    import importlib
+
+    try:
+        return importlib.import_module(f"ifc_console_agents.{name}")
+    except ModuleNotFoundError as exc:
+        if exc.name != "ifc_console_agents":
+            raise
+        return None
+
+
+def _agents_registry():
+    packs = _agent_module("packs")
+    if packs is None:
+        return None
+    return packs.AgentPackRegistry(_new_store().project_dir)
 
 
 def _cmd_agents_list(args: argparse.Namespace) -> int:
     registry = _agents_registry()
+    if registry is None:
+        return _agents_missing()
     installed = registry.installed()
     if args.json:
         print(
@@ -2775,12 +2813,20 @@ def _cmd_agents_list(args: argparse.Namespace) -> int:
 
 def _cmd_agents_blocks(args: argparse.Namespace) -> int:
     """The blocks a built-in or custom agent can be built from."""
-    from ifc_console.agents.blocks import BLOCKS
+    blocks = _agent_module("blocks")
+    if blocks is None:
+        return _agents_missing()
+    available_blocks = blocks.BLOCKS
 
     if args.json:
-        print(json.dumps([block.info().model_dump(mode="json") for block in BLOCKS], indent=2))
+        print(
+            json.dumps(
+                [block.info().model_dump(mode="json") for block in available_blocks],
+                indent=2,
+            )
+        )
         return 0
-    for block in BLOCKS:
+    for block in available_blocks:
         marks = []
         if block.viewer_only:
             marks.append("viewer only")
@@ -2797,12 +2843,14 @@ def _cmd_agents_blocks(args: argparse.Namespace) -> int:
 
 
 def _cmd_agents_files(args: argparse.Namespace) -> int:
-    from ifc_console.agents.files import AgentReferenceStore
+    agent_files = _agent_module("files")
+    if agent_files is None:
+        return _agents_missing()
     from ifc_console.knowledge.project import ProjectKnowledge
     from ifc_console.mcp.envelope import ToolError
 
     store = _new_store()
-    references = AgentReferenceStore(store.project_dir)
+    references = agent_files.AgentReferenceStore(store.project_dir)
     knowledge = ProjectKnowledge(store.project_dir)
     try:
         added = references.add_paths(args.paths) if args.paths else []
@@ -2830,9 +2878,13 @@ def _cmd_agents_files(args: argparse.Namespace) -> int:
 def _cmd_agents_run(args: argparse.Namespace) -> int:
     import asyncio
 
-    from ifc_console.agents.runner import run_pack
+    runner = _agent_module("runner")
+    if runner is None:
+        return _agents_missing()
 
     registry = _agents_registry()
+    if registry is None:
+        return _agents_missing()
     pack = registry.get(args.name.lower())
     if pack is None:
         active = ", ".join(info.name for info in registry.active()) or "(none)"
@@ -2840,7 +2892,7 @@ def _cmd_agents_run(args: argparse.Namespace) -> int:
         print("`ifc-console agents list` shows built-in and project agents")
         return 1
     asyncio.run(
-        run_pack(
+        runner.run_pack(
             pack,
             path=args.path,
             attach=args.attach,
@@ -2857,7 +2909,9 @@ def _cmd_agents_run(args: argparse.Namespace) -> int:
     return 0
 # --------------------------------------------------------------------------- keys
 def _cmd_keys_set(args: argparse.Namespace) -> int:
-    from ifc_console import credentials
+    credentials = _agent_module("credentials")
+    if credentials is None:
+        return _agents_missing()
     from ifc_console.mcp.envelope import ToolError
 
     key = args.key
@@ -2882,7 +2936,9 @@ def _cmd_keys_set(args: argparse.Namespace) -> int:
 
 
 def _cmd_keys_list(args: argparse.Namespace) -> int:
-    from ifc_console import credentials
+    credentials = _agent_module("credentials")
+    if credentials is None:
+        return _agents_missing()
 
     store = _new_store()
     if not credentials.keyring_available():
@@ -2899,7 +2955,9 @@ def _cmd_keys_list(args: argparse.Namespace) -> int:
 
 
 def _cmd_keys_delete(args: argparse.Namespace) -> int:
-    from ifc_console import credentials
+    credentials = _agent_module("credentials")
+    if credentials is None:
+        return _agents_missing()
     from ifc_console.mcp.envelope import ToolError
 
     store = _new_store()

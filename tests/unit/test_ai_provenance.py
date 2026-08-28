@@ -6,7 +6,7 @@ import json
 
 import pytest
 
-from ifc_console.agents.provenance import (
+from ifc_console.ifc.ai_provenance import (
     MEASUREMENT_PSET,
     PREFIX,
     PROPERTY_PSET,

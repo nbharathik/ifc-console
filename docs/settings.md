@@ -1,7 +1,8 @@
 # Settings
 
 Defaults are safe for most users. Use settings when you need a different port,
-larger model limit, stricter sandbox, or optional feature behavior.
+larger model limit, stricter sandbox, or different browser and extension
+startup behavior.
 
 ## View and change settings
 
@@ -111,7 +112,12 @@ setting.
 | `workspace.scan_depth` | `3` | directory levels scanned |
 | `workspace.scan_cap` | `10000` | maximum files examined per scan |
 
-## Optional features
+## Viewer, agents, and optional features
+
+The viewer settings are part of `ifc-console` and do not require an LLM. The
+`chat.*` settings take effect only when `ifc-console-agents` is installed and
+its extension has loaded; the agent panel's JavaScript and CSS are loaded only
+when that panel is present.
 
 | key | default | meaning |
 | --- | ------- | ------- |

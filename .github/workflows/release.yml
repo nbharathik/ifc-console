@@ -1,8 +1,9 @@
 name: Release
 
 # Publishes to PyPI via trusted publishing when a v* tag is pushed.
-# One-time setup: configure trusted publishers for both the existing core
-# project and the optional viewer project with this workflow and environment.
+# One-time setup: configure trusted publishers for ifc-console,
+# ifc-console-agents, and the temporary ifc-console-viewer compatibility
+# project with this environment.
 
 on:
   push:
@@ -44,7 +45,7 @@ jobs:
         env:
           RELEASE_TAG: ${{ github.ref_name }}
       - run: uv run python -m compileall -q src tests packages scripts
-      - run: uv run pytest
+      - run: uv run pytest tests packages/ifc-console-agents/tests
 
   dependencies:
     name: Audit dependencies (${{ matrix.os }}, Python ${{ matrix.python }})
@@ -70,8 +71,10 @@ jobs:
         env:
           AUDIT_PYTHON: ${{ matrix.python }}
         run: |
-          uv export --no-dev --no-emit-workspace --extra validation --extra viewer --format requirements-txt --output-file audit-requirements.txt --quiet
-          uvx --python "$AUDIT_PYTHON" --from pip-audit==2.10.1 pip-audit -r audit-requirements.txt --disable-pip
+          uv export --package ifc-console --no-dev --no-emit-workspace --extra validation --extra documents --format requirements.txt --output-file audit-core.txt --quiet
+          uv export --package ifc-console-agents --no-dev --no-emit-workspace --extra full --format requirements.txt --output-file audit-agents.txt --quiet
+          uvx --python "$AUDIT_PYTHON" --from pip-audit==2.10.1 pip-audit -r audit-core.txt --disable-pip
+          uvx --python "$AUDIT_PYTHON" --from pip-audit==2.10.1 pip-audit -r audit-agents.txt --disable-pip
 
   test:
     name: Inspect and build release candidate
@@ -94,50 +97,67 @@ jobs:
       - name: Audit GitHub Actions
         run: uvx zizmor==1.29.0 --pedantic .github/workflows
       - name: Audit Python source
-        run: uvx --python 3.12 --from bandit==1.8.6 bandit -q -r src -ll
+        run: >-
+          uvx --python 3.12 --from bandit==1.8.6
+          bandit -q -r src packages/ifc-console-agents/src -ll
       - run: uv sync --extra dev --extra docs
       - run: uv run ruff check src tests packages scripts
       - run: uv run python -m compileall -q src tests packages scripts
       - name: Check viewer JavaScript syntax
         run: |
-          node --check packages/ifc-console-viewer/src/ifc_console_viewer/static/app.js
-          node --check packages/ifc-console-viewer/src/ifc_console_viewer/static/chat.js
-          node --check packages/ifc-console-viewer/src/ifc_console_viewer/static/chat-page.js
-          node --check packages/ifc-console-viewer/src/ifc_console_viewer/static/parser.js
-          node --check packages/ifc-console-viewer/src/ifc_console_viewer/static/worker.js
+          node --check src/ifc_console/viewer/static/app.js
+          node --check src/ifc_console/viewer/static/parser.js
+          node --check src/ifc_console/viewer/static/worker.js
+          node --check packages/ifc-console-agents/src/ifc_console_agents/static/chat.js
+          node --check packages/ifc-console-agents/src/ifc_console_agents/static/chat-page.js
       - run: uv run mkdocs build --strict
-      - name: Build both distributions and the example plugin
+      - name: Build core, agents, compatibility shim, and example plugin
         run: |
-          uv build
-          uv build --package ifc-console-viewer
-          uv build --project examples/plugins/company_checks --out-dir dist/plugin-example
-      - name: Verify the split
-        run: uv run python scripts/check_wheels.py --stage-dir dist/publish
-      - name: Smoke-test base-only and viewer installs
+          uv build --out-dir release-dist
+          uv build --package ifc-console-agents --out-dir release-dist
+          uv build --package ifc-console-viewer --out-dir release-dist
+          uv build --project examples/plugins/company_checks --out-dir release-dist/plugin-example
+      - name: Verify package boundaries, bundled assets, and release budgets
+        run: >-
+          uv run python scripts/check_wheels.py
+          --dist-dir release-dist
+          --stage-dir release-dist/publish
+      - name: Smoke-test core-only, agents, compatibility shim, and source installs
         run: |
-          uv venv .release-smoke-base
-          uv pip install --python .release-smoke-base/bin/python dist/ifc_console-*.whl
-          .release-smoke-base/bin/python -c "import importlib.util, ifc_console; from ifc_console.viewer import assets; assert assets.static_dir() is None; assert importlib.util.find_spec('ifc_console_viewer') is None; print(ifc_console.__version__)"
-          .release-smoke-base/bin/ifc-console --version
-          uv pip install --python .release-smoke-base/bin/python --no-deps dist/plugin-example/*.whl
-          .release-smoke-base/bin/python -c "from importlib.metadata import entry_points; matches = [entry for entry in entry_points(group='ifc_console.plugins') if entry.name == 'company_checks']; assert len(matches) == 1; assert matches[0].load()().manifest.api_version == '1'"
-          uv venv .release-smoke-viewer
-          uv pip install --python .release-smoke-viewer/bin/python dist/*.whl websockets
-          .release-smoke-viewer/bin/python -c "import ifc_console, ifc_console_viewer; from ifc_console.viewer import assets; assert assets.static_dir() is not None; print(ifc_console.__version__)"
+          version="${GITHUB_REF_NAME#v}"
+          uv venv .release-smoke-main
+          uv pip install --python .release-smoke-main/bin/python release-dist/ifc_console-${version}-*.whl
+          .release-smoke-main/bin/python -c "import importlib.util, ifc_console; from ifc_console.viewer import assets; directory = assets.require_static_dir(); assert (directory / 'vendor' / 'web-ifc.wasm').is_file(); assert importlib.util.find_spec('ifc_console_agents') is None; assert importlib.util.find_spec('ifc_console_viewer') is None; print(ifc_console.__version__)"
+          uv pip check --python .release-smoke-main/bin/python
+          .release-smoke-main/bin/ifc-console --version
+          uv pip install --python .release-smoke-main/bin/python --no-deps release-dist/plugin-example/*.whl
+          .release-smoke-main/bin/python -c "from importlib.metadata import entry_points; matches = [entry for entry in entry_points(group='ifc_console.plugins') if entry.name == 'company_checks']; assert len(matches) == 1; assert matches[0].load()().manifest.api_version == '1'"
+          uv venv .release-smoke-agents
+          uv pip install --python .release-smoke-agents/bin/python release-dist/ifc_console-${version}-*.whl release-dist/ifc_console_agents-${version}-*.whl
+          .release-smoke-agents/bin/python -c "from importlib.metadata import entry_points; import ifc_console_agents; from ifc_console_agents import assets; directory = assets.require_static_dir(); assert (directory / 'chat.js').is_file(); matches = [entry for entry in entry_points(group='ifc_console.extensions') if entry.name == 'agents']; assert len(matches) == 1; assert matches[0].load().__name__ == 'AgentExtension'; print(ifc_console_agents.__version__)"
+          uv pip check --python .release-smoke-agents/bin/python
+          uv pip uninstall --python .release-smoke-agents/bin/python ifc-console-agents
+          .release-smoke-agents/bin/python -c "from ifc_console.viewer import assets; assert (assets.require_static_dir() / 'index.html').is_file()"
+          uv venv .release-smoke-shim
+          uv pip install --python .release-smoke-shim/bin/python release-dist/ifc_console-${version}-*.whl release-dist/ifc_console_viewer-${version}-*.whl
+          .release-smoke-shim/bin/python -c "import ifc_console_viewer; from ifc_console.viewer import assets; assert ifc_console_viewer.static_dir() == assets.static_dir(); print(ifc_console_viewer.__version__)"
+          uv pip check --python .release-smoke-shim/bin/python
           uv venv .release-smoke-sdist
-          uv pip install --python .release-smoke-sdist/bin/python dist/ifc_console-*.tar.gz
+          uv pip install --python .release-smoke-sdist/bin/python release-dist/ifc_console-${version}.tar.gz release-dist/ifc_console_agents-${version}.tar.gz
+          .release-smoke-sdist/bin/python -c "from ifc_console.viewer import assets as viewer_assets; from ifc_console_agents import assets as agent_assets; assert (viewer_assets.require_static_dir() / 'index.html').is_file(); assert (agent_assets.require_static_dir() / 'chat.html').is_file()"
+          uv pip check --python .release-smoke-sdist/bin/python
           .release-smoke-sdist/bin/ifc-console --version
       - name: Preserve the verified distributions
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: release-distributions-${{ github.sha }}
-          path: dist/publish/
+          path: release-dist/publish/
           if-no-files-found: error
           retention-days: 7
           compression-level: 0
 
-  publish:
-    name: Publish distributions
+  publish-core:
+    name: Publish core distribution
     needs: [compatibility, dependencies, test]
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -150,18 +170,52 @@ jobs:
         with:
           name: release-distributions-${{ github.sha }}
           path: publish
-      - name: Publish the optional viewer first
-        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1
-        with:
-          packages-dir: publish/viewer/
-      - name: Publish the core only after the viewer succeeds
+      - name: Publish the main distribution
         uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1
         with:
           packages-dir: publish/core/
 
+  publish-agents:
+    name: Publish agents distribution
+    needs: publish-core
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: pypi
+    permissions:
+      id-token: write  # trusted publishing
+    steps:
+      - name: Retrieve the verified distributions
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-distributions-${{ github.sha }}
+          path: publish
+      - name: Publish the agents distribution
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1
+        with:
+          packages-dir: publish/agents/
+
+  publish-viewer-compat:
+    name: Publish deprecated viewer compatibility shim
+    needs: publish-core
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: pypi
+    permissions:
+      id-token: write  # trusted publishing
+    steps:
+      - name: Retrieve the verified distributions
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-distributions-${{ github.sha }}
+          path: publish
+      - name: Publish the temporary compatibility shim
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1
+        with:
+          packages-dir: publish/compat-viewer/
+
   docs-build:
     name: Build release documentation
-    needs: publish
+    needs: [publish-agents, publish-viewer-compat]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:

@@ -1,7 +1,8 @@
 # Getting started
 
-Install IFC Console, open a model, and connect one AI client. The browser
-workspace, editing, and automation are optional.
+Install IFC Console and open a model. The bundled browser viewer, terminal,
+MCP server, and deterministic SDK need no AI client. Connecting an MCP client,
+editing, automation, and the optional agent product are separate choices.
 
 ## Requirements
 
@@ -16,25 +17,29 @@ versions support the documented `auto` fallback.
 
 | install | includes |
 | ------- | -------- |
-| `ifc-console` | terminal, MCP, SDK, agents, workflows, chat runtime, and core operations |
-| `ifc-console[viewer]` | the core package plus local viewer and browser chat assets |
+| `ifc-console` | console/TUI, MCP, deterministic SDK and workflows, IFC operations, and local viewer |
+| `ifc-console-agents` | agent SDK, providers/chat, built-in and custom packs, browser panel, devkit, and testing helpers; installs a compatible core |
+| `ifc-console-agents[documents]` | agent PDF/document processing |
+| `ifc-console-agents[graph]` | agent LangGraph integration |
+| `ifc-console-agents[full]` | all optional agent integrations |
 | `ifc-console[validation]` | the core package plus IDS validation |
 
 ```bash
-# uv
+# uv: choose core, or core plus every agent integration
 uv tool install ifc-console
-uv tool install "ifc-console[viewer]"  # browser workspace
+uv tool install --with "ifc-console-agents[full]" ifc-console
 
-# pip
+# pip: install core, then optionally add agents
 pip install ifc-console
-pip install "ifc-console[viewer]"      # browser workspace
+pip install ifc-console-agents           # base agent product
+pip install "ifc-console-agents[full]"  # agent product plus all integrations
 ```
 
 For a one-time core run, use `uvx ifc-console`. Upgrade an installed uv tool
 with `uv tool upgrade ifc-console`.
 
 !!! note "Working on the source code?"
-    Clone the repository, run `uv sync --extra dev`, then use
+    Clone the repository, run `uv sync --all-packages --all-extras`, then use
     `uv run ifc-console`. See [Development](development.md).
 
 Verify the install:
@@ -43,7 +48,10 @@ Verify the install:
 ifc-console doctor
 ```
 
-`viewer assets: optional` is expected after a core-only install.
+`viewer assets: ok` is expected after every normal `ifc-console` install. The
+viewer is part of core and does not contact an LLM. For one compatibility
+release, `ifc-console[viewer]` adds nothing and `ifc-console-viewer` is only a
+shim for older direct installs.
 
 ## Open a model
 
@@ -62,9 +70,9 @@ model with `/file` or `/file path/to/model.ifc`.
 | `/file` | open or switch the active model |
 | `/status` | show model, mode, server, and viewer state |
 | `/connect <client>` | copy setup for an AI client |
-| `/viewer` | open the optional browser workspace |
-| `/agent` | open the General assistant |
-| `/agent list` | list every built-in and custom assistant |
+| `/viewer` | open the bundled browser viewer |
+| `/agent` | open the optional General assistant; requires `ifc-console-agents` |
+| `/agent list` | list built-in and custom assistants; requires `ifc-console-agents` |
 | `/mode edit` | allow in-memory model changes |
 | `/save` / `/reload` | keep or discard in-memory changes |
 | `/help` | show terminal help |

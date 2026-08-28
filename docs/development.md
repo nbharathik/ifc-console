@@ -7,14 +7,24 @@ How to work on ifc-console itself. To report a bug or a security issue, see
 
 ```bash
 git clone https://github.com/nbharathik/ifc-console && cd ifc-console
-uv sync --extra dev
+uv sync --package ifc-console              # core runtime only
+uv sync --all-packages --all-extras       # complete core + agents workspace
 uv run ifc-console doctor
 uv run pytest          # full suite; see the test summary for expected xfails
 uv run ruff check src tests packages scripts
 ```
 
-Standard src-layout package (`src/ifc_console/`), hatchling build, uv-managed.
-Python 3.10 through 3.14.
+The uv workspace contains two active hatchling distributions:
+
+```text
+src/ifc_console/                                  ifc-console
+packages/ifc-console-agents/src/ifc_console_agents/  ifc-console-agents
+```
+
+Both support Python 3.10 through 3.14. Core owns deterministic IFC behavior
+and the viewer; agents depend on core and register through
+`ifc_console.extensions`. Never add an import from core to
+`ifc_console_agents`.
 
 ## Browser panel harness
 
@@ -77,7 +87,7 @@ for error paths.
 
 ## The vendored viewer
 
-`packages/ifc-console-viewer/src/ifc_console_viewer/static/vendor/` contains
+`src/ifc_console/viewer/static/vendor/` contains
 three.js and web-ifc exactly as shipped on npm (one import specifier is rewritten
 in OrbitControls.js so no import map is needed). `VENDORED.md` in that folder
 records versions, licenses, hashes, and the upgrade procedure. Do not edit
@@ -106,9 +116,24 @@ uv run mkdocs build --strict    # static site into site/
 
 ## CI and releases
 
-Every push and pull request runs the suite on three operating systems and five
-Python versions, plus builds both wheels and proves the core wheel contains no
-viewer assets while the companion wheel contains the complete reviewed bundle.
+Every push and pull request runs the suite across the supported operating
+systems and Python versions. Packaging checks build both active wheels and
+source archives, prove the viewer bundle is complete in core, reject agent
+modules and panel assets from core, and reject `ifc_console` files from the
+agent wheel.
+
+Release budgets are deliberately small despite the vendored browser runtime:
+
+| artifact | hard wheel limit |
+| -------- | ---------------- |
+| `ifc-console` | 2.5 MB |
+| `ifc-console-agents` | 1.0 MB |
+| both wheels together | 3.0 MB |
+
+The browser also keeps startup work bounded: core viewer modules load normally,
+while an installed agent panel's JavaScript and CSS load only when the panel is
+opened. Size checks complement, rather than replace, the static-file allowlist,
+vendor hashes, and dependency audits.
 
 Configure GitHub Pages once under **Settings > Pages > Build and deployment**
 with **Source** set to **GitHub Actions**. The docs and release workflows build
@@ -122,15 +147,19 @@ tags.
 Before a release, `uv run python scripts/check_release.py --tag vX.Y.Z` verifies
 that the tag, both package versions, their compatibility range, and the
 changelog agree. Releases are cut by the maintainer pushing that tag: CI
-re-runs the tests, validates both wheels and source archives, publishes the
-viewer first and then the core package, and deploys these docs.
+re-runs the tests, validates both wheels and source archives, publishes core
+first and then its dependent agents package, and deploys these docs.
 
 Configure trusted publishers for both the `ifc-console` and
-`ifc-console-viewer` PyPI projects with this repository, workflow
+`ifc-console-agents` PyPI projects with this repository, workflow
 `release.yml`, and the protected GitHub environment `pypi`. The workflow
 builds, inspects, and smoke-tests artifacts in a job without OIDC permission.
 Its minimal publishing job can only retrieve those verified files and publish
 them after the environment gate.
+
+`ifc-console[viewer]` and the retired `ifc-console-viewer` project are retained
+only as one-release compatibility no-ops/shims. They are not a third active
+product and must not regain viewer assets or enter the normal publish order.
 
 The checkout-only lockfile is deliberately excluded from the source archive.
 Install that archive through the standard PEP 517 path with `pip` or `uv pip`;

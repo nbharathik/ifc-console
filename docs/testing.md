@@ -1,10 +1,14 @@
-# Testing the panel and the agents
+# Testing the viewer, agent panel, and agents
 
 Three layers, none of which needs an API key, a paid model, or a browser you
 have to click through.
 
-From a source checkout, the root `package.json` provides dependency-free
-shortcuts after `uv sync --extra dev`:
+From a source checkout, install both workspace products and their test extras.
+The root `package.json` then provides dependency-free shortcuts:
+
+```bash
+uv sync --all-packages --all-extras
+```
 
 ```bash
 npm run dev       # real viewer + chat in exactly one tab
@@ -14,8 +18,10 @@ npm test          # panel modules, markup contracts, and devkit unit tests
 ```
 
 There is no npm install or second frontend server. The harness serves the real
-workspace assets with cache revalidation, so a browser refresh picks up CSS and
-JavaScript edits. `npm test` can run against the existing environment while the
+core viewer plus the installed agent extension's panel assets with cache
+revalidation, so a browser refresh picks up CSS and JavaScript edits. The agent
+panel module and stylesheet are requested only when the extension contributes
+that panel. `npm test` can run against the existing environment while the
 harness stays up. `npm run check` resets only its disposable temp project, so
 repeated checks start from the same server-side state.
 
@@ -31,6 +37,9 @@ viewer and chat shells, provider and model discovery, the agent list, the
 capability blocks, reference indexing, a document upload, creating a custom
 agent, and one full streaming run per agent including the vision path and an
 AI-marked proposal. It prints a table and exits non-zero on failure.
+
+The `dev` command and rehearsal provider come from `ifc-console-agents`. Core
+viewer tests remain usable without an API key, model provider, or LLM.
 
 **No browser tab is ever opened by `--check`.** The demo project lives under
 your temp directory and its console home is isolated, so nothing touches your
@@ -75,9 +84,10 @@ The panel's pure logic lives in ES modules with no DOM dependency:
 - `chat_sidebar.js` - assistant grouping and conversation bucketing
 - `chat_workspace.js` - the agent workspace model
 
-Run `npm test` from the repository root. The pytest wrapper enumerates every
-`tests/ui/*.test.mjs` file explicitly, which works across supported Node
-versions and shells.
+Run `npm test` from the repository root. Separate pytest wrappers enumerate the
+core `tests/ui/*.test.mjs` files and the optional agents package's
+`packages/ifc-console-agents/tests/ui/*.test.mjs` files explicitly, which works
+across supported Node versions and shells.
 
 The quoted glob works on Windows as well as macOS and Linux. No npm install,
 browser, or dependencies are needed. `pytest` runs the same suite via
@@ -86,12 +96,12 @@ a pure panel module has no test.
 
 ## 3. `pytest`
 
-`tests/unit/test_viewer_assets.py` is the browser-less guard against markup and
-script drifting apart: every `el("x")` must have a `data-role="x"`, every
-handled action must have a button, and every button must be handled. It also
-pins the security properties the panel promises, such as never writing an API
-key to browser storage and never calling a provider directly, and the two
-motion rules that cost real debugging time:
+The viewer and agent-panel asset tests are browser-less guards against markup
+and script drifting apart: every `el("x")` must have a `data-role="x"`, every
+handled action must have a button, and every button must be handled. The agent
+tests also pin the security properties the panel promises, such as never
+writing an API key to browser storage and never calling a provider directly,
+and the two motion rules that cost real debugging time:
 
 - entrance animations fill `forwards`, never `both`, because a `both` fill on
   an element that is still `display: none` keeps the keyframe's start state

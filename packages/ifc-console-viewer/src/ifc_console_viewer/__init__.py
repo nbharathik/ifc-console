@@ -1,11 +1,6 @@
-"""Static browser assets for the optional ifc-console viewer."""
+"""Compatibility access to the viewer bundled with :mod:`ifc_console`."""
 
-from pathlib import Path
+from ifc_console.viewer.assets import static_dir
 
 __version__ = "0.1.4"
 __all__ = ["__version__", "static_dir"]
-
-
-def static_dir() -> Path:
-    """Return the directory holding the viewer application and vendor assets."""
-    return Path(__file__).resolve().parent / "static"

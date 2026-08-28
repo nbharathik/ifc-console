@@ -1169,24 +1169,6 @@
       "destructive": false,
       "input_schema": {
         "properties": {
-          "name": {
-            "description": "Skill name from list_agent_skills.",
-            "type": "string"
-          }
-        },
-        "required": [
-          "name"
-        ],
-        "type": "object"
-      },
-      "name": "get_agent_skill",
-      "output_schema": null,
-      "read_only": true
-    },
-    {
-      "destructive": false,
-      "input_schema": {
-        "properties": {
           "function": {
             "anyOf": [
               {
@@ -2267,16 +2249,6 @@
     {
       "destructive": false,
       "input_schema": {
-        "properties": {},
-        "type": "object"
-      },
-      "name": "list_agent_skills",
-      "output_schema": null,
-      "read_only": true
-    },
-    {
-      "destructive": false,
-      "input_schema": {
         "properties": {
           "limit": {
             "default": 200,
@@ -3058,6 +3030,109 @@
     {
       "destructive": false,
       "input_schema": {
+        "$defs": {
+          "PropertyPreview": {
+            "additionalProperties": false,
+            "description": "One property assignment requested inside an atomic preview.",
+            "properties": {
+              "create_missing": {
+                "default": false,
+                "type": "boolean"
+              },
+              "nominal_type": {
+                "anyOf": [
+                  {
+                    "maxLength": 255,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "property_name": {
+                "maxLength": 255,
+                "minLength": 1,
+                "type": "string"
+              },
+              "pset_name": {
+                "maxLength": 255,
+                "minLength": 1,
+                "type": "string"
+              },
+              "value": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "boolean"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "pset_name",
+              "property_name",
+              "value"
+            ],
+            "title": "PropertyPreview",
+            "type": "object"
+          }
+        },
+        "properties": {
+          "expected_revision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "global_ids": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 500,
+            "minItems": 1,
+            "type": "array"
+          },
+          "properties": {
+            "items": {
+              "$ref": "#/$defs/PropertyPreview"
+            },
+            "maxItems": 16,
+            "minItems": 1,
+            "type": "array"
+          }
+        },
+        "required": [
+          "global_ids",
+          "properties"
+        ],
+        "type": "object"
+      },
+      "name": "preview_property_changes",
+      "output_schema": null,
+      "read_only": false
+    },
+    {
+      "destructive": false,
+      "input_schema": {
         "properties": {
           "fields": {
             "anyOf": [
@@ -3236,54 +3311,6 @@
       "name": "query_spatial",
       "output_schema": null,
       "read_only": true
-    },
-    {
-      "destructive": false,
-      "input_schema": {
-        "properties": {
-          "applies_to": {
-            "anyOf": [
-              {
-                "maxLength": 200,
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "description": "Classes or tasks it fits, e.g. 'IfcMember sheet piles'."
-          },
-          "content": {
-            "description": "Markdown body: when to use, steps, checks.",
-            "maxLength": 60000,
-            "type": "string"
-          },
-          "description": {
-            "description": "One line: what the skill does.",
-            "maxLength": 200,
-            "type": "string"
-          },
-          "name": {
-            "description": "Lowercase slug, e.g. 'sheet-pile-profile'.",
-            "maxLength": 64,
-            "type": "string"
-          },
-          "overwrite": {
-            "default": false,
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "name",
-          "description",
-          "content"
-        ],
-        "type": "object"
-      },
-      "name": "save_agent_skill",
-      "output_schema": null,
-      "read_only": false
     },
     {
       "destructive": true,

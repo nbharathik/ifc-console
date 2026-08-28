@@ -181,7 +181,9 @@ def _agent_args(core: AppCore, rest: str, _files: FilesProvider | None) -> MenuS
         ("list", "show built-in and project agents"),
         ("files", "refresh and list project references"),
     ]
-    rows.extend((info.name, info.description) for info in core.agent_packs.active())
+    registry = getattr(core, "agent_packs", None)
+    if registry is not None:
+        rows.extend((info.name, info.description) for info in registry.active())
     return _choices("agent", rest, rows, context="agent")
 
 

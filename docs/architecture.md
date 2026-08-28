@@ -3,9 +3,9 @@
 All interfaces share one operation core:
 
 ```text
-SDK       Agent       CLI/TUI       MCP       Browser
- |          |            |           |           |
- +----------+------------+-----------+-----------+
+SDK                    CLI/TUI       MCP       Viewer
+ |                        |           |           |
+ +------------------------+-----------+-----------+
                          |
             OperationService + Registry
               schemas, policy, envelopes
@@ -18,9 +18,17 @@ SDK       Agent       CLI/TUI       MCP       Browser
                               restricted workers
 ```
 
-`ifc-console` contains this complete Python runtime, including MCP, SDK,
-agents, chat, plugins, and workflows. `ifc-console-viewer` contains static
-browser assets only and is installed through `ifc-console[viewer]`.
+`ifc-console` contains the deterministic runtime: console/TUI, MCP, SDK,
+operations, plugins, jobs, workflows, viewer routes, and the complete browser
+viewer bundle. `ifc-console-agents` is an optional dependent distribution for
+the agent SDK, providers/chat, built-in and custom packs, agent panel, devkit,
+testing helpers, document/vision support, and LangGraph integration.
+
+Installed products advertise entry points in `ifc_console.extensions`.
+`ExtensionManager` validates their versioned manifests, attaches state,
+registers operations and HTTP routes once, contributes browser panels, and
+isolates startup and shutdown failures. The dependency direction remains
+`ifc-console-agents -> ifc-console`; core does not import agent modules.
 
 ## Operation contract
 
@@ -79,11 +87,16 @@ recent activity, and transaction history.
 
 ## Browser boundary
 
-The optional wheel ships plain browser modules, Three.js, web-ifc, and WASM.
-It has no Python application logic, CDN dependency, or Node runtime. The core
-package owns the HTTP routes, authentication, selection bridge, chat runtime,
-and seven stable viewer operations. Without the assets or a connected tab,
-those operations return an actionable availability state.
+Core ships plain browser modules, Three.js, web-ifc, and WASM. It has no CDN
+dependency or Node runtime and works without an LLM. Core also owns the HTTP
+routes, authentication, selection bridge, and seven stable viewer operations;
+without a connected tab, those operations return an actionable availability
+state.
+
+When the agents extension is installed, it contributes chat routes and a
+declarative browser panel. The viewer shell loads that panel's JavaScript and
+CSS lazily only when the extension exists and the user opens it, so a core-only
+viewer does not download or render dead agent UI.
 
 ## Runtime
 

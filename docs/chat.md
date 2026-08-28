@@ -1,14 +1,25 @@
 # Browser chat
 
-The chat runtime and built-in agents ship in `ifc-console`. Their browser UI is
-part of the optional asset wheel installed through `ifc-console[viewer]`.
-The panel is off by default and is the only IFC Console feature that may contact
-an external LLM provider.
+The chat runtime, providers, built-in/custom packs, and Agent browser panel ship
+in the optional `ifc-console-agents` distribution. It registers through
+`ifc_console.extensions`; core does not import it directly. The panel is off by
+default and is the only IFC Console feature that may contact an external LLM
+provider. The bundled IFC viewer remains fully usable without this package or
+an LLM.
+
+The extension contributes its routes and panel declaration at startup. Its
+browser JavaScript and CSS are loaded lazily only when the installed panel is
+opened.
 
 ## Open the panel
 
 ```bash
-pip install "ifc-console[viewer]"
+pip install ifc-console-agents
+# Add PDF/document processing when needed:
+pip install "ifc-console-agents[documents]"
+
+# Existing uv tool installation:
+uv tool install --with ifc-console-agents ifc-console
 ifc-console
 ```
 
@@ -52,7 +63,7 @@ The panel includes:
 | --------- | ------- |
 | General | full IFC, document, measurement, review, proposal, and code surface |
 | Measurement | cited, recipe-driven measurements |
-| Documents | answers from indexed project references |
+| Documents | answers from indexed project references; PDFs require `[documents]` |
 | Model review | schema, IDS, clashes, quantities, and model health |
 | Plain chat | the permitted tool loop without a preset prompt |
 
@@ -134,22 +145,28 @@ For viewer navigation and measurement controls, see [3D viewer](viewer.md).
 
 ## Python
 
-The SDK exposes the same provider-neutral loop:
+The optional SDK exposes the same provider-neutral loop. Agent types use the
+canonical `ifc_console_agents` namespace; deterministic runtimes remain in
+`ifc_console`:
 
 ```python
-from ifc_console import Workbench
+from ifc_console import LocalRuntime
+from ifc_console_agents import Agent, ProviderModel
 
-with Workbench.open("tower.ifc") as wb:
-    answer = wb.ask(
-        "Which walls are missing a fire rating?",
-        provider="anthropic",
-        model="YOUR_MODEL_ID",
+async with await LocalRuntime.open("tower.ifc") as runtime:
+    tools = await runtime.tools("query_elements", "get_element", "get_psets")
+    agent = Agent(
+        name="fire-review",
+        model=ProviderModel(provider="anthropic", model="YOUR_MODEL_ID"),
+        tools=tools,
+        instructions="Use IFC tools for every factual model claim.",
     )
-    print(answer["text"])
+    answer = await agent.run("Which walls are missing a fire rating?")
+    print(answer.text)
 ```
 
-Pass `on_event=print` to stream events. Without `api_key=`, the key comes from
-the environment or configured credential source. See [Python SDK](sdk.md).
+Use `agent.stream()` to consume typed events. Provider keys come from the
+environment or configured credential source. See [Python SDK](sdk.md).
 
 ## Settings
 

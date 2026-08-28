@@ -170,6 +170,17 @@ _TUI_HINTS = {
     "WORKSPACE_DISABLED": "/settings workspace.enabled true turns indexing on",
 }
 
+_AGENTS_INSTALL_HINT = "install [b]ifc-console-agents[/b] to add chat and custom agents"
+
+
+def _require_agents(console: ConsoleScreen) -> bool:
+    """Keep the core console usable when the optional agent product is absent."""
+    core = console.core
+    if core.extensions.available("agents") and core.agent_packs is not None:
+        return True
+    console.print(f"[yellow]agent features are not installed[/yellow]; {_AGENTS_INSTALL_HINT}")
+    return False
+
 
 def _console_hint(exc: ToolError) -> str:
     return _TUI_HINTS.get(exc.code, exc.hint)
@@ -603,11 +614,6 @@ async def _viewer(console: ConsoleScreen, args: str) -> None:
         return
     if not await _require_server(console):
         return
-    from ifc_console.viewer import assets
-
-    if not assets.available():
-        console.print(f"[red]{escape(assets.INSTALL_HINT)}[/red]")
-        return
     core.enable_viewer()
     url = core.viewer.url or core.viewer_url
     if args == "url":
@@ -648,6 +654,8 @@ async def _chat(console: ConsoleScreen, args: str) -> None:
         console.print("chat panel disabled; any API key held for this run is gone")
         console.refresh_status()
         return
+    if not _require_agents(console):
+        return
     if arg in _CHAT_PROVIDERS:
         core.chat.provider = arg
         console.print(f"chat provider set to [b]{arg}[/b] for this session")
@@ -663,14 +671,6 @@ async def _chat(console: ConsoleScreen, args: str) -> None:
 
     if not await _require_server(console):
         return
-    from ifc_console.viewer import assets
-
-    if not assets.available():
-        console.print(
-            f"[red]{escape(assets.INSTALL_HINT)}[/red] [dim](the chat panel ships with it)[/dim]"
-        )
-        return
-
     solo = arg == "solo"
     if not solo:
         core.enable_viewer()
@@ -833,7 +833,9 @@ async def _status(console: ConsoleScreen, _args: str) -> None:
         lines.append(f"  viewer   {core.viewer.connected} tab(s)  {core.viewer.url}")
     else:
         lines.append("  viewer   off (/viewer to start)")
-    if core.chat.enabled:
+    if not core.extensions.available("agents"):
+        lines.append("  chat     unavailable (install ifc-console-agents)")
+    elif core.chat.enabled:
         model = core.chat.model or "no model chosen"
         lines.append(f"  chat     on  {core.chat.provider} | {model}")
     else:
@@ -1185,6 +1187,8 @@ async def _kb(console: ConsoleScreen, args: str) -> None:
 
 
 async def _agent_open(console: ConsoleScreen, name: str) -> None:
+    if not _require_agents(console):
+        return
     core = console.core
     pack = core.agent_packs.get(name)
     if pack is None:
@@ -1201,13 +1205,10 @@ async def _agent_open_url(
     console: ConsoleScreen, *, agent: str | None = None, builder: bool = False
 ) -> None:
     """Enable the panel and open the requested agent surface directly."""
+    if not _require_agents(console):
+        return
     core = console.core
     if not await _require_server(console):
-        return
-    from ifc_console.viewer import assets
-
-    if not assets.available():
-        console.print(f"[red]{escape(assets.INSTALL_HINT)}[/red]")
         return
     core.enable_viewer()
     core.enable_chat()
@@ -1232,6 +1233,8 @@ async def _agent_open_url(
 
 
 async def _agent_pick(console: ConsoleScreen) -> None:
+    if not _require_agents(console):
+        return
     registry = console.core.agent_packs
     infos = registry.active()
     if not infos:
@@ -1262,6 +1265,8 @@ async def _agent_pick(console: ConsoleScreen) -> None:
     ),
 )
 async def _agent(console: ConsoleScreen, args: str) -> None:
+    if not _require_agents(console):
+        return
     core = console.core
     parts = args.strip().lower().split()
     registry = core.agent_packs

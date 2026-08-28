@@ -17,13 +17,14 @@ from ifc_console.toolsets import (
 )
 
 if TYPE_CHECKING:
-    from ifc_console.agents.agent import Agent
-    from ifc_console.agents.models import (
+    from ifc_console_agents.agent import Agent
+    from ifc_console_agents.models import (
         AgentLimits,
         AgentModel,
         ApprovalHandler,
         ThreadStore,
     )
+
     from ifc_console.toolsets import ToolMiddleware
 
 
@@ -156,7 +157,14 @@ class IfcRuntime:
     ) -> Agent:
         """Build the bundled provider-neutral agent over this runtime."""
 
-        from ifc_console.agents import Agent
+        try:
+            from ifc_console_agents import Agent
+        except ModuleNotFoundError as exc:
+            if exc.name != "ifc_console_agents":
+                raise
+            raise RuntimeError(
+                "agent creation requires the ifc-console-agents package"
+            ) from exc
 
         tools = await self.toolset(
             *tool_sources,
@@ -245,12 +253,7 @@ class LocalRuntime(IfcRuntime):
     def enable_viewer(self) -> str:
         """Enable viewer operations and return its tokenized loopback URL."""
 
-        if not self.workbench.core.enable_viewer():
-            raise IfcConsoleError(
-                "VIEWER_NOT_INSTALLED",
-                "the optional viewer assets are unavailable",
-                'Install "ifc-console[viewer]".',
-            )
+        self.workbench.core.enable_viewer()
         return self.workbench.core.viewer_url
 
     def build_web_app(

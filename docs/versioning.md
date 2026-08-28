@@ -16,19 +16,23 @@ minor and patch releases will not break you.
 4. **The CLI exit codes**: 0 ok, 1 runtime error, 2 environment problem,
    3 bad usage, 4 file not found or unparseable, 5 validation findings.
 5. **Resource URIs** (`ifc://...`) and prompt names.
-6. **The documented Python SDK**: names exported from `ifc_console`, documented
-   `Workbench` and `AsyncWorkbench` methods, their call signatures, and the
-   public fields of exported typed records and result models. Auxiliary
-   modules public by name: `ifc_console.testing` (the agent test doubles),
-   the exports of `ifc_console.knowledge` (the corpus surface), the exports
-   of `ifc_console.agents.packs` (the agent pack contract), and the exports
-   of `ifc_console.credentials`. Other modules below `ifc_console.*` that
-   are not re-exported are internal.
-7. **Plugin API version 1**: `PluginManifest`, `PluginAPI`,
+6. **The documented core Python SDK**: names exported from `ifc_console`,
+   documented `Workbench` and `AsyncWorkbench` methods, their call signatures,
+   and the public fields of exported typed records and result models. The
+   deterministic IFC knowledge surface remains under `ifc_console.knowledge`.
+7. **The documented agent SDK**: names exported from `ifc_console_agents`,
+   including the provider-neutral loop, events, approvals, storage, testing
+   helpers, pack contracts, and documented optional integrations. New code
+   uses this namespace rather than the transitional core aliases.
+8. **Plugin API version 1**: `PluginManifest`, `PluginAPI`,
    `OperationPlugin`, synchronous registration and shutdown, structured
    operation registration, capability declarations, and the result helpers
    described in the [plugin guide](plugins.md). A future incompatible plugin
    contract will use a new `manifest.api_version`.
+9. **Extension API version 1**: installed companion products register through
+   `ifc_console.extensions`. Manifest validation, attach/register-once,
+   status, HTTP routes, declarative browser panels, and shutdown form the
+   cross-distribution boundary. Core never imports extension implementations.
 
 ## What is and is not a breaking change
 
@@ -58,19 +62,30 @@ API, and may change freely.
 
 ## How this is enforced
 
-The contracts are executable. `tests/golden/api_contract.json` snapshots the
-tool schemas, envelope schema, and error-code registry.
-`tests/golden/sdk_contract.json` snapshots top-level exports, documented method
-signatures, typed model schemas, enums, and plugin API records. CI fails on any
-drift. An intended change requires deliberately regenerating both golden files
-with `python scripts/snapshot_api.py` and reviewing the SemVer impact. Separate
-tests cover lazy imports, plugin lifecycle behavior, and the installable
-example plugin. Release checks verify that the base wheel is free of viewer
-assets and that the separate viewer wheel carries the complete reviewed bundle.
+The contracts are executable. Core-only and core-plus-agents snapshots cover
+tool schemas, the envelope, error codes, and each package's documented Python
+surface. CI fails on unintended drift. An intended change requires deliberately
+regenerating the relevant golden file and reviewing the SemVer impact. Separate
+tests cover lazy imports, plugin and extension lifecycle behavior, and the
+installable example plugin. Release checks verify that core contains the full
+reviewed viewer bundle but no agent implementation or panel assets, while the
+agent wheel owns only `ifc_console_agents` and declares a compatible core range.
 
 ## Optional extras
 
 Capabilities that need an ecosystem package degrade, never break. Calling
-`validate_ids` without `ifctester` returns `EXTRA_NOT_INSTALLED`; `/viewer`
-without the viewer extra prints its install command. Extras are versioned
-independently of the core API.
+`validate_ids` without `ifctester` returns `EXTRA_NOT_INSTALLED`. Agent PDF
+features require `ifc-console-agents[documents]`; LangGraph adapters require
+`ifc-console-agents[graph]`; `[full]` installs both. The viewer has no runtime
+extra: `ifc-console[viewer]` and `ifc-console-viewer` are one-release no-op/shim
+compatibility paths only.
+
+For the same one-release transition, the former `ifc-console[graph]` and
+`ifc-console[keys]` install commands forward to the matching
+`ifc-console-agents` capability. New installations should use the agents
+package directly.
+
+For the initial split, core and agents release together and agents declares a
+compatible core minor range. Core publishes first. A future independent agent
+release cadence must introduce an explicit tag/version policy before the two
+versions diverge.

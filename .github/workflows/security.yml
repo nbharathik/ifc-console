@@ -29,7 +29,9 @@ jobs:
           enable-cache: false
           version: "0.12.3"
       - name: Scan Python source
-        run: uvx --python 3.12 --from bandit==1.8.6 bandit -q -r src -ll
+        run: >-
+          uvx --python 3.12 --from bandit==1.8.6
+          bandit -q -r src packages/ifc-console-agents/src -ll
 
   dependencies:
     name: Dependencies (${{ matrix.os }}, Python ${{ matrix.python }})
@@ -51,13 +53,22 @@ jobs:
           version: "0.12.3"
       - name: Verify dependency lock
         run: uv lock --check
-      - name: Audit locked runtime dependencies and production extras
+      - name: Export locked runtime dependency boundaries
+        shell: bash
+        run: |
+          uv export --package ifc-console --no-dev --no-emit-workspace --extra geometry --extra validation --format requirements-txt --output-file audit-core.txt --quiet
+          uv export --package ifc-console-agents --no-dev --no-emit-workspace --format requirements-txt --output-file audit-agents-base.txt --quiet
+          uv export --package ifc-console-agents --no-dev --no-emit-workspace --extra documents --format requirements-txt --output-file audit-agents-documents.txt --quiet
+          uv export --package ifc-console-agents --no-dev --no-emit-workspace --extra graph --format requirements-txt --output-file audit-agents-graph.txt --quiet
+      - name: Audit each runtime dependency boundary
         shell: bash
         env:
           AUDIT_PYTHON: ${{ matrix.python }}
         run: |
-          uv export --no-dev --no-emit-workspace --extra validation --extra viewer --format requirements-txt --output-file audit-requirements.txt --quiet
-          uvx --python "$AUDIT_PYTHON" --from pip-audit==2.10.1 pip-audit -r audit-requirements.txt --disable-pip
+          for requirements in audit-core.txt audit-agents-base.txt audit-agents-documents.txt audit-agents-graph.txt; do
+            echo "Auditing $requirements"
+            uvx --python "$AUDIT_PYTHON" --from pip-audit==2.10.1 pip-audit -r "$requirements" --disable-pip
+          done
 
   workflows:
     name: GitHub Actions

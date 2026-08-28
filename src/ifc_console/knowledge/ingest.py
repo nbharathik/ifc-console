@@ -100,12 +100,12 @@ def chunk_pdf(path: Path) -> list[tuple[int, str]]:
     try:
         from pypdf import PdfReader
     except ImportError:
-        from ifc_console.agents.environment import missing_dependency_hint
+        from ifc_console.knowledge.dependencies import missing_document_dependency
 
         raise ToolError(
             "EXTRA_NOT_INSTALLED",
             "PDF ingestion needs the pypdf package.",
-            missing_dependency_hint("pypdf"),
+            missing_document_dependency("pypdf"),
         ) from None
     try:
         reader = PdfReader(str(path))

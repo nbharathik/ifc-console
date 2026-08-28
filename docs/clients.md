@@ -10,8 +10,10 @@ open in the shared ifc-console session.
 3. Paste the copied configuration into the location shown by the console.
 4. Restart or reload the client once.
 
-The normal daily flow is then `ifc-console`, `/file`, and chat. Changing the
-model does not require another client setup.
+The normal daily flow is then `ifc-console`, `/file`, and your MCP client's
+chat. Changing the model does not require another client setup. The local
+browser chat is an optional `ifc-console-agents` extension; the viewer itself
+does not use an LLM.
 
 You can generate the same configuration without opening the console:
 
@@ -181,15 +183,15 @@ The viewer tools remain in `tools/list` while the viewer is off. This is
 deliberate: clients may cache the list, and the agent must still be able to
 call `open_viewer` and continue without reconnecting.
 
-## Which agent capabilities are exported
+## MCP and optional-agent boundaries
 
 The boundary is explicit:
 
 | capability | MCP exposure |
 | ---------- | ------------ |
-| registered IFC operations and trusted operation-plugin tools | shared by MCP, built-in chat, the agent runtime, and the SDK |
+| registered IFC operations and trusted operation-plugin tools | shared by MCP and the deterministic SDK; also available to chat and agents when `ifc-console-agents` is installed |
 | viewer selection, control, measurement, highlighting, themes, and screenshots | shared MCP tools; require bridge/HTTP and a connected tab |
-| agent-only `FunctionToolSource` or imported `McpToolSource` tools | private to the `Toolset` that owns them unless deliberately promoted to an operation plugin |
+| `FunctionToolSource` or imported `McpToolSource` tools used by an agent | private to the `Toolset` that owns them unless deliberately promoted to an operation plugin |
 | blocks, delegation, thread memory, response validation, and approval handlers | orchestration behavior, not remotely callable tools |
 | `/mode`, `/save`, credentials, settings, and approval decisions | human/host controls; intentionally never exposed as AI tools |
 

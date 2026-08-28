@@ -1,0 +1,829 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>ifc-console viewer</title>
+  <link rel="stylesheet" href="/viewer/static/app.css">
+  <link rel="stylesheet" href="/viewer/static/themes.css">
+  <link rel="icon" href="data:,">
+</head>
+<body>
+  <header id="topbar">
+    <span id="brand">
+      <!-- the >_ prompt mark, same squared monoline system as the logo kit -->
+      <svg class="brand-mark" width="15" height="15" viewBox="0 0 16 16" fill="none"
+           aria-hidden="true" stroke="currentColor" stroke-width="1.5"
+           stroke-linecap="square" stroke-linejoin="miter">
+        <path d="M3.4 3.6L7.9 8L3.4 12.4"/>
+        <path d="M9.9 12.4H13.1"/>
+      </svg>
+      <span class="brand-name">ifc-console</span>
+    </span>
+    <span class="topbar-context">
+      <span id="model-name" aria-label="Current model"></span>
+      <!-- Only shown once a second model is attached in the console. -->
+      <select id="model-select" aria-label="Model to view" hidden></select>
+      <span id="schema" class="meta" hidden></span>
+    </span>
+    <span class="topbar-state">
+      <span id="mode" class="meta mode">...</span>
+      <span id="dirty" class="meta warn" hidden>Unsaved</span>
+      <span id="live" class="connection off" role="status" aria-live="polite"
+            aria-label="Server disconnected" title="Server connection">
+        <span class="connection-mark" aria-hidden="true"></span>
+        <span class="connection-label">Offline</span>
+      </span>
+    </span>
+    <span class="spacer"></span>
+    <span class="topbar-actions">
+      <button id="btn-chat" class="icon-btn" type="button" hidden
+              aria-pressed="false" aria-controls="chat-dock"
+              aria-label="Toggle the agent panel" title="Toggle agent panel (C)">
+        <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
+          <path d="M2.4 3.2h11.2v7.2H6.8L3.6 13v-2.6H2.4z" stroke="currentColor"
+                stroke-width="1.4" stroke-linejoin="miter"/>
+          <path d="M5 6.2h6M5 8.2h3.6" stroke="currentColor" stroke-width="1.2"
+                stroke-linecap="square"/>
+        </svg>
+      </button>
+      <button id="btn-clear-hl" class="text-action" hidden
+              title="Clear highlights placed by the assistant">
+        <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
+          <path d="m4 4 8 8m0-8-8 8" stroke="currentColor" stroke-width="1.4"
+                stroke-linecap="square"/>
+        </svg>
+        Clear highlights
+      </button>
+    </span>
+  </header>
+
+  <main id="layout">
+    <aside id="chat-dock" hidden></aside>
+    <div id="chat-dock-resize" role="separator" aria-orientation="vertical"
+         aria-label="Resize the assistant workspace" aria-controls="chat-dock" tabindex="0"
+         title="Drag or use arrow keys to resize; Home resets" hidden></div>
+
+  <div id="viewer-rail">
+    <nav id="model-tabs" role="tablist" aria-label="Open IFC files"></nav>
+    <button id="model-tab-open-active" class="open-active-model" type="button" hidden
+            aria-label="Open the active IFC file" title="Open the active IFC file">
+      <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
+        <path d="m3 5.3 5-2.5 5 2.5v5.4l-5 2.5-5-2.5V5.3Z" stroke="currentColor"
+              stroke-width="1.15" stroke-linejoin="round"/>
+        <path d="m3 5.3 5 2.5 5-2.5M8 7.8v5.4" stroke="currentColor"
+              stroke-width="1.15"/>
+      </svg>
+      <span>Open active IFC</span>
+    </button>
+    <button id="model-tab-add" class="rail-icon" type="button"
+            aria-expanded="false" aria-controls="model-tab-menu"
+            aria-label="Choose an attached IFC file" title="Choose an attached IFC file">
+      <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
+        <path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="1.35"
+              stroke-linecap="square"/>
+      </svg>
+    </button>
+    <div id="model-tab-menu" class="rail-menu" role="dialog"
+         aria-label="Open an IFC file" hidden>
+      <div class="rail-menu-title">Available IFC files</div>
+      <div id="model-tab-choices"></div>
+      <p id="model-tab-empty" class="tool-note" hidden>No IFC files are attached.</p>
+    </div>
+
+    <span class="viewer-rail-spacer"></span>
+    <div id="viewer-toolbar" role="toolbar" aria-label="Viewer tools">
+      <button id="btn-tool-visibility" class="rail-tool" type="button"
+              data-tool-panel="visibility" aria-expanded="false"
+              aria-controls="tools-panel" aria-label="Visibility tools"
+              title="Visibility (H hides selected)">
+        <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
+          <path d="M2.2 8s2-3.2 5.8-3.2S13.8 8 13.8 8 11.8 11.2 8 11.2 2.2 8 2.2 8Z"
+                stroke="currentColor" stroke-width="1.2"/>
+          <circle cx="8" cy="8" r="1.7" stroke="currentColor" stroke-width="1.2"/>
+        </svg>
+        <span>Visibility</span>
+      </button>
+      <button id="btn-tool-views" class="rail-tool" type="button"
+              data-tool-panel="views" aria-expanded="false"
+              aria-controls="tools-panel" aria-label="Views and camera"
+              title="Views and camera (F fits model)">
+        <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
+          <path d="m3 5.3 5-2.5 5 2.5v5.4l-5 2.5-5-2.5V5.3Z" stroke="currentColor"
+                stroke-width="1.15" stroke-linejoin="round"/>
+          <path d="m3 5.3 5 2.5 5-2.5M8 7.8v5.4" stroke="currentColor"
+                stroke-width="1.15"/>
+        </svg>
+        <span>Views</span>
+      </button>
+      <button id="btn-tool-section" class="rail-tool" type="button"
+              data-tool-panel="section" aria-expanded="false"
+              aria-controls="tools-panel" aria-label="Section tools"
+              title="Section planes">
+        <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
+          <path d="M3 3h10v10H3z" stroke="currentColor" stroke-width="1.15"/>
+          <path d="M8 2v12" stroke="currentColor" stroke-width="1.35"
+                stroke-dasharray="2 1.5"/>
+        </svg>
+        <span>Section</span>
+      </button>
+      <button id="btn-tool-measure" class="rail-tool measure-tool" type="button"
+              aria-expanded="false" aria-controls="measure-card"
+              aria-label="Measurement tools" title="Measure (M)">
+        <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
+          <path d="m2.5 11.5 9-9 2 2-9 9h-2v-2Z" stroke="currentColor"
+                stroke-width="1.25" stroke-linejoin="round"/>
+          <path d="m7 7 2 2m-4 0 1.4 1.4M9 5l1.4 1.4" stroke="currentColor"
+                stroke-width="1.1" stroke-linecap="round"/>
+        </svg>
+        <span>Measure</span>
+        <b id="measure-rail-count" class="rail-badge" hidden>0</b>
+      </button>
+      <button id="btn-tool-display" class="rail-tool" type="button"
+              data-tool-panel="display" aria-expanded="false"
+              aria-controls="tools-panel" aria-label="Display options"
+              title="Display options">
+        <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
+          <path d="M3 4.2 8 1.8l5 2.4-5 2.4zM3 8l5 2.4L13 8M3 11.8 8 14.2l5-2.4"
+                stroke="currentColor" stroke-width="1.15" stroke-linejoin="round"/>
+        </svg>
+        <span>Display</span>
+      </button>
+      <button id="btn-tool-filters" class="rail-tool" type="button"
+              data-tool-panel="filters" aria-expanded="false"
+              aria-controls="tools-panel" aria-label="Active viewer filters"
+              title="Review and clear viewer filters">
+        <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
+          <path d="M2.5 3h11L9.4 7.8v4.7l-2.8 1V7.8L2.5 3Z" stroke="currentColor"
+                stroke-width="1.2" stroke-linejoin="round"/>
+        </svg>
+        <span>Filters</span>
+        <b id="filter-count" class="rail-badge" hidden>0</b>
+      </button>
+      <button id="btn-settings" class="rail-tool viewer-settings-tool" type="button"
+              aria-expanded="false" aria-controls="settings-panel"
+              aria-label="Viewer settings" title="Viewer settings">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.35"
+             stroke-linecap="square" aria-hidden="true">
+          <circle cx="8" cy="8" r="4.6"/>
+          <circle cx="8" cy="8" r="1.7"/>
+          <path d="M8 1.6v1.8M8 12.6v1.8M14.4 8h-1.8M3.4 8H1.6M12.53 3.47 11.25 4.75M4.75 11.25l-1.28 1.28M12.53 12.53 11.25 11.25M4.75 4.75 3.47 3.47"/>
+        </svg>
+        <span>Settings</span>
+      </button>
+    </div>
+  </div>
+
+    <div id="viewer-stage">
+    <section id="viewer-empty" aria-labelledby="viewer-empty-title" hidden>
+      <svg viewBox="0 0 32 32" fill="none" aria-hidden="true">
+        <path d="m6 10 10-5 10 5v12l-10 5-10-5V10Z" stroke="currentColor"
+              stroke-width="1.35" stroke-linejoin="round"/>
+        <path d="m6 10 10 5 10-5M16 15v12" stroke="currentColor" stroke-width="1.35"/>
+      </svg>
+      <h1 id="viewer-empty-title">No IFC view open</h1>
+      <p>The Agent workspace can stay open without rendering a model.</p>
+      <button id="viewer-empty-open" type="button">Open active IFC</button>
+    </section>
+
+    <aside id="tree-panel" aria-labelledby="tree-panel-title">
+      <div class="panel-title">
+        <span id="tree-panel-title">Model</span>
+        <button id="tree-panel-close" class="panel-close" type="button"
+                aria-controls="tree-panel" aria-label="Close model panel"
+                title="Close model panel">
+          <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
+            <path d="M4.5 4.5 11.5 11.5M11.5 4.5 4.5 11.5" stroke="currentColor"
+                  stroke-width="1.35" stroke-linecap="square"/>
+          </svg>
+        </button>
+      </div>
+      <div class="panel-search">
+        <input id="search-input" type="search" autocomplete="off" spellcheck="false"
+               placeholder="Search name or IfcWall"
+               title="Type a name, or an IFC class / selector such as IfcWall or Name=/W.*/"
+               aria-label="Search elements" aria-describedby="search-help">
+        <span id="search-help" class="sr-only">Enter searches. Escape clears the search.</span>
+        <button id="search-clear" class="icon-btn" hidden
+                aria-label="Clear search" title="Clear search (Esc)">
+          <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
+            <path d="M4.5 4.5 11.5 11.5M11.5 4.5 4.5 11.5" stroke="currentColor"
+                  stroke-width="1.4" stroke-linecap="round"/>
+          </svg>
+        </button>
+      </div>
+      <div class="panel-body">
+        <div id="search-results" role="region" aria-label="Search results"
+             aria-live="polite" hidden></div>
+        <nav id="tree" aria-label="Model hierarchy"></nav>
+      </div>
+    </aside>
+    <div id="split-tree" class="splitter" role="separator" aria-orientation="vertical"
+         aria-label="Resize model tree" aria-controls="tree-panel" tabindex="0"
+         title="Drag or use arrow keys to resize; Home resets"></div>
+
+    <section id="canvas-wrap" aria-label="Model viewport">
+      <p id="viewport-help" class="sr-only">Arrow keys pan the model. F fits the model. H hides the selection. I isolates it. U shows all. T toggles transparent context. M measures distance. G toggles the grid. Number keys 1 through 4 set standard views. Control or Shift and click adds an element to the selection. Double-click frames an element. Question mark opens all controls.</p>
+      <canvas id="canvas" tabindex="0" aria-label="Interactive 3D model viewport"
+              aria-describedby="viewport-help" data-viewer-context="viewport"></canvas>
+      <div id="overlay" class="overlay" data-state="loading"
+           role="status" aria-live="polite" aria-atomic="true" aria-busy="true">
+        <div class="overlay-card loading-card">
+          <span class="loading-label">Loading model</span>
+          <div class="progress-track"><div class="loading-bar indeterminate"></div></div>
+        </div>
+      </div>
+
+      <button id="tree-panel-tab" class="panel-edge-tab panel-edge-tab-left" type="button"
+              aria-controls="tree-panel" aria-expanded="false"
+              aria-label="Open model panel" title="Open model panel" hidden>
+        <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
+          <rect x="2.25" y="3" width="11.5" height="10" rx="1" stroke="currentColor"
+                stroke-width="1.25"/>
+          <path d="M6 3.5v9" stroke="currentColor" stroke-width="1.25"/>
+        </svg>
+      </button>
+      <button id="props-panel-tab" class="panel-edge-tab panel-edge-tab-right" type="button"
+              aria-controls="props-panel" aria-expanded="false"
+              aria-label="Open properties panel" title="Open properties panel" hidden>
+        <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
+          <rect x="2.25" y="3" width="11.5" height="10" rx="1" stroke="currentColor"
+                stroke-width="1.25"/>
+          <path d="M10 3.5v9" stroke="currentColor" stroke-width="1.25"/>
+        </svg>
+      </button>
+
+      <button id="btn-tools" class="icon-btn" aria-expanded="false" hidden
+              aria-controls="tools-panel" aria-label="View tools"
+              title="View tools">
+        <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
+          <path d="M8 2.2 13.8 5.4 8 8.6 2.2 5.4Z" stroke="currentColor" stroke-width="1.3"
+                stroke-linejoin="round"/>
+          <path d="M2.2 8.4 8 11.6 13.8 8.4M2.2 11 8 14.2 13.8 11" stroke="currentColor"
+                stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </button>
+
+      <div id="tools-panel" class="popover" role="dialog" aria-label="View tools" hidden>
+        <div class="popover-head">
+          <div class="popover-heading">View tools</div>
+          <button id="tools-panel-close" class="popover-close" type="button"
+                  aria-controls="tools-panel" aria-label="Close view tools"
+                  title="Close view tools">
+            <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
+              <path d="M4.5 4.5 11.5 11.5M11.5 4.5 4.5 11.5" stroke="currentColor"
+                    stroke-width="1.35" stroke-linecap="square"/>
+            </svg>
+          </button>
+        </div>
+        <div class="tool-section" data-tool-panel="visibility">
+        <div class="popover-title">Visibility</div>
+        <div class="tool-list">
+          <button id="tool-isolate" class="tool-btn"
+                  title="Show only the selected elements">
+            <span class="tool-btn-label">
+              <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                <path d="M5 3H3v2m8-2h2v2M5 13H3v-2m8 2h2v-2M6 6h4v4H6V6Z"
+                      stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+              </svg>
+              Isolate
+            </span>
+            <kbd>I</kbd>
+          </button>
+          <button id="tool-focus-sel" class="tool-btn"
+                  title="Isolate the selection and frame it">
+            <span class="tool-btn-label">
+              <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                <circle cx="8" cy="8" r="3" stroke="currentColor" stroke-width="1.2"/>
+                <path d="M8 2v2m0 8v2M2 8h2m8 0h2" stroke="currentColor"
+                      stroke-width="1.2" stroke-linecap="round"/>
+              </svg>
+              Focus
+            </span>
+            <kbd>Shift+F</kbd>
+          </button>
+          <button id="tool-hide" class="tool-btn"
+                  title="Hide the selected elements">
+            <span class="tool-btn-label">
+              <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                <path d="M2.2 8s2-3.2 5.8-3.2S13.8 8 13.8 8 11.8 11.2 8 11.2 2.2 8 2.2 8Z"
+                      stroke="currentColor" stroke-width="1.15"/>
+                <path d="m3 3 10 10" stroke="currentColor" stroke-width="1.3"
+                      stroke-linecap="round"/>
+              </svg>
+              Hide
+            </span>
+            <kbd>H</kbd>
+          </button>
+          <button id="tool-show-all" class="tool-btn"
+                  title="Reset isolation and hidden elements">
+            <span class="tool-btn-label">
+              <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                <path d="M2.2 8s2-3.2 5.8-3.2S13.8 8 13.8 8 11.8 11.2 8 11.2 2.2 8 2.2 8Z"
+                      stroke="currentColor" stroke-width="1.15"/>
+                <circle cx="8" cy="8" r="1.7" stroke="currentColor" stroke-width="1.15"/>
+              </svg>
+              Show all
+            </span>
+            <kbd>U</kbd>
+          </button>
+          <label class="switch-row tool-switch">
+            <span class="switch-text">
+              <span class="switch-label">Transparent context <kbd>T</kbd></span>
+              <small>Keep selected elements solid and fade everything else.</small>
+            </span>
+            <input type="checkbox" id="tool-ghost" class="switch">
+          </label>
+        </div>
+        </div>
+        <div class="tool-section" data-tool-panel="views">
+        <div class="popover-title">Camera</div>
+        <div class="tool-list">
+          <button id="tool-fit-sel" class="tool-btn"
+                  title="Frame the selected elements">
+            <span class="tool-btn-label">
+              <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                <circle cx="7" cy="7" r="4" stroke="currentColor" stroke-width="1.2"/>
+                <path d="m10 10 3 3M5.5 7h3M7 5.5v3" stroke="currentColor"
+                      stroke-width="1.2" stroke-linecap="round"/>
+              </svg>
+              Zoom selection
+            </span>
+          </button>
+          <button id="tool-fit-all" class="tool-btn"
+                  title="Frame the whole model">
+            <span class="tool-btn-label">
+              <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                <path d="M6 3H3v3m7-3h3v3M6 13H3v-3m7 3h3v-3" stroke="currentColor"
+                      stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+              Fit model
+            </span>
+            <kbd>F</kbd>
+          </button>
+          <button id="tool-ortho" class="tool-btn" aria-pressed="false"
+                  title="Parallel projection: equal lengths read equal anywhere in the frame">
+            <span class="tool-btn-label">
+              <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                <path d="m3 5.3 5-2.5 5 2.5v5.4l-5 2.5-5-2.5V5.3Z" stroke="currentColor"
+                      stroke-width="1.15" stroke-linejoin="round"/>
+                <path d="m3 5.3 5 2.5 5-2.5M8 7.8v5.4" stroke="currentColor"
+                      stroke-width="1.15"/>
+              </svg>
+              Orthographic
+            </span>
+            <kbd>P</kbd>
+          </button>
+        </div>
+        </div>
+        <div class="tool-section" data-tool-panel="views">
+        <div class="popover-title">Views</div>
+        <div class="tool-views">
+          <button data-view="top">Top</button>
+          <button data-view="bottom">Bottom</button>
+          <button data-view="front">Front</button>
+          <button data-view="back">Back</button>
+          <button data-view="left">Left</button>
+          <button data-view="right">Right</button>
+          <button data-view="iso">Iso</button>
+        </div>
+        </div>
+        <div class="tool-section" data-tool-panel="views">
+        <div class="popover-title">Saved views</div>
+        <div id="saved-views" class="saved-views"></div>
+        <div class="save-view-row">
+          <input id="view-name" type="text" autocomplete="off" spellcheck="false"
+                 placeholder="Name this view" aria-label="Saved view name">
+          <button id="tool-save-view" class="tool-btn"
+                  title="Store the current camera position">Save</button>
+        </div>
+        </div>
+        <div class="tool-section" data-tool-panel="section">
+        <div class="popover-title">Section</div>
+        <p class="tool-note section-note">Enable an axis, then drag its slider. The colored plane marks the exact cut.</p>
+        <div id="section-rows" class="section-rows">
+          <!-- one row per axis; the slider only appears once the axis is cut -->
+          <div class="section-row" data-axis="x">
+            <label class="section-head">
+              <input type="checkbox" class="switch section-on" data-axis="x">
+              <span class="section-label">X</span>
+            </label>
+            <input type="range" class="section-at" data-axis="x"
+                   min="0" max="1" step="0.001" value="1" aria-label="X section position" hidden>
+            <button class="section-flip" data-axis="x" title="Flip the cut side"
+                    aria-label="Flip X cut side" hidden>
+              <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                <path d="M3 5h9m0 0L9.5 2.5M12 5 9.5 7.5M13 11H4m0 0 2.5-2.5M4 11l2.5 2.5"
+                      stroke="currentColor" stroke-width="1.2" stroke-linecap="round"
+                      stroke-linejoin="round"/>
+              </svg>
+            </button>
+          </div>
+          <div class="section-row" data-axis="z">
+            <label class="section-head">
+              <input type="checkbox" class="switch section-on" data-axis="z">
+              <span class="section-label">Y</span>
+            </label>
+            <input type="range" class="section-at" data-axis="z"
+                   min="0" max="1" step="0.001" value="1" aria-label="Y section position" hidden>
+            <button class="section-flip" data-axis="z" title="Flip the cut side"
+                    aria-label="Flip Y cut side" hidden>
+              <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                <path d="M3 5h9m0 0L9.5 2.5M12 5 9.5 7.5M13 11H4m0 0 2.5-2.5M4 11l2.5 2.5"
+                      stroke="currentColor" stroke-width="1.2" stroke-linecap="round"
+                      stroke-linejoin="round"/>
+              </svg>
+            </button>
+          </div>
+          <div class="section-row" data-axis="y">
+            <label class="section-head">
+              <input type="checkbox" class="switch section-on" data-axis="y">
+              <span class="section-label">Z</span>
+            </label>
+            <input type="range" class="section-at" data-axis="y"
+                   min="0" max="1" step="0.001" value="1" aria-label="Z section position" hidden>
+            <button class="section-flip" data-axis="y" title="Flip the cut side"
+                    aria-label="Flip Z cut side" hidden>
+              <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                <path d="M3 5h9m0 0L9.5 2.5M12 5 9.5 7.5M13 11H4m0 0 2.5-2.5M4 11l2.5 2.5"
+                      stroke="currentColor" stroke-width="1.2" stroke-linecap="round"
+                      stroke-linejoin="round"/>
+              </svg>
+            </button>
+          </div>
+        </div>
+        <label class="select-row section-depth-row" for="section-depth">
+          <span class="switch-text">
+            <span class="switch-label">Slice thickness</span>
+            <small id="section-depth-help">0 = one-sided cut</small>
+          </span>
+          <span class="number-field">
+            <input id="section-depth" type="number" min="0" step="0.1" value="0"
+                   inputmode="decimal" aria-label="Section slice thickness"
+                   aria-describedby="section-depth-help">
+            <span id="section-depth-unit" class="number-unit" aria-hidden="true">m</span>
+          </span>
+        </label>
+        <div class="tool-list">
+          <button id="tool-section-clear" class="tool-btn" hidden
+                  title="Turn every section plane off">Clear sections</button>
+        </div>
+        </div>
+        <div class="tool-section" data-tool-panel="measure" hidden>
+        <div class="popover-title">Measure</div>
+        <div class="tool-list measure-launcher-list">
+          <button id="tool-open-measure" class="tool-btn tool-btn-primary" type="button"
+                  aria-controls="measure-card" aria-expanded="false"
+                  title="Open the measurement tools">
+            <span class="tool-btn-label">
+              <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                <path d="m2.5 11.5 9-9 2 2-9 9h-2v-2Z" stroke="currentColor"
+                      stroke-width="1.25" stroke-linejoin="round"/>
+                <path d="m7 7 2 2m-4 0 1.4 1.4M9 5l1.4 1.4" stroke="currentColor"
+                      stroke-width="1.1" stroke-linecap="round"/>
+              </svg>
+              Measure
+            </span>
+            <svg class="tool-chevron" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+              <path d="m6 4 4 4-4 4" stroke="currentColor" stroke-width="1.25"
+                    stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+          </button>
+          <div class="tool-action-grid">
+            <button id="tool-measure-element" class="tool-btn tool-btn-compact" type="button"
+                    title="Length, width, thickness and diagonal of the selected elements">
+              <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                <path d="M3 5.5 8 3l5 2.5v5L8 13l-5-2.5v-5Z" stroke="currentColor"
+                      stroke-width="1.15" stroke-linejoin="round"/>
+                <path d="m3 5.5 5 2.6 5-2.6M8 8.1V13" stroke="currentColor"
+                      stroke-width="1.15"/>
+              </svg>
+              Size
+            </button>
+            <button id="tool-measure-laser" class="tool-btn tool-btn-compact" type="button"
+                    title="Distance to the nearest element each way along X, Y and Z">
+              <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                <path d="M2.5 8h11M4.5 5.5 2 8l2.5 2.5M11.5 5.5 14 8l-2.5 2.5"
+                      stroke="currentColor" stroke-width="1.2" stroke-linecap="round"
+                      stroke-linejoin="round"/>
+              </svg>
+              Clearance
+            </button>
+          </div>
+          <button id="tool-measure-clear" class="tool-btn tool-btn-subtle" type="button"
+                  title="Clear all measurements, including an unfinished one">
+            <span class="tool-btn-label">
+              <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                <path d="M4.5 5.5h7l-.5 8H5l-.5-8ZM6 5.5V3.7h4v1.8M3.5 5.5h9"
+                      stroke="currentColor" stroke-width="1.15" stroke-linecap="round"
+                      stroke-linejoin="round"/>
+              </svg>
+              Clear all
+            </span>
+          </button>
+        </div>
+        </div>
+        <p class="tool-note measure-launcher-note">
+          Alt-click an element for its size. Measurement locks and accuracy settings
+          are in the measurement card.
+        </p>
+        <div id="tool-hidden-info" class="tool-note"></div>
+
+        <div class="tool-section" data-tool-panel="display">
+          <div class="popover-title">Model appearance</div>
+          <div class="tool-list">
+            <label class="switch-row tool-switch">
+              <span class="switch-text">
+                <span class="switch-label">Mesh outlines</span>
+                <small id="set-edges-note">Show tessellated creases over IFC surfaces.</small>
+              </span>
+              <input type="checkbox" id="set-edges" class="switch">
+            </label>
+            <label class="switch-row tool-switch">
+              <span class="switch-text">
+                <span class="switch-label">Ground grid <kbd>G</kbd></span>
+                <small>Reference plane under the model.</small>
+              </span>
+              <input type="checkbox" id="set-grid" class="switch">
+            </label>
+            <label class="switch-row tool-switch">
+              <span class="switch-text">
+                <span class="switch-label">Origin axes</span>
+                <small>Show X, Y and Z at the project origin.</small>
+              </span>
+              <input type="checkbox" id="set-axes" class="switch">
+            </label>
+          </div>
+        </div>
+
+        <div class="tool-section" data-tool-panel="filters">
+          <div class="popover-title">Active filters</div>
+          <div id="filter-list" class="filter-list" aria-live="polite"></div>
+          <button id="tool-clear-filters" class="tool-btn clear-filter-all" type="button"
+                  title="Restore the default IFC view">Clear all filters</button>
+        </div>
+      </div>
+
+      <div id="snap-hint" aria-hidden="true" hidden></div>
+
+      <div id="measure-card" role="region" aria-labelledby="measure-title" hidden>
+        <div id="measure-head">
+          <span id="measure-title" class="measure-title">
+            <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
+              <path d="m2.5 11.5 9-9 2 2-9 9h-2v-2Z" stroke="currentColor"
+                    stroke-width="1.25" stroke-linejoin="round"/>
+              <path d="m7 7 2 2m-4 0 1.4 1.4M9 5l1.4 1.4" stroke="currentColor"
+                    stroke-width="1.1" stroke-linecap="round"/>
+            </svg>
+            Measure
+            <span id="measure-count" class="measure-count" aria-label="Saved measurements">0</span>
+          </span>
+          <span class="measure-head-actions">
+            <button id="measure-clear" class="icon-btn" type="button"
+                    title="Clear all measurements" aria-label="Clear all measurements">
+              <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                <path d="M4.5 5.5h7l-.5 8H5l-.5-8ZM6 5.5V3.7h4v1.8M3.5 5.5h9"
+                      stroke="currentColor" stroke-width="1.15" stroke-linecap="round"
+                      stroke-linejoin="round"/>
+              </svg>
+            </button>
+            <button id="measure-close" class="icon-btn" type="button"
+                    title="Close measurement tools" aria-label="Close measurement tools">
+              <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                <path d="M4.5 4.5 11.5 11.5M11.5 4.5 4.5 11.5"
+                      stroke="currentColor" stroke-width="1.35" stroke-linecap="round"/>
+              </svg>
+            </button>
+          </span>
+        </div>
+
+        <div class="measure-mode-grid" role="group" aria-label="Measurement type">
+          <button id="tool-measure" class="measure-mode" type="button" aria-pressed="false"
+                  title="Measure between two points (M)">
+            <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
+              <path d="M3 12 12 3M2.5 9.5v4h4M9.5 2.5h4v4" stroke="currentColor"
+                    stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+            <span>Length</span><kbd>M</kbd>
+          </button>
+          <button id="tool-measure-path" class="measure-mode" type="button"
+                  aria-pressed="false" title="Measure a multi-segment path">
+            <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
+              <path d="M2.5 12.5 6 5.5l3.2 4 4.3-6" stroke="currentColor"
+                    stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round"/>
+              <circle cx="2.5" cy="12.5" r="1" fill="currentColor"/>
+              <circle cx="6" cy="5.5" r="1" fill="currentColor"/>
+              <circle cx="9.2" cy="9.5" r="1" fill="currentColor"/>
+              <circle cx="13.5" cy="3.5" r="1" fill="currentColor"/>
+            </svg>
+            <span>Path</span>
+          </button>
+          <button id="tool-measure-angle" class="measure-mode" type="button"
+                  aria-pressed="false" title="Measure an angle with three points (A)">
+            <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
+              <path d="M3 12 8 4l5 8M5.5 12a5 5 0 0 1 5-4.3" stroke="currentColor"
+                    stroke-width="1.25" stroke-linecap="round"/>
+            </svg>
+            <span>Angle</span><kbd>A</kbd>
+          </button>
+          <button id="tool-measure-area" class="measure-mode" type="button"
+                  aria-pressed="false" title="Outline an area, then finish (R)">
+            <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
+              <path d="m3 4 6-1 4 4-2 6-7-1-1-8Z" stroke="currentColor"
+                    stroke-width="1.25" stroke-linejoin="round"/>
+            </svg>
+            <span>Area</span><kbd>R</kbd>
+          </button>
+        </div>
+
+        <div class="measure-readout" aria-live="polite" aria-atomic="true">
+          <span>Live</span>
+          <output id="measure-live">Pick a point</output>
+        </div>
+        <p id="measure-hint" class="tool-note" hidden></p>
+
+        <div id="measure-axis" class="measure-axis-row">
+          <span class="measure-control-label">Lock</span>
+          <div class="measure-axis-buttons" role="group" aria-label="Measurement axis lock">
+            <button class="measure-axis" type="button" data-measure-axis=""
+                    aria-pressed="true">Free</button>
+            <button class="measure-axis" type="button" data-measure-axis="x"
+                    aria-pressed="false">X</button>
+            <button class="measure-axis" type="button" data-measure-axis="y"
+                    aria-pressed="false">Y</button>
+            <button class="measure-axis" type="button" data-measure-axis="z"
+                    aria-pressed="false">Z</button>
+          </div>
+        </div>
+
+        <button id="measure-finish" class="measure-finish" type="button" disabled>
+          <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
+            <path d="m3 8.5 3 3 7-7" stroke="currentColor" stroke-width="1.4"
+                  stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+          <span id="measure-finish-label">Finish</span>
+        </button>
+
+        <details class="measure-settings">
+          <summary>Accuracy &amp; units</summary>
+          <label class="switch-row measure-setting-row">
+            <span class="switch-text">
+              <span class="switch-label">Snap to geometry <kbd>S</kbd></span>
+              <small>Corners, midpoints and edges</small>
+            </span>
+            <input type="checkbox" id="tool-snap" class="switch" checked>
+          </label>
+          <!-- Geometry is metres whatever the file says; only the label moves. -->
+          <label class="select-row measure-setting-row" for="measure-unit">
+            <span class="switch-label">Units</span>
+            <select id="measure-unit" aria-label="Length unit">
+              <option value="file">File</option>
+              <option value="mm">Millimetres</option>
+              <option value="cm">Centimetres</option>
+              <option value="m">Metres</option>
+              <option value="ft">Feet and inches</option>
+            </select>
+          </label>
+          <label class="select-row measure-setting-row" for="measure-decimals">
+            <span class="switch-label">Precision</span>
+            <select id="measure-decimals" aria-label="Length precision">
+              <option value="auto">Default</option>
+              <option value="0">0 (1/1")</option>
+              <option value="1">1 (1/2")</option>
+              <option value="2">2 (1/4")</option>
+              <option value="3">3 (1/8")</option>
+              <option value="4">4 (1/16")</option>
+            </select>
+          </label>
+        </details>
+
+        <div class="measure-list-head">Saved</div>
+        <ul id="measure-list"></ul>
+      </div>
+
+      <div id="legend" hidden>
+        <div id="legend-head">
+          <span id="legend-title">Color theme</span>
+          <button id="legend-clear" class="icon-btn" title="Clear the color theme"
+                  aria-label="Clear the color theme">
+            <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
+              <path d="m4 4 8 8m0-8-8 8" stroke="currentColor" stroke-width="1.4"
+                    stroke-linecap="square"/>
+            </svg>
+          </button>
+        </div>
+        <ul id="legend-items"></ul>
+      </div>
+
+      <div id="settings-panel" class="popover" role="dialog"
+           aria-label="Viewer settings" hidden>
+        <div class="popover-title">Appearance</div>
+        <label class="select-row" for="set-theme">
+          <span class="switch-text">
+            <span class="switch-label">Theme</span>
+            <small>Choose one restrained palette for this viewer.</small>
+          </span>
+          <select id="set-theme" aria-label="Viewer theme">
+            <option value="light">Light</option>
+            <option value="dark">Dark</option>
+            <option value="modern">Modern Dark</option>
+            <option value="blue">Default Blue</option>
+          </select>
+        </label>
+        <div class="popover-title">Workspace</div>
+        <div class="tool-list">
+          <button id="set-reset-layout" class="tool-btn"
+                  title="Reopen both side panels and forget their widths">
+            Reset panel layout</button>
+        </div>
+        <p class="tool-note">Four restrained palettes, each with one accent family.</p>
+      </div>
+
+      <div id="help-panel" class="popover" role="dialog"
+           aria-label="Viewer controls" hidden>
+        <div class="popover-title">Navigation</div>
+        <table>
+          <tr><td>drag</td><td>orbit</td></tr>
+          <tr><td>right-drag</td><td>pan</td></tr>
+          <tr><td>scroll</td><td>zoom</td></tr>
+          <tr><td>click</td><td>select</td></tr>
+          <tr><td>ctrl/shift+click</td><td>add or remove from the selection</td></tr>
+          <tr><td>double-click</td><td>frame the clicked element</td></tr>
+          <tr><td><kbd>F</kbd></td><td>fit the whole model</td></tr>
+          <tr><td><kbd>Shift</kbd>+<kbd>F</kbd></td><td>isolate and frame the selection</td></tr>
+          <tr><td><kbd>H</kbd></td><td>hide the selection</td></tr>
+          <tr><td><kbd>I</kbd></td><td>isolate the selection</td></tr>
+          <tr><td><kbd>U</kbd></td><td>show all hidden elements</td></tr>
+          <tr><td><kbd>T</kbd></td><td>toggle transparent context</td></tr>
+          <tr><td><kbd>1</kbd>–<kbd>4</kbd></td><td>top, front, right and isometric views</td></tr>
+          <tr><td><kbd>G</kbd></td><td>toggle the ground grid</td></tr>
+          <tr><td><kbd>M</kbd></td><td>measure between two points</td></tr>
+          <tr><td>while measuring</td><td>click a point · right-drag orbit · middle-drag pan</td></tr>
+          <tr><td>Path / Area</td><td>use Finish or <kbd>Enter</kbd> after the last point</td></tr>
+          <tr><td><kbd>X</kbd> <kbd>Y</kbd> <kbd>Z</kbd></td><td>lock a measurement to one axis</td></tr>
+          <tr><td>alt+click</td><td>measure the size of one element</td></tr>
+          <tr><td>arrow keys</td><td>pan when the viewport is focused</td></tr>
+          <tr><td><kbd>?</kbd></td><td>open or close this controls guide</td></tr>
+          <tr><td><kbd>Esc</kbd></td><td>leave the active tool</td></tr>
+          <tr><td>tree click</td><td>select an element or branch</td></tr>
+          <tr><td>tree checkbox</td><td>hide or show a branch</td></tr>
+          <tr><td>top tool rail</td><td>visibility, views, section, measure, display and filters</td></tr>
+        </table>
+      </div>
+      <button id="panel-scrim" class="panel-scrim" tabindex="-1" hidden
+              aria-label="Close side panel"></button>
+    </section>
+
+    <div id="split-props" class="splitter" role="separator" aria-orientation="vertical"
+         aria-label="Resize properties" aria-controls="props-panel" tabindex="0"
+         title="Drag or use arrow keys to resize; Home resets"></div>
+    <aside id="props-panel" aria-labelledby="props-panel-title">
+      <div class="panel-title">
+        <span id="props-panel-title">Properties</span>
+        <button id="props-panel-close" class="panel-close" type="button"
+                aria-controls="props-panel" aria-label="Close properties panel"
+                title="Close properties panel">
+          <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
+            <path d="M4.5 4.5 11.5 11.5M11.5 4.5 4.5 11.5" stroke="currentColor"
+                  stroke-width="1.35" stroke-linecap="square"/>
+          </svg>
+        </button>
+      </div>
+      <div class="panel-body">
+        <div id="props"><p class="hint">Select an element to inspect its IFC data.</p></div>
+      </div>
+    </aside>
+    </div>
+  </main>
+
+  <footer id="statusbar">
+    <span id="sel-info" role="status" aria-live="polite" aria-atomic="true"
+          data-viewer-context="selection" data-selection-count="0"
+          title="The current selection is available to the assistant">No selection</span>
+    <span id="hl-info" role="status" aria-live="polite" aria-atomic="true"></span>
+    <!-- Hidden, isolated, cut and projected: the states the popover used to
+         keep to itself, with the controls that undo them. -->
+    <span id="vis-info">
+      <span id="vis-info-text" role="status" aria-live="polite" aria-atomic="true"></span>
+      <button id="vis-show-all" class="status-action" type="button" hidden
+              title="Show every element again">Show all</button>
+      <button id="vis-clear-section" class="status-action" type="button" hidden
+              title="Turn every section plane off">Clear cuts</button>
+    </span>
+    <span class="spacer"></span>
+    <span id="stats"></span>
+    <button id="btn-help" class="icon-btn" aria-expanded="false"
+            aria-controls="help-panel" aria-label="Viewer controls"
+            title="Viewer controls">
+      <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
+        <circle cx="8" cy="8" r="5.75" stroke="currentColor" stroke-width="1.25"/>
+        <path d="M8 7.2v3.5M8 5.1v.1" stroke="currentColor" stroke-width="1.5"
+              stroke-linecap="square"/>
+      </svg>
+    </button>
+  </footer>
+
+  <script type="module" src="/viewer/static/app.js"></script>
+</body>
+</html>

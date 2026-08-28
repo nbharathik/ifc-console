@@ -21,6 +21,7 @@ if TYPE_CHECKING:
     from ifc_console.app import AppCore
 
 KNOWLEDGE_ANN = ToolAnnotations(readOnlyHint=True, destructiveHint=False)
+MAX_PROJECT_REFERENCE_BYTES = 25 * 1024 * 1024
 
 _NOT_READY = (
     "The reference index is still building (it takes a few seconds on first "
@@ -173,7 +174,9 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
             {
                 "ready": core.project_knowledge.ready,
                 "files": rows,
-                "managed_directory": str(core.agent_files.directory),
+                "managed_directory": (
+                    str(core.agent_files.directory) if core.agent_files is not None else None
+                ),
             },
             core.session_meta(),
             char_limit=limit_,
@@ -219,10 +222,8 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
                 f"the indexed image {normalized!r} is no longer on disk.",
                 "Upload or copy it again, then refresh the agent references.",
             )
-        from ifc_console.agents.files import MAX_REFERENCE_BYTES
-
         size = target.stat().st_size
-        if size > MAX_REFERENCE_BYTES:
+        if size > MAX_PROJECT_REFERENCE_BYTES:
             raise ToolError(
                 "RESULT_TOO_LARGE",
                 f"{target.name} is larger than the 25 MB vision limit.",
@@ -298,12 +299,12 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
         try:
             import pymupdf
         except ImportError:
-            from ifc_console.agents.environment import missing_dependency_hint
+            from ifc_console.knowledge.dependencies import missing_document_dependency
 
             raise ToolError(
                 "EXTRA_NOT_INSTALLED",
                 "PDF page rendering needs the PyMuPDF package.",
-                missing_dependency_hint("PyMuPDF"),
+                missing_document_dependency("PyMuPDF"),
             ) from None
         try:
             document = pymupdf.open(target)

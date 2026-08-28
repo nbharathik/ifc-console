@@ -1,7 +1,8 @@
 # Operation plugins
 
-Plugins add trusted Python operations to the SDK, MCP server, CLI, and chat
-panel through one registration.
+Plugins add trusted Python operations to the SDK, MCP server, and CLI through
+one registration. They also appear in provider chat when the separate
+`ifc-console-agents` extension is installed.
 
 Use a plugin when an operation should appear everywhere. Use
 `FunctionToolSource` for one agent application, or a [workflow](workflows.md)
@@ -103,9 +104,15 @@ with Workbench.open("tower.ifc") as wb:
     result = wb.call("company_checks_status")
 ```
 
-The operation also appears through MCP and chat when its required capabilities
-are allowed. Use `tools(permitted_only=True)` when an agent should see only
-currently permitted operations.
+The operation also appears through MCP and, when `ifc-console-agents` is
+installed, provider chat when its required capabilities are allowed. Use
+`tools(permitted_only=True)` when an agent should see only currently permitted
+operations.
+
+Operation plugins and product extensions are separate contracts. Companion
+products such as the agent package register routes, state, and declarative
+browser panels through `ifc_console.extensions`; an operation plugin should not
+try to recreate that lifecycle.
 
 ## Cleanup and compatibility
 

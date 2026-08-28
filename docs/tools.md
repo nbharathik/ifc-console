@@ -50,6 +50,11 @@ The default page is 50 rows. IFC read operations accept an optional resident
 
 ## Knowledge and project evidence
 
+The built-in IFC reference and deterministic project index belong to
+`ifc-console`. Install `ifc-console-agents[documents]` when agents need PDF
+text extraction and page rendering; Markdown and plain-text indexing needs no
+LLM.
+
 | tool | purpose |
 | ---- | ------- |
 | `search_ifc_knowledge` | search IFC references, APIs, recipes, and project documents |
@@ -148,6 +153,7 @@ Host SDK/CLI: approve -> commit -> optional restore
 | tool | purpose |
 | ---- | ------- |
 | `preview_property_change` | preview one property value on selected elements |
+| `preview_property_changes` | preview up to 16 property values as one atomic ChangeSet |
 | `preview_classification_assignment` | preview a direct classification assignment |
 | `get_change_set` | inspect a revision-bound ChangeSet |
 | `list_ai_authored_properties` | inventory values under `IfcConsole_AI_` |
@@ -185,7 +191,9 @@ directory, model directory, or an explicitly allowed root.
 
 ## Agent skills
 
-Skills are Markdown procedures in `.ifc-console/agents/skills/`.
+Skills are Markdown procedures in `.ifc-console/agents/skills/`. These tools
+are registered by the optional `ifc-console-agents` distribution through the
+`ifc_console.extensions` entry-point group.
 
 | tool | purpose |
 | ---- | ------- |
@@ -195,8 +203,8 @@ Skills are Markdown procedures in `.ifc-console/agents/skills/`.
 
 ## Viewer operations
 
-Viewer operations remain discoverable even when assets or a browser tab are
-not ready:
+Viewer operations ship with `ifc-console` and remain discoverable before a
+browser tab is connected:
 
 | tool | purpose |
 | ---- | ------- |
@@ -209,8 +217,9 @@ not ready:
 | `control_viewer` | orient, section, select, focus, measure, and save viewpoints |
 
 The handlers report states such as `ready`, `call_open_viewer`,
-`waiting_for_viewer_tab`, `viewer_extra_missing`, and
-`unavailable_on_transport`. See [3D viewer](viewer.md).
+`waiting_for_viewer_tab`, and `unavailable_on_transport`. Missing assets mean
+the main package installation is incomplete; there is no viewer extra to add.
+See [3D viewer](viewer.md).
 
 ## Error codes
 

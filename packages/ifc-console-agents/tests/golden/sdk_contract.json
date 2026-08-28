@@ -1,0 +1,1332 @@
+{
+  "aliases": {
+    "AgentEventType": "Literal['run_started', 'text_delta', 'reasoning_delta', 'tool_call_started', 'tool_progress', 'approval_requested', 'approval_resolved', 'tool_call_finished', 'usage', 'run_completed', 'run_failed']",
+    "AgentRole": "Literal['user', 'assistant', 'tool']",
+    "ApprovalCallback": "collections.abc.Callable[[ifc_console_agents.models.ApprovalRequest], ifc_console_agents.models.ApprovalDecision | bool | collections.abc.Awaitable[ifc_console_agents.models.ApprovalDecision | bool]]"
+  },
+  "dataclasses": {},
+  "enums": {},
+  "exports": [
+    "Agent",
+    "AgentEvent",
+    "AgentEventType",
+    "AgentImage",
+    "AgentLimits",
+    "AgentMessage",
+    "AgentModel",
+    "AgentRole",
+    "AgentRunError",
+    "AgentRunResult",
+    "AgentToolCallRecord",
+    "AgentToolSource",
+    "AgentUsage",
+    "ApprovalCallback",
+    "ApprovalDecision",
+    "ApprovalHandler",
+    "ApprovalRequest",
+    "CallbackApprovalHandler",
+    "DenyAllApprovals",
+    "InMemoryThreadStore",
+    "JsonThreadStore",
+    "ProviderModel",
+    "ThreadStore",
+    "ThreadStoreError",
+    "__version__"
+  ],
+  "methods": {
+    "Agent": {
+      "run": {
+        "async": true,
+        "parameters": [
+          {
+            "annotation": "str",
+            "kind": "POSITIONAL_OR_KEYWORD",
+            "name": "prompt",
+            "required": true
+          },
+          {
+            "annotation": "str | None",
+            "default": "None",
+            "kind": "KEYWORD_ONLY",
+            "name": "thread_id"
+          },
+          {
+            "annotation": "Mapping[str, Any] | None",
+            "default": "None",
+            "kind": "KEYWORD_ONLY",
+            "name": "options"
+          },
+          {
+            "annotation": "type[BaseModel] | None",
+            "default": "None",
+            "kind": "KEYWORD_ONLY",
+            "name": "response_model"
+          },
+          {
+            "annotation": "Sequence[AgentImage | Mapping[str, str]] | None",
+            "default": "None",
+            "kind": "KEYWORD_ONLY",
+            "name": "images"
+          }
+        ],
+        "returns": "AgentRunResult"
+      },
+      "stream": {
+        "async": false,
+        "parameters": [
+          {
+            "annotation": "str",
+            "kind": "POSITIONAL_OR_KEYWORD",
+            "name": "prompt",
+            "required": true
+          },
+          {
+            "annotation": "str | None",
+            "default": "None",
+            "kind": "KEYWORD_ONLY",
+            "name": "thread_id"
+          },
+          {
+            "annotation": "Mapping[str, Any] | None",
+            "default": "None",
+            "kind": "KEYWORD_ONLY",
+            "name": "options"
+          },
+          {
+            "annotation": "Sequence[AgentImage | Mapping[str, str]] | None",
+            "default": "None",
+            "kind": "KEYWORD_ONLY",
+            "name": "images"
+          },
+          {
+            "annotation": "ApprovalHandler | None",
+            "default": "None",
+            "kind": "KEYWORD_ONLY",
+            "name": "approval_handler"
+          }
+        ],
+        "returns": "AsyncIterator[AgentEvent]"
+      }
+    },
+    "AgentToolSource": {
+      "aclose": {
+        "async": true,
+        "parameters": [],
+        "returns": "None"
+      },
+      "call_tool": {
+        "async": true,
+        "parameters": [
+          {
+            "annotation": "str",
+            "kind": "POSITIONAL_OR_KEYWORD",
+            "name": "name",
+            "required": true
+          },
+          {
+            "annotation": "Mapping[str, Any]",
+            "kind": "POSITIONAL_OR_KEYWORD",
+            "name": "arguments",
+            "required": true
+          }
+        ],
+        "returns": "dict[str, Any]"
+      },
+      "list_tools": {
+        "async": true,
+        "parameters": [],
+        "returns": "Sequence[ToolDefinition]"
+      }
+    },
+    "InMemoryThreadStore": {
+      "delete": {
+        "async": true,
+        "parameters": [
+          {
+            "annotation": "str",
+            "kind": "POSITIONAL_OR_KEYWORD",
+            "name": "thread_id",
+            "required": true
+          }
+        ],
+        "returns": "bool"
+      },
+      "list_threads": {
+        "async": true,
+        "parameters": [],
+        "returns": "tuple[str, ...]"
+      },
+      "load": {
+        "async": true,
+        "parameters": [
+          {
+            "annotation": "str",
+            "kind": "POSITIONAL_OR_KEYWORD",
+            "name": "thread_id",
+            "required": true
+          }
+        ],
+        "returns": "Sequence[AgentMessage]"
+      },
+      "save": {
+        "async": true,
+        "parameters": [
+          {
+            "annotation": "str",
+            "kind": "POSITIONAL_OR_KEYWORD",
+            "name": "thread_id",
+            "required": true
+          },
+          {
+            "annotation": "Sequence[AgentMessage]",
+            "kind": "POSITIONAL_OR_KEYWORD",
+            "name": "messages",
+            "required": true
+          }
+        ],
+        "returns": "None"
+      }
+    },
+    "JsonThreadStore": {
+      "delete": {
+        "async": true,
+        "parameters": [
+          {
+            "annotation": "str",
+            "kind": "POSITIONAL_OR_KEYWORD",
+            "name": "thread_id",
+            "required": true
+          }
+        ],
+        "returns": "bool"
+      },
+      "list_threads": {
+        "async": true,
+        "parameters": [],
+        "returns": "tuple[str, ...]"
+      },
+      "load": {
+        "async": true,
+        "parameters": [
+          {
+            "annotation": "str",
+            "kind": "POSITIONAL_OR_KEYWORD",
+            "name": "thread_id",
+            "required": true
+          }
+        ],
+        "returns": "Sequence[AgentMessage]"
+      },
+      "save": {
+        "async": true,
+        "parameters": [
+          {
+            "annotation": "str",
+            "kind": "POSITIONAL_OR_KEYWORD",
+            "name": "thread_id",
+            "required": true
+          },
+          {
+            "annotation": "Sequence[AgentMessage]",
+            "kind": "POSITIONAL_OR_KEYWORD",
+            "name": "messages",
+            "required": true
+          }
+        ],
+        "returns": "None"
+      }
+    },
+    "ProviderModel": {
+      "stream": {
+        "async": false,
+        "parameters": [
+          {
+            "annotation": "Sequence[AgentMessage]",
+            "kind": "KEYWORD_ONLY",
+            "name": "messages",
+            "required": true
+          },
+          {
+            "annotation": "Sequence[ToolDefinition]",
+            "kind": "KEYWORD_ONLY",
+            "name": "tools",
+            "required": true
+          },
+          {
+            "annotation": "str",
+            "kind": "KEYWORD_ONLY",
+            "name": "system",
+            "required": true
+          },
+          {
+            "annotation": "Mapping[str, Any]",
+            "kind": "KEYWORD_ONLY",
+            "name": "options",
+            "required": true
+          }
+        ],
+        "returns": "AsyncIterator[Mapping[str, Any]]"
+      }
+    }
+  },
+  "models": {
+    "AgentEvent": {
+      "$defs": {
+        "AgentImage": {
+          "description": "One image a message carries, as base64 without a data: prefix.",
+          "properties": {
+            "data": {
+              "minLength": 1,
+              "title": "Data",
+              "type": "string"
+            },
+            "media_type": {
+              "pattern": "^image/(png|jpeg|gif|webp)$",
+              "title": "Media Type",
+              "type": "string"
+            }
+          },
+          "required": [
+            "media_type",
+            "data"
+          ],
+          "title": "AgentImage",
+          "type": "object"
+        },
+        "AgentMessage": {
+          "description": "Provider-neutral conversation message, including tool round state.",
+          "properties": {
+            "images": {
+              "default": [],
+              "items": {
+                "$ref": "#/$defs/AgentImage"
+              },
+              "title": "Images",
+              "type": "array"
+            },
+            "name": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Name"
+            },
+            "role": {
+              "enum": [
+                "user",
+                "assistant",
+                "tool"
+              ],
+              "title": "Role",
+              "type": "string"
+            },
+            "text": {
+              "default": "",
+              "title": "Text",
+              "type": "string"
+            },
+            "tool_call_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Tool Call Id"
+            },
+            "tool_calls": {
+              "default": [],
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "title": "Tool Calls",
+              "type": "array"
+            }
+          },
+          "required": [
+            "role"
+          ],
+          "title": "AgentMessage",
+          "type": "object"
+        },
+        "AgentProgress": {
+          "description": "How far a still-running tool call has got.\n\nA ten-second tool is indistinguishable from a hang unless it says so, and\n``elapsed_s`` alone already tells the reader the run is alive.",
+          "properties": {
+            "done": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Done",
+              "type": "integer"
+            },
+            "elapsed_s": {
+              "default": 0.0,
+              "minimum": 0,
+              "title": "Elapsed S",
+              "type": "number"
+            },
+            "note": {
+              "default": "",
+              "title": "Note",
+              "type": "string"
+            },
+            "total": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Total"
+            }
+          },
+          "title": "AgentProgress",
+          "type": "object"
+        },
+        "AgentRunResult": {
+          "properties": {
+            "data": {
+              "default": null,
+              "title": "Data"
+            },
+            "error": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Error"
+            },
+            "messages": {
+              "items": {
+                "$ref": "#/$defs/AgentMessage"
+              },
+              "title": "Messages",
+              "type": "array"
+            },
+            "run_id": {
+              "title": "Run Id",
+              "type": "string"
+            },
+            "stopped_reason": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "tool_budget",
+                    "round_budget"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Stopped Reason"
+            },
+            "text": {
+              "title": "Text",
+              "type": "string"
+            },
+            "thread_id": {
+              "title": "Thread Id",
+              "type": "string"
+            },
+            "tool_calls": {
+              "default": [],
+              "items": {
+                "$ref": "#/$defs/AgentToolCallRecord"
+              },
+              "title": "Tool Calls",
+              "type": "array"
+            },
+            "usage": {
+              "$ref": "#/$defs/AgentUsage"
+            }
+          },
+          "required": [
+            "run_id",
+            "thread_id",
+            "text",
+            "messages"
+          ],
+          "title": "AgentRunResult",
+          "type": "object"
+        },
+        "AgentToolCallRecord": {
+          "properties": {
+            "arguments": {
+              "additionalProperties": true,
+              "title": "Arguments",
+              "type": "object"
+            },
+            "id": {
+              "title": "Id",
+              "type": "string"
+            },
+            "name": {
+              "title": "Name",
+              "type": "string"
+            },
+            "ok": {
+              "title": "Ok",
+              "type": "boolean"
+            },
+            "result": {
+              "additionalProperties": true,
+              "title": "Result",
+              "type": "object"
+            },
+            "summary": {
+              "title": "Summary",
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "name",
+            "arguments",
+            "ok",
+            "summary",
+            "result"
+          ],
+          "title": "AgentToolCallRecord",
+          "type": "object"
+        },
+        "AgentUsage": {
+          "properties": {
+            "input_tokens": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Input Tokens"
+            },
+            "output_tokens": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Output Tokens"
+            }
+          },
+          "title": "AgentUsage",
+          "type": "object"
+        },
+        "ApprovalDecision": {
+          "properties": {
+            "approved": {
+              "title": "Approved",
+              "type": "boolean"
+            },
+            "decided_by": {
+              "default": "application",
+              "title": "Decided By",
+              "type": "string"
+            },
+            "reason": {
+              "default": "",
+              "title": "Reason",
+              "type": "string"
+            }
+          },
+          "required": [
+            "approved"
+          ],
+          "title": "ApprovalDecision",
+          "type": "object"
+        },
+        "ApprovalRequest": {
+          "description": "A caller-owned decision requested before a protected tool executes.",
+          "properties": {
+            "arguments": {
+              "additionalProperties": true,
+              "title": "Arguments",
+              "type": "object"
+            },
+            "created_at": {
+              "format": "date-time",
+              "title": "Created At",
+              "type": "string"
+            },
+            "request_id": {
+              "title": "Request Id",
+              "type": "string"
+            },
+            "required_capabilities": {
+              "default": [],
+              "items": {
+                "type": "string"
+              },
+              "title": "Required Capabilities",
+              "type": "array"
+            },
+            "run_id": {
+              "title": "Run Id",
+              "type": "string"
+            },
+            "thread_id": {
+              "title": "Thread Id",
+              "type": "string"
+            },
+            "tool_call_id": {
+              "title": "Tool Call Id",
+              "type": "string"
+            },
+            "tool_name": {
+              "title": "Tool Name",
+              "type": "string"
+            }
+          },
+          "required": [
+            "request_id",
+            "run_id",
+            "thread_id",
+            "tool_call_id",
+            "tool_name",
+            "arguments"
+          ],
+          "title": "ApprovalRequest",
+          "type": "object"
+        }
+      },
+      "description": "One discriminated streaming event emitted by an agent run.",
+      "properties": {
+        "approval": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ApprovalRequest"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "arguments": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Arguments"
+        },
+        "created_at": {
+          "format": "date-time",
+          "title": "Created At",
+          "type": "string"
+        },
+        "decision": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ApprovalDecision"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "depth": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Depth",
+          "type": "integer"
+        },
+        "parent_run_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Parent Run Id"
+        },
+        "progress": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AgentProgress"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "result": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Result"
+        },
+        "run_id": {
+          "title": "Run Id",
+          "type": "string"
+        },
+        "run_result": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AgentRunResult"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "text": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Text"
+        },
+        "thread_id": {
+          "title": "Thread Id",
+          "type": "string"
+        },
+        "tool_call_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tool Call Id"
+        },
+        "tool_name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tool Name"
+        },
+        "type": {
+          "enum": [
+            "run_started",
+            "text_delta",
+            "reasoning_delta",
+            "tool_call_started",
+            "tool_progress",
+            "approval_requested",
+            "approval_resolved",
+            "tool_call_finished",
+            "usage",
+            "run_completed",
+            "run_failed"
+          ],
+          "title": "Type",
+          "type": "string"
+        },
+        "usage": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AgentUsage"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "type",
+        "run_id",
+        "thread_id"
+      ],
+      "title": "AgentEvent",
+      "type": "object"
+    },
+    "AgentImage": {
+      "description": "One image a message carries, as base64 without a data: prefix.",
+      "properties": {
+        "data": {
+          "minLength": 1,
+          "title": "Data",
+          "type": "string"
+        },
+        "media_type": {
+          "pattern": "^image/(png|jpeg|gif|webp)$",
+          "title": "Media Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "media_type",
+        "data"
+      ],
+      "title": "AgentImage",
+      "type": "object"
+    },
+    "AgentLimits": {
+      "description": "Hard limits for one run.",
+      "properties": {
+        "approval_timeout_s": {
+          "default": 3600.0,
+          "exclusiveMinimum": 0,
+          "maximum": 86400,
+          "title": "Approval Timeout S",
+          "type": "number"
+        },
+        "max_tool_calls": {
+          "default": 32,
+          "maximum": 1000,
+          "minimum": 0,
+          "title": "Max Tool Calls",
+          "type": "integer"
+        },
+        "max_tool_result_chars": {
+          "default": 12000,
+          "maximum": 1000000,
+          "minimum": 512,
+          "title": "Max Tool Result Chars",
+          "type": "integer"
+        },
+        "max_tool_rounds": {
+          "default": 8,
+          "maximum": 100,
+          "minimum": 1,
+          "title": "Max Tool Rounds",
+          "type": "integer"
+        },
+        "parallel_read_only": {
+          "default": true,
+          "title": "Parallel Read Only",
+          "type": "boolean"
+        },
+        "timeout_s": {
+          "default": 600.0,
+          "exclusiveMinimum": 0,
+          "maximum": 86400,
+          "title": "Timeout S",
+          "type": "number"
+        }
+      },
+      "title": "AgentLimits",
+      "type": "object"
+    },
+    "AgentMessage": {
+      "$defs": {
+        "AgentImage": {
+          "description": "One image a message carries, as base64 without a data: prefix.",
+          "properties": {
+            "data": {
+              "minLength": 1,
+              "title": "Data",
+              "type": "string"
+            },
+            "media_type": {
+              "pattern": "^image/(png|jpeg|gif|webp)$",
+              "title": "Media Type",
+              "type": "string"
+            }
+          },
+          "required": [
+            "media_type",
+            "data"
+          ],
+          "title": "AgentImage",
+          "type": "object"
+        }
+      },
+      "description": "Provider-neutral conversation message, including tool round state.",
+      "properties": {
+        "images": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/AgentImage"
+          },
+          "title": "Images",
+          "type": "array"
+        },
+        "name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Name"
+        },
+        "role": {
+          "enum": [
+            "user",
+            "assistant",
+            "tool"
+          ],
+          "title": "Role",
+          "type": "string"
+        },
+        "text": {
+          "default": "",
+          "title": "Text",
+          "type": "string"
+        },
+        "tool_call_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tool Call Id"
+        },
+        "tool_calls": {
+          "default": [],
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "Tool Calls",
+          "type": "array"
+        }
+      },
+      "required": [
+        "role"
+      ],
+      "title": "AgentMessage",
+      "type": "object"
+    },
+    "AgentRunResult": {
+      "$defs": {
+        "AgentImage": {
+          "description": "One image a message carries, as base64 without a data: prefix.",
+          "properties": {
+            "data": {
+              "minLength": 1,
+              "title": "Data",
+              "type": "string"
+            },
+            "media_type": {
+              "pattern": "^image/(png|jpeg|gif|webp)$",
+              "title": "Media Type",
+              "type": "string"
+            }
+          },
+          "required": [
+            "media_type",
+            "data"
+          ],
+          "title": "AgentImage",
+          "type": "object"
+        },
+        "AgentMessage": {
+          "description": "Provider-neutral conversation message, including tool round state.",
+          "properties": {
+            "images": {
+              "default": [],
+              "items": {
+                "$ref": "#/$defs/AgentImage"
+              },
+              "title": "Images",
+              "type": "array"
+            },
+            "name": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Name"
+            },
+            "role": {
+              "enum": [
+                "user",
+                "assistant",
+                "tool"
+              ],
+              "title": "Role",
+              "type": "string"
+            },
+            "text": {
+              "default": "",
+              "title": "Text",
+              "type": "string"
+            },
+            "tool_call_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Tool Call Id"
+            },
+            "tool_calls": {
+              "default": [],
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "title": "Tool Calls",
+              "type": "array"
+            }
+          },
+          "required": [
+            "role"
+          ],
+          "title": "AgentMessage",
+          "type": "object"
+        },
+        "AgentToolCallRecord": {
+          "properties": {
+            "arguments": {
+              "additionalProperties": true,
+              "title": "Arguments",
+              "type": "object"
+            },
+            "id": {
+              "title": "Id",
+              "type": "string"
+            },
+            "name": {
+              "title": "Name",
+              "type": "string"
+            },
+            "ok": {
+              "title": "Ok",
+              "type": "boolean"
+            },
+            "result": {
+              "additionalProperties": true,
+              "title": "Result",
+              "type": "object"
+            },
+            "summary": {
+              "title": "Summary",
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "name",
+            "arguments",
+            "ok",
+            "summary",
+            "result"
+          ],
+          "title": "AgentToolCallRecord",
+          "type": "object"
+        },
+        "AgentUsage": {
+          "properties": {
+            "input_tokens": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Input Tokens"
+            },
+            "output_tokens": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Output Tokens"
+            }
+          },
+          "title": "AgentUsage",
+          "type": "object"
+        }
+      },
+      "properties": {
+        "data": {
+          "default": null,
+          "title": "Data"
+        },
+        "error": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Error"
+        },
+        "messages": {
+          "items": {
+            "$ref": "#/$defs/AgentMessage"
+          },
+          "title": "Messages",
+          "type": "array"
+        },
+        "run_id": {
+          "title": "Run Id",
+          "type": "string"
+        },
+        "stopped_reason": {
+          "anyOf": [
+            {
+              "enum": [
+                "tool_budget",
+                "round_budget"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Stopped Reason"
+        },
+        "text": {
+          "title": "Text",
+          "type": "string"
+        },
+        "thread_id": {
+          "title": "Thread Id",
+          "type": "string"
+        },
+        "tool_calls": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/AgentToolCallRecord"
+          },
+          "title": "Tool Calls",
+          "type": "array"
+        },
+        "usage": {
+          "$ref": "#/$defs/AgentUsage"
+        }
+      },
+      "required": [
+        "run_id",
+        "thread_id",
+        "text",
+        "messages"
+      ],
+      "title": "AgentRunResult",
+      "type": "object"
+    },
+    "AgentToolCallRecord": {
+      "properties": {
+        "arguments": {
+          "additionalProperties": true,
+          "title": "Arguments",
+          "type": "object"
+        },
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "ok": {
+          "title": "Ok",
+          "type": "boolean"
+        },
+        "result": {
+          "additionalProperties": true,
+          "title": "Result",
+          "type": "object"
+        },
+        "summary": {
+          "title": "Summary",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "arguments",
+        "ok",
+        "summary",
+        "result"
+      ],
+      "title": "AgentToolCallRecord",
+      "type": "object"
+    },
+    "AgentUsage": {
+      "properties": {
+        "input_tokens": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Input Tokens"
+        },
+        "output_tokens": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Output Tokens"
+        }
+      },
+      "title": "AgentUsage",
+      "type": "object"
+    },
+    "ApprovalDecision": {
+      "properties": {
+        "approved": {
+          "title": "Approved",
+          "type": "boolean"
+        },
+        "decided_by": {
+          "default": "application",
+          "title": "Decided By",
+          "type": "string"
+        },
+        "reason": {
+          "default": "",
+          "title": "Reason",
+          "type": "string"
+        }
+      },
+      "required": [
+        "approved"
+      ],
+      "title": "ApprovalDecision",
+      "type": "object"
+    },
+    "ApprovalRequest": {
+      "description": "A caller-owned decision requested before a protected tool executes.",
+      "properties": {
+        "arguments": {
+          "additionalProperties": true,
+          "title": "Arguments",
+          "type": "object"
+        },
+        "created_at": {
+          "format": "date-time",
+          "title": "Created At",
+          "type": "string"
+        },
+        "request_id": {
+          "title": "Request Id",
+          "type": "string"
+        },
+        "required_capabilities": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Required Capabilities",
+          "type": "array"
+        },
+        "run_id": {
+          "title": "Run Id",
+          "type": "string"
+        },
+        "thread_id": {
+          "title": "Thread Id",
+          "type": "string"
+        },
+        "tool_call_id": {
+          "title": "Tool Call Id",
+          "type": "string"
+        },
+        "tool_name": {
+          "title": "Tool Name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "request_id",
+        "run_id",
+        "thread_id",
+        "tool_call_id",
+        "tool_name",
+        "arguments"
+      ],
+      "title": "ApprovalRequest",
+      "type": "object"
+    }
+  },
+  "optional_exports": [],
+  "version": "0.1.4"
+}

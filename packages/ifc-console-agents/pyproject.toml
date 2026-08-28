@@ -1,0 +1,78 @@
+[build-system]
+requires = ["hatchling==1.31.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "ifc-console-agents"
+dynamic = ["version"]
+description = "Optional agent SDK, LLM chat, and browser panel for IFC Console."
+readme = "README.md"
+requires-python = ">=3.10,<3.15"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [{ name = "nbharathik" }]
+keywords = ["ifc", "bim", "agents", "llm", "mcp", "openbim"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Typing :: Typed",
+    "Topic :: Scientific/Engineering",
+]
+dependencies = [
+    "ifc-console>=0.1.4,<0.2",
+    "keyring>=24",
+    "pydantic>=2.7,<3",
+    "starlette>=0.37",
+    "typing-extensions>=4.12",
+]
+
+[project.optional-dependencies]
+documents = [
+    "pypdf>=4",
+    "PyMuPDF>=1.24,<2",
+]
+graph = [
+    "langgraph>=1,<2",
+    "langgraph-checkpoint-sqlite>=3,<4",
+]
+full = [
+    "pypdf>=4",
+    "PyMuPDF>=1.24,<2",
+    "langgraph>=1,<2",
+    "langgraph-checkpoint-sqlite>=3,<4",
+]
+
+[project.urls]
+Homepage = "https://github.com/nbharathik/ifc-console"
+Documentation = "https://nbharathik.github.io/ifc-console/"
+Repository = "https://github.com/nbharathik/ifc-console"
+Issues = "https://github.com/nbharathik/ifc-console/issues"
+
+[project.entry-points."ifc_console.extensions"]
+agents = "ifc_console_agents.extension:AgentExtension"
+
+[tool.hatch.version]
+path = "src/ifc_console_agents/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ifc_console_agents"]
+
+[tool.uv.sources]
+ifc-console = { workspace = true }
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM"]
+ignore = ["E501"]

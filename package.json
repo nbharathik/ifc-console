@@ -6,6 +6,6 @@
     "dev": "uv run --frozen ifc-console dev --open chat",
     "harness": "uv run --frozen ifc-console dev --open none",
     "check": "uv run --frozen ifc-console dev --fresh --check",
-    "test": "uv run --frozen --no-sync pytest -q tests/unit/test_ui_modules.py tests/unit/test_viewer_assets.py tests/unit/test_devkit.py"
+    "test": "uv run --frozen --no-sync pytest -q tests/unit/test_ui_modules.py tests/unit/test_viewer_assets.py packages/ifc-console-agents/tests/unit/test_browser_panel_modules.py packages/ifc-console-agents/tests/unit/test_browser_panel_assets.py packages/ifc-console-agents/tests/unit/test_devkit.py"
   }
 }

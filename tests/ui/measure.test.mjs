@@ -29,7 +29,7 @@ import {
   unionBoxCorners,
   unitForFile,
   unitOf,
-} from "../../packages/ifc-console-viewer/src/ifc_console_viewer/static/measure_math.js";
+} from "../../src/ifc_console/viewer/static/measure_math.js";
 
 const near = (actual, expected, tolerance = 1e-9) => {
   assert.ok(

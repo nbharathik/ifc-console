@@ -1,12 +1,13 @@
 # Knowledge index
 
-An offline reference the LLM can search before it writes code or a selector.
-It exists because the most common failure mode is a plausible guess: a property
-set that does not exist, an API function with the wrong name, a property on the
-wrong entity.
+An offline, deterministic reference available from the console, SDK, and MCP.
+An LLM can search it before writing code or a selector, but building and
+querying the index does not require one. It exists because the most common
+failure mode is a plausible guess: a property set that does not exist, an API
+function with the wrong name, or a property on the wrong entity.
 
-Everything indexed here already ships inside the ifcopenshell package you
-installed. Nothing is downloaded, nothing is sent anywhere, and the index works
+Everything in the built-in corpus already ships inside the ifcopenshell package
+you installed. Nothing is downloaded or sent anywhere, and the index works
 with no network at all.
 
 ## What is in it
@@ -74,6 +75,14 @@ per-project corpus answers "what does our company say": measurement
 conventions, submission requirements, naming rules, delivered as the
 documents they already live in.
 
+Markdown, plain text, and images work with the core installation. Add the
+agents distribution's document support for PDF text and page rendering:
+
+```bash
+pip install "ifc-console-agents[documents]"
+# uv tool: uv tool install --with "ifc-console-agents[documents]" ifc-console
+```
+
 ```bash
 ifc-console knowledge ingest docs/ QS-Manual.pdf
 ifc-console knowledge ingest --replace docs/
@@ -81,9 +90,10 @@ ifc-console knowledge ingest --replace docs/
 
 Markdown and plain text index natively, split per heading section. PDF text
 indexes per page with `pypdf`, and any page can be rendered with PyMuPDF for a
-vision model to inspect drawings, tables, or scans. Both dependencies ship in
-the base package because the built-in agents rely on them. Scanned PDFs carry
-no searchable text and are reported as visual-only rather than OCRed. Images
+vision model to inspect drawings, tables, or scans. Those two dependencies are
+provided by `ifc-console-agents[documents]`, not the base agent install.
+Scanned PDFs carry no searchable text and are reported as visual-only rather
+than OCRed. Images
 (png, jpg) are registered so search can find and cite them, while their pixels
 remain on disk until a vision turn needs them. From the SDK the same ingestion
 is `wb.ingest_docs(paths, replace=False)` and page rendering is
@@ -108,9 +118,10 @@ search hits, and the standing rule tells the model to report such text, not
 follow it. And the model can only search; adding or changing documents is
 yours.
 
-[Measurement recipes](agents.md#measurement-recipes) build on this
-corpus: YAML files under `.ifc-console/recipes/` pin the exact method a
-measurement uses and are indexed here beside the documents they cite.
+[Measurement recipes](agents.md#measurement-recipes) from the optional agent
+product build on this corpus: YAML files under `.ifc-console/recipes/` pin the
+exact method a measurement uses and are indexed here beside the documents they
+cite.
 
 Applications can build corpora of their own with the same machinery:
 `ifc_console.knowledge` exports `Record` (the one shape every corpus

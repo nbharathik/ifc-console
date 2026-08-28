@@ -1088,7 +1088,16 @@ class AsyncWorkbench:
         {"text", "tool_calls", "usage", "turns"}; pass on_event to watch the
         stream as it happens.
         """
-        from ifc_console.chat.agent import converse
+        try:
+            from ifc_console_agents.chat.agent import converse
+        except ModuleNotFoundError as exc:
+            if exc.name != "ifc_console_agents":
+                raise
+            raise IfcConsoleError(
+                "EXTRA_NOT_INSTALLED",
+                "LLM conversations are provided by ifc-console-agents",
+                "Install ifc-console-agents and retry.",
+            ) from exc
 
         turns = list(history or []) + [{"role": "user", "text": prompt}]
         parts: list[str] = []

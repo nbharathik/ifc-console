@@ -12,6 +12,14 @@ from typing import Any
 from pydantic import BaseModel
 
 SDK_GOLDEN_PATH = Path(__file__).parent / "golden" / "sdk_contract.json"
+AGENT_SDK_GOLDEN_PATH = (
+    Path(__file__).parent.parent
+    / "packages"
+    / "ifc-console-agents"
+    / "tests"
+    / "golden"
+    / "sdk_contract.json"
+)
 
 
 def _annotation(value: Any) -> str:
@@ -67,19 +75,23 @@ def _dataclass_contract(owner: type[Any]) -> list[dict[str, Any]]:
     return fields
 
 
-def build_sdk_contract() -> dict[str, Any]:
-    import ifc_console
-
-    exports = sorted(ifc_console.__all__)
+def _build_module_contract(
+    module: Any,
+    method_owners: tuple[type[Any], ...],
+    *,
+    optional_exports: tuple[str, ...] = (),
+) -> dict[str, Any]:
+    exports = sorted(module.__all__)
+    optional = set(optional_exports)
     models: dict[str, Any] = {}
     enums: dict[str, Any] = {}
     dataclasses_: dict[str, Any] = {}
     aliases: dict[str, str] = {}
 
     for name in exports:
-        if name == "__version__":
+        if name == "__version__" or name in optional:
             continue
-        value = getattr(ifc_console, name)
+        value = getattr(module, name)
         if inspect.isclass(value) and issubclass(value, BaseModel):
             models[name] = value.model_json_schema()
         elif inspect.isclass(value) and issubclass(value, enum.Enum):
@@ -89,6 +101,23 @@ def build_sdk_contract() -> dict[str, Any]:
         elif not inspect.isclass(value):
             aliases[name] = _annotation(value)
 
+    return {
+        "version": module.__version__,
+        "exports": exports,
+        "optional_exports": sorted(optional),
+        "aliases": aliases,
+        "dataclasses": dataclasses_,
+        "enums": enums,
+        "methods": {owner.__name__: _method_contract(owner) for owner in method_owners},
+        "models": models,
+    }
+
+
+def build_sdk_contract() -> dict[str, Any]:
+    """Snapshot core without importing the optional agents distribution."""
+    import ifc_console
+
+    optional = tuple(sorted(ifc_console._AGENT_EXPORTS))
     method_owners = (
         ifc_console.Workbench,
         ifc_console.AsyncWorkbench,
@@ -100,22 +129,27 @@ def build_sdk_contract() -> dict[str, Any]:
         ifc_console.Toolset,
         ifc_console.FunctionToolSource,
         ifc_console.McpToolSource,
-        ifc_console.Agent,
-        ifc_console.AgentToolSource,
-        ifc_console.ProviderModel,
-        ifc_console.InMemoryThreadStore,
-        ifc_console.JsonThreadStore,
         ifc_console.EmbeddedWebApp,
     )
-    return {
-        "version": ifc_console.__version__,
-        "exports": exports,
-        "aliases": aliases,
-        "dataclasses": dataclasses_,
-        "enums": enums,
-        "methods": {owner.__name__: _method_contract(owner) for owner in method_owners},
-        "models": models,
-    }
+    return _build_module_contract(
+        ifc_console,
+        method_owners,
+        optional_exports=optional,
+    )
+
+
+def build_agent_sdk_contract() -> dict[str, Any]:
+    """Snapshot the canonical agent SDK independently of core compatibility."""
+    import ifc_console_agents
+
+    method_owners = (
+        ifc_console_agents.Agent,
+        ifc_console_agents.AgentToolSource,
+        ifc_console_agents.ProviderModel,
+        ifc_console_agents.InMemoryThreadStore,
+        ifc_console_agents.JsonThreadStore,
+    )
+    return _build_module_contract(ifc_console_agents, method_owners)
 
 
 def dump_sdk_contract(contract: dict[str, Any]) -> str:

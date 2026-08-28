@@ -1,13 +1,14 @@
 # 3D viewer
 
-The optional browser viewer shows geometry, properties, selections, and AI
-highlights. It runs on localhost.
+The bundled browser viewer shows geometry, properties, selections, highlights,
+and measurements. It runs on localhost and needs no LLM, provider account, or
+API key.
 
 ## Install and open
 
 ```bash
-uv tool install "ifc-console[viewer]"
-# or: pip install "ifc-console[viewer]"
+uv tool install ifc-console
+# or: pip install ifc-console
 ```
 
 Open a model, then run `/viewer`.
@@ -19,8 +20,10 @@ Open a model, then run `/viewer`.
 | `/viewer off` | close tabs and remove viewer tools |
 | `ifc-console --viewer` | enable it at startup |
 
-The core console works without the viewer package. `ifc-console doctor` reports
-whether its assets are installed.
+The browser assets, Three.js, web-ifc, and WASM ship in `ifc-console` itself.
+`ifc-console doctor` treats missing viewer assets as a damaged installation.
+The legacy `ifc-console[viewer]` extra and `ifc-console-viewer` distribution are
+one-release compatibility no-ops/shims; do not use them for new installs.
 
 stdio-only sessions have no HTTP server and therefore no viewer. Use the
 interactive console or `--no-tui`.
@@ -28,11 +31,15 @@ interactive console or `--no-tui`.
 ## Layout
 
 ```text
-+-- Agent --+-- IFC file tabs --+-- viewer tools / settings --+
-| spatial tree  | 3D canvas                                      | properties   |
-| and search    | persistent floating tool panels                | psets, qtos  |
-+---------------+------------------------------------------------+--------------+
++-- IFC file tabs -------------------- viewer tools / settings --+
+| spatial tree  | 3D canvas                              | properties   |
+| and search    | persistent floating tool panels        | psets, qtos  |
++---------------+----------------------------------------+--------------+
 ```
+
+With `ifc-console-agents` installed, the agent extension adds its panel to the
+workspace. Its JavaScript and CSS load lazily only when the extension is
+available and the panel is opened; the core-only viewer has no empty Agent tab.
 
 | action | control |
 | ------ | ------- |
@@ -57,18 +64,18 @@ interactive console or `--no-tui`.
 
 The viewer help button lists all mouse and keyboard controls.
 
-GlobalIds in Agent answers and tool results are live links into the model.
+GlobalIds in optional Agent answers and tool results are live links into the model.
 Clicking one opens the IFC surface, finds the attached model that contains it,
 selects the element, and frames it. Drag-select a GlobalId in the transcript
 and press ++i++ to open its IFC and isolate it; ++i++ also isolates the most
 recently clicked GlobalId when focus is outside a text field.
 
-Agent is the fixed first workspace tab and cannot be closed. Every IFC tab can
-close, including the last one: the Agent then uses the full workspace without a
-hidden 3D surface. Click the `>_ ifc-console` mark to return to that Agent-only
-view, **Open active IFC** to restore the console's active model, or `+` to choose
-any attached IFC file. Viewer settings sit at the right end of the viewer tool
-rail, so settings apply to the viewer surface rather than the agent window.
+When the agent extension is installed, its panel can remain open while every
+IFC tab closes. Click the `>_ ifc-console` mark to return to that panel-only
+view, **Open active IFC** to restore the console's active model, or `+` to
+choose any attached IFC file. Without the extension, IFC tabs remain the whole
+workspace. Viewer settings sit at the right end of the viewer tool rail, so
+they apply to the viewer surface rather than an optional panel.
 
 Search accepts ordinary text or IfcOpenShell selectors:
 
@@ -108,10 +115,11 @@ measurements for the session. Each parsed IFC revision stays in browser memory,
 so returning to a tab skips the download and WebAssembly parse. The viewer
 renders one model at a time; it does not create a federated overlay.
 
-## AI tools
+## MCP viewer tools
 
-Six viewport tools plus the launcher are always present in the shared agent and
-MCP catalog:
+Six viewport tools plus the launcher are always present in the core MCP
+catalog. External MCP clients can use them without an LLM inside IFC Console;
+installed agent packs consume the same tools:
 
 | tool | use |
 | ---- | --- |
@@ -124,7 +132,7 @@ MCP catalog:
 
 With several IFC files attached, `get_viewer_selection` returns a `selections`
 row for every IFC that has selected elements, while its compatibility fields
-describe the tab currently on screen. The Agent panel shows one selection chip
+describe the tab currently on screen. The optional Agent panel shows one selection chip
 per IFC and sends all of those model-scoped GlobalIds with the next message.
 Pass a selected `model_id` to `control_viewer`, `highlight_elements`,
 `apply_color_theme`, or `get_viewer_screenshot` when the target must be

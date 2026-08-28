@@ -495,7 +495,6 @@ def build_operations(core: AppCore) -> OperationService:
         tools_insight,
         tools_knowledge,
         tools_query,
-        tools_skills,
         tools_viewer,
         tools_workspace,
     )
@@ -509,12 +508,12 @@ def build_operations(core: AppCore) -> OperationService:
     tools_exec.register(registry, core)
     tools_files.register(registry, core)
     tools_workspace.register(registry, core)
-    tools_skills.register(registry, core)
     # Viewer operations stay in every interface. Their handlers report live
-    # readiness, and open_viewer can activate the optional browser surface.
+    # readiness, and open_viewer can activate the bundled browser surface.
     tools_viewer.register_launcher(registry, core)
     jobs.register(registry, core)
     changes.register(registry, core)
+    core.extensions.register_operations(registry)
     core.plugins.load_configured(core, registry)
     core._operations_registered = True
     core._sync_viewer_tools()

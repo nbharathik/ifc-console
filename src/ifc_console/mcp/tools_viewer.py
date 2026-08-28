@@ -1,6 +1,6 @@
 """Viewer tools: selection, highlight, screenshot, viewport control.
 
-The tools are registered on every interface even while the optional viewer is
+The tools are registered on every interface even while the bundled viewer is
 off. This stable catalog matters for MCP clients that cache ``tools/list``:
 ``open_viewer`` can activate the web surface and the same connection can then
 control it without reconnecting.
@@ -356,13 +356,7 @@ def register_launcher(mcp: OperationRegistry, core: AppCore) -> None:
                 "`ifc-console serve --http` and connect over HTTP; the viewer "
                 "needs the HTTP surface.",
             )
-        if not core.enable_viewer():
-            raise ToolError(
-                "EXTRA_NOT_INSTALLED",
-                "the viewer asset bundle is not installed.",
-                "Ask the user to install the viewer extra "
-                "(`pip install 'ifc-console[viewer]'`) and restart.",
-            )
+        core.enable_viewer()
         opened = False
         if open_browser and not core.viewer_hub.connected:
             import webbrowser

@@ -29,10 +29,10 @@ from ifc_console.application.retention import ArtifactRetentionService
 from ifc_console.application.transactions import TransactionService
 from ifc_console.application.workflows import WorkflowService
 from ifc_console.audit import AuditLog
-from ifc_console.chat import ChatState
 from ifc_console.core.operations import OperationRegistry
 from ifc_console.core.results import ToolError
 from ifc_console.events import EventBus
+from ifc_console.extensions import AssistantState, ExtensionManager
 from ifc_console.knowledge import KnowledgeBase
 from ifc_console.plugins import PluginManager
 from ifc_console.policy.modes import Mode, PolicyEngine
@@ -69,6 +69,7 @@ class AppCore:
         transport: str = "http",
         viewer: bool | None = None,
         chat: bool | None = None,
+        extension_manager: ExtensionManager | None = None,
     ) -> None:
         store.ensure_dirs()
         self.store = store
@@ -108,7 +109,7 @@ class AppCore:
         self.port = port if port is not None else s.server.port
         self.transport = transport
         self.viewer = ViewerState()
-        self.chat = ChatState(
+        self.chat = AssistantState(
             provider=s.chat.provider, model=s.chat.model, base_url=s.chat.base_url
         )
         self.viewer_hub = ViewerHub(self)
@@ -116,11 +117,10 @@ class AppCore:
         self.knowledge = KnowledgeBase(store.home, schemas=tuple(s.knowledge.schemas))
         self._knowledge_thread: threading.Thread | None = None
         self._project_knowledge = None
-        from ifc_console.agents.files import AgentReferenceStore
-        from ifc_console.agents.packs import AgentPackRegistry
-
-        self.agent_packs = AgentPackRegistry(self.store.project_dir)
-        self.agent_files = AgentReferenceStore(self.store.project_dir)
+        # Optional product extensions own their state. These compatibility
+        # attributes are populated by ifc-console-agents when it is installed.
+        self.agent_packs = None
+        self.agent_files = None
         self.agent_panel = None  # created by the panel routes on first use
         self.server_running = False
         # Why the last start attempt failed, so /viewer and /chat can say more
@@ -132,6 +132,10 @@ class AppCore:
         self.workspace_id = f"workspace-{secrets.token_hex(8)}"
         self.operations = OperationRegistry()
         self.plugins = PluginManager()
+        # Embedders and contract tests may supply an explicit manager. An
+        # empty manager is the supported way to guarantee a core-only host
+        # even when companion distributions are installed in the interpreter.
+        self.extensions = extension_manager or ExtensionManager()
         self.operation_service = OperationService(self, self.operations)
         self.tool_functions = self.operations.handlers
         self._operations_registered = False
@@ -186,6 +190,18 @@ class AppCore:
         # even when broader directories are allowed for MCP/tool access.
         self.launch_dir = Path.cwd().resolve()
 
+        self.allowed_dirs: list[Path] = []
+        for d in s.files.allowed_dirs:
+            self.add_allowed_dir(Path(d))
+        for d in extra_allowed_dirs:
+            self.add_allowed_dir(d)
+        self.add_allowed_dir(self.launch_dir)
+
+        # Extensions attach only after the complete host state exists. A plain
+        # core install discovers none and follows the same path without agent
+        # imports or provider dependencies.
+        self.extensions.attach(self)
+
         # viewer=True/False comes from the --viewer flag; None defers to
         # settings.
         want_viewer = s.viewer.enabled_default if viewer is None else viewer
@@ -194,13 +210,6 @@ class AppCore:
         want_chat = s.chat.enabled_default if chat is None else chat
         if want_chat:
             self.enable_chat()
-
-        self.allowed_dirs: list[Path] = []
-        for d in s.files.allowed_dirs:
-            self.add_allowed_dir(Path(d))
-        for d in extra_allowed_dirs:
-            self.add_allowed_dir(d)
-        self.add_allowed_dir(self.launch_dir)
 
     # -- basics ---------------------------------------------------------------
     @property
@@ -232,12 +241,8 @@ class AppCore:
 
     @property
     def viewer_supported(self) -> bool:
-        """Whether this runtime can serve and launch the optional web viewer."""
-        if self.transport != "http":
-            return False
-        from ifc_console.viewer import assets
-
-        return assets.available()
+        """Whether this transport can serve the bundled web viewer."""
+        return self.transport == "http"
 
     # -- viewer lifecycle -------------------------------------------------------
     def attach_mcp(self, mcp) -> None:
@@ -274,11 +279,6 @@ class AppCore:
         """Turn the viewer web surface on; tools are always discoverable."""
         if self.viewer.enabled:
             return True
-        from ifc_console.viewer import assets
-
-        if not assets.available():
-            log.warning(assets.INSTALL_HINT)
-            return False
         self.viewer.enabled = True
         self.viewer.url = self.viewer_url
         self._sync_viewer_tools()
@@ -300,13 +300,11 @@ class AppCore:
 
     def enable_chat(self) -> bool:
         """Turn the optional browser chat panel on (idempotent)."""
+        if not self.extensions.available("agents"):
+            log.warning("the chat panel requires ifc-console-agents")
+            return False
         if self.chat.enabled:
             return True
-        from ifc_console.viewer import assets
-
-        if not assets.available():
-            log.warning(assets.INSTALL_HINT)
-            return False
         self.chat.enabled = True
         self.chat.url = self.chat_url
         self.audit.record("chat_enabled", provider=self.chat.provider, model=self.chat.model)
@@ -914,6 +912,7 @@ class AppCore:
 
     def shutdown(self) -> None:
         self.plugins.close()
+        self.extensions.close()
         self.workflows.close()
         self.batches.close()
         self.jobs.close()
@@ -929,6 +928,7 @@ class AppCore:
     async def ashutdown(self) -> None:
         """Await job cleanup so transaction rollback finishes before sessions close."""
         self.plugins.close()
+        self.extensions.close()
         await self.workflows.aclose()
         await self.batches.aclose()
         await self.jobs.aclose()

@@ -1,8 +1,21 @@
 # Agent applications
 
-The agent runtime is part of `ifc-console`. Use it when an LLM should choose
-IFC and application tools. Use [`Workbench`](sdk.md) for deterministic scripts
-and CI.
+The agent runtime is the optional `ifc-console-agents` product. Use it when an
+LLM should choose IFC and application tools; use [`Workbench`](sdk.md) from
+core for deterministic scripts and CI. The package depends on a compatible
+`ifc-console` and registers chat routes, agent operations, state, and its
+browser panel through `ifc_console.extensions`.
+
+```bash
+pip install ifc-console-agents
+pip install "ifc-console-agents[documents]"  # PDF text and rendered pages
+pip install "ifc-console-agents[graph]"      # LangGraph and checkpoints
+pip install "ifc-console-agents[full]"       # both optional integrations
+```
+
+`ifc-console-agents` also owns built-in and custom packs, provider chat,
+devkit/rehearsal tools, and provider-free testing helpers. The core viewer and
+its MCP controls continue to work when this package is absent.
 
 ```text
 runtime -> scoped Toolset -> Agent -> typed events
@@ -111,7 +124,7 @@ every IFC Console interface.
 ## Run an agent
 
 ```python
-from ifc_console import Agent, AgentLimits, InMemoryThreadStore, ProviderModel
+from ifc_console_agents import Agent, AgentLimits, InMemoryThreadStore, ProviderModel
 
 agent = Agent(
     name="submission-reviewer",
@@ -131,7 +144,7 @@ result = await agent.run("Review the submission", thread_id="review-42")
 print(result.text)
 ```
 
-`runtime.create_agent(...)` builds the toolset and agent together.
+Build the toolset with a core runtime and pass it to `Agent`, as above.
 `tools.describe()` renders a prompt-ready catalog. Read-only calls in the same
 round run concurrently unless `parallel_read_only=False`.
 
@@ -160,7 +173,7 @@ finish events, approval events, usage, and exactly one final `run_completed` or
 Attach images with `AgentImage.from_file()`:
 
 ```python
-from ifc_console import AgentImage
+from ifc_console_agents import AgentImage
 
 result = await agent.run(
     "Inspect this detail",
@@ -171,7 +184,7 @@ result = await agent.run(
 Image tool results become native vision input automatically. Keep thread-store
 limits small because image-bearing transcripts grow quickly.
 
-`ifc_console.testing` provides `ScriptedAgentModel`, `RecordingThreadStore`,
+`ifc_console_agents.testing` provides `ScriptedAgentModel`, `RecordingThreadStore`,
 `text_round`, `tool_call_round`, `ok_envelope`, and `error_envelope` for tests
 without a provider key.
 
@@ -181,7 +194,7 @@ Write, commit, restore, subprocess, and destructive operations require host
 approval. The default policy denies them, and the model cannot approve itself.
 
 ```python
-from ifc_console import ApprovalDecision, CallbackApprovalHandler
+from ifc_console_agents import ApprovalDecision, CallbackApprovalHandler
 
 async def approve(request):
     allowed = await policy_service.authorize(
@@ -226,12 +239,12 @@ agent = create_agent(
 
 Implement `AgentModel` for another provider library and `ThreadStore` for your
 database. `JsonThreadStore(path)` suits small local applications. The optional
-`ifc-console[graph]` extra adds the LangGraph adapter described in the
+`ifc-console-agents[graph]` extra adds the LangGraph adapter described in the
 [SDK guide](sdk.md#langchain-and-langgraph).
 
 ## Built-in agents
 
-Four presets ship in `ifc_console.agents.presets`:
+Four presets ship in `ifc_console_agents.presets`:
 
 | preset | purpose |
 | ------ | ------- |
@@ -242,8 +255,8 @@ Four presets ship in `ifc_console.agents.presets`:
 
 They use the same public `Agent`, `Toolset`, and provider contracts as custom
 applications. `examples/sdk/quickstart_agent.py` is the smallest runnable
-example. For the browser panel, install `ifc-console[viewer]`, start the
-console, and run `/agent`.
+example. Install `ifc-console-agents`, start the console, and run `/agent` for
+the lazily loaded browser panel.
 
 ## Project workspace
 
@@ -303,7 +316,7 @@ the tool surface but never widen session policy.
 Compose the same blocks in Python:
 
 ```python
-from ifc_console.agents.blocks import compose
+from ifc_console_agents.blocks import compose
 
 composition = await compose(
     runtime,
@@ -334,7 +347,7 @@ The preview-only tools are:
 
 Provenance records include the agent, target property, model, method, source,
 unit, confidence, timestamp, and proposal ID. `list_ai_authored_properties` and
-`ifc_console.agents.provenance.read_ai_properties` return values with
+`ifc_console_agents.provenance.read_ai_properties` returns values with
 `provenance_by_property`. The `IfcConsole_AI_` prefix keeps the complete
 AI-assisted layer identifiable.
 

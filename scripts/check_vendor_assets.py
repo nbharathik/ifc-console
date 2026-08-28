@@ -8,10 +8,9 @@ from pathlib import Path
 
 VENDOR = (
     Path(__file__).parent.parent
-    / "packages"
-    / "ifc-console-viewer"
     / "src"
-    / "ifc_console_viewer"
+    / "ifc_console"
+    / "viewer"
     / "static"
     / "vendor"
 )

@@ -84,11 +84,8 @@ def build_viewer_routes(core: AppCore) -> list[Any]:
     async def viewer_shell(request) -> Response:
         if not core.viewer.enabled:
             return _disabled_response()
-        directory = assets.static_dir()
-        if directory is None:
-            return JSONResponse({"error": "viewer_not_installed", "hint": assets.INSTALL_HINT}, 501)
         return FileResponse(
-            directory / "index.html",
+            assets.require_static_dir() / "index.html",
             headers={"Content-Security-Policy": _CSP, "Cache-Control": "no-cache"},
         )
 

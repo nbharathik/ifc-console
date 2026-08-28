@@ -162,7 +162,7 @@ def register(registry: OperationRegistry, core: AppCore) -> None:
         limit: Annotated[int, Field(ge=1, le=2000, description="Maximum elements.")] = 200,
         model: Annotated[str | None, Field(description=MODEL_ARG)] = None,
     ) -> Envelope:
-        from ifc_console.agents.provenance import read_ai_properties
+        from ifc_console.ifc.ai_provenance import read_ai_properties
 
         session = core.resolve_session(model)
         data = await session.run(lambda: read_ai_properties(session.ifc, limit=limit))

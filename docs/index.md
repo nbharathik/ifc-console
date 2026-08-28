@@ -3,15 +3,19 @@
   <img alt="ifc-console" width="360" src="assets/brand/horizontal-dark.svg#only-dark">
 </p>
 
-**A local bridge between IFC models and AI tools.** `ifc-console` provides the
-terminal, MCP server, Python SDK, agent workflows, chat runtime, and IFC
-operations. The optional `ifc-console-viewer` wheel adds only browser assets.
+**A local IFC workbench and bridge.** `ifc-console` provides the terminal,
+MCP server, deterministic Python SDK and workflows, IFC operations, and local
+3D viewer. It works fully without an LLM. Install `ifc-console-agents` when you
+also want provider chat, agent applications, reusable packs, and their browser
+panel.
 
 ```text
-LLM client ---- MCP ----+
-Python application -----+--> ifc-console --> IfcOpenShell model
-Terminal ---------------+       |
-Browser, with [viewer] --+       +--> policy, jobs, workflows, audit
+MCP client ---------+
+Python application -+--> ifc-console --> IfcOpenShell model
+Terminal -----------+       |   |
+Browser viewer -----+       |   +--> policy, jobs, workflows, audit
+                            |
+                    ifc-console-agents (optional extension)
 ```
 
 ## Start here
@@ -22,8 +26,9 @@ cd path/to/your/models
 ifc-console
 ```
 
-Run `/file`, then `/connect <client>`. Add `ifc-console[viewer]` if you also
-want the local 3D viewer and browser chat.
+Run `/file`, then `/viewer` for local visual work or `/connect <client>` for an
+external MCP client. Add `ifc-console-agents` only when you want the built-in
+agent/chat experience.
 
 ```text
 > /file

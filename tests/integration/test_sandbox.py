@@ -32,7 +32,7 @@ for c in ().__class__.__base__.__subclasses__():
 def model_path() -> Path:
     """Module-scoped twin of the minimal_ifc4_path fixture: one worker for the
     whole file is worth the duplication."""
-    from tests.conftest import GENERATED, _ensure_fixtures
+    from tests.fixtures_plugin import GENERATED, _ensure_fixtures
 
     _ensure_fixtures()
     return GENERATED / "minimal_ifc4.ifc"

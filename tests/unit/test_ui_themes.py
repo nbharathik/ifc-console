@@ -1,4 +1,4 @@
-"""Named appearance palettes stay synchronized across every UI surface."""
+"""Named appearance palettes stay synchronized across core UI surfaces."""
 
 from __future__ import annotations
 
@@ -11,12 +11,11 @@ import pytest
 from ifc_console.settings import TuiSettings
 from ifc_console.themes import RESOLVED_THEME_IDS, THEME_IDS, THEME_LABELS, resolve_theme
 
-STATIC = (
+VIEWER_STATIC = (
     Path(__file__).resolve().parents[2]
-    / "packages"
-    / "ifc-console-viewer"
     / "src"
-    / "ifc_console_viewer"
+    / "ifc_console"
+    / "viewer"
     / "static"
 )
 
@@ -54,56 +53,6 @@ async def test_named_theme_broadcasts_to_viewer(core, name: str) -> None:
     assert core.viewer_hub.status_payload()["theme"] == name
 
 
-def test_web_surfaces_offer_and_load_named_palettes() -> None:
-    index = (STATIC / "index.html").read_text(encoding="utf-8")
-    chat = (STATIC / "chat.html").read_text(encoding="utf-8")
-    app_js = (STATIC / "app.js").read_text(encoding="utf-8")
-    app_css = (STATIC / "app.css").read_text(encoding="utf-8")
-    chat_js = (STATIC / "chat.js").read_text(encoding="utf-8")
-    chat_css = (STATIC / "chat.css").read_text(encoding="utf-8")
-    theme_css = (STATIC / "themes.css").read_text(encoding="utf-8")
-
-    assert '/viewer/static/themes.css' in index
-    assert '/viewer/static/themes.css' in chat
-    assert index.index('/viewer/static/app.css') < index.index('/viewer/static/themes.css')
-    assert index.index('/viewer/static/chat.css') < index.index('/viewer/static/themes.css')
-    assert chat.index('/viewer/static/chat.css') < chat.index('/viewer/static/themes.css')
-    picker = index.split('id="set-theme"', 1)[1].split("</select>", 1)[0]
-    assert re.findall(r'<option value="([^"]+)">', picker) == list(THEME_IDS)
-    for name in THEME_IDS:
-        assert f'value="{name}"' in index
-        assert f'value="{name}"' in chat_js
-        assert f'{name}: {{ canvas:' in app_js
-    for name in ("dark", "modern"):
-        assert f':root[data-theme="{name}"]' in theme_css
-        assert f'.chat-root[data-theme="{name}"]' in theme_css
-        assert f'html[data-console-theme="{name}"] body.chat-page' in theme_css
-    assert ':root[data-theme="light"]' in app_css
-    assert '.chat-root[data-theme="light"]' in chat_css
-
-
-def test_viewer_theme_always_reaches_the_chat_and_agent_workspace() -> None:
-    app_js = (STATIC / "app.js").read_text(encoding="utf-8")
-    chat_js = (STATIC / "chat.js").read_text(encoding="utf-8")
-    chat_page_js = (STATIC / "chat-page.js").read_text(encoding="utf-8")
-
-    paint = app_js.split("function paintTheme(theme)", 1)[1].split(
-        "function applyTheme(name)", 1
-    )[0]
-    assert 'scheduleViewerContext("theme")' in paint
-
-    listener = chat_js.split(
-        'document.addEventListener("ifc-console:viewer-context"', 1
-    )[1].split(
-        'document.addEventListener("ifc-console:viewer-result"', 1
-    )[0]
-    assert "applyThemePreference(viewerTheme);" in listener
-    assert "rememberThemePreference(viewerTheme);" in listener
-    assert 'settings.theme === "system"' not in listener
-    assert "document.documentElement.dataset.consoleTheme = resolved;" in chat_js
-    assert "document.documentElement.dataset.consoleTheme = root.dataset.theme" in chat_page_js
-
-
 def _contrast(foreground: str, background: str) -> float:
     def luminance(value: str) -> float:
         channels = [int(value[index : index + 2], 16) / 255 for index in (1, 3, 5)]
@@ -120,8 +69,8 @@ def _contrast(foreground: str, background: str) -> float:
 
 
 def test_named_theme_text_remains_readable_at_every_hierarchy() -> None:
-    app_css = (STATIC / "app.css").read_text(encoding="utf-8")
-    theme_css = (STATIC / "themes.css").read_text(encoding="utf-8")
+    app_css = (VIEWER_STATIC / "app.css").read_text(encoding="utf-8")
+    theme_css = (VIEWER_STATIC / "themes.css").read_text(encoding="utf-8")
     blocks = {
         "blue": app_css.split(":root {", 1)[1].split("}", 1)[0],
         "light": app_css.split(':root[data-theme="light"]', 1)[1].split("}", 1)[0],
@@ -142,7 +91,7 @@ def test_named_theme_text_remains_readable_at_every_hierarchy() -> None:
 
 
 def test_dark_theme_stays_cool_neutral_instead_of_brown_or_blue() -> None:
-    theme_css = (STATIC / "themes.css").read_text(encoding="utf-8")
+    theme_css = (VIEWER_STATIC / "themes.css").read_text(encoding="utf-8")
     block = theme_css.split(':root[data-theme="dark"]', 1)[1].split("}", 1)[0]
     colors = dict(re.findall(r"--([\w-]+):\s*(#[0-9a-fA-F]{6});", block))
 
@@ -163,7 +112,7 @@ def test_dark_theme_stays_cool_neutral_instead_of_brown_or_blue() -> None:
 
 
 def test_modern_theme_uses_a_quiet_grey_highlight() -> None:
-    theme_css = (STATIC / "themes.css").read_text(encoding="utf-8")
+    theme_css = (VIEWER_STATIC / "themes.css").read_text(encoding="utf-8")
     block = theme_css.split(':root[data-theme="modern"]', 1)[1].split("}", 1)[0]
     colors = dict(re.findall(r"--([\w-]+):\s*(#[0-9a-fA-F]{6});", block))
 
@@ -176,9 +125,8 @@ def test_modern_theme_uses_a_quiet_grey_highlight() -> None:
 
 
 def test_each_palette_uses_one_accent_family_for_ui_semantics() -> None:
-    app_css = (STATIC / "app.css").read_text(encoding="utf-8")
-    theme_css = (STATIC / "themes.css").read_text(encoding="utf-8")
-    chat_css = (STATIC / "chat.css").read_text(encoding="utf-8")
+    app_css = (VIEWER_STATIC / "app.css").read_text(encoding="utf-8")
+    theme_css = (VIEWER_STATIC / "themes.css").read_text(encoding="utf-8")
 
     for source, palettes in ((app_css, 2), (theme_css, 2)):
         for token, value in (
@@ -193,7 +141,3 @@ def test_each_palette_uses_one_accent_family_for_ui_semantics() -> None:
             ("mode-edit", "accent-bright"),
         ):
             assert source.count(f"--{token}: var(--{value});") == palettes
-
-    assert "--chat-ok: var(--ok, var(--chat-accent-bright));" in chat_css
-    assert "--chat-warn: var(--warn, var(--chat-accent-bright));" in chat_css
-    assert "--chat-bad: var(--danger, var(--chat-accent-bright));" in chat_css

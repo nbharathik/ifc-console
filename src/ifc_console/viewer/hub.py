@@ -797,6 +797,10 @@ class ViewerHub:
             "tabs": self.connected,
             # the viewer only offers the chat dock while the console has it on
             "chat": {"enabled": self.core.chat.enabled},
+            # Installed extensions contribute browser UI declaratively.  The
+            # viewer shell stays useful on its own and lazy-loads a panel only
+            # when both its manifest and enabled state are present.
+            "browser_panels": self.core.extensions.browser_panels(),
         }
 
     def cache_model_bytes(self, etag: str, data: bytes) -> None:

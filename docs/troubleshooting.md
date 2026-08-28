@@ -83,12 +83,13 @@ Save/reload, upgrade Python where applicable, try `/sandbox restart`, or use
 ### Assets are missing
 
 ```bash
-uv tool install "ifc-console[viewer]" --force
-# or: pip install --force-reinstall "ifc-console[viewer]"
+uv tool install --force ifc-console
+# or: pip install --force-reinstall ifc-console
 ```
 
-Restart ifc-console. `doctor` reports `optional` for an intentional core-only
-install and `ok` when assets are present.
+Restart ifc-console. The viewer assets are bundled in the main wheel, so
+`doctor` reports missing assets as a broken installation, not an optional
+extra. The one-release `ifc-console[viewer]` compatibility extra is a no-op.
 
 ### Model is too large
 
@@ -104,8 +105,19 @@ Close the stale tab and run `/viewer` again.
 
 ### Chat cannot reach a provider
 
+First confirm the optional agent product is installed:
+
+```bash
+pip install ifc-console-agents
+```
+
 Check the key, model ID, and base URL. Local servers need an OpenAI-compatible
 `/v1` URL. `chat.local_only=true` intentionally refuses remote URLs.
+
+Viewer-only use does not need the agent product, a provider key, or an LLM. If
+the agent extension fails to load, its browser panel is omitted while the
+console, MCP server, SDK, and viewer continue to work; inspect
+`ifc-console doctor --json` and the application log for the extension error.
 
 ## Logs and bug reports
 

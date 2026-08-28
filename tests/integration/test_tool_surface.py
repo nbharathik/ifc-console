@@ -1,4 +1,4 @@
-"""Tool registration surface, including the stable optional viewer catalog."""
+"""Tool registration surface, including the stable on-demand viewer catalog."""
 
 from __future__ import annotations
 
@@ -55,24 +55,22 @@ async def test_viewer_tools_appear_when_enabled_at_start(tmp_path) -> None:
     core.shutdown()
 
 
-async def test_missing_viewer_extra_keeps_catalog_but_launcher_explains(tmp_path, monkeypatch) -> None:
-    """Discovery stays stable and execution reports the missing optional extra."""
+async def test_bundled_viewer_starts_without_an_optional_extra(tmp_path) -> None:
+    """A plain main-package runtime can enable its bundled 3D viewer."""
     from ifc_console.app import AppCore
     from ifc_console.mcp.server import build_mcp
     from ifc_console.settings import SettingsStore
     from ifc_console.viewer import assets
 
-    monkeypatch.setattr(assets, "available", lambda: False)
+    assert assets.available() is True
     store = SettingsStore(home=tmp_path / "home", project_dir=tmp_path, env={})
-    core = AppCore(store, viewer=True, chat=True)
+    core = AppCore(store, viewer=True)
     mcp = build_mcp(core)
     names = {tool.name for tool in await mcp.list_tools()}
-    assert core.viewer.enabled is False
-    assert core.chat.enabled is False
+    assert core.viewer.enabled is True
     assert set(VIEWER_TOOLS).issubset(names)
     result = await core.operation_service.call("open_viewer", {"wait_for_connection_s": 0})
-    assert result.ok is False
-    assert result.error.code == "EXTRA_NOT_INSTALLED"
+    assert result.ok is True
     core.shutdown()
 
 

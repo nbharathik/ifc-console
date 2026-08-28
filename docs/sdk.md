@@ -1,33 +1,39 @@
 # Python SDK
 
-The framework-neutral SDK ships in `ifc-console` with MCP, agents, workflows,
-and chat. Install the viewer extra only when an application needs the browser
-assets:
+The framework-neutral deterministic SDK ships in `ifc-console` with MCP,
+workflows, IFC operations, and the bundled browser viewer. The optional
+`ifc-console-agents` distribution adds the provider-neutral agent SDK,
+providers/chat, packs, testing/devkit helpers, and agent browser panel:
 
 ```bash
 pip install ifc-console
-pip install "ifc-console[viewer]"
+pip install ifc-console-agents
+pip install "ifc-console-agents[documents]"
+pip install "ifc-console-agents[graph]"
+pip install "ifc-console-agents[full]"
 ```
 
 | interface | use |
 | --------- | --- |
-| `LocalRuntime` | embedded tools and agents over a local model |
+| `LocalRuntime` | embedded core tools over a local model |
 | `ConsoleRuntime` | tools connected to a running console |
-| `Agent` | bounded, provider-neutral tool loop |
+| `Agent` | bounded, provider-neutral tool loop from `ifc-console-agents` |
 | `Toolset` | scoped IFC, Python, and MCP operations |
 | `FunctionToolSource` | trusted application functions as tools |
 | `RuntimeSettings` | validated settings for an embedded session |
 | `Workbench` | synchronous scripts, notebooks, and CI |
 | `AsyncWorkbench` | the same API for async applications |
 
-Start with `LocalRuntime` for an agent and `Workbench` for deterministic code.
+Start with `Workbench` for deterministic code and combine `LocalRuntime` with
+the optional `Agent` only when a model must choose tools.
 
 ## Agent runtime
 
 Keep model policy, settings, and tool selection visible in host code:
 
 ```python
-from ifc_console import Agent, FunctionToolSource, LocalRuntime, ProviderModel
+from ifc_console import FunctionToolSource, LocalRuntime
+from ifc_console_agents import Agent, ProviderModel
 
 company = FunctionToolSource(namespace="company")
 
@@ -100,10 +106,10 @@ async with await LocalRuntime.open("tower.ifc") as runtime:
 Use LangChain's async APIs so model sessions and tools stay on one event loop.
 Structured IFC envelopes remain available as tool-message artifacts.
 
-For a checkpointed outer workflow, install `ifc-console[graph]`:
+For a checkpointed outer workflow, install `ifc-console-agents[graph]`:
 
 ```python
-from ifc_console.integrations.langgraph import create_langgraph_workflow, graph_update
+from ifc_console_agents.integrations.langgraph import create_langgraph_workflow, graph_update
 
 async def inspect(state):
     result = await reviewer.run(state["prompt"])
@@ -127,13 +133,14 @@ the same thread ID. Async approval interrupts require Python 3.11 or newer.
 ## Embed the web surface
 
 `LocalRuntime.build_web_app()` returns the authenticated ASGI surface used by
-the console. The core package owns MCP, chat, routes, and authentication;
-`ifc-console[viewer]` supplies the static browser application.
+the console. Core owns MCP, viewer routes, authentication, and the static
+browser application. Installed products such as `ifc-console-agents` register
+additional routes and a browser panel through `ifc_console.extensions`; the
+panel assets are loaded lazily only when that extension is present and opened.
 
 ```python
 runtime.enable_viewer()
-agent = await runtime.create_agent(...)
-surface = runtime.build_web_app(extra_routes=my_chat_routes(agent))
+surface = runtime.build_web_app(extra_routes=my_application_routes)
 
 print(surface.viewer_url)
 print(surface.browser_url("/my-chat"))
@@ -174,10 +181,11 @@ The context manager closes model and worker resources.
 | `georeferencing()` | CRS and map conversion |
 | `schema_docs(...)` | IFC entity, pset, or property docs |
 
-Knowledge methods include `search_knowledge()`, `knowledge_record()`, and
-`api_docs()`. `ingest_docs(paths)` indexes project text, markdown, PDFs, and
-images; use `project_documents()` and `project_reference_image(path)` to inspect
-the corpus. Search hits include document and page provenance.
+Core knowledge methods include `search_knowledge()`, `knowledge_record()`, and
+`api_docs()` over deterministic IFC schema/API references. Project document
+and image retrieval belongs to `ifc-console-agents`; install its `documents`
+extra for PDF text and rendered pages. Agent search hits retain document and
+page provenance.
 
 Geometry and measurement operations such as `get_element_geometry`,
 `measure_elements`, `measure_distance`, and `get_measurement_recipe` are

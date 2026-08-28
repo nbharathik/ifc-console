@@ -5,13 +5,13 @@ build-backend = "hatchling.build"
 [project]
 name = "ifc-console-viewer"
 version = "0.1.4"
-description = "Optional browser assets for the ifc-console 3D viewer (three.js and web-ifc)."
+description = "Compatibility shim for the 3D viewer now bundled with ifc-console."
 readme = "README.md"
 requires-python = ">=3.10,<3.15"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
 authors = [{ name = "nbharathik" }]
-keywords = ["ifc", "bim", "viewer", "three.js", "web-ifc"]
+keywords = ["ifc", "bim", "viewer", "compatibility"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "License :: OSI Approved :: Apache Software License",
@@ -25,9 +25,10 @@ classifiers = [
     "Programming Language :: Python :: 3.14",
     "Topic :: Scientific/Engineering",
 ]
-# Assets only: it can also be inspected independently and has no runtime
-# dependency on the core package.
-dependencies = []
+# One-release compatibility bridge for applications that imported
+# ifc_console_viewer.static_dir() directly. The browser assets themselves now
+# live in the main package.
+dependencies = ["ifc-console>=0.1,<0.2"]
 
 [project.urls]
 Homepage = "https://github.com/nbharathik/ifc-console"
@@ -35,3 +36,6 @@ Documentation = "https://nbharathik.github.io/ifc-console/viewer/"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/ifc_console_viewer"]
+
+[tool.uv.sources]
+ifc-console = { workspace = true }

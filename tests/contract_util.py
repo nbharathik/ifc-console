@@ -12,16 +12,43 @@ from pathlib import Path
 from typing import Any
 
 GOLDEN_PATH = Path(__file__).parent / "golden" / "api_contract.json"
+AGENT_GOLDEN_PATH = (
+    Path(__file__).parent.parent
+    / "packages"
+    / "ifc-console-agents"
+    / "tests"
+    / "golden"
+    / "api_contract.json"
+)
 
 
-async def build_contract(home: Path) -> dict[str, Any]:
+async def build_contract(home: Path, *, with_agents: bool = False) -> dict[str, Any]:
     from ifc_console.app import AppCore
+    from ifc_console.extensions import ExtensionManager
     from ifc_console.mcp.envelope import ERROR_CODES, Envelope
     from ifc_console.mcp.server import build_mcp
     from ifc_console.settings import SettingsStore
 
+    entries: tuple[Any, ...] = ()
+    if with_agents:
+        from ifc_console_agents.extension import AgentExtension
+
+        class _AgentsEntryPoint:
+            name = "agents"
+            value = "ifc_console_agents.extension:AgentExtension"
+            dist = None
+
+            @staticmethod
+            def load():
+                return AgentExtension
+
+        entries = (_AgentsEntryPoint(),)
     store = SettingsStore(home=home, project_dir=home, env={})
-    core = AppCore(store, viewer=True)  # viewer on: snapshot the full surface
+    core = AppCore(
+        store,
+        viewer=True,
+        extension_manager=ExtensionManager(entries),
+    )
     try:
         mcp = build_mcp(core)
         tools = []

@@ -2,7 +2,8 @@
 
 Run `ifc-console` without a subcommand to open the control surface for models,
 permissions, clients, and browser tools. Chat happens in your MCP client or the
-optional browser panel.
+optional browser panel contributed by `ifc-console-agents`. The console and
+bundled viewer work without an LLM.
 
 ```text
 +------------------------------------------------------------+
@@ -55,11 +56,11 @@ Type `/` to browse commands. Values for `/mode`, `/viewer`, `/connect`, and
 | `/mode [ask\|edit]` | show or change AI authority |
 | `/sandbox [auto\|strict\|off\|restart]` | control generated-code isolation |
 | `/viewer [off\|url]` | open, close, or print the viewer URL |
-| `/chat [solo\|off\|provider]` | control browser chat |
+| `/chat [solo\|off\|provider]` | control browser chat; requires `ifc-console-agents` |
 | `/connect [client\|all]` | show and copy client setup |
 | `/copy [client\|url\|viewer\|token]` | copy connection data |
 | `/port <n>` | move the HTTP server |
-| `/theme [light\|dark\|modern\|blue]` | change the shared console, viewer, and chat theme |
+| `/theme [light\|dark\|modern\|blue]` | change the console and viewer theme, plus chat when installed |
 
 ### Help and diagnostics
 

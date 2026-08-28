@@ -115,7 +115,7 @@ Bulk results put their list under a tool-specific key (`rows`, `elements`,
 matched and how much came back, and a result that did not fit carries
 `data.truncation` with the offset to resume from.
 
-The 3D viewer tools are always listed, even while the optional viewer is off,
+The 3D viewer tools are always listed, even while the bundled viewer is off,
 so clients that cache tools can complete a visual workflow without reconnecting.
 When visual evidence would help: open/load the IFC with open_ifc_file if needed,
 call open_viewer(wait_for_connection_s=10), then use control_viewer(action="context")
@@ -127,8 +127,8 @@ user or by control_viewer. control_viewer can section, orient, isolate, focus,
 measure, and save a viewpoint. Its coordinates are metres in the model's own
 axes. If open_viewer reports VIEWER_UNAVAILABLE, this is a standalone stdio
 server and visual work requires the shared HTTP/bridge connection. If it reports
-EXTRA_NOT_INSTALLED, tell the user to install the viewer extra. Do not use OS or
-browser automation for viewport work when these viewer tools are available.
+Do not use OS or browser automation for viewport work when these viewer tools
+are available.
 
 Never attempt OS, network, or file-system access from execute_ifc_code; that
 class of code is blocked unless the user explicitly enables it.
@@ -302,7 +302,7 @@ class TokenAuthMiddleware:
     """
 
     PROTECTED = ("/mcp", "/api", "/ws", "/viewer", "/chat")
-    PUBLIC = ("/viewer/static",)
+    PUBLIC = ("/viewer/static", "/agents/static")
     # exact paths a browser navigates to; the page authenticates itself with
     # the fragment token. The boundary check still applies.
     TOKEN_EXEMPT = ("/viewer", "/chat", "/ws")
@@ -543,8 +543,6 @@ def build_http_app(
     from starlette.responses import JSONResponse
     from starlette.routing import Mount, Route
 
-    from ifc_console.chat.routes import build_chat_routes
-    from ifc_console.viewer import assets as viewer_assets
     from ifc_console.viewer.routes import build_static_app, build_viewer_routes
 
     app = mcp.streamable_http_app()
@@ -595,7 +593,12 @@ def build_http_app(
                     "enabled": core.viewer.enabled,
                     "connected": core.viewer.connected,
                 },
-                "chat": {"enabled": core.chat.enabled},
+                "chat": {
+                    "available": core.extensions.available("agents"),
+                    "enabled": core.chat.enabled,
+                },
+                "extensions": core.extensions.status(),
+                "browser_panels": core.extensions.browser_panels(),
             }
         )
 
@@ -605,12 +608,8 @@ def build_http_app(
         Route("/api/status", status, methods=["GET"]),
     ]
     extra.extend(build_viewer_routes(core))
-    extra.extend(build_chat_routes(core))
-    from ifc_console.agents.panel import build_agent_panel_routes
-
-    extra.extend(build_agent_panel_routes(core))
-    if viewer_assets.available():
-        extra.append(Mount("/viewer/static", app=build_static_app(), name="viewer-static"))
+    extra.extend(core.extensions.http_routes())
+    extra.append(Mount("/viewer/static", app=build_static_app(), name="viewer-static"))
     app.router.routes[0:0] = extra
     return TokenAuthMiddleware(app, core.token, core=core)
 
