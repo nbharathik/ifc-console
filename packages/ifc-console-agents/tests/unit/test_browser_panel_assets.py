@@ -49,15 +49,16 @@ def test_ifc_tabs_keep_parsed_revisions_and_model_scoped_selections(
     load = script.split("async function loadModel()", 1)[1].split(
         "/**\n * Yield to the browser", 1
     )[0]
-    assert "parsedModelCache.get(targetModelId)" in load
-    assert "cached.etag === targetEtag" in load
+    assert "cachedParsedModel(targetModelId, targetEtag)" in load
     assert "buildScene(null, cached.parsed" in load
     build = script.split("async function buildScene(buffer)", 1)[1].split(
         "// ---------------------------------------------------------------- spatial tree", 1
     )[0]
     assert "residentParsed || await parseBuffer(buffer)" in build
-    assert "parsedModelCache.set(targetModelId" in build
+    assert "cacheParsedModel(targetModelId, targetEtag, parsed)" in build
     assert build.index("await parseBuffer(buffer)") < build.index("disposeModel();")
+    assert "PARSED_CACHE_MAX_ENTRIES = 2" in script
+    assert "PARSED_CACHE_BUDGET" in script
 
     context = script.split("function viewerContext(", 1)[1].split(
         "function scheduleViewerContext", 1
@@ -113,7 +114,7 @@ def test_chat_splitter_updates_aria_and_primary_agent_has_no_close_callback(
         assert f'"{attribute}"' in aria
     mount = script.split("chatPanel ||= mountPanel", 1)[1].split("return chatPanel", 1)[0]
     assert "onClose" not in mount
-    assert "agentWorkspacePrimary" in script
+    assert "extensionPanelPrimary" in script
     assert "#chat-dock-resize:focus-visible" in chat_css
 
 def _assert_plain_object_check(script: str) -> None:
@@ -411,7 +412,12 @@ def test_agent_workspace_connects_content_and_viewer_context(chat_js: str) -> No
         "ifc-console:viewer-result",
     ):
         assert event_name in chat_js
-    assert 'detail: { action: "capture-evidence"' in chat_js
+    assert 'sendViewerCommand({' in chat_js
+    assert 'action: "capture-evidence"' in chat_js
+    assert "options.viewer?.version === 1" in chat_js
+    assert "viewer.execute(detail)" in chat_js
+    assert "viewer.subscribe(applyViewerContext)" in chat_js
+    assert "viewer.subscribeResults?." in chat_js
     assert "const binary = atob(" in chat_js
     assert "fetch(result.dataUrl)" not in chat_js
 
@@ -474,8 +480,8 @@ def test_ifc_tabs_start_in_the_viewer_column_and_agent_settings_stay_in_its_head
     )[0]
     assert 'class="chat-title" data-role="title"' in chat_header
     assert 'title="Agent settings" aria-label="Open agent settings"' in chat_header
-    assert "chatPanel ||= mountPanel(chatDock);" in script
-    assert "const agentWorkspacePrimary" in script
+    assert "mountPanel(chatDock, { viewer: viewerComponentHost.api })" in script
+    assert "const extensionPanelPrimary" in script
 
 
 def test_model_capability_controls_and_key_location_are_visible(
@@ -1676,8 +1682,9 @@ def test_a_camera_transition_yields_to_the_hand_on_the_mouse(script: str) -> Non
     assert "cameraTween = null;" in start
     # the glide runs before the controls read the pose, or update() answers
     # with the previous frame's
-    loop = script.split("renderer.setAnimationLoop(", 1)[1]
+    loop = script.split("function renderFrame(now)", 1)[1]
     assert loop.index("stepCameraTween(now)") < loop.index("controls.update()")
+    assert "renderer.setAnimationLoop" not in script
     step = script.split("function stepCameraTween(now)", 1)[1].split(
         chr(10) + "}", 1
     )[0]

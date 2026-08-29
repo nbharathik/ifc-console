@@ -11,7 +11,7 @@ uv sync --all-packages --all-extras
 ```
 
 ```bash
-npm run dev       # real viewer + chat in exactly one tab
+npm run dev       # real viewer + Agent workspace in exactly one tab
 npm run harness   # same server, print the URLs and open no tab
 npm run check     # rebuild, run the offline HTTP/SSE checklist, then exit
 npm test          # panel modules, markup contracts, and devkit unit tests
@@ -59,7 +59,7 @@ Useful flags:
 To look at the panel by hand, drop `--check`:
 
 ```bash
-ifc-console dev --open chat
+ifc-console dev --open agent
 ```
 
 That opens **exactly one** tab, and only because you asked. Without a terminal
@@ -110,12 +110,12 @@ and the two motion rules that cost real debugging time:
   its track resizes leaves the element stuck at its old size.
 
 The suite can no longer open a browser: `tests/conftest.py` replaces
-`webbrowser.open` with a recorder for every test, so `/viewer`, `/chat`, and
-`/agent` are exercised without a tab appearing.
+`webbrowser.open` with a recorder, so `/viewer` and `/agent` are exercised
+without a tab appearing.
 
 ## When a link says the token is invalid
 
-Opening `http://127.0.0.1:8383/viewer?chat=1` with no `#t=` fragment makes the
+Opening `http://127.0.0.1:8383/viewer?panel=agents` with no `#t=` fragment makes the
 browser fall back to a token remembered from an earlier console run. If that
 console has stopped or restarted, the viewer now says the **link** has no valid
 token, forgets the stale one so the next fresh link works, and points at

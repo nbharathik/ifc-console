@@ -46,7 +46,7 @@ def test_serve_run_flags_work_before_or_after_the_subcommand() -> None:
         "--port",
         "9000",
         "--viewer",
-        "--chat",
+        "--agent",
         "--allow-dir",
         "models",
         "--log-level",
@@ -56,7 +56,7 @@ def test_serve_run_flags_work_before_or_after_the_subcommand() -> None:
     before = parser.parse_args([*flags, "serve", "--stdio"])
     after = parser.parse_args(["serve", "--stdio", *flags])
 
-    for name in ("file", "mode", "port", "viewer", "chat", "allow_dir", "log_level"):
+    for name in ("file", "mode", "port", "viewer", "agent", "allow_dir", "log_level"):
         assert getattr(before, name) == getattr(after, name)
 
 

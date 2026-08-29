@@ -170,7 +170,7 @@ _TUI_HINTS = {
     "WORKSPACE_DISABLED": "/settings workspace.enabled true turns indexing on",
 }
 
-_AGENTS_INSTALL_HINT = "install [b]ifc-console-agents[/b] to add chat and custom agents"
+_AGENTS_INSTALL_HINT = "install [b]ifc-console-agents[/b] to add the Agent workspace"
 
 
 def _require_agents(console: ConsoleScreen) -> bool:
@@ -592,33 +592,20 @@ async def _theme(console: ConsoleScreen, args: str) -> None:
 
 @command(
     "viewer",
-    "/viewer [off|url]",
-    "open the 3D viewer (off disables, url prints the link)",
+    "/viewer",
+    "open the 3D viewer",
     "connect",
-    examples=("/viewer", "/viewer url", "/viewer off"),
+    examples=("/viewer",),
 )
 async def _viewer(console: ConsoleScreen, args: str) -> None:
     core = console.core
-    args = args.strip().lower()
-    if args == "off":
-        if not core.viewer.enabled:
-            console.print("viewer is already off")
-            return
-        core.disable_viewer()
-        closed = await core.viewer_hub.close_all()
-        console.print(
-            f"viewer disabled ({closed} tab{'s' if closed != 1 else ''} closed); "
-            "viewer tools remain available and can reopen it"
-        )
-        console.refresh_status()
+    if args.strip():
+        console.print("[red]usage: /viewer[/red]")
         return
     if not await _require_server(console):
         return
     core.enable_viewer()
     url = core.viewer.url or core.viewer_url
-    if args == "url":
-        console.print(f"viewer: {url}")
-        return
     console.app.copy_to_clipboard(url)
     import webbrowser
 
@@ -630,76 +617,6 @@ async def _viewer(console: ConsoleScreen, args: str) -> None:
         console.print(f"[green]viewer opened in your browser[/green] (URL copied): {url}")
     else:
         console.print(f"viewer URL copied: {url}")
-
-
-_CHAT_PROVIDERS = ("openai", "anthropic", "openrouter", "local")
-
-
-@command(
-    "chat",
-    "/chat [solo|off|provider]",
-    "open the 3D view with the chat panel beside it (solo drops the 3D view)",
-    "connect",
-    examples=("/chat", "/chat solo", "/chat anthropic", "/chat off"),
-)
-async def _chat(console: ConsoleScreen, args: str) -> None:
-    core = console.core
-    arg = args.strip().lower()
-
-    if arg == "off":
-        if not core.chat.enabled:
-            console.print("chat is already off")
-            return
-        core.disable_chat()
-        console.print("chat panel disabled; any API key held for this run is gone")
-        console.refresh_status()
-        return
-    if not _require_agents(console):
-        return
-    if arg in _CHAT_PROVIDERS:
-        core.chat.provider = arg
-        console.print(f"chat provider set to [b]{arg}[/b] for this session")
-        arg = ""
-    elif arg == "split":
-        arg = ""  # what the split used to be called; it is the default now
-    elif arg and arg != "solo":
-        console.print(
-            f"[red]unknown option {escape(arg)}[/red]; use /chat, /chat solo, "
-            f"/chat off, or one of: {', '.join(_CHAT_PROVIDERS)}"
-        )
-        return
-
-    if not await _require_server(console):
-        return
-    solo = arg == "solo"
-    if not solo:
-        core.enable_viewer()
-    newly_enabled = not core.chat.enabled
-    core.enable_chat()
-    url = core.chat_solo_url if solo else core.chat_url
-    if newly_enabled:
-        provider = core.chat.provider
-        console.print(
-            f"[b]chat panel on[/b] ([cyan]{provider}[/cyan]) [dim]/chat off turns it back off[/dim]\n"
-            "[yellow]this is the one part of ifc-console that talks to the internet: your "
-            "prompts and whatever the tools read from the model go to the provider you "
-            "choose. Keys come from the environment or the panel and are never written to "
-            "disk.[/yellow]"
-        )
-    console.app.copy_to_clipboard(url)
-    import webbrowser
-
-    try:
-        opened = webbrowser.open(url)
-    except Exception:
-        opened = False
-    what = "chat" if solo else "3D view with the chat beside it"
-    console.print(
-        f"[green]{what} opened in your browser[/green] (URL copied): {url}"
-        if opened
-        else f"{what}: URL copied: {url}"
-    )
-    console.refresh_status()
 
 
 @command(
@@ -834,12 +751,12 @@ async def _status(console: ConsoleScreen, _args: str) -> None:
     else:
         lines.append("  viewer   off (/viewer to start)")
     if not core.extensions.available("agents"):
-        lines.append("  chat     unavailable (install ifc-console-agents)")
+        lines.append("  agent    unavailable (install ifc-console-agents)")
     elif core.chat.enabled:
         model = core.chat.model or "no model chosen"
-        lines.append(f"  chat     on  {core.chat.provider} | {model}")
+        lines.append(f"  agent    on  {core.chat.provider} | {model}")
     else:
-        lines.append("  chat     off (/chat to start)")
+        lines.append("  agent    off (/agent to start)")
     sandbox = core.sandbox.status()
     where = "sandboxed" if sandbox["would_sandbox"] else "in-process"
     lines.append(f"  sandbox  {sandbox['mode']}; next code run {where} (/sandbox)")
@@ -1211,8 +1128,9 @@ async def _agent_open_url(
     if not await _require_server(console):
         return
     core.enable_viewer()
+    newly_enabled = not core.chat.enabled
     core.enable_chat()
-    head, _, fragment = core.chat_url.partition("#")
+    head, _, fragment = core.agent_url.partition("#")
     query = f"agent={agent}" if agent else "builder=1"
     joiner = "&" if "?" in head else "?"
     url = f"{head}{joiner}{query}" + (f"#{fragment}" if fragment else "")
@@ -1224,6 +1142,12 @@ async def _agent_open_url(
     except Exception:
         opened = False
     label = "custom agent builder" if builder else core.agent_packs.get(agent or "").info.title
+    if newly_enabled:
+        console.print(
+            "[yellow]Agent prompts and model context may go to the provider you choose. "
+            "Keys come from the environment or Agent settings and are never written to "
+            "project files.[/yellow]"
+        )
     console.print(
         f"[green]{escape(label)} opened in your browser[/green] (URL copied): {url}"
         if opened
@@ -1253,7 +1177,7 @@ async def _agent_pick(console: ConsoleScreen) -> None:
 
 @command(
     "agent",
-    "/agent [name|new|list|files]",
+    "/agent [name|new|list|files|off]",
     "open General or a named agent, or compose one from capability blocks",
     "connect",
     examples=(
@@ -1262,6 +1186,7 @@ async def _agent_pick(console: ConsoleScreen) -> None:
         "/agent measurement",
         "/agent new",
         "/agent files",
+        "/agent off",
     ),
 )
 async def _agent(console: ConsoleScreen, args: str) -> None:
@@ -1270,6 +1195,15 @@ async def _agent(console: ConsoleScreen, args: str) -> None:
     core = console.core
     parts = args.strip().lower().split()
     registry = core.agent_packs
+
+    if parts and parts[0] == "off":
+        if not core.chat.enabled:
+            console.print("Agent workspace is already off")
+            return
+        core.disable_chat()
+        console.print("Agent workspace disabled; any API key held for this run is gone")
+        console.refresh_status()
+        return
 
     if parts and parts[0] in {"new", "build", "custom"}:
         await _agent_open_url(console, builder=True)
@@ -1322,7 +1256,8 @@ async def _agent(console: ConsoleScreen, args: str) -> None:
         )
     lines.append(
         "[dim]/agent opens General; /agent <name> opens another directly; "
-        "/agent new builds one from blocks; /agent files shows references[/dim]"
+        "/agent new builds one from blocks; /agent files shows references; "
+        "/agent off disables the workspace[/dim]"
     )
     console.print("\n".join(lines))
 

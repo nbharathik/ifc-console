@@ -20,6 +20,7 @@
 
 import * as THREE from "./vendor/three.module.min.js";
 import { OrbitControls } from "./vendor/OrbitControls.js";
+import { createViewerComponent } from "./viewer_component.js";
 import {
   angleMeasure as angleCore,
   boxExtents,
@@ -45,8 +46,11 @@ import {
 // The token arrives in the URL fragment so it never reaches the server or its
 // logs; keep it per-tab and scrub it from the address bar immediately.
 const hashParams = new URLSearchParams(location.hash.replace(/^#/, ""));
-// read the query before scrubbing; ?chat=1 opens the split view on load
+// Read the query before scrubbing. A named optional panel is attached only
+// when its launcher asks for it; a plain /viewer URL stays viewer-only even
+// when an agent extension is installed and enabled in this session.
 const queryParams = new URLSearchParams(location.search);
+const requestedPanel = queryParams.get("panel") || "";
 const token = hashParams.get("t") || sessionStorage.getItem("ifc-console-token") || "";
 if (token) sessionStorage.setItem("ifc-console-token", token);
 const tokenFromLink = hashParams.has("t");
@@ -427,9 +431,16 @@ let resScale = 1;
 let lastRenderMs = 0;
 let interacting = false;
 let userMovedCamera = false;
+let frameRequest = 0;
+
+function requestFrame() {
+  if (frameRequest || document.hidden) return;
+  frameRequest = requestAnimationFrame(renderFrame);
+}
 
 function invalidate() {
   needsRender = true;
+  requestFrame();
 }
 
 // A reader that has to know where the camera is should not have to poll for
@@ -439,6 +450,7 @@ let cameraSettle = 0;
 controls.addEventListener("start", () => {
   interacting = true;
   userMovedCamera = true;
+  invalidate();
   clearTimeout(cameraSettle);
   // The hand on the mouse outranks any glide still in flight; carrying on
   // would fight the damping the gesture is about to apply.
@@ -446,6 +458,7 @@ controls.addEventListener("start", () => {
 });
 controls.addEventListener("end", () => {
   interacting = false;
+  invalidate();
   clearTimeout(cameraSettle);
   cameraSettle = setTimeout(() => scheduleViewerContext("camera"), 250);
 });
@@ -475,9 +488,9 @@ function resize() {
   // Projection and drawing-buffer coordinates changed even though
   // OrbitControls did not emit change; discard any old async pick decode.
   cameraSerial++;
-  // Re-render in the same frame; the observer fires before paint, so the
-  // resized buffer never appears blank or stretched while dragging a splitter.
-  renderer.render(scene, camera);
+  // The observer fires before paint. Queue one component frame instead of
+  // drawing here and then drawing the same state again from the render loop.
+  invalidate();
 }
 new ResizeObserver(resize).observe(canvas.parentElement);
 resize();
@@ -588,7 +601,8 @@ function renderNow() {
 }
 
 let lastFrameAt = 0;
-renderer.setAnimationLoop((now) => {
+function renderFrame(now) {
+  frameRequest = 0;
   // First, so the orbit controls read the pose the glide has just written.
   if (cameraTween) stepCameraTween(now);
   if (controls.enableDamping) {
@@ -619,7 +633,16 @@ renderer.setAnimationLoop((now) => {
     applyResolution();
     renderNow();
   }
+  // Damping and camera transitions need successive frames. Everything else
+  // sleeps until invalidate() is called, avoiding a 60 Hz callback in an idle
+  // viewer or a background Agent workspace.
+  if (moved || cameraTween || needsRender) requestFrame();
+}
+
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) invalidate();
 });
+requestFrame();
 
 // Screenshots and picking need a full-resolution buffer regardless of the
 // adaptive scale the orbit interaction may have left behind.
@@ -650,10 +673,64 @@ let viewerDocumentOpen = true;
 // returning to a tab feels like returning to the same drawing.
 const modelTabViews = new Map();
 // Parsing is the expensive WebAssembly step. Keep the parsed chunks for every
-// resident IFC revision so returning to a tab never downloads or reparses it.
-// Entries disappear only when the server detaches that model or its ETag is
-// replaced by a newer revision.
-const parsedModelCache = new Map(); // model id -> { etag, parsed }
+// recent IFC revision so returning to a tab is quick, but bound the typed
+// arrays: an unlimited cache duplicated the GPU scene for every resident file.
+const parsedModelCache = new Map(); // model id -> { etag, parsed, bytes }
+const PARSED_CACHE_MAX_ENTRIES = 2;
+const PARSED_CACHE_BUDGET = Math.round(
+  Math.min(256, Math.max(96, (Number(navigator.deviceMemory) || 4) * 64)) * 1_048_576,
+);
+let parsedModelCacheBytes = 0;
+
+function parsedModelBytes(parsed) {
+  let bytes = 0;
+  const addArrays = (record) => {
+    for (const value of Object.values(record || {})) {
+      if (ArrayBuffer.isView(value)) bytes += value.byteLength;
+    }
+  };
+  for (const chunk of parsed?.chunks || []) {
+    addArrays(chunk.geometry);
+    addArrays(chunk.placements);
+  }
+  addArrays(parsed?.maps);
+  for (const guid of parsed?.maps?.guids || []) bytes += guid.length * 2;
+  return bytes;
+}
+
+function dropParsedModel(modelId) {
+  const previous = parsedModelCache.get(modelId);
+  if (!previous) return;
+  parsedModelCache.delete(modelId);
+  parsedModelCacheBytes -= previous.bytes;
+}
+
+function cacheParsedModel(modelId, etag, parsed) {
+  if (!modelId || !etag || modelRows.length < 2) return;
+  const bytes = parsedModelBytes(parsed);
+  dropParsedModel(modelId);
+  if (bytes > PARSED_CACHE_BUDGET) return;
+  parsedModelCache.set(modelId, { etag, parsed, bytes });
+  parsedModelCacheBytes += bytes;
+  while (
+    parsedModelCache.size > PARSED_CACHE_MAX_ENTRIES
+    || parsedModelCacheBytes > PARSED_CACHE_BUDGET
+  ) {
+    dropParsedModel(parsedModelCache.keys().next().value);
+  }
+}
+
+function cachedParsedModel(modelId, etag) {
+  const entry = parsedModelCache.get(modelId);
+  if (!entry || entry.etag !== etag) {
+    if (entry) dropParsedModel(modelId);
+    return null;
+  }
+  // Map insertion order is the LRU list.
+  parsedModelCache.delete(modelId);
+  parsedModelCache.set(modelId, entry);
+  return entry;
+}
 // A selection belongs to its IFC, not to whichever tab happens to be visible.
 // GlobalIds make these snapshots stable across rebuilds and let the chat carry
 // several models' selections at once.
@@ -685,9 +762,6 @@ const themeByGuid = new Map();    // GlobalId -> hex
 let themeLegend = [];             // [{label, color, count}]
 let themeTitle = "";
 
-const VIEWER_CONTEXT_EVENT = "ifc-console:viewer-context";
-const VIEWER_COMMAND_EVENT = "ifc-console:viewer-command";
-const VIEWER_RESULT_EVENT = "ifc-console:viewer-result";
 let viewerContextQueued = false;
 let viewerContextReason = "state";
 
@@ -829,29 +903,26 @@ function viewerContext(reason = viewerContextReason) {
   };
 }
 
+// The viewer is one reusable component whether the caller is its own chrome,
+// an attached Agent panel, or the server's WebSocket command handler. Panels
+// receive the typed facade directly; DOM events remain a compatibility shim.
+const viewerComponentHost = createViewerComponent({
+  readContext: viewerContext,
+  execute: runViewerCommand,
+});
+
 function scheduleViewerContext(reason = "state") {
   viewerContextReason = reason;
   if (viewerContextQueued) return;
   viewerContextQueued = true;
   queueMicrotask(() => {
     viewerContextQueued = false;
-    document.dispatchEvent(new CustomEvent(VIEWER_CONTEXT_EVENT, {
-      detail: viewerContext(viewerContextReason),
-    }));
+    viewerComponentHost.publish(viewerContext(viewerContextReason));
   });
 }
 
 function sendViewerResult(command, ok, result = null, error = null) {
-  document.dispatchEvent(new CustomEvent(VIEWER_RESULT_EVENT, {
-    detail: {
-      version: 1,
-      commandId: command.commandId || null,
-      action: command.action || "",
-      ok,
-      result,
-      error,
-    },
-  }));
+  viewerComponentHost.publishResult(command, ok, result, error);
 }
 
 // --------------------------------------------------- element state textures
@@ -2032,8 +2103,32 @@ function updateGround() {
 // module runs inline on the main thread as a fallback.
 let worker = null;
 let workerBusy = false;
+let workerIdleTimer = 0;
 let loadGen = 0;
 let activeHandlers = null;
+const WORKER_IDLE_MS = 30_000;
+
+function clearWorkerIdle() {
+  clearTimeout(workerIdleTimer);
+  workerIdleTimer = 0;
+}
+
+function stopWorker() {
+  clearWorkerIdle();
+  if (worker) worker.terminate();
+  worker = null;
+  workerBusy = false;
+}
+
+function scheduleWorkerIdle() {
+  clearWorkerIdle();
+  if (!worker || workerBusy) return;
+  // web-ifc closes the model but its WASM heap stays at its high-water mark.
+  // Keep it briefly for a tab switch, then return that memory to the browser.
+  workerIdleTimer = setTimeout(() => {
+    if (!workerBusy) stopWorker();
+  }, WORKER_IDLE_MS);
+}
 
 function routeParserMessage(msg) {
   if (!activeHandlers || msg.seq !== loadGen) return;
@@ -2045,15 +2140,14 @@ function routeParserMessage(msg) {
   else if (msg.type === "tree") h.onTree(msg);
   else if (msg.type === "done") h.onDone(msg);
   else if (msg.type === "error" && msg.init_failed) {
-    if (worker) worker.terminate();
-    worker = null;
-    workerBusy = false;
+    stopWorker();
     h.onWorkerLost();
   }
   else if (msg.type === "error") h.onError(new Error(msg.message));
 }
 
 function spawnWorker() {
+  clearWorkerIdle();
   worker = new Worker("/viewer/static/worker.js", { type: "module" });
   worker.onmessage = (event) => routeParserMessage(event.data);
   worker.onerror = (event) => {
@@ -2061,9 +2155,7 @@ function spawnWorker() {
     // the inline path; the next load will try a fresh worker again.
     console.warn("[ifc-console] parser worker failed", event.message || event);
     const h = activeHandlers;
-    worker.terminate();
-    worker = null;
-    workerBusy = false;
+    stopWorker();
     if (h) h.onWorkerLost();
   };
 }
@@ -2087,14 +2179,13 @@ async function parseInline(buffer, handlers) {
 }
 
 function parseBuffer(buffer) {
+  clearWorkerIdle();
   loadGen++;
   const seq = loadGen;
   if (workerBusy && worker) {
     // A parse is still running for a previous revision: wasm cannot be
     // interrupted, so drop the whole worker and start fresh.
-    worker.terminate();
-    worker = null;
-    workerBusy = false;
+    stopWorker();
   }
   return new Promise((resolve, reject) => {
     let finished = false;
@@ -2118,11 +2209,14 @@ function parseBuffer(buffer) {
       onDone: () => {
         finished = true;
         workerBusy = false;
+        if (activeHandlers === handlers) activeHandlers = null;
+        scheduleWorkerIdle();
         resolve({ chunks, maps, tree, coordination });
       },
       onError: (err) => {
         finished = true;
-        workerBusy = false;
+        if (activeHandlers === handlers) activeHandlers = null;
+        stopWorker();
         reject(err);
       },
       onWorkerLost: () => {
@@ -2150,13 +2244,16 @@ function parseBuffer(buffer) {
       const copy = buffer.slice();
       worker.postMessage({ seq, buffer: copy.buffer }, [copy.buffer]);
     } catch {
-      if (worker) worker.terminate();
-      worker = null;
-      workerBusy = false;
+      stopWorker();
       handlers.onWorkerLost();
     }
   });
 }
+
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden && !workerBusy) stopWorker();
+});
+window.addEventListener("pagehide", stopWorker);
 
 async function fetchModelBytes(res) {
   const total = Number(res.headers.get("content-length")) || 0;
@@ -2164,18 +2261,34 @@ async function fetchModelBytes(res) {
     return new Uint8Array(await res.arrayBuffer());
   }
   const reader = res.body.getReader();
-  const parts = [];
+  // FileResponse supplies Content-Length. Fill that one allocation directly
+  // instead of retaining every network chunk and then allocating the whole
+  // model again at the end. Unknown/chunked responses keep the fallback list.
+  let buffer = total ? new Uint8Array(total) : null;
+  const parts = buffer ? null : [];
   let received = 0;
   for (;;) {
     const { done, value } = await reader.read();
     if (done) break;
-    parts.push(value);
+    if (buffer && received + value.length <= buffer.length) {
+      buffer.set(value, received);
+    } else if (buffer) {
+      // A misleading Content-Length should cost one growth, not corrupt data.
+      let size = Math.max(received + value.length, buffer.length * 2, 64 * 1024);
+      const grown = new Uint8Array(size);
+      grown.set(buffer.subarray(0, received));
+      grown.set(value, received);
+      buffer = grown;
+    } else {
+      parts.push(value);
+    }
     received += value.length;
     showProgress(
       `Downloading model: ${(received / 1_048_576).toFixed(1)} MB`,
       total ? received / total : null);
   }
-  const buffer = new Uint8Array(received);
+  if (buffer) return received === buffer.length ? buffer : buffer.slice(0, received);
+  buffer = new Uint8Array(received);
   let offset = 0;
   for (const part of parts) {
     buffer.set(part, offset);
@@ -2198,8 +2311,8 @@ async function loadModel() {
   const targetModelId = loadingModelId;
   const targetEtag = targetRow?.etag || null;
   try {
-    const cached = targetModelId ? parsedModelCache.get(targetModelId) : null;
-    if (cached && cached.etag === targetEtag) {
+    const cached = targetModelId ? cachedParsedModel(targetModelId, targetEtag) : null;
+    if (cached) {
       showProgress("Opening cached model", null);
       const rendered = await buildScene(null, cached.parsed, targetModelId, cached.etag);
       if (rendered) {
@@ -2340,7 +2453,7 @@ async function buildScene(buffer) {
 
   const parsed = residentParsed || await parseBuffer(buffer);
   if (targetModelId && targetEtag) {
-    parsedModelCache.set(targetModelId, { etag: targetEtag, parsed });
+    cacheParsedModel(targetModelId, targetEtag, parsed);
   }
   // A user may switch again while WebAssembly is still parsing. Keep the
   // finished result warm, but never replace the newly requested tab with it.
@@ -5941,10 +6054,13 @@ $("viewer-empty-open").addEventListener("click", openActiveViewerModel);
 function renderModelPicker(rows) {
   modelRows = rows || [];
   const residentIds = new Set(modelRows.map((row) => row.id));
-  for (const store of [modelTabViews, parsedModelCache, modelSelections]) {
+  for (const store of [modelTabViews, modelSelections]) {
     for (const modelId of store.keys()) {
       if (!residentIds.has(modelId)) store.delete(modelId);
     }
+  }
+  for (const modelId of parsedModelCache.keys()) {
+    if (!residentIds.has(modelId)) dropParsedModel(modelId);
   }
   const select = $("model-select");
   const many = modelRows.length > 1;
@@ -6014,10 +6130,10 @@ function setModelInfo(status) {
     if (status.color_theme && frameTargetsCurrentModel(status.color_theme)) {
       applyColorThemeFrame(status.color_theme);
     }
-    const agentPanel = (status.browser_panels || []).find(
-      (panel) => panel.name === "agents",
-    );
-    setChatAvailable(agentPanel, Boolean(status.chat?.enabled));
+    const extensionPanel = requestedPanel
+      ? (status.browser_panels || []).find((panel) => panel.name === requestedPanel)
+      : null;
+    setChatAvailable(extensionPanel, Boolean(status.chat?.enabled));
   } else {
     label.textContent = "no model";
     label.title = "";
@@ -7666,29 +7782,13 @@ function commandFailure(error) {
   return where ? `${error} (${where})` : String(error);
 }
 
-document.addEventListener(VIEWER_COMMAND_EVENT, (event) => {
-  const command = isPlainObject(event.detail) ? event.detail : {};
-  try {
-    const result = runViewerCommand(command);
-    if (result && typeof result.then === "function") {
-      result.then((value) => sendViewerResult(command, true, value)).catch(
-        (error) => sendViewerResult(command, false, null, commandFailure(error)),
-      );
-    } else {
-      sendViewerResult(command, true, result);
-    }
-  } catch (error) {
-    sendViewerResult(command, false, null, commandFailure(error));
-  }
-});
-
-// ---------------------------------------------------------------- chat dock
-// The panel is a separate module and only loaded when asked for, so a viewer
-// session that never opens the chat pays nothing for it.
+// ---------------------------------------------------------- extension panel
+// The panel is a separate component and only loaded when its launcher names
+// it. A /viewer tab therefore pays no Agent JavaScript, CSS, layout or memory.
 const chatDock = $("chat-dock");
 const chatResize = $("chat-dock-resize");
 const chatBtn = $("btn-chat");
-const agentWorkspacePrimary = queryParams.get("chat") === "1";
+const extensionPanelPrimary = Boolean(requestedPanel);
 const CHAT_DOCK_MIN_WIDTH = 520;
 const CHAT_DOCK_DEFAULT_WIDTH = 720;
 const CHAT_CANVAS_MIN_WIDTH = 420;
@@ -7697,7 +7797,7 @@ const CHAT_DOCK_OVERLAY_WIDTH = 1040;
 let chatPanel = null;
 let chatLoadPromise = null;
 let chatPanelDefinition = null;
-let chatDesiredOpen = Boolean(uiState.chatOpen || agentWorkspacePrimary);
+let chatDesiredOpen = extensionPanelPrimary;
 let chatRequestVersion = 0;
 
 function loadPanelStylesheet(url) {
@@ -7819,7 +7919,7 @@ function closePanelsForChat(force = false) {
 }
 
 async function setChat(open, { force = false } = {}) {
-  if (agentWorkspacePrimary && !force) open = true;
+  if (extensionPanelPrimary && !force) open = true;
   const requestVersion = ++chatRequestVersion;
   chatDesiredOpen = Boolean(open);
   uiState.chatOpen = chatDesiredOpen;
@@ -7845,7 +7945,7 @@ async function setChat(open, { force = false } = {}) {
           if (typeof mountPanel !== "function") {
             throw new TypeError("extension panel module has no mountPanel export");
           }
-          chatPanel ||= mountPanel(chatDock);
+          chatPanel ||= mountPanel(chatDock, { viewer: viewerComponentHost.api });
           return chatPanel;
         })
         .finally(() => { chatLoadPromise = null; });
@@ -7913,7 +8013,9 @@ function reconcileCompactLayout() {
 // opens a dead panel. The extension manifest supplies its module and styling;
 // core never needs to know where the companion package stores those assets.
 function setChatAvailable(panel, enabled) {
-  const available = Boolean(panel && enabled);
+  const available = Boolean(
+    requestedPanel && panel?.name === requestedPanel && enabled,
+  );
   chatPanelDefinition = available ? panel : null;
   chatBtn.hidden = !available;
   if (panel?.label) {
@@ -7926,7 +8028,7 @@ function setChatAvailable(panel, enabled) {
 }
 
 chatBtn.addEventListener("click", () => {
-  if (agentWorkspacePrimary && !chatDock.hidden) chatPanel?.focus();
+  if (extensionPanelPrimary && !chatDock.hidden) chatPanel?.focus();
   else setChat(chatDock.hidden);
 });
 

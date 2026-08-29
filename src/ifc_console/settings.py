@@ -104,7 +104,7 @@ class ViewerSettings(BaseModel):
 
 
 class ChatSettings(BaseModel):
-    """The optional in-browser chat panel. Off unless you turn it on."""
+    """The optional in-browser Agent workspace. Off unless you turn it on."""
 
     enabled_default: bool = False
     # openai | anthropic | openrouter | local

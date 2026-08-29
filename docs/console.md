@@ -55,12 +55,12 @@ Type `/` to browse commands. Values for `/mode`, `/viewer`, `/connect`, and
 | ------- | --- |
 | `/mode [ask\|edit]` | show or change AI authority |
 | `/sandbox [auto\|strict\|off\|restart]` | control generated-code isolation |
-| `/viewer [off\|url]` | open, close, or print the viewer URL |
-| `/chat [solo\|off\|provider]` | control browser chat; requires `ifc-console-agents` |
+| `/viewer` | open the viewer; close its browser tab when finished |
+| `/agent [name\|new\|list\|files\|off]` | open or manage the Agent workspace; requires `ifc-console-agents` |
 | `/connect [client\|all]` | show and copy client setup |
 | `/copy [client\|url\|viewer\|token]` | copy connection data |
 | `/port <n>` | move the HTTP server |
-| `/theme [light\|dark\|modern\|blue]` | change the console and viewer theme, plus chat when installed |
+| `/theme [light\|dark\|modern\|blue]` | change the console and viewer theme, plus the Agent workspace when installed |
 
 ### Help and diagnostics
 

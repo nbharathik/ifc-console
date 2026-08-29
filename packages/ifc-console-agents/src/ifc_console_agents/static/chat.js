@@ -39,12 +39,12 @@ import {
 } from "./chat_studio.js";
 import { formatBytes, reachSentence, workspaceModel } from "./chat_workspace.js";
 
-/* ifc-console chat panel.
+/* ifc-console Agent panel.
  *
- * One ES module, no dependencies, mounted either as the whole page (/chat) or
- * as a dock beside the 3D view. Everything goes through the ifc-console
- * server on this origin: it holds the provider key, runs the tool loop, and
- * streams the result back as SSE. The browser never sees a provider URL.
+ * One ES module mounted beside the shared 3D viewer. Everything goes through
+ * the ifc-console server on this origin: it holds the provider key, runs the
+ * tool loop, and streams the result back as SSE. The browser never sees a
+ * provider URL.
  *
  * Three surfaces, one job each: the sidebar navigates, the conversation stays
  * in place, and one Agent workspace control opens assistant context, content,
@@ -662,22 +662,46 @@ export function mountChat(root, options = {}) {
   const input = el("input");
   const send = act("send");
 
-  // Docked beside the viewer, an id in the transcript is a way into the 3D
-  // view. The solo page has no viewer, so callers fall back to copying.
-  const viewerAttached = () => Boolean(document.getElementById("canvas"));
+  // The viewer passes its component facade when this panel is attached. The
+  // DOM fallback keeps older standalone embedders working for one release.
+  const viewer = options.viewer?.version === 1 ? options.viewer : null;
+  const viewerAttached = () => Boolean(viewer || document.getElementById("canvas"));
+
+  const sendViewerCommand = (detail) => {
+    if (!viewer) {
+      document.dispatchEvent(new CustomEvent("ifc-console:viewer-command", { detail }));
+      return;
+    }
+    Promise.resolve(viewer.execute(detail)).then(
+      (result) => handleViewerResult({
+        version: 1,
+        commandId: detail.commandId || null,
+        action: detail.action || "",
+        ok: true,
+        result,
+        error: null,
+      }),
+      (error) => handleViewerResult({
+        version: 1,
+        commandId: detail.commandId || null,
+        action: detail.action || "",
+        ok: false,
+        result: null,
+        error: String(error?.message || error),
+      }),
+    );
+  };
   let lastTranscriptGuids = [];
 
   const selectInViewer = (guids, { isolate = false, modelId = null } = {}) => {
     if (!guids.length || !viewerAttached()) return false;
     lastTranscriptGuids = [...guids];
-    document.dispatchEvent(new CustomEvent("ifc-console:viewer-command", {
-      detail: {
-        action: isolate ? "isolate-guids" : "reveal-guids",
-        guids,
-        model_id: modelId,
-        commandId: `chat-guid-${Date.now()}`,
-      },
-    }));
+    sendViewerCommand({
+      action: isolate ? "isolate-guids" : "reveal-guids",
+      guids,
+      model_id: modelId,
+      commandId: `chat-guid-${Date.now()}`,
+    });
     return true;
   };
 
@@ -1245,9 +1269,7 @@ export function mountChat(root, options = {}) {
     document.documentElement.dataset.consoleTheme = resolved;
     if (el("theme")) el("theme").value = theme === "system" ? resolved : theme;
     if (notifyViewer) {
-      document.dispatchEvent(new CustomEvent("ifc-console:viewer-command", {
-        detail: { action: "set-theme", theme },
-      }));
+      sendViewerCommand({ action: "set-theme", theme });
     }
   }
 
@@ -1855,11 +1877,11 @@ export function mountChat(root, options = {}) {
           const selectedModel = viewerSelections().find(
             (row) => row.model_id === sessionStatus.view_model_id,
           ) || viewerSelections()[0];
-          document.dispatchEvent(new CustomEvent("ifc-console:viewer-command", {
-            detail: selectedModel.model_id === sessionStatus.view_model_id
+          sendViewerCommand(
+            selectedModel.model_id === sessionStatus.view_model_id
               ? { action: "focus-selection" }
               : { action: "set-model", model_id: selectedModel.model_id },
-          }));
+          );
         },
       },
       {
@@ -2158,9 +2180,11 @@ export function mountChat(root, options = {}) {
 
   function captureViewerEvidence() {
     pendingCaptureCommand = `chat-evidence-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-    document.dispatchEvent(new CustomEvent("ifc-console:viewer-command", {
-      detail: { action: "capture-evidence", format: "png", commandId: pendingCaptureCommand },
-    }));
+    sendViewerCommand({
+      action: "capture-evidence",
+      format: "png",
+      commandId: pendingCaptureCommand,
+    });
   }
 
   function renderAttachments() {
@@ -2200,11 +2224,11 @@ export function mountChat(root, options = {}) {
       chip.title = `${count} selected IFC element${count === 1 ? "" : "s"} from this file go to the tools`
         + " with this message. Click the name to open that IFC selection.";
       chip.querySelector("span").addEventListener("click", () => {
-        document.dispatchEvent(new CustomEvent("ifc-console:viewer-command", {
-          detail: selectedModel.model_id === sessionStatus.view_model_id
+        sendViewerCommand(
+          selectedModel.model_id === sessionStatus.view_model_id
             ? { action: "focus-selection" }
             : { action: "set-model", model_id: selectedModel.model_id },
-        }));
+        );
       });
       tray.appendChild(chip);
     }
@@ -5382,9 +5406,10 @@ export function mountChat(root, options = {}) {
       dismissNotification(actionButton.closest(".chat-notification"));
     }
     else if (action === "drop-selection") {
-      document.dispatchEvent(new CustomEvent("ifc-console:viewer-command", {
-        detail: { action: "clear-model-selection", model_id: actionButton.dataset.modelId },
-      }));
+      sendViewerCommand({
+        action: "clear-model-selection",
+        model_id: actionButton.dataset.modelId,
+      });
     }
     else if (action === "drop-queued") {
       // Taking it back returns the text rather than deleting it, and the
@@ -5536,9 +5561,7 @@ export function mountChat(root, options = {}) {
     if (files.length) await uploadWorkspaceContent(files);
   });
   el("ifcmodel").addEventListener("change", () => {
-    document.dispatchEvent(new CustomEvent("ifc-console:viewer-command", {
-      detail: { action: "set-model", modelId: el("ifcmodel").value },
-    }));
+    sendViewerCommand({ action: "set-model", modelId: el("ifcmodel").value });
   });
   el("session-mode").addEventListener("change", () => {
     void changeSessionMode(el("session-mode").value);
@@ -5595,8 +5618,7 @@ export function mountChat(root, options = {}) {
     loadWorkspace({ force: true });
   });
 
-  document.addEventListener("ifc-console:viewer-context", (event) => {
-    const detail = event.detail;
+  function applyViewerContext(detail) {
     if (!detail || typeof detail !== "object") return;
     const viewerOpen = detail.open !== false;
     viewerLinked = viewerOpen;
@@ -5635,14 +5657,11 @@ export function mountChat(root, options = {}) {
       if (settings.theme !== viewerTheme) rememberThemePreference(viewerTheme);
     }
     renderContext();
-  });
+  }
 
-  document.addEventListener("ifc-console:viewer-result", async (event) => {
-    const detail = event.detail;
+  async function handleViewerResult(detail) {
     if (detail?.ok && detail.action === "get-context" && detail.result) {
-      document.dispatchEvent(new CustomEvent("ifc-console:viewer-context", {
-        detail: detail.result,
-      }));
+      applyViewerContext(detail.result);
       return;
     }
     if (String(detail?.commandId || "").startsWith("chat-guid-") && !detail.ok) {
@@ -5678,11 +5697,21 @@ export function mountChat(root, options = {}) {
     } catch (exc) {
       note(`Could not attach the 3D view: ${exc.message || exc}`, true);
     }
-  });
+  }
 
-  document.dispatchEvent(new CustomEvent("ifc-console:viewer-command", {
-    detail: { action: "get-context" },
-  }));
+  if (viewer) {
+    viewer.subscribe(applyViewerContext);
+    viewer.subscribeResults?.((detail) => { void handleViewerResult(detail); });
+  } else {
+    document.addEventListener("ifc-console:viewer-context", (event) => {
+      applyViewerContext(event.detail);
+    });
+    document.addEventListener("ifc-console:viewer-result", (event) => {
+      void handleViewerResult(event.detail);
+    });
+  }
+
+  sendViewerCommand({ action: "get-context" });
 
   // The sidebar starts where it was left, and open by default on a surface
   // wide enough to hold it without covering the conversation.

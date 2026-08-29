@@ -1,4 +1,4 @@
-# Browser chat
+# Agent workspace
 
 The chat runtime, providers, built-in/custom packs, and Agent browser panel ship
 in the optional `ifc-console-agents` distribution. It registers through
@@ -21,16 +21,20 @@ uv tool install --with ifc-console-agents ifc-console
 ifc-console
 ```
 
-Then use:
+Then use the single Agent launcher:
 
 | command | action |
 | ------- | ------ |
-| `/chat` | open chat beside the 3D viewer |
-| `/chat solo` | open chat without the canvas |
-| `/chat <provider>` | open chat and select a provider |
-| `/chat off` | close chat and forget any in-memory key |
-| `/agent` | open the General assistant |
+| `/agent` | open General beside the shared 3D viewer |
+| `/agent <name>` | open a named assistant |
 | `/agent list` | list every built-in and custom assistant |
+| `/agent new` | build a custom assistant |
+| `/agent off` | disable the workspace and forget any in-memory key |
+
+There is no separate `/chat` command. Conversation is part of the Agent
+workspace. `/viewer` always opens the viewer alone; `/agent` attaches this
+panel to the same viewer component and therefore has the same measurements,
+sections, selections, camera controls, and screenshots.
 
 stdio has no browser surface. Use the interactive console or `--no-tui`.
 
@@ -99,7 +103,7 @@ manage saved entries.
 
 The browser talks only to the local console. The console sends the selected
 provider your messages, system instructions, image inputs, and tool results,
-which may contain IFC or project data. Use a local provider or leave chat off
+which may contain IFC or project data. Use a local provider or leave the Agent workspace off
 when that data must not leave the machine.
 
 ## Tools and safety
@@ -170,7 +174,7 @@ environment or configured credential source. See [Python SDK](sdk.md).
 
 | key | default | purpose |
 | --- | ------- | ------- |
-| `chat.enabled_default` | `false` | open chat at session start |
+| `chat.enabled_default` | `false` | enable the Agent workspace at session start |
 | `chat.provider` | `openai` | initial provider |
 | `chat.model` | empty | initial model ID |
 | `chat.base_url` | empty | provider URL override |
@@ -179,4 +183,4 @@ environment or configured credential source. See [Python SDK](sdk.md).
 | `chat.local_only` | `false` | allow only local provider URLs |
 | `chat.timeout_s` | `300` | provider response timeout |
 
-Use `ifc-console --chat` to open the panel at startup.
+Use `ifc-console --agent` to open the workspace at startup.

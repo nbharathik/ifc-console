@@ -617,7 +617,7 @@ class ViewerHub:
         self._restore_model_selections()
 
     async def close_all(self) -> int:
-        """Disconnect every tab (used by /viewer off). Returns tabs closed."""
+        """Disconnect every viewer tab and return the number closed."""
         clients = list(self.clients)
         for client in clients:
             with contextlib.suppress(Exception):

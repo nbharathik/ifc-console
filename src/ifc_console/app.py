@@ -123,7 +123,7 @@ class AppCore:
         self.agent_files = None
         self.agent_panel = None  # created by the panel routes on first use
         self.server_running = False
-        # Why the last start attempt failed, so /viewer and /chat can say more
+        # Why the last start attempt failed, so /viewer and /agent can say more
         # than "not running" (a port conflict is the usual reason).
         self.server_error: str | None = None
         # Operations are registered independently of any transport. The old
@@ -286,12 +286,16 @@ class AppCore:
         self.events.emit("viewer_enabled", url=self.viewer_public_url)
         return True
 
-    # -- chat panel -----------------------------------------------------------
+    # -- optional Agent panel -------------------------------------------------
+    @property
+    def agent_url(self) -> str:
+        """The Agent workspace attached to the shared viewer component."""
+        return f"http://127.0.0.1:{self.port}/viewer?panel=agents#t={self.token}"
+
     @property
     def chat_url(self) -> str:
-        """The chat docked beside the 3D view: what /chat opens. The token
-        rides the fragment, so it has to stay last in the URL."""
-        return f"http://127.0.0.1:{self.port}/viewer?chat=1#t={self.token}"
+        """Compatibility alias for integrations that predate ``agent_url``."""
+        return self.agent_url
 
     @property
     def chat_solo_url(self) -> str:
@@ -299,7 +303,7 @@ class AppCore:
         return f"http://127.0.0.1:{self.port}/chat#t={self.token}"
 
     def enable_chat(self) -> bool:
-        """Turn the optional browser chat panel on (idempotent)."""
+        """Enable the optional Agent panel backend (idempotent)."""
         if not self.extensions.available("agents"):
             log.warning("the chat panel requires ifc-console-agents")
             return False

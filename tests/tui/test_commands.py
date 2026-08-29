@@ -412,13 +412,16 @@ async def test_enabling_ai_save_requires_confirmation_and_applies_live(
     assert console.core.policy.allow_ai_save is False
 
 
-async def test_viewer_url_requires_server(console: FakeConsole) -> None:
-    await commands.dispatch(console, "/viewer url")
+async def test_viewer_is_one_open_command(console: FakeConsole) -> None:
+    await commands.dispatch(console, "/viewer")
     assert "server is still starting" in console.text
     console.core.server_running = True
     console.clear_log()
+    await commands.dispatch(console, "/viewer")
+    assert "/viewer#t=" in console.clipboard
+    console.clear_log()
     await commands.dispatch(console, "/viewer url")
-    assert "/viewer#t=" in console.text
+    assert "usage: /viewer" in console.text
 
 
 # ----------------------------------------------------- 0.1.4 command rework
@@ -465,62 +468,16 @@ async def test_kb_reports_when_the_index_is_missing(console) -> None:
     assert "not built" in console.text or "building" in console.text
 
 
-# ------------------------------------------------------------- the chat panel
-async def test_chat_enables_the_panel_and_warns_about_the_network(console) -> None:
-    console.core.server_running = True
+# ----------------------------------------------------------- product surfaces
+async def test_chat_is_not_a_separate_slash_command(console) -> None:
+    assert "chat" not in commands.REGISTRY
     await commands.dispatch(console, "/chat")
-    assert console.core.chat.enabled is True
-    assert "talks to the internet" in console.text
-    assert "/chat" in console.clipboard or "chat" in console.clipboard
+    assert "unknown command /chat" in console.text
 
 
-async def test_chat_opens_the_3d_view_with_the_panel_docked(console) -> None:
-    """The panel answers about the open model, so it opens beside it."""
-    console.core.server_running = True
-    await commands.dispatch(console, "/chat")
-    assert console.core.viewer.enabled is True
-    assert "/viewer?chat=1" in console.clipboard
-
-
-async def test_chat_split_is_still_accepted(console) -> None:
-    console.core.server_running = True
-    await commands.dispatch(console, "/chat split")
-    assert "unknown option" not in console.text
-    assert "chat=1" in console.clipboard
-
-
-async def test_chat_solo_leaves_the_viewer_alone(console) -> None:
-    console.core.server_running = True
-    await commands.dispatch(console, "/chat solo")
-    assert console.core.chat.enabled is True
-    assert console.core.viewer.enabled is False
-    assert "chat=1" not in console.clipboard
-
-
-async def test_chat_off_drops_the_session_key(console) -> None:
-    console.core.server_running = True
-    await commands.dispatch(console, "/chat")
-    console.core.chat.keys["openai"] = "sk-test"
-    await commands.dispatch(console, "/chat off")
-    assert console.core.chat.enabled is False
-    assert console.core.chat.keys == {}
-
-
-async def test_chat_picks_a_provider(console) -> None:
-    console.core.server_running = True
-    await commands.dispatch(console, "/chat anthropic")
-    assert console.core.chat.provider == "anthropic"
-
-
-async def test_chat_rejects_an_unknown_option(console) -> None:
-    await commands.dispatch(console, "/chat nonsense")
-    assert "unknown option" in console.text
-    assert console.core.chat.enabled is False
-
-
-async def test_status_reports_the_chat_panel(console) -> None:
+async def test_status_reports_the_agent_workspace(console) -> None:
     await commands.dispatch(console, "/status")
-    assert "chat     off" in console.text
+    assert "agent    off (/agent to start)" in console.text
 
 
 # ----------------------------------------------------------- the agent launcher
@@ -536,8 +493,18 @@ async def test_bare_agent_opens_general_directly(
     assert console.clipboard == no_browser[0]
     assert console.core.viewer.enabled is True
     assert console.core.chat.enabled is True
+    assert "/viewer?panel=agents" in no_browser[0]
     assert "General" in console.text
     assert "available agents" not in console.text
+    assert "prompts and model context may go to the provider" in console.text
+
+
+async def test_agent_off_drops_the_session_key(console) -> None:
+    console.core.chat.enabled = True
+    console.core.chat.keys["openai"] = "sk-test"
+    await commands.dispatch(console, "/agent off")
+    assert console.core.chat.enabled is False
+    assert console.core.chat.keys == {}
 
 
 async def test_agent_list_prints_every_agent_without_opening_one(
@@ -557,7 +524,7 @@ async def test_browser_commands_explain_a_port_conflict(console) -> None:
     """"server is not running" is useless on its own; say what is holding it."""
     console.core.server_running = False
     console.core.server_error = "port 8383 is in use by an ifc-console session"
-    for line in ("/chat", "/viewer"):
+    for line in ("/agent", "/viewer"):
         console.clear_log()
         await commands.dispatch(console, line)
         assert "port 8383 is in use" in console.text
@@ -568,7 +535,7 @@ async def test_browser_commands_explain_a_port_conflict(console) -> None:
 async def test_browser_commands_say_when_the_server_is_still_starting(console) -> None:
     console.core.server_running = False
     console.core.server_error = None
-    await commands.dispatch(console, "/chat")
+    await commands.dispatch(console, "/agent")
     assert "still starting" in console.text
 
 

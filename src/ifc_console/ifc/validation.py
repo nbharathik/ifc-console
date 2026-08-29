@@ -51,6 +51,25 @@ def _issue(statement: Any) -> dict[str, Any]:
     return entry
 
 
+def _issue_class(statement: Any) -> str:
+    """Just the grouping key, without serializing the instance."""
+    if not isinstance(statement, dict):
+        return "(file)"
+    instance = statement.get("instance")
+    if instance is None:
+        return "(file)"
+    try:
+        return str(instance.is_a()) or "(file)"
+    except Exception:
+        return type(instance).__name__
+
+
+def _issue_severity(statement: Any) -> str:
+    if not isinstance(statement, dict):
+        return "error"
+    return str(statement.get("level", "error")).lower() or "error"
+
+
 def run_schema_validation(
     ifc: Any, *, express_rules: bool = False, max_issues: int = MAX_ISSUES
 ) -> dict[str, Any]:
@@ -63,11 +82,16 @@ def run_schema_validation(
     by_class: Counter[str] = Counter()
     by_severity: Counter[str] = Counter()
     for statement in logger.statements:
-        entry = _issue(statement)
-        by_class[entry.get("class") or "(file)"] += 1
-        by_severity[entry.get("severity") or "error"] += 1
+        # Past the cap only the counters matter, and serializing an instance
+        # to build the full entry is the expensive part of this loop.
         if len(issues) < max_issues:
+            entry = _issue(statement)
             issues.append(entry)
+            by_class[entry.get("class") or "(file)"] += 1
+            by_severity[entry.get("severity") or "error"] += 1
+            continue
+        by_class[_issue_class(statement)] += 1
+        by_severity[_issue_severity(statement)] += 1
     total = len(logger.statements)
     return {
         "valid": total == 0,

@@ -34,6 +34,7 @@ REQUIRED_ASSETS = (
     "index.html",
     "app.css",
     "app.js",
+    "viewer_component.js",
     "measure_math.js",
     "parser.js",
     "themes.css",

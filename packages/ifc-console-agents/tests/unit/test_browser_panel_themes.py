@@ -55,14 +55,13 @@ def test_viewer_theme_always_reaches_the_chat_and_agent_workspace() -> None:
     )[0]
     assert 'scheduleViewerContext("theme")' in paint
 
-    listener = chat_js.split(
-        'document.addEventListener("ifc-console:viewer-context"', 1
-    )[1].split(
-        'document.addEventListener("ifc-console:viewer-result"', 1
+    listener = chat_js.split("function applyViewerContext(detail)", 1)[1].split(
+        "async function handleViewerResult", 1
     )[0]
     assert "applyThemePreference(viewerTheme);" in listener
     assert "rememberThemePreference(viewerTheme);" in listener
     assert 'settings.theme === "system"' not in listener
+    assert "viewer.subscribe(applyViewerContext)" in chat_js
     assert "document.documentElement.dataset.consoleTheme = resolved;" in chat_js
     assert (
         "document.documentElement.dataset.consoleTheme = root.dataset.theme"

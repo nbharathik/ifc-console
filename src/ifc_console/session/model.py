@@ -24,6 +24,8 @@ from ifc_console.session.backups import BackupStore
 
 T = TypeVar("T")
 
+_file_digest = getattr(hashlib, "file_digest", None)  # 3.11+
+
 _LOAD_TIMEOUT = 600.0
 _SAVE_TIMEOUT = 600.0
 
@@ -372,10 +374,14 @@ class ModelSession:
 
     @staticmethod
     def _hash_file(path: Path) -> tuple[str, int]:
-        digest = hashlib.sha256()
-        size_bytes = 0
+        # file_digest (3.11+) hashes in C and drops the GIL; on a 70 MB model
+        # that is about three times faster than a read/update loop in Python.
         with path.open("rb") as handle:
-            for chunk in iter(lambda: handle.read(1 << 20), b""):
+            if _file_digest is not None:
+                return _file_digest(handle, "sha256").hexdigest(), handle.tell()
+            digest = hashlib.sha256()
+            size_bytes = 0
+            for chunk in iter(lambda: handle.read(1 << 22), b""):
                 digest.update(chunk)
                 size_bytes += len(chunk)
         return digest.hexdigest(), size_bytes

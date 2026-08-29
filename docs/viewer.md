@@ -16,9 +16,15 @@ Open a model, then run `/viewer`.
 | command | use |
 | ------- | --- |
 | `/viewer` | enable the viewer and open the browser |
-| `/viewer url` | print its URL |
-| `/viewer off` | close tabs and remove viewer tools |
 | `ifc-console --viewer` | enable it at startup |
+
+`/viewer` has no subcommands: close the browser tab when you are finished. If
+another tool needs the address, `/copy viewer` copies it without expanding the
+viewer command itself.
+
+`/viewer` is always the viewer-only product surface. It does not restore or
+load an Agent panel, even when `ifc-console-agents` is installed. `/agent`
+opens the Agent workspace and attaches it beside this same viewer.
 
 The browser assets, Three.js, web-ifc, and WASM ship in `ifc-console` itself.
 `ifc-console doctor` treats missing viewer assets as a damaged installation.
@@ -37,9 +43,23 @@ interactive console or `--no-tui`.
 +---------------+----------------------------------------+--------------+
 ```
 
-With `ifc-console-agents` installed, the agent extension adds its panel to the
-workspace. Its JavaScript and CSS load lazily only when the extension is
-available and the panel is opened; the core-only viewer has no empty Agent tab.
+With `ifc-console-agents` installed, `/agent` asks the extension to mount its
+panel beside the viewer. Its JavaScript and CSS load lazily only on that
+explicit Agent URL; a normal `/viewer` tab has no Agent code, layout, or memory
+cost.
+
+## Shared viewer component
+
+The canvas and all viewport behavior form one reusable component. The viewer
+owns selection, camera, visibility, sections, measurements, saved views, and
+evidence capture. An attached panel receives a small component facade for
+reading context, executing those commands, and subscribing to asynchronous
+results. A compatibility DOM-event adapter remains for older integrations.
+
+This boundary prevents feature drift: a measurement or section feature added
+to the normal viewer is immediately the same feature used from `/agent`.
+Server WebSocket commands use the same command dispatcher, so MCP clients also
+operate the exact viewport visible to the user.
 
 | action | control |
 | ------ | ------- |
@@ -111,8 +131,9 @@ Results use the live in-memory model, including unsaved edits.
 When several models are resident, Chrome-like tabs switch which IFC file is
 displayed. Tabs can be closed and reopened from the plus button, and each tab
 remembers its camera, selection, cuts, visibility, transparency, and
-measurements for the session. Each parsed IFC revision stays in browser memory,
-so returning to a tab skips the download and WebAssembly parse. The viewer
+measurements for the session. Up to two recent parsed IFC revisions stay in a
+device-aware 96–256 MB cache, so a normal tab switch skips the download and
+WebAssembly parse without letting typed arrays grow once per open model. The viewer
 renders one model at a time; it does not create a federated overlay.
 
 ## MCP viewer tools
@@ -145,10 +166,28 @@ The viewport tools require a connected browser tab. An external MCP client does
 not need the user to run `/viewer` first: `open_viewer` turns the surface on,
 opens the tokenized page in the local browser, waits briefly for its WebSocket,
 and returns `ready=true` when an IFC is loaded and the tab is connected. The
-catalog stays stable through `/viewer` and `/viewer off`, which avoids stale
+catalog stays stable whether a viewer tab is open or closed, which avoids stale
 tool caches in Codex, Claude Code, and other MCP hosts. Standalone stdio
 sessions get a clear error because they serve no web pages; use the shared
 console bridge or HTTP transport for visual work.
+
+A Claude or Codex MCP session can therefore call `open_viewer`, use
+`control_viewer` for the camera, sections, visibility, and measurements, and
+call `get_viewer_screenshot` for visual evidence. It gains viewer access only;
+it does not load the built-in Agent panel or its provider runtime.
+
+## Performance behavior
+
+- Rendering is demand-driven. The viewer requests frames while the camera is
+  moving, damping, resizing, or content is dirty, then sleeps when idle.
+- Model downloads fill the known-size response buffer directly instead of
+  retaining all stream chunks plus a second full-size allocation.
+- Parsed-model caching is bounded by count and estimated typed-array bytes.
+- The web-ifc worker is kept briefly for a fast follow-up parse, then terminated
+  after 30 seconds idle or when a hidden tab no longer needs it, releasing its
+  WebAssembly high-water memory.
+- Completed parser callbacks are detached immediately so model buffers and
+  geometry chunks are not kept alive by stale closures.
 
 `control_viewer` takes one `action`:
 

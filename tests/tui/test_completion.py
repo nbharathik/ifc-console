@@ -19,6 +19,7 @@ def inserts(state: completion.MenuState) -> list[str]:
 def test_slash_alone_lists_every_command(core) -> None:
     state = completion.complete("/", core)
     assert inserts(state) == sorted(f"/{name}" for name in commands.REGISTRY)
+    assert "/chat" not in inserts(state)
 
 
 def test_prefix_filters_and_exact_name_ranks_first(core) -> None:
@@ -91,13 +92,14 @@ def test_unique_command_prefix_reaches_argument_menu(core) -> None:
     assert inserts(state) == ["claude-code", "claude-desktop"]
 
 
-def test_viewer_offers_bare_open_plus_flags(core) -> None:
-    state = completion.complete("/viewer ", core)
-    assert [c.shown for c in state.candidates] == ["(open)", "off", "url"]
-    bare = state.candidates[0]
-    assert bare.terminal and state.apply(bare) == "/viewer "
-    state = completion.complete("/viewer o", core)
-    assert inserts(state) == ["off"]  # the bare row only shows for an empty token
+def test_viewer_is_terminal_and_has_no_argument_menu(core) -> None:
+    command = {c.insert: c for c in completion.complete("/", core).candidates}["/viewer"]
+    assert command.terminal and not command.advance
+    assert completion.complete("/viewer ", core).empty
+
+
+def test_agent_off_is_offered_from_the_only_agent_launcher(core) -> None:
+    assert "off" in inserts(completion.complete("/agent ", core))
 
 
 def test_copy_targets(core) -> None:

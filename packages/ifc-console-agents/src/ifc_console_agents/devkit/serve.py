@@ -34,8 +34,13 @@ class DevServer:
         return f"{self.base_url}/viewer#t={self.token}"
 
     @property
+    def agent_url(self) -> str:
+        return f"{self.base_url}/viewer?panel=agents&agent=general#t={self.token}"
+
+    @property
     def chat_url(self) -> str:
-        return f"{self.base_url}/viewer?chat=1#t={self.token}"
+        """Compatibility alias for the former dev-harness surface name."""
+        return self.agent_url
 
     @property
     def solo_chat_url(self) -> str:
@@ -172,11 +177,10 @@ def run_dev(
         print(f"note         : {note}")
     print("provider     : rehearsal (offline, no key, no network)")
     print()
-    print(f"viewer + chat: {dev.chat_url}")
-    print(f"3D only      : {dev.viewer_url}")
-    print(f"chat only    : {dev.solo_chat_url}")
+    print(f"Agent + viewer: {dev.agent_url}")
+    print(f"viewer only  : {dev.viewer_url}")
 
-    urls = {"chat": dev.chat_url, "viewer": dev.viewer_url, "solo": dev.solo_chat_url}
+    urls = {"agent": dev.agent_url, "viewer": dev.viewer_url}
     if open_target in urls:
         opened = _open_once(urls[open_target])
         print(
@@ -185,7 +189,7 @@ def run_dev(
             else "could not open a browser tab; copy a URL above"
         )
     else:
-        print("no browser tab opened; copy a URL above, or pass --open chat")
+        print("no browser tab opened; copy a URL above, or pass --open agent")
     print("Ctrl+C to stop.")
     try:
         while dev.thread.is_alive():

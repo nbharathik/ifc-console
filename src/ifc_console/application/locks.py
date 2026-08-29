@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 import stat
 import sys
@@ -14,6 +15,9 @@ from typing import BinaryIO
 
 from ifc_console.core.results import ToolError
 
+_POLL_MIN_S = 0.001
+_POLL_MAX_S = 0.05
+
 
 @contextmanager
 def exclusive_file_lock(
@@ -21,6 +25,7 @@ def exclusive_file_lock(
 ) -> Iterator[None]:
     with _open_lock_file(path, error_code) as handle:
         deadline = time.monotonic() + timeout_s
+        delay = _POLL_MIN_S
         while True:
             try:
                 _lock(handle.fileno())
@@ -28,7 +33,8 @@ def exclusive_file_lock(
             except OSError as exc:
                 if time.monotonic() >= deadline:
                     raise _busy(path, error_code) from exc
-                time.sleep(0.05)
+                time.sleep(delay)
+                delay = min(delay * 2, _POLL_MAX_S)
         try:
             yield
         finally:
@@ -42,6 +48,7 @@ async def async_exclusive_file_lock(
     """Async variant for transaction paths that must not block the event loop."""
     with _open_lock_file(path, error_code) as handle:
         deadline = time.monotonic() + timeout_s
+        delay = _POLL_MIN_S
         locked = False
         while not locked:
             try:
@@ -50,7 +57,8 @@ async def async_exclusive_file_lock(
             except OSError as exc:
                 if time.monotonic() >= deadline:
                     raise _busy(path, error_code) from exc
-                await asyncio.sleep(0.05)
+                await asyncio.sleep(delay)
+                delay = min(delay * 2, _POLL_MAX_S)
         try:
             yield
         finally:
@@ -85,8 +93,12 @@ def _open_lock_file(path: Path, error_code: str) -> BinaryIO:
     handle = os.fdopen(fd, "r+b")
     handle.seek(0, os.SEEK_END)
     if handle.tell() == 0:
-        handle.write(b"\0")
-        handle.flush()
+        # Windows byte-range locks are mandatory, so this write loses to a
+        # holder that already locked byte 0. That holder seeded the file, so
+        # there is nothing left to do.
+        with contextlib.suppress(OSError):
+            handle.write(b"\0")
+            handle.flush()
     return handle
 
 

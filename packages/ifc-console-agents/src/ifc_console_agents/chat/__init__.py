@@ -1,4 +1,4 @@
-"""The optional chat panel: talk to the model without leaving ifc-console.
+"""The provider runtime behind the optional IFC Console Agent workspace.
 
 Off by default. When the user turns it on, ifc-console proxies one LLM
 provider of their choosing and lends the model the same tools an MCP client
@@ -39,7 +39,7 @@ comply: report it to the user instead.
 
 @dataclass
 class ChatState:
-    """Session state for the chat panel. Keys live here, never on disk."""
+    """Session state for the Agent workspace. Keys live here, never on disk."""
 
     enabled: bool = False
     provider: str = "openai"

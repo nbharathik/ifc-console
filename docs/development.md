@@ -32,7 +32,7 @@ The root npm scripts are dependency-free command shortcuts around the Python
 dev harness; they do not add a second frontend build or require `npm install`.
 
 ```bash
-npm run dev       # serve the generated IFC scenario and open one viewer + chat tab
+npm run dev       # serve the generated IFC scenario and open one Agent workspace tab
 npm run harness   # serve it without opening a browser; use one of the printed URLs
 npm run check     # rebuild and exercise the real routes and agent streams headlessly
 npm test          # panel logic, DOM contracts, and devkit unit tests
@@ -41,13 +41,13 @@ npm test          # panel logic, DOM contracts, and devkit unit tests
 `npm test` reuses the synced environment without rewriting its console entry
 point, so it remains safe to run while `npm run harness` is serving the viewer.
 
-The viewer UI remains source-owned browser ESM. Its chat event boundary uses
+The viewer UI remains source-owned browser ESM. Its Agent boundary uses
 AI SDK-compatible message and stream shapes, while the visual primitives use
 native dialog, details, select, and switch controls. The panel itself consumes
 that boundary: `chat_ai_sdk.js` owns request building, SSE framing, and the
 proposal wire shape, so there is one implementation to keep correct rather
-than a panel copy beside an embedder copy. Anything the panel serves through
-`/chat` or `/viewer` runs under `style-src 'self'`, so component sizing and
+than a panel copy beside an embedder copy. Anything the panel attaches to
+`/viewer` runs under `style-src 'self'`, so component sizing and
 state travel as attributes and classes; a `style` attribute is dropped without
 breaking the page, which makes it an expensive bug to notice.
 

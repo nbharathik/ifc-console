@@ -58,7 +58,7 @@ class ConfirmModal(ModalScreen[bool]):
 
 
 class AgentPickerModal(ModalScreen["str | None"]):
-    """Arrows to move, Enter to open the agent in the chat panel, Esc cancels."""
+    """Arrows to move, Enter to open the Agent workspace, Esc cancels."""
 
     BINDINGS = [
         Binding("escape", "cancel", "Cancel", show=False),
@@ -81,7 +81,7 @@ class AgentPickerModal(ModalScreen["str | None"]):
 
     def compose(self) -> ComposeResult:
         with Vertical():
-            yield Label("Open an agent in the chat panel")
+            yield Label("Open the Agent workspace")
             yield OptionList(id="agents")
             yield Static("up/down select · Enter open · Esc cancel", classes="hint")
 

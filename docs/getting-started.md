@@ -118,11 +118,11 @@ ifc-console serve --stdio --file model.ifc --mode ask
 ```
 
 stdio has no browser surface. Use the console or `--no-tui` when you need the
-viewer or chat panel.
+viewer or Agent workspace.
 
 ## Next steps
 
 - [The console](console.md)
-- [3D viewer](viewer.md) and [browser chat](chat.md)
+- [3D viewer](viewer.md) and [Agent workspace](chat.md)
 - [Python SDK](sdk.md) and [agent applications](agents.md)
 - [Troubleshooting](troubleshooting.md)

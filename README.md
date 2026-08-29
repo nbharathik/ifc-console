@@ -58,6 +58,7 @@ You can use `pip` instead, or run the core application once with
 > /file             choose an IFC model
 > /connect codex    copy one-time client setup
 > /viewer           open the bundled browser viewer
+> /agent            open the Agent workspace (agent install only)
 ```
 
 With `pip`, install `ifc-console` for the deterministic product or
@@ -93,7 +94,7 @@ before editing untrusted files or prompts.
 - [Console and client setup](https://nbharathik.github.io/ifc-console/console/)
 - [Python SDK](https://nbharathik.github.io/ifc-console/sdk/) and [agent applications](https://nbharathik.github.io/ifc-console/agents/)
 - [MCP tools](https://nbharathik.github.io/ifc-console/tools/) and [workflows](https://nbharathik.github.io/ifc-console/workflows/)
-- [3D viewer](https://nbharathik.github.io/ifc-console/viewer/) and [browser chat](https://nbharathik.github.io/ifc-console/chat/)
+- [3D viewer](https://nbharathik.github.io/ifc-console/viewer/) and [Agent workspace](https://nbharathik.github.io/ifc-console/chat/)
 - [Troubleshooting](https://nbharathik.github.io/ifc-console/troubleshooting/)
 
 For development setup and tests, see [Contributing](docs/contributing.md).

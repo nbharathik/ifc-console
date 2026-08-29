@@ -101,7 +101,6 @@ class AgentExtension:
             label="Agent",
             module_url="/agents/static/chat.js",
             stylesheet_url="/agents/static/chat.css",
-            standalone_url="/chat",
         )
 
     def close(self, core: AppCore, state: AgentExtensionState) -> None:

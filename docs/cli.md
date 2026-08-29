@@ -38,7 +38,7 @@ These flags work with the interactive command and `serve` where applicable:
 | `--mode ask\|edit` | set the starting mode |
 | `--port N` | set the HTTP port; default `8383` |
 | `--viewer` | enable the bundled browser viewer |
-| `--chat` | enable the agents extension's browser chat panel; requires `ifc-console-agents` |
+| `--agent` | enable the agents extension's browser workspace; requires `ifc-console-agents` |
 | `--allow-dir PATH` | add a readable root; repeatable |
 | `--log-level LEVEL` | `debug`, `info`, `warning`, or `error` |
 | `--no-tui` | run a headless HTTP server |
@@ -84,7 +84,7 @@ Runs schema validation and optional IDS checks. Formats are `text`, `json`,
 
 ```bash
 ifc-console dev --check
-ifc-console dev --open chat
+ifc-console dev --open agent
 ```
 
 Rehearses the browser panel against a generated demo project with an offline
@@ -99,7 +99,7 @@ a terminal asked for it. This command is supplied by the optional
 | `--json` | Machine-readable check results |
 | `--fresh` | Rebuild the demo project first |
 | `--keep` | Keep serving after `--check` |
-| `--open chat\|viewer\|solo\|none` | Which single surface to open |
+| `--open agent\|viewer\|none` | Which single surface to open |
 | `--project DIR` | Where the demo project lives |
 | `--file model.ifc` | Use your own model instead of the demo one |
 | `--port N` | Serve somewhere other than 8393 |

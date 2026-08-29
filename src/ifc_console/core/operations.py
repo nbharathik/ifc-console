@@ -116,6 +116,16 @@ def _has_list(annotation: Any) -> bool:
     return any(_has_list(argument) for argument in get_args(annotation))
 
 
+@functools.lru_cache(maxsize=512)
+def _raw_json_schema(model: type[BaseModel]) -> dict[str, Any]:
+    """Pydantic schema generation dominates any tool listing, and an
+    operation's models are fixed once it is registered. Callers never see this
+    dict: strip_auto_titles rebuilds it, so each of them gets a fresh copy.
+    """
+    return model.model_json_schema()
+
+
+@functools.lru_cache(maxsize=512)
 def _is_bulk(model: type[BaseModel]) -> bool:
     """Does this payload grow with the model?
 
@@ -219,7 +229,7 @@ class OperationSpec:
 
     @property
     def input_schema(self) -> dict[str, Any]:
-        schema = strip_auto_titles(self.argument_model.model_json_schema())
+        schema = strip_auto_titles(_raw_json_schema(self.argument_model))
         # FastMCP omits this keyword from the public tool schema. Keep the SDK
         # definition byte-compatible while the application validator still
         # rejects unknown arguments through the model's extra="forbid" rule.
@@ -249,12 +259,12 @@ class OperationSpec:
             return None
         if _is_bulk(self.data_model):
             return None
-        schema = strip_auto_titles(_envelope_for(self.data_model).model_json_schema())
+        schema = strip_auto_titles(_raw_json_schema(_envelope_for(self.data_model)))
         return schema if len(json.dumps(schema)) <= MAX_OUTPUT_SCHEMA_CHARS else None
 
     @property
     def data_schema(self) -> dict[str, Any] | None:
-        return strip_auto_titles(self.data_model.model_json_schema()) if self.data_model else None
+        return strip_auto_titles(_raw_json_schema(self.data_model)) if self.data_model else None
 
     @property
     def inputSchema(self) -> dict[str, Any]:

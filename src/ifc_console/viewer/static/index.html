@@ -8,6 +8,17 @@
   <link rel="stylesheet" href="/viewer/static/app.css">
   <link rel="stylesheet" href="/viewer/static/themes.css">
   <link rel="icon" href="data:,">
+  <!-- Without these the browser only discovers three.js after app.js parses,
+       and web-ifc (5.9 MB) only after the worker spawns. Declaring them here
+       starts every download while the HTML is still being read. -->
+  <link rel="modulepreload" href="/viewer/static/app.js">
+  <link rel="modulepreload" href="/viewer/static/vendor/three.module.min.js">
+  <link rel="modulepreload" href="/viewer/static/vendor/three.core.min.js">
+  <link rel="modulepreload" href="/viewer/static/vendor/OrbitControls.js">
+  <link rel="modulepreload" href="/viewer/static/measure_math.js">
+  <link rel="modulepreload" href="/viewer/static/viewer_component.js">
+  <link rel="modulepreload" href="/viewer/static/vendor/web-ifc-api.js">
+  <link rel="modulepreload" href="/viewer/static/parser.js">
 </head>
 <body>
   <header id="topbar">

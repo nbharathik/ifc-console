@@ -28,7 +28,7 @@ ifc-console
 
 Run `/file`, then `/viewer` for local visual work or `/connect <client>` for an
 external MCP client. Add `ifc-console-agents` only when you want the built-in
-agent/chat experience.
+Agent workspace experience.
 
 ```text
 > /file

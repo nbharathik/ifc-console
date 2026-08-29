@@ -4,6 +4,16 @@
 
 ### Packaging and product boundaries
 
+- Make the browser surfaces explicit: `/viewer` is a single-purpose command
+  that opens only the reusable viewer (closing the tab is enough to leave it),
+  `/agent` mounts the optional Agent panel beside that same component, and the
+  redundant `/chat` slash command is removed. The old `--chat` startup spelling
+  remains a hidden one-release alias for `--agent`.
+- Give attached panels a direct, versioned viewer facade for context, commands,
+  and asynchronous results, while retaining DOM events as a compatibility
+  adapter. MCP/WebSocket control and the Agent panel now share the viewer's one
+  command implementation.
+
 - Make `ifc-console` the complete deterministic IFC product: console/TUI,
   MCP, SDK, operations, workflows, and the local Three.js/web-ifc browser
   viewer now ship together and work without an LLM or provider credentials.
@@ -49,6 +59,12 @@
   five hundred GlobalIds back.
 
 ### Viewer
+
+- Make idle rendering demand-driven, bound parsed-model typed-array caching by
+  device-aware bytes and entry count, fill known-size downloads in one buffer,
+  release idle web-ifc workers, and detach completed parser closures. This
+  reduces background CPU and prevents large IFC buffers and WASM high-water
+  memory from accumulating across tab switches.
 
 - Keep the top workspace row for IFC document tabs only. The agent name and
   settings stay in the agent header, IFC tabs begin at the viewer edge, and

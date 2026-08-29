@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "uv run --frozen --all-packages ifc-console dev --open chat",
+    "dev": "uv run --frozen --all-packages ifc-console dev --open agent",
     "harness": "uv run --frozen --all-packages ifc-console dev --open none",
     "check": "uv run --frozen --all-packages ifc-console dev --fresh --check",
     "test": "uv run --frozen --no-sync pytest -q tests/unit/test_ui_modules.py tests/unit/test_viewer_assets.py packages/ifc-console-agents/tests/unit/test_browser_panel_modules.py packages/ifc-console-agents/tests/unit/test_browser_panel_assets.py packages/ifc-console-agents/tests/unit/test_devkit.py"

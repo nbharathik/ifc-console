@@ -123,7 +123,7 @@ when that panel is present.
 | --- | ------- | ------- |
 | `viewer.enabled_default` | `false` | start the viewer automatically |
 | `viewer.max_model_mb` | `200` | largest model sent to the browser |
-| `chat.enabled_default` | `false` | start browser chat automatically |
+| `chat.enabled_default` | `false` | enable the Agent workspace automatically |
 | `chat.provider` | `openai` | `openai`, `anthropic`, `openrouter`, or `local` |
 | `chat.model` | empty | initial provider model ID |
 | `chat.base_url` | empty | provider URL override, commonly for a local server |

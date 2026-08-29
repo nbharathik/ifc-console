@@ -26,6 +26,11 @@ def script() -> str:
 
 
 @pytest.fixture(scope="module")
+def component_js() -> str:
+    return (STATIC / "viewer_component.js").read_text(encoding="utf-8")
+
+
+@pytest.fixture(scope="module")
 def styles() -> str:
     return (STATIC / "app.css").read_text(encoding="utf-8")
 
@@ -170,21 +175,20 @@ def test_filter_panel_can_restore_the_default_ifc_view(html: str, script: str) -
         assert reset in clear
 
 
-def test_viewer_bridge_exposes_context_and_command_results(script: str) -> None:
+def test_viewer_component_exposes_context_commands_and_async_results(
+    script: str, component_js: str
+) -> None:
     for event_name in (
         "ifc-console:viewer-context",
         "ifc-console:viewer-command",
         "ifc-console:viewer-result",
     ):
-        assert event_name in script
+        assert event_name in component_js
     context = script.split("function viewerContext(", 1)[1].split(
         "function scheduleViewerContext", 1
     )[0]
     for field in ("model:", "models:", "selection:", "mode:", "theme:", "capabilities:"):
         assert field in context
-    handler = script.split(
-        "document.addEventListener(VIEWER_COMMAND_EVENT", 1
-    )[1].split("// ---------------------------------------------------------------- chat dock", 1)[0]
     # one dispatch, reachable from the panel and from the server
     assert "function runViewerCommand(command)" in script
     for action in (
@@ -195,14 +199,16 @@ def test_viewer_bridge_exposes_context_and_command_results(script: str) -> None:
         "capture-evidence",
     ):
         assert f'command.action === "{action}"' in script
-    assert "const result = runViewerCommand(command)" in handler
-    assert 'typeof result.then === "function"' in handler
-    assert "sendViewerResult(command, true, value)" in handler
-    assert "sendViewerResult(command, true, result)" in handler
+    assert "createViewerComponent({" in script
+    assert "execute: runViewerCommand" in script
+    assert "Promise.resolve().then(() => execute(command))" in component_js
+    assert "target.addEventListener(VIEWER_COMMAND_EVENT, handleLegacyCommand)" in component_js
+    assert "publishResult(command, true, await api.execute(command))" in component_js
+    assert "subscribeResults(listener)" in component_js
     # the failure carries the frame it came from: a command that dies inside
     # three.js says nothing useful without it
-    assert "sendViewerResult(command, false, null, commandFailure(error))" in handler
-    assert 'split(String.fromCharCode(10))[1]?.trim()' in script
+    assert "publishResult(command, false, null, failureText(error))" in component_js
+    assert 'split(String.fromCharCode(10))[1]?.trim()' in component_js
 
 
 def test_theme_preference_is_persisted_and_resolves_through_workspace(
@@ -276,14 +282,17 @@ def test_viewer_states_are_announced_and_recoverable(html: str, script: str) -> 
     assert 'motionPreference.addEventListener("change"' in script
 
 
-def test_chat_loading_is_single_flight_and_honors_the_latest_panel_state(
+def test_extension_panel_loading_is_explicit_single_flight_and_viewer_only_by_default(
     script: str,
 ) -> None:
+    assert 'const requestedPanel = queryParams.get("panel") || ""' in script
     assert "let chatLoadPromise = null" in script
-    assert "let chatDesiredOpen = Boolean(uiState.chatOpen || agentWorkspacePrimary)" in script
+    assert "let chatDesiredOpen = extensionPanelPrimary" in script
+    assert "if (extensionPanelPrimary && !force) open = true" in script
     assert "const requestVersion = ++chatRequestVersion" in script
     assert "chatLoadPromise ||= import(chatPanelDefinition.module_url)" in script
     assert "loadPanelStylesheet(chatPanelDefinition.stylesheet_url)" in script
+    assert "mountPanel(chatDock, { viewer: viewerComponentHost.api })" in script
     assert "requestVersion !== chatRequestVersion || !chatDesiredOpen" in script
 
 
@@ -454,7 +463,7 @@ def test_parser_worker_init_can_retry_and_fall_back(worker_js: str, script: str)
         "function spawnWorker()", 1
     )[0]
     assert "msg.init_failed" in route
-    assert "worker.terminate()" in route
+    assert "stopWorker()" in route
     assert "h.onWorkerLost()" in route
 
 
@@ -485,9 +494,11 @@ def test_orbiting_keeps_up_when_frames_are_slow(script: str) -> None:
     """Damping applied per frame is a glide at 60fps and two seconds of lag at
     the 8fps a large model gives while you are close enough to see detail."""
     assert "BASE_DAMPING" in script
-    loop = script.split("renderer.setAnimationLoop(", 1)[1].split("controls.update()", 1)[0]
+    loop = script.split("function renderFrame(now)", 1)[1].split("controls.update()", 1)[0]
     assert "Math.pow(1 - BASE_DAMPING" in loop
     assert "16.7" in loop
+    assert "renderer.setAnimationLoop" not in script
+    assert "if (moved || cameraTween || needsRender) requestFrame();" in script
     # and the pivot follows the surface depth without ever snapping the view:
     # it slides along the view axis, so orbit and pan scale to what is in
     # front of the camera on every gesture

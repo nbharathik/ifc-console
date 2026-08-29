@@ -12,7 +12,7 @@ open in the shared ifc-console session.
 
 The normal daily flow is then `ifc-console`, `/file`, and your MCP client's
 chat. Changing the model does not require another client setup. The local
-browser chat is an optional `ifc-console-agents` extension; the viewer itself
+the browser Agent workspace is an optional `ifc-console-agents` extension; the viewer itself
 does not use an LLM.
 
 You can generate the same configuration without opening the console:

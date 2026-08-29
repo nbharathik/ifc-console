@@ -155,31 +155,12 @@ def _theme_args(core: AppCore, rest: str, _files: FilesProvider | None) -> MenuS
     return _choices("theme", rest, rows, context="theme")
 
 
-def _viewer_args(core: AppCore, rest: str, _files: FilesProvider | None) -> MenuState:
-    state = _choices(
-        "viewer",
-        rest,
-        [
-            ("off", "disable the viewer and close its tabs"),
-            ("url", "print the viewer link without opening a browser"),
-        ],
-        context="viewer",
-    )
-    if rest.strip():
-        return state
-    bare = Candidate(
-        insert="", display="(open)", annotation="open the 3D viewer in your browser", terminal=True
-    )
-    return MenuState(
-        prefix=state.prefix, candidates=(bare, *state.candidates), context=state.context
-    )
-
-
 def _agent_args(core: AppCore, rest: str, _files: FilesProvider | None) -> MenuState:
     rows = [
         ("new", "compose a project agent from reviewed capability blocks"),
         ("list", "show built-in and project agents"),
         ("files", "refresh and list project references"),
+        ("off", "disable the Agent workspace and forget in-memory keys"),
     ]
     registry = getattr(core, "agent_packs", None)
     if registry is not None:
@@ -406,7 +387,6 @@ _ARG_PROVIDERS: dict[str, Provider] = {
     "use": _use_args,
     "sandbox": _sandbox_args,
     "theme": _theme_args,
-    "viewer": _viewer_args,
     "copy": _copy_args,
     "connect": _connect_args,
     "file": _open_args,

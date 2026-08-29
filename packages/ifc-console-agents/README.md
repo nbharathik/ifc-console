@@ -10,7 +10,8 @@ pip install ifc-console-agents
 ```
 
 Installing the package registers the `agents` IFC Console extension. Start
-`ifc-console` normally and use `/chat` to enable its panel. Deterministic SDK,
+`ifc-console` normally and use `/agent` to open its viewer-attached workspace.
+Use `/agent off` to disable it and forget in-memory keys. Deterministic SDK,
 workflow, MCP, console, and 3D viewer features remain available from the base
 `ifc-console` package without an LLM provider.
 

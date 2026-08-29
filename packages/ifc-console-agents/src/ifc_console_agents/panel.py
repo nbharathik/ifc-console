@@ -375,7 +375,7 @@ def _disabled() -> JSONResponse:
     return JSONResponse(
         {
             "error": "chat_disabled",
-            "hint": "type /chat in the ifc-console terminal to turn the panel on",
+            "hint": "type /agent in the ifc-console terminal to open the Agent workspace",
         },
         status_code=404,
     )

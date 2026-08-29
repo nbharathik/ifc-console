@@ -122,11 +122,11 @@ def build_parser() -> argparse.ArgumentParser:
     dev.add_argument(
         "--open",
         dest="open_target",
-        choices=["chat", "viewer", "solo", "none"],
+        choices=["agent", "viewer", "none"],
         default=None,
         help=(
             "Which single surface to open. At most one tab, ever. Defaults to the "
-            "chat panel on a terminal and to none when output is piped or checked."
+            "Agent workspace on a terminal and to none when output is piped or checked."
         ),
     )
     dev.add_argument(
@@ -513,7 +513,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     ag = sub.add_parser(
         "agents",
-        help="Built-in and project agents used by the Console chat panel.",
+        help="Built-in and project agents used by the Agent workspace.",
     )
     ag_sub = ag.add_subparsers(dest="agents_cmd", required=True)
     ag_list = ag_sub.add_parser("list", help="List built-in and project agents.")
@@ -614,10 +614,19 @@ def _add_run_flags(
         help="Enable the local 3D web viewer (needs the HTTP server: TUI or --http).",
     )
     parser.add_argument(
-        "--chat",
+        "--agent",
         action="store_true",
         default=flag_default,
-        help="Enable the browser chat panel (talks to the LLM provider you configure).",
+        help="Enable the browser Agent workspace (requires ifc-console-agents).",
+    )
+    # One-release command-line compatibility. The product surface and help use
+    # --agent; /chat is intentionally not a console command anymore.
+    parser.add_argument(
+        "--chat",
+        dest="agent",
+        action="store_true",
+        default=flag_default,
+        help=argparse.SUPPRESS,
     )
     parser.add_argument(
         "--allow-dir",
@@ -669,8 +678,8 @@ def _make_core(args: argparse.Namespace, store: SettingsStore, transport: str) -
                 file=sys.stderr,
             )
         viewer_flag = False
-    # the chat panel is served over the same HTTP surface as the viewer
-    chat_flag = True if getattr(args, "chat", False) else None
+    # The Agent workspace attaches to the same viewer component and HTTP server.
+    chat_flag = True if getattr(args, "agent", False) else None
     if transport == "stdio":
         chat_flag = False
     from ifc_console.app import AppCore
@@ -755,7 +764,8 @@ def _cmd_interactive(args: argparse.Namespace) -> int:
     print(f"ifc-console {__version__} starting...", file=sys.stderr, flush=True)
     from ifc_console import preload
 
-    preload.start()
+    # ui=True: textual is warmed alongside settings/AppCore instead of after.
+    preload.start(ui=True)
     store = _make_store(args)
     _setup_logging(store, level=store.settings.logging.level)
     # the TUI owns the terminal: drop the stderr handler, keep the file log
@@ -2272,7 +2282,7 @@ def _cmd_dev(args: argparse.Namespace) -> int:
     # A browser tab is a deliberate act, not a side effect of running checks.
     open_target = args.open_target
     if open_target is None:
-        open_target = "none" if (args.check or not sys.stdout.isatty()) else "chat"
+        open_target = "none" if (args.check or not sys.stdout.isatty()) else "agent"
 
     if not args.check:
         return serve.run_dev(
@@ -2316,7 +2326,7 @@ def _cmd_dev(args: argparse.Namespace) -> int:
             print()
             print(checks.render(run))
         if args.keep:
-            print(f"\nserving: {dev.chat_url}\nCtrl+C to stop.")
+            print(f"\nserving: {dev.agent_url}\nCtrl+C to stop.")
             try:
                 while dev.thread.is_alive():
                     dev.thread.join(timeout=0.5)

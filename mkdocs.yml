@@ -54,7 +54,7 @@ nav:
       - The console: console.md
       - Connecting clients: clients.md
       - 3D viewer: viewer.md
-      - Chat panel: chat.md
+      - Agent workspace: chat.md
       - Troubleshooting: troubleshooting.md
   - Safety:
       - Safety model: safety.md
