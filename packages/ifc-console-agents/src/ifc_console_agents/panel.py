@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 from collections import OrderedDict
 from collections.abc import Mapping, Sequence
 from contextlib import nullcontext, suppress
@@ -33,6 +34,7 @@ if TYPE_CHECKING:
 log = logging.getLogger("ifc-console.agents")
 
 _MAX_THREADS = 20
+_MAX_THREAD_RECORD_BYTES = 8 * 1024 * 1024
 _MAX_PROMPT_CHARS = 100_000
 _MAX_UPLOAD_BYTES = MAX_REFERENCE_BYTES
 # The panel prints the call arguments beside the tool, so they have to be
@@ -220,8 +222,100 @@ def _thread_matches_signature(thread_id: str, signature: tuple[str, ...]) -> boo
     return thread_id.startswith(f"panel-{_signature_token(signature)}-")
 
 
+def _project_storage_key(project_dir: Path) -> str:
+    """Stable, non-identifying key for machine-local state for one project."""
+    canonical = os.path.normcase(str(project_dir.expanduser().resolve()))
+    return sha256(canonical.encode("utf-8")).hexdigest()[:24]
+
+
 def _thread_directory(core: AppCore) -> Path:
-    return core.store.project_dir / ".ifc-console" / "agents" / "threads"
+    """Private panel history under the user's IFC Console home.
+
+    The project path scopes conversations without putting prompts, tool output,
+    or model context inside a repository. Only its hash appears on disk.
+    """
+    return (
+        core.store.home.expanduser().resolve()
+        / "agents"
+        / "projects"
+        / _project_storage_key(core.store.project_dir)
+        / "threads"
+    )
+
+
+def _legacy_thread_directory(core: AppCore) -> Path:
+    return core.store.project_dir.expanduser().resolve() / ".ifc-console" / "agents" / "threads"
+
+
+def migrate_legacy_panel_threads(core: AppCore) -> int:
+    """Move IFC Console-owned legacy project threads into private user state.
+
+    Older releases mixed panel conversations with versionable project assets.
+    Migrate only records whose ``panel-*`` identity and hashed filename prove
+    they belong to this panel; unknown SDK/embedder files are left untouched.
+    """
+    source = _legacy_thread_directory(core)
+    if not source.is_dir():
+        return 0
+    # A cloned project must not be able to point this migration at files
+    # elsewhere on the machine through a repository-controlled symlink.
+    try:
+        if source.is_symlink() or source.resolve() != source.absolute():
+            log.warning("refusing to migrate symlinked Agent thread directory %s", source)
+            return 0
+    except OSError:
+        return 0
+    target = _thread_directory(core)
+    moved = 0
+    for path in source.glob("*.json"):
+        try:
+            if path.is_symlink() or path.stat().st_size > _MAX_THREAD_RECORD_BYTES:
+                continue
+            raw = path.read_bytes()
+            payload = json.loads(raw)
+        except (OSError, UnicodeDecodeError, ValueError):
+            continue
+        thread_id = payload.get("thread_id") if isinstance(payload, dict) else None
+        if not _valid_panel_thread_id(thread_id):
+            continue
+        expected = sha256(thread_id.encode("utf-8")).hexdigest() + ".json"
+        if path.name != expected:
+            continue
+
+        target.mkdir(parents=True, exist_ok=True)
+        destination = target / path.name
+        if destination.exists():
+            try:
+                if destination.read_bytes() == raw:
+                    path.unlink()
+                    moved += 1
+            except OSError:
+                pass
+            continue
+
+        temporary = destination.with_suffix(f".{uuid4().hex}.tmp")
+        try:
+            with temporary.open("xb") as handle:
+                handle.write(raw)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, destination)
+            with suppress(OSError):
+                destination.chmod(0o600)
+            path.unlink()
+            moved += 1
+        except OSError as exc:
+            log.warning("could not migrate legacy Agent thread %s: %s", path.name, exc)
+        finally:
+            with suppress(OSError):
+                temporary.unlink()
+
+    # Remove only directories made empty by the migration. Project-owned
+    # references, agents, skills, settings, and unknown thread records remain.
+    for directory in (source, source.parent, source.parent.parent):
+        with suppress(OSError):
+            directory.rmdir()
+    return moved
 
 
 def _clear_owned_panel_thread_files(directory: Path) -> int:

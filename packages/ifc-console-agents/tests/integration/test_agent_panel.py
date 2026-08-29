@@ -189,6 +189,12 @@ def _auth(core) -> dict:
     return {"Authorization": f"Bearer {core.token}"}
 
 
+def _thread_dir(core) -> Path:
+    from ifc_console_agents.panel import _thread_directory
+
+    return _thread_directory(core)
+
+
 def _events(response) -> list[dict]:
     events = []
     for line in response.text.split("\n\n"):
@@ -216,6 +222,72 @@ async def panel_core(core, work_model: Path):
     core.agent_packs.register(ScriptedPack())
     core.agent_packs.register(ScriptedPack(name="uploader", features=("files",)))
     return core
+
+
+async def test_panel_threads_are_private_user_data_and_project_scoped(panel_core, tmp_path):
+    from ifc_console_agents.panel import _thread_directory
+
+    directory = _thread_directory(panel_core)
+    assert directory.is_relative_to(panel_core.store.home.resolve())
+    assert directory != (
+        panel_core.store.project_dir / ".ifc-console" / "agents" / "threads"
+    )
+    assert directory.parts[-4:-1] == ("agents", "projects", directory.parts[-2])
+
+    other = SimpleNamespace(
+        store=SimpleNamespace(
+            home=panel_core.store.home,
+            project_dir=tmp_path / "another-project",
+        )
+    )
+    assert _thread_directory(other) != directory
+
+
+async def test_legacy_project_panel_threads_migrate_without_moving_sdk_records(panel_core):
+    from ifc_console_agents.panel import migrate_legacy_panel_threads
+    from ifc_console_agents.storage import JsonThreadStore
+
+    legacy = panel_core.store.project_dir / ".ifc-console" / "agents" / "threads"
+    panel_id = "panel-legacy-123"
+    panel_path = _write_thread_record(
+        legacy,
+        panel_id,
+        {"version": "1", "messages": [{"role": "user", "text": "legacy"}]},
+    )
+    sdk_path = _write_thread_record(
+        legacy,
+        "sdk-thread",
+        {"version": "1", "messages": []},
+    )
+
+    assert migrate_legacy_panel_threads(panel_core) == 1
+    assert not panel_path.exists()
+    assert sdk_path.exists()
+    assert [message.text for message in await JsonThreadStore(_thread_dir(panel_core)).load(panel_id)] == [
+        "legacy"
+    ]
+
+
+async def test_legacy_thread_migration_refuses_a_symlinked_directory(panel_core, tmp_path):
+    from ifc_console_agents.panel import migrate_legacy_panel_threads
+
+    external = tmp_path / "external-threads"
+    panel_id = "panel-external-123"
+    external_path = _write_thread_record(
+        external,
+        panel_id,
+        {"version": "1", "messages": [{"role": "user", "text": "keep me"}]},
+    )
+    legacy = panel_core.store.project_dir / ".ifc-console" / "agents" / "threads"
+    legacy.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        legacy.symlink_to(external, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"directory symlinks are unavailable: {exc}")
+
+    assert migrate_legacy_panel_threads(panel_core) == 0
+    assert external_path.exists()
+    assert not _thread_dir(panel_core).exists()
 
 
 async def test_builtin_agents_appear_without_any_setup(core, work_model: Path):
@@ -623,7 +695,7 @@ async def test_panel_threads_survive_a_server_state_rebuild_and_can_be_deleted(p
         client.post("/api/agents/stream", headers=_auth(panel_core), json=_stream_body())
     )
     thread_id = first[0]["id"]
-    thread_dir = panel_core.store.project_dir / ".ifc-console" / "agents" / "threads"
+    thread_dir = _thread_dir(panel_core)
     assert list(thread_dir.glob("*.json"))
 
     panel_core.agent_panel.threads.clear()
@@ -646,7 +718,7 @@ async def test_panel_threads_survive_a_server_state_rebuild_and_can_be_deleted(p
 
 
 async def test_bulk_thread_clear_is_idempotent_and_preserves_non_panel_records(panel_core):
-    thread_dir = panel_core.store.project_dir / ".ifc-console" / "agents" / "threads"
+    thread_dir = _thread_dir(panel_core)
     with _client(panel_core) as client:
         response = client.post(
             "/api/agents/stream", headers=_auth(panel_core), json=_stream_body()
@@ -685,7 +757,7 @@ async def test_bulk_thread_clear_cancels_an_active_stream_before_unlinking(panel
     started = threading.Event()
     release = threading.Event()
     panel_core.agent_packs.register(DelayedPack(started, release))
-    thread_dir = panel_core.store.project_dir / ".ifc-console" / "agents" / "threads"
+    thread_dir = _thread_dir(panel_core)
     outcome: dict[str, object] = {}
 
     with _client(panel_core) as client:
@@ -758,7 +830,7 @@ async def test_individual_thread_delete_cannot_be_undone_by_an_active_stream(pan
     started = threading.Event()
     release = threading.Event()
     panel_core.agent_packs.register(DelayedPack(started, release))
-    thread_dir = panel_core.store.project_dir / ".ifc-console" / "agents" / "threads"
+    thread_dir = _thread_dir(panel_core)
     outcome: dict[str, object] = {}
 
     with _client(panel_core) as client:
@@ -829,7 +901,7 @@ async def test_interrupting_a_run_records_that_it_was_stopped(panel_core):
 
     from ifc_console_agents.storage import JsonThreadStore
 
-    directory = panel_core.store.project_dir / ".ifc-console" / "agents" / "threads"
+    directory = _thread_dir(panel_core)
     saved = await JsonThreadStore(directory).load(thread_id)
     assert [message.role for message in saved] == ["user", "assistant"]
     assert "stopped this run" in saved[-1].text
@@ -868,7 +940,7 @@ async def test_truncating_a_thread_removes_the_attempt_being_retried(panel_core)
 
     from ifc_console_agents.storage import JsonThreadStore
 
-    store = JsonThreadStore(panel_core.store.project_dir / ".ifc-console" / "agents" / "threads")
+    store = JsonThreadStore(_thread_dir(panel_core))
     assert len(await store.load(thread_id)) == 4
 
     cut = client.post(

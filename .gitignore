@@ -27,5 +27,6 @@ CLAUDE.md
 
 # Local IFC Console project state (recipes may still be committed deliberately)
 .ifc-console/agents/references/
+.ifc-console/agents/threads/
 .ifc-console/knowledge/
 .ifc-console/settings.local.json

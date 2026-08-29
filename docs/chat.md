@@ -137,9 +137,10 @@ Turn `chat.tools` off for conversation without IFC tools.
   `/ask`, and `/edit` are available at the start of a message.
 - `control_viewer` lets assistants focus, select, isolate, section, measure,
   and capture the same viewport the user sees.
-- Local history stores bounded browser transcripts and agent threads under the
-  project. Switching model, provider, instructions, or content access starts a
-  compatible fresh context.
+- Local history stores bounded browser transcripts and keeps server-side Agent
+  threads in the user's private IFC Console home, scoped by a hash of the
+  project path. Switching model, provider, instructions, or content access
+  starts a compatible fresh context.
 - **Delete all** removes conversation history, but keeps credentials and project
   references.
 

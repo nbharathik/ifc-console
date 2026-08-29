@@ -41,7 +41,14 @@ environment variable is set:
   transactions/     transaction workspaces and journals
   sessions/<id>/    per-session audit records
   logs/             rotating application log
+  agents/
+    projects/<hash>/threads/  private Agent conversations, scoped per project
 ```
+
+Runtime state, credentials, logs, and conversations belong here, not inside a
+repository. Project `.ifc-console/` files are limited to deliberate project
+inputs such as reviewed settings, references, custom agents, skills, and
+recipes; generated project knowledge indexes remain disposable and ignored.
 
 Settings are applied in this order, with the last value winning:
 

@@ -475,7 +475,7 @@ const TEMPLATE = `
           Delete all
         </button>
         <div class="chat-history-confirm" data-role="history-confirm" hidden>
-          <p>This permanently deletes every saved transcript and its project-local assistant context.</p>
+          <p>This permanently deletes every saved transcript and its private local assistant context.</p>
           <div>
             <button class="chat-btn" data-act="cancel-clear-history" type="button">Cancel</button>
             <button class="chat-btn danger" data-act="confirm-clear-history" type="button">Delete conversations</button>
@@ -1650,7 +1650,7 @@ export function mountChat(root, options = {}) {
     if (state) {
       state.textContent = message || (count
         ? `${count} conversation${count === 1 ? "" : "s"} saved in this browser across the open models.`
-        : "No browser transcripts. Delete all also clears any project-local assistant context.");
+        : "No browser transcripts. Delete all also clears any private local assistant context.");
     }
     const remove = act("request-clear-history");
     if (remove) remove.disabled = false;
@@ -4653,7 +4653,7 @@ export function mountChat(root, options = {}) {
     resetInProgress = true;
     invalidateActiveRun({ recordStop: false });
     render();
-    renderHistoryControls("Deleting browser transcripts and project-local assistant context...");
+    renderHistoryControls("Deleting browser transcripts and private local assistant context...");
     try {
       const response = await postJSON("/api/agents/threads/clear", {});
       let payload = {};
@@ -4685,7 +4685,7 @@ export function mountChat(root, options = {}) {
       renderHistoryControls(
         initial
           ? "Conversation history starts clean."
-          : `All conversations deleted${payload.removed_threads ? ` (${payload.removed_threads} project thread${payload.removed_threads === 1 ? "" : "s"})` : ""}.`,
+          : `All conversations deleted${payload.removed_threads ? ` (${payload.removed_threads} saved thread${payload.removed_threads === 1 ? "" : "s"})` : ""}.`,
       );
       return true;
     } finally {

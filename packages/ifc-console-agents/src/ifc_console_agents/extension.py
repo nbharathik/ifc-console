@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from contextlib import suppress
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -15,8 +16,10 @@ from ifc_console_agents.chat import ChatState
 from ifc_console_agents.chat.routes import build_chat_routes
 from ifc_console_agents.files import AgentReferenceStore
 from ifc_console_agents.packs import AgentPackRegistry
-from ifc_console_agents.panel import build_agent_panel_routes
+from ifc_console_agents.panel import build_agent_panel_routes, migrate_legacy_panel_threads
 from ifc_console_agents.tools_skills import register as register_skill_operations
+
+log = logging.getLogger("ifc-console.agents")
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -47,6 +50,12 @@ class AgentExtension:
         # Fail while the extension manager is isolating discovery errors, not
         # later when Starlette asks the extension to construct its route tree.
         require_static_dir()
+        migrated = migrate_legacy_panel_threads(core)
+        if migrated:
+            log.info(
+                "migrated %d legacy Agent thread(s) into the user data directory",
+                migrated,
+            )
         settings = core.settings.chat
         chat = ChatState(
             provider=settings.provider,

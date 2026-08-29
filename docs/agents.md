@@ -267,10 +267,14 @@ Project-local agent data is inspectable and versionable:
     content-access.json
     custom/           custom agent blueprints
     skills/           reusable markdown procedures
-    threads/          optional local conversations
   knowledge/          retrieval index and source manifest
   recipes/            reviewed measurement recipes
 ```
+
+Private conversation threads are not project files. The panel stores them per
+project under `~/.ifc-console/agents/projects/<project-hash>/threads/` (or the
+configured `IFC_CONSOLE_HOME`) so prompts and tool output cannot be committed
+with a repository. Older project-local panel threads are migrated on startup.
 
 Add references in **Agent workspace > Content**, with
 `ifc-console agents files <paths>`, or by copying supported files into

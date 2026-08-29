@@ -308,7 +308,9 @@ Workbench.open(
 )
 ```
 
-`project_dir` anchors `.ifc-console/` settings, knowledge, references, recipes,
-and agent data, and joins the allowed paths. It defaults to the working
+`project_dir` anchors deliberate project inputs such as `.ifc-console/`
+settings, references, recipes, skills, and custom agents, and joins the allowed
+paths. Private Agent threads remain under the user's IFC Console home, scoped
+by a hash of this directory. It defaults to the working
 directory. Settings here are session-only; change them later with
 `wb.configure({...})` or `runtime.settings.get()`, `.set()`, and `.update()`.

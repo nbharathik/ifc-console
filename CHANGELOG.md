@@ -4,6 +4,10 @@
 
 ### Packaging and product boundaries
 
+- Move Agent conversation threads out of project repositories and into
+  `~/.ifc-console/agents/projects/<project-hash>/threads/`. Migrate identifiable
+  legacy panel records on startup, preserve unrelated SDK records, and ignore
+  the obsolete project path so private prompts cannot be packaged or committed.
 - Make the browser surfaces explicit: `/viewer` is a single-purpose command
   that opens only the reusable viewer (closing the tab is enough to leave it),
   `/agent` mounts the optional Agent panel beside that same component, and the
