@@ -116,7 +116,9 @@ Results use the live in-memory model, including unsaved edits.
   one. In parallel projection a length reads the same anywhere in the frame.
 - **Measurements:** length, path, angle, area, element size, and clearance. All of
   them report metres in the model's own axes, and the model can read them back
-  with `get_viewer_measurements`.
+  with `get_viewer_measurements`. Each measurement also carries anchors naming
+  the GlobalIds it touched, which is what lets the Agent panel record a
+  measurement pattern as a reusable skill.
 - **Snapping:** measured points land on real mesh corners, edge midpoints,
   anywhere along an edge, or the exact visible surface, chosen by which is
   nearest the cursor on screen and guarded by the visible surface depth.

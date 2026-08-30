@@ -465,6 +465,87 @@ def _sse(payload: dict[str, Any]) -> str:
     return f"data: {json.dumps(payload, default=str)}\n\n"
 
 
+@dataclass(frozen=True)
+class ResolvedModel:
+    """One validated provider selection, ready to build an agent with."""
+
+    model: Any
+    provider_id: str
+    model_id: str
+    base_url: str
+    options: dict[str, Any]
+    capabilities: dict[str, bool | None]
+
+
+def resolve_provider_model(
+    core: AppCore, body: Mapping[str, Any]
+) -> tuple[ResolvedModel | None, JSONResponse | None]:
+    """Turn a request body into a provider model, or the error to return.
+
+    Chat runs and workflow runs pick a provider the same way, including the
+    local-only base URL check, so that decision lives in one place.
+    """
+    from ifc_console_agents.chat.providers import PROVIDERS, ProviderError, validate_base_url
+    from ifc_console_agents.providers import ProviderModel
+
+    settings = core.settings.chat
+    provider_id = str(body.get("provider") or core.chat.provider or "openai").lower()
+    provider = PROVIDERS.get(provider_id)
+    if provider is None:
+        return None, JSONResponse(
+            {"error": f"unknown provider {provider_id!r}"}, status_code=400
+        )
+    chosen = str(body.get("model") or core.chat.model or provider.suggested_model).strip()
+    if not chosen:
+        return None, JSONResponse(
+            {"error": f"pick a model for {provider.label} first"}, status_code=400
+        )
+    raw_base = str(body.get("base_url") or core.chat.base_url or provider.base_url)
+    try:
+        base_url = validate_base_url(raw_base, local_only=settings.local_only)
+    except ProviderError as exc:
+        return None, JSONResponse({"error": str(exc)}, status_code=400)
+
+    options: dict[str, Any] = {}
+    for key in ("temperature", "top_p", "max_tokens"):
+        value = body.get(key)
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            options[key] = value
+    capabilities: dict[str, bool | None] = {}
+    for key in ("tools_supported", "vision_supported"):
+        value = body.get(key)
+        if value is not None and not isinstance(value, bool):
+            return None, JSONResponse(
+                {"error": f"{key} must be true, false, or omitted"}, status_code=400
+            )
+        capabilities[key] = value
+    model = ProviderModel(
+        provider=provider.id,
+        model=chosen,
+        api_key=(
+            str(body.get("api_key")).strip()
+            if body.get("api_key")
+            else core.chat.key_for(provider.id)
+        ),
+        base_url=base_url,
+        local_only=settings.local_only,
+        timeout_s=float(settings.timeout_s),
+        tools_supported=capabilities["tools_supported"],
+        vision_supported=capabilities["vision_supported"],
+    )
+    return (
+        ResolvedModel(
+            model=model,
+            provider_id=provider.id,
+            model_id=chosen,
+            base_url=base_url,
+            options=options,
+            capabilities=capabilities,
+        ),
+        None,
+    )
+
+
 def _disabled() -> JSONResponse:
     return JSONResponse(
         {
@@ -1277,54 +1358,15 @@ def build_agent_panel_routes(core: AppCore) -> list[Route]:
                 # prompt needs the references; model-only measurements can run.
                 log.warning("agent reference sync failed before a run", exc_info=True)
 
-        from ifc_console_agents.chat.providers import PROVIDERS, ProviderError, validate_base_url
-
-        settings = core.settings.chat
-        provider_id = str(body.get("provider") or core.chat.provider or "openai").lower()
-        provider = PROVIDERS.get(provider_id)
-        if provider is None:
-            return JSONResponse({"error": f"unknown provider {provider_id!r}"}, status_code=400)
-        chosen = str(body.get("model") or core.chat.model or provider.suggested_model).strip()
-        if not chosen:
-            return JSONResponse(
-                {"error": f"pick a model for {provider.label} first"}, status_code=400
-            )
-        raw_base = str(body.get("base_url") or core.chat.base_url or provider.base_url)
-        try:
-            base_url = validate_base_url(raw_base, local_only=settings.local_only)
-        except ProviderError as exc:
-            return JSONResponse({"error": str(exc)}, status_code=400)
-
-        from ifc_console_agents.providers import ProviderModel
-
-        options: dict[str, Any] = {}
-        for key in ("temperature", "top_p", "max_tokens"):
-            value = body.get(key)
-            if isinstance(value, (int, float)) and not isinstance(value, bool):
-                options[key] = value
-        capabilities: dict[str, bool | None] = {}
-        for key in ("tools_supported", "vision_supported"):
-            value = body.get(key)
-            if value is not None and not isinstance(value, bool):
-                return JSONResponse(
-                    {"error": f"{key} must be true, false, or omitted"},
-                    status_code=400,
-                )
-            capabilities[key] = value
-        model = ProviderModel(
-            provider=provider.id,
-            model=chosen,
-            api_key=(
-                str(body.get("api_key")).strip()
-                if body.get("api_key")
-                else core.chat.key_for(provider.id)
-            ),
-            base_url=base_url,
-            local_only=settings.local_only,
-            timeout_s=float(settings.timeout_s),
-            tools_supported=capabilities["tools_supported"],
-            vision_supported=capabilities["vision_supported"],
-        )
+        resolved, error = resolve_provider_model(core, body)
+        if error is not None:
+            return error
+        assert resolved is not None
+        model = resolved.model
+        base_url = resolved.base_url
+        chosen = resolved.model_id
+        options = resolved.options
+        capabilities = resolved.capabilities
 
         state = _panel_state(core)
         session_instructions = (additional_instructions or "").strip()
@@ -1337,7 +1379,7 @@ def build_agent_panel_routes(core: AppCore) -> list[Route]:
         )
         autonomy = "auto" if core.ai_autonomy else "approval"
         signature = (
-            provider.id,
+            resolved.provider_id,
             chosen,
             base_url,
             _pack_configuration_digest(pack),
@@ -1389,7 +1431,7 @@ def build_agent_panel_routes(core: AppCore) -> list[Route]:
                         model=model,
                         persistent=persist_history,
                         instructions=session_instructions,
-                        model_label=f"{provider.id}/{chosen}",
+                        model_label=f"{resolved.provider_id}/{chosen}",
                         # Asking the browser needs a run to ask on behalf of,
                         # so that handler is built per run. Left standing, the
                         # agent's deny-all default is the safe fallback.
@@ -1411,7 +1453,7 @@ def build_agent_panel_routes(core: AppCore) -> list[Route]:
         core.audit.record(
             "agent_panel_request",
             agent=pack.info.name,
-            provider=provider.id,
+            provider=resolved.provider_id,
             model=chosen,
             thread=thread_id,
         )
@@ -1470,6 +1512,14 @@ def build_agent_panel_routes(core: AppCore) -> list[Route]:
                 f"{len(selection_rows)} IFC file(s): "
                 + "; ".join(selected_models)
                 + ". 'This' or 'selected' in the message means these model-scoped GlobalIds.]"
+            )
+        # Hand measurements the same treatment: "these measurements" must
+        # resolve without a guessing round.
+        measured_items, _ = hub.latest_measurements() if hub.connected else ([], None)
+        if measured_items:
+            attachment_note += (
+                f"\n\n[Viewer context: {len(measured_items)} measurement(s) are on "
+                "screen; get_viewer_measurements returns them with element anchors.]"
             )
 
         async def events():
@@ -1711,9 +1761,225 @@ def build_agent_panel_routes(core: AppCore) -> list[Route]:
             {"imported": row, "skills": await asyncio.to_thread(store.entries)}
         )
 
+    async def skills_record(request) -> JSONResponse:
+        """Save the viewer's current measurements as a reusable skill.
+
+        The skill stores intent: each value is matched against the measured
+        element's analyzed dimensions, so an agent can repeat the pattern on
+        similar elements even when their shapes differ.
+        """
+        if not core.chat.enabled:
+            return _disabled()
+        try:
+            body = await request.json()
+        except (ValueError, UnicodeDecodeError):
+            return JSONResponse({"error": "request body is not valid JSON"}, status_code=400)
+        if not isinstance(body, dict):
+            return JSONResponse({"error": "request body must be a JSON object"}, status_code=400)
+        name = body.get("name")
+        if not isinstance(name, str) or not name.strip():
+            return JSONResponse({"error": "name is required"}, status_code=400)
+        notes = body.get("notes")
+        if notes is not None and (not isinstance(notes, str) or len(notes) > 2000):
+            return JSONResponse(
+                {"error": "notes must be text up to 2000 characters"}, status_code=400
+            )
+        overwrite = body.get("overwrite") is True
+
+        hub = core.viewer_hub
+        items, measured_at = hub.latest_measurements() if hub.connected else ([], None)
+        if not items:
+            return JSONResponse(
+                {
+                    "error": "no measurements to record",
+                    "hint": "measure in the viewer first; the newest tab's list is saved",
+                },
+                status_code=409,
+            )
+
+        from ifc_console_agents.recording import build_recorded_skill, measured_guids
+
+        guids = measured_guids(items)
+        analysis = None
+        if guids:
+            from ifc_console.sdk import AsyncWorkbench
+
+            # Read-only probe. The workbench wraps the live core and is never
+            # closed here: closing it would close the console.
+            try:
+                envelope = await AsyncWorkbench(core).call(
+                    "analyze_element_geometry", global_ids=guids[:5]
+                )
+                if envelope.get("ok"):
+                    analysis = envelope.get("data")
+            except Exception:
+                analysis = None
+        meta = core.session_meta()
+        skill = build_recorded_skill(
+            items=items,
+            measured_at=measured_at,
+            model_name=str(meta.get("model") or "the open model"),
+            analysis=analysis,
+            notes=notes or "",
+        )
+        description = body.get("description")
+        description = (
+            description.strip()[:200]
+            if isinstance(description, str) and description.strip()
+            else skill.description
+        )
+        applies_to = body.get("applies_to")
+        applies_to = (
+            applies_to.strip()[:200]
+            if isinstance(applies_to, str) and applies_to.strip()
+            else skill.applies_to
+        )
+
+        from ifc_console.core.results import ToolError
+
+        from ifc_console_agents.skills import AgentSkillStore
+
+        store = AgentSkillStore(core.store.project_dir)
+        try:
+            row = await asyncio.to_thread(
+                store.save,
+                name.strip(),
+                skill.content,
+                description=description,
+                applies_to=applies_to,
+                overwrite=overwrite,
+            )
+        except ToolError as exc:
+            status = 409 if exc.code == "FILE_EXISTS" else 400
+            return JSONResponse(
+                {"error": str(exc), "code": exc.code, "hint": exc.hint}, status_code=status
+            )
+        core.audit.record(
+            "skill_record",
+            name=row["name"],
+            path=row["path"],
+            measurements=len(items),
+            elements=len(guids),
+        )
+        return JSONResponse(
+            {
+                "recorded": row,
+                "classes": list(skill.classes),
+                "intents": list(skill.intents),
+                "analyzed": analysis is not None,
+                "skills": await asyncio.to_thread(store.entries),
+            }
+        )
+
+    async def list_workflows(_request) -> JSONResponse:
+        """Every workflow this project can run, built-in and its own."""
+        if not core.chat.enabled:
+            return _disabled()
+        from ifc_console_agents.workflows import WorkflowRegistry
+
+        registry = WorkflowRegistry(core.store.project_dir)
+        rows = await asyncio.to_thread(registry.entries)
+        return JSONResponse({"workflows": rows})
+
+    async def run_workflow(request) -> Response:
+        """Run one workflow and stream its steps.
+
+        The event vocabulary is the chat panel's, plus the workflow-shaped
+        events, so one renderer serves the workflow page and the agent panel.
+        """
+        if not core.chat.enabled:
+            return _disabled()
+        try:
+            body = await request.json()
+        except (ValueError, UnicodeDecodeError):
+            return JSONResponse({"error": "request body is not valid JSON"}, status_code=400)
+        if not isinstance(body, dict):
+            return JSONResponse({"error": "request body must be a JSON object"}, status_code=400)
+        name = body.get("workflow")
+        if not isinstance(name, str) or not name.strip():
+            return JSONResponse({"error": "workflow must be a name"}, status_code=400)
+        inputs = body.get("inputs") or {}
+        if not isinstance(inputs, dict):
+            return JSONResponse({"error": "inputs must be a JSON object"}, status_code=400)
+
+        from ifc_console.core.results import ToolError
+
+        from ifc_console_agents.workflow_runner import WorkflowRunner
+        from ifc_console_agents.workflows import AgentStep, WorkflowRegistry, validate_inputs
+
+        registry = WorkflowRegistry(core.store.project_dir)
+        try:
+            spec = await asyncio.to_thread(registry.get, name.strip())
+            validate_inputs(spec, inputs)
+        except ToolError as exc:
+            status = 404 if exc.code == "NOT_FOUND" else 400
+            return JSONResponse(
+                {"error": str(exc), "code": exc.code, "hint": exc.hint}, status_code=status
+            )
+
+        # A workflow of tools, gates, and a report needs no provider at all.
+        # Demanding a model for one would put an API key in front of work the
+        # console can do on its own.
+        resolved = None
+        if any(isinstance(step, AgentStep) for step in spec.steps):
+            resolved, error = resolve_provider_model(core, body)
+            if error is not None:
+                return error
+            assert resolved is not None
+
+        state = _panel_state(core)
+        runner = WorkflowRunner(
+            core,
+            model=resolved.model if resolved else None,
+            model_label=(
+                f"{resolved.provider_id}/{resolved.model_id}" if resolved else ""
+            ),
+            auto_approve=bool(core.ai_autonomy),
+        )
+        core.audit.record(
+            "workflow_panel_request",
+            workflow=spec.name,
+            provider=resolved.provider_id if resolved else "none",
+            model=resolved.model_id if resolved else "none",
+            run=runner.run_id,
+        )
+        thread_key = f"workflow:{runner.run_id}"
+
+        async def events():
+            stream_task = asyncio.current_task()
+            if stream_task is not None:
+                async with state.lifecycle_lock:
+                    state.active_streams.setdefault(thread_key, set()).add(stream_task)
+            try:
+                async for event in runner.stream(spec, inputs):
+                    yield _sse(event)
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # the panel must always finish cleanly
+                log.exception("workflow %s failed", spec.name)
+                yield _sse({"type": "error", "text": "internal workflow error"})
+            finally:
+                state.deny_owned(runner)
+                if stream_task is not None:
+                    async with state.lifecycle_lock:
+                        active = state.active_streams.get(thread_key)
+                        if active is not None:
+                            active.discard(stream_task)
+                            if not active:
+                                state.active_streams.pop(thread_key, None)
+            yield _sse({"type": "done"})
+
+        return StreamingResponse(
+            events(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
     return [
         Route("/api/agents", list_agents, methods=["GET"]),
         Route("/api/agents/blocks", list_blocks, methods=["GET"]),
+        Route("/api/agents/workflows", list_workflows, methods=["GET"]),
+        Route("/api/agents/workflows/run", run_workflow, methods=["POST"]),
         Route("/api/agents/workspace", agent_workspace, methods=["GET"]),
         Route("/api/agents/content", list_content, methods=["GET"]),
         Route("/api/agents/content/access", set_content_access, methods=["POST"]),
@@ -1730,6 +1996,7 @@ def build_agent_panel_routes(core: AppCore) -> list[Route]:
         Route("/api/agents/approve", approve, methods=["POST"]),
         Route("/api/agents/upload", upload, methods=["POST"]),
         Route("/api/agents/skills/import", skills_import, methods=["POST"]),
+        Route("/api/agents/skills/record", skills_record, methods=["POST"]),
     ]
 
 

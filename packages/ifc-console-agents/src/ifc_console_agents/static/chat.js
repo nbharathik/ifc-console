@@ -206,6 +206,9 @@ const TEMPLATE = `
     </div>
     <span class="chat-spacer"></span>
     <div class="chat-actions">
+      <button class="chat-icon chat-workflows-toggle t-press" data-act="workflows" type="button"
+              title="Workflows" aria-label="Open workflows"
+              aria-expanded="false" aria-controls="chat-workflows">${I.pipeline}</button>
       <button class="chat-icon chat-model-setup-toggle t-press" data-act="settings" type="button"
               title="Model setup" aria-label="Open model setup in Agent workspace"
               aria-expanded="false" aria-controls="chat-workspace">${I.model}</button>
@@ -301,6 +304,11 @@ const TEMPLATE = `
     <div class="chat-hint" data-role="hint" role="status" aria-live="polite"></div>
     <div class="chat-sr" data-role="announce" role="status" aria-live="polite"></div>
   </footer>
+
+  <!-- Workflows live over the conversation, not beside it: the same surface
+       the /workflows page mounts, so both doors show one state. -->
+  <div class="chat-workflows" id="chat-workflows" data-role="workflows" hidden
+       aria-label="Workflows"></div>
 </div>
 
 <div class="chat-shell-scrim" data-act="close-overlays" aria-hidden="true"></div>
@@ -1840,6 +1848,7 @@ export function mountChat(root, options = {}) {
   function plusOptions() {
     const usesFiles = Boolean(pack() && (pack().features || []).includes("files"));
     const selected = viewerSelectionCount();
+    const measured = Number(sessionStatus.measurements) || 0;
     return [
       {
         icon: I.clip,
@@ -1882,6 +1891,39 @@ export function mountChat(root, options = {}) {
               ? { action: "focus-selection" }
               : { action: "set-model", model_id: selectedModel.model_id },
           );
+        },
+      },
+      {
+        icon: I.search,
+        label: "Analyze the selected element",
+        note: selected ? "Prefills a geometry analysis request" : "Nothing selected yet",
+        available: viewerLinked,
+        run: () => {
+          if (!selected) {
+            note("Click an element in the 3D view first.");
+            return;
+          }
+          insertAtCaret(
+            "Analyze the selected element's geometry: describe its shape, extract "
+            + "the key dimensions with analyze_element_geometry, cross-check profile "
+            + "against mesh, and suggest properties worth storing. Wait for my "
+            + "confirmation before proposing.",
+          );
+        },
+      },
+      {
+        icon: I.skill,
+        label: "Save measurements as a skill",
+        note: measured
+          ? `${measured} on screen become one repeatable pattern`
+          : "Measure in the 3D view first",
+        available: viewerLinked,
+        run: () => {
+          if (!measured) {
+            note("Measure in the 3D view first; the saved list becomes the skill.");
+            return;
+          }
+          openWorkspace(act("plus"), "skills");
         },
       },
       {
@@ -2877,6 +2919,52 @@ export function mountChat(root, options = {}) {
     else openWorkspace(trigger, "agent");
   }
 
+  // Workflows are the same component the /workflows page mounts, loaded on
+  // first use so the panel does not pay for it until somebody opens it.
+  let workflowsPanel = null;
+  let workflowsReturnFocus = null;
+
+  function closeWorkflows({ restoreFocus = true } = {}) {
+    const host = el("workflows");
+    if (!host || host.hidden) return;
+    host.hidden = true;
+    host.inert = true;
+    for (const button of root.querySelectorAll('[data-act="workflows"]')) {
+      button.setAttribute("aria-expanded", "false");
+    }
+    const target = workflowsReturnFocus;
+    workflowsReturnFocus = null;
+    if (restoreFocus) focusQuietly(overlayReturnTarget(target));
+  }
+
+  async function openWorkflows(trigger = document.activeElement) {
+    const host = el("workflows");
+    if (!host) return;
+    workflowsReturnFocus = trigger;
+    host.hidden = false;
+    host.inert = false;
+    for (const button of root.querySelectorAll('[data-act="workflows"]')) {
+      button.setAttribute("aria-expanded", "true");
+    }
+    if (!workflowsPanel) {
+      try {
+        const module = await import("/agents/static/workflows.js");
+        workflowsPanel = module.mountWorkflows(host, { onClose: () => closeWorkflows() });
+      } catch {
+        host.innerHTML = `<p class="chat-empty">Workflows could not be loaded.</p>`;
+        return;
+      }
+    } else {
+      void workflowsPanel.refresh();
+    }
+    workflowsPanel.focus();
+  }
+
+  function toggleWorkflows(trigger) {
+    if (el("workflows")?.hidden === false) closeWorkflows();
+    else void openWorkflows(trigger);
+  }
+
   const wsNode = (tag, className, text) => {
     const node = document.createElement(tag);
     if (className) node.className = className;
@@ -3191,6 +3279,45 @@ export function mountChat(root, options = {}) {
     }
   }
 
+  async function recordSkillFromViewer(nameInput, notesInput, button) {
+    const name = nameInput.value.trim().toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+    if (!name) {
+      nameInput.focus();
+      return;
+    }
+    const overwrite = button.dataset.overwrite === name;
+    button.disabled = true;
+    try {
+      const response = await postJSON("/api/agents/skills/record", {
+        name,
+        notes: notesInput.value.trim(),
+        overwrite,
+      });
+      const payload = await response.json();
+      if (response.status === 409 && payload.code === "FILE_EXISTS") {
+        button.dataset.overwrite = name;
+        button.textContent = `'${name}' exists. Record again to overwrite`;
+        return;
+      }
+      if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
+      delete button.dataset.overwrite;
+      note(`Skill '${payload.recorded.name}' recorded from the viewer measurements.`);
+      await loadWorkspace({ force: true });
+      closeWorkspace({ restoreFocus: false });
+      insertAtCaret(
+        `Follow the ${payload.recorded.name} skill: apply it to all similar `
+        + "elements and give me a results table.",
+      );
+    } catch (exc) {
+      workspaceError = String(exc.message || exc);
+      workspace = null;
+      renderWorkspace();
+    } finally {
+      button.disabled = false;
+    }
+  }
+
   function wsSkills(body) {
     const model = workspace;
     const count = model.skills.length;
@@ -3202,6 +3329,42 @@ export function mountChat(root, options = {}) {
         + ".ifc-console/agents/skills. Agents check them at the start of a task "
         + "and follow the one that matches.",
     );
+    const recordRow = wsNode("div", "chat-ws-skill-record");
+    const measured = Number(sessionStatus.measurements) || 0;
+    recordRow.appendChild(wsNode(
+      "p",
+      "chat-ws-lead",
+      measured
+        ? `${measured} viewer measurement${measured === 1 ? "" : "s"} on screen can `
+          + "be recorded as a repeatable pattern: the skill stores what each value "
+          + "means, so an agent can apply it to similar elements of any shape."
+        : "Measure an element in the 3D viewer first, then record the pattern "
+          + "here as a reusable skill.",
+    ));
+    const form = wsNode("div", "chat-ws-skill-record-form");
+    const nameInput = document.createElement("input");
+    nameInput.type = "text";
+    nameInput.className = "chat-custom";
+    nameInput.placeholder = "skill name, e.g. wall-thickness-pattern";
+    nameInput.setAttribute("aria-label", "Name for the recorded skill");
+    const notesInput = document.createElement("input");
+    notesInput.type = "text";
+    notesInput.className = "chat-custom";
+    notesInput.placeholder = "notes for the agent (optional)";
+    notesInput.setAttribute("aria-label", "Notes stored with the recorded skill");
+    const recordBtn = wsNode("button", "chat-btn t-press", "Record from viewer");
+    recordBtn.type = "button";
+    recordBtn.disabled = !measured;
+    nameInput.addEventListener("input", () => {
+      delete recordBtn.dataset.overwrite;
+      recordBtn.textContent = "Record from viewer";
+    });
+    recordBtn.addEventListener("click", () => {
+      void recordSkillFromViewer(nameInput, notesInput, recordBtn);
+    });
+    form.append(nameInput, notesInput, recordBtn);
+    recordRow.appendChild(form);
+    body.appendChild(recordRow);
     const importRow = wsNode("div", "chat-ws-skill-import");
     const importBtn = wsNode("button", "chat-btn t-press", "Import .md skills");
     importBtn.type = "button";
@@ -5321,6 +5484,7 @@ export function mountChat(root, options = {}) {
     else if (armedDelete) disarmDelete();
     else if (!el("modal").hidden) closeSettings();
     else if (!el("builder-modal").hidden) closeBuilder();
+    else if (el("workflows")?.hidden === false) closeWorkflows();
     else if (workspaceOpen) closeWorkspace();
     else if (sideOpen && !sideIsInline()) {
       setSide(false);
@@ -5350,9 +5514,11 @@ export function mountChat(root, options = {}) {
       else submit();
     }
     else if (action === "workspace") toggleWorkspace(actionButton);
+    else if (action === "workflows") toggleWorkflows(actionButton);
     else if (action === "close-workspace") closeWorkspace();
     else if (action === "close-overlays") {
-      if (workspaceOpen) closeWorkspace();
+      if (el("workflows")?.hidden === false) closeWorkflows();
+      else if (workspaceOpen) closeWorkspace();
       else if (sideOpen && !sideIsInline()) {
         setSide(false);
         focusQuietly(act("toggle-side"));
@@ -5640,6 +5806,9 @@ export function mountChat(root, options = {}) {
       selections: viewerOpen
         ? (selections || sessionStatus.selections || [])
         : [],
+      measurements: viewerOpen && detail.measurements && typeof detail.measurements === "object"
+        ? Number(detail.measurements.count) || 0
+        : viewerOpen ? (sessionStatus.measurements || 0) : 0,
       // The viewer already publishes its saved views with every context frame,
       // so `@view:` costs nothing beyond reading them.
       saved_views: Array.isArray(detail.savedViews) ? detail.savedViews : sessionStatus.saved_views,

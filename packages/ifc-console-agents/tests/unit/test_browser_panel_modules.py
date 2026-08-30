@@ -37,6 +37,7 @@ def test_every_panel_module_is_covered() -> None:
         "chat_sidebar.js",
         "chat_studio.js",
         "chat_workspace.js",
+        "workflows_model.js",
     }
     missing = [name for name in pure if not (static / name).is_file()]
     assert not missing, f"expected panel modules are gone: {missing}"

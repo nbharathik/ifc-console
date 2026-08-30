@@ -1,0 +1,69 @@
+version: "1"
+name: revision-diff-review
+title: Revision diff review
+description: >-
+  Compare the open model against another attached revision and explain what
+  changed, in plain language, with the risky changes called out.
+tags: [diff, review]
+
+inputs:
+  - id: other_model
+    label: Newer revision
+    type: text
+    required: true
+    help: model_id of the revision to compare against. Attach it first, then list_models.
+  - id: selector
+    label: Limit to
+    type: text
+    required: false
+    help: Optional selector, e.g. IfcWall. Leave empty to diff every element.
+
+steps:
+  - id: diff
+    kind: tool
+    title: Compare revisions
+    tool: compare_models
+    arguments:
+      other_model: "{{ inputs.other_model }}"
+      selector: "{{ inputs.selector }}"
+
+  - id: review
+    kind: agent
+    title: Explain the changes
+    needs: [diff]
+    preset: review
+    blocks: [ifc-context, spatial, viewer]
+    max_tool_rounds: 12
+    prompt: |
+      Two revisions of this model were compared. Write the change review a
+      project lead reads on Monday morning.
+
+      The diff returned:
+      {{ steps.diff.text }}
+
+      Cover, in this order:
+      1. One paragraph: what changed overall, and whether it looks like normal
+         design progress or something worth a second look.
+      2. The changes that matter, grouped by discipline or building system.
+         Name real elements (name and GlobalId) and where they are. Look them
+         up rather than reciting ids.
+      3. Risk flags: anything removed that other elements depend on, anything
+         that moved far enough to break a coordinated interface, anything
+         retyped or re-containered.
+
+      When the viewer is available, colour the changed elements so the reader
+      can see the change set, and say what you highlighted.
+      If the diff fell back to matching on class and name, say so: the pairing
+      is then a guess and the counts are approximate.
+
+  - id: report
+    kind: export
+    title: Write the review
+    needs: [review]
+    name: revision-diff-review
+    body: |
+      # Revision diff review
+
+      Baseline: the open model. Compared against: {{ inputs.other_model }}
+
+      {{ steps.review.text }}

@@ -60,6 +60,11 @@ REQUIRED_AGENT_ASSETS = (
     "chat_sidebar.js",
     "chat_studio.js",
     "chat_workspace.js",
+    "workflows-page.js",
+    "workflows.css",
+    "workflows.html",
+    "workflows.js",
+    "workflows_model.js",
 )
 CORE_AGENT_SHIMS = (
     "ifc_console/agents/__init__.py",

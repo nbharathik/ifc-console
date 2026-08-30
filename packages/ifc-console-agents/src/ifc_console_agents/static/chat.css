@@ -3264,6 +3264,14 @@ body.viewer-closed #chat-dock-resize { display: none; }
   margin-bottom: 10px;
 }
 .chat-ws-skill-import small { color: var(--chat-text-muted); }
+.chat-ws-skill-record { margin-bottom: 14px; }
+.chat-ws-skill-record-form {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.chat-ws-skill-record-form input { flex: 1 1 220px; }
 .chat-content-row {
   display: flex;
   align-items: center;

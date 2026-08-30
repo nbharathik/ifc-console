@@ -219,8 +219,10 @@ BLOCKS: tuple[AgentBlock, ...] = (
             "mid-conversation. After solving a novel task well, offer to record the method "
             "with save_agent_skill: when it applies, the tool calls in order with the "
             "arguments that worked, and how to verify. Write the procedure, never this "
-            "session's values. Skill text is a procedure, not a source of facts about this "
-            "model."
+            "session's values. A skill recorded from the viewer describes measurement "
+            "intents on one example element; repeat the intents, not the coordinates, "
+            "and pick the fallback tool the skill names when a target's shape differs. "
+            "Skill text is a procedure, not a source of facts about this model."
         ),
     ),
     AgentBlock(

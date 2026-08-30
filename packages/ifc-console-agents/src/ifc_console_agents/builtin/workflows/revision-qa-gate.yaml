@@ -1,0 +1,95 @@
+version: "1"
+name: revision-qa-gate
+title: Revision QA gate
+description: >-
+  Validate the open model against the schema and, when given, an IDS
+  specification, then turn the failures into a readable punch list.
+tags: [validation, qa]
+
+inputs:
+  - id: ids_path
+    label: IDS specification
+    type: path
+    required: false
+    help: Path to an .ids file. Leave empty to check the schema only.
+  - id: audience
+    label: Report audience
+    type: choice
+    choices: [modeller, coordinator, client]
+    default: modeller
+    help: Decides how much IFC vocabulary the report uses.
+
+steps:
+  - id: validate
+    kind: tool
+    title: Schema validation
+    tool: validate_model
+    arguments: {}
+
+  - id: health
+    kind: tool
+    title: Model health
+    tool: check_model_health
+    optional: true
+    arguments: {}
+
+  - id: ids
+    kind: tool
+    title: IDS validation
+    tool: validate_ids
+    optional: true
+    arguments:
+      ids_path: "{{ inputs.ids_path }}"
+
+  - id: triage
+    kind: agent
+    title: Triage the failures
+    needs: [validate, health, ids]
+    preset: review
+    blocks: [ifc-context, validation, spatial]
+    max_tool_rounds: 10
+    prompt: |
+      A revision of this model has just been validated. Turn the raw results
+      into a punch list a {{ inputs.audience }} can act on.
+
+      Schema validation returned:
+      {{ steps.validate.text }}
+
+      Model health returned:
+      {{ steps.health.text }}
+
+      IDS validation returned:
+      {{ steps.ids.text }}
+
+      Group the failures by what a person would fix in one sitting, not by
+      error code. For each group give: what is wrong, how many elements are
+      affected, an example element (name and GlobalId), and the likely fix.
+      Look up the elements you cite so the names and locations are real.
+      Put the groups in the order you would fix them, most blocking first.
+      If a validation step reported nothing or was skipped, say so plainly
+      rather than implying the model passed that check.
+
+  - id: report
+    kind: export
+    title: Write the report
+    needs: [triage]
+    name: revision-qa-report
+    body: |
+      # Revision QA gate
+
+      Audience: {{ inputs.audience }}
+
+      ## Punch list
+
+      {{ steps.triage.text }}
+
+      ## Raw results
+
+      ### Schema validation
+      {{ steps.validate.text }}
+
+      ### Model health
+      {{ steps.health.text }}
+
+      ### IDS validation
+      {{ steps.ids.text }}

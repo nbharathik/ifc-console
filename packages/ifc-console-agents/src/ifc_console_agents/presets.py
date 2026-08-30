@@ -194,6 +194,7 @@ GENERAL = AgentPreset(
         "Measure the interior wall thickness and cite the manual",
         "Which walls have no fire rating?",
         "Review the model and list the worst problems",
+        "Apply my recorded skill to all similar elements",
     ),
     examples=(
         Example(
@@ -252,6 +253,7 @@ MEASUREMENT = AgentPreset(
         "Analyze the selected element and report every dimension",
         "Read the manual and measure what it defines",
         "Propose the measured thickness as an AI-marked property",
+        "Apply my recorded skill to all similar elements",
     ),
     examples=(
         Example(

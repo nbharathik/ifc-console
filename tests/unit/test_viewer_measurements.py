@@ -140,6 +140,50 @@ class TestCleaning:
         cleaned = _clean_measurements([{**MEASUREMENT, "ends": ["corner", "surface"]}])
         assert cleaned[0]["ends"] == ["corner", "surface"]
 
+    def test_anchors_and_label_travel_with_any_kind(self):
+        """Anchors name the measured elements; without them a recorded
+        measurement cannot be tied back to anything."""
+        anchors = [
+            {"guid": "3vB2YO$MX4xv5uCqZZG05x", "world": [0.0, 0.0, 0.0]},
+            {"guid": None, "world": [0.2, 0.0, 0.0]},
+        ]
+        distance = _clean_measurements(
+            [{**MEASUREMENT, "anchors": anchors, "label": " span "}]
+        )[0]
+        assert distance["anchors"] == [
+            {"guid": "3vB2YO$MX4xv5uCqZZG05x", "world": [0.0, 0.0, 0.0]},
+            {"world": [0.2, 0.0, 0.0]},
+        ]
+        assert distance["label"] == "span"
+        laser = _clean_measurements([{**LASER, "anchors": anchors[:1]}])[0]
+        assert laser["anchors"][0]["guid"] == "3vB2YO$MX4xv5uCqZZG05x"
+
+    def test_bad_anchors_drop_without_taking_the_measurement(self):
+        cleaned = _clean_measurements(
+            [
+                {
+                    **MEASUREMENT,
+                    "anchors": [
+                        "nonsense",
+                        {"guid": "", "world": [1, 2]},
+                        {"guid": "a" * 200, "world": None},
+                        {"guid": "ok", "world": [1.0, 2.0, 3.0]},
+                    ],
+                    "label": 7,
+                }
+            ]
+        )[0]
+        assert cleaned["anchors"] == [{"guid": "ok", "world": [1.0, 2.0, 3.0]}]
+        assert "label" not in cleaned
+
+    def test_anchor_and_label_caps(self):
+        many = [{"guid": f"g{i}", "world": [0.0, 0.0, 0.0]} for i in range(30)]
+        cleaned = _clean_measurements(
+            [{**MEASUREMENT, "anchors": many, "label": "x" * 300}]
+        )[0]
+        assert len(cleaned["anchors"]) == 16
+        assert len(cleaned["label"]) == 120
+
     def test_garbage_is_dropped_not_fatal(self):
         cleaned = _clean_measurements(
             [

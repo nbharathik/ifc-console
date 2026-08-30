@@ -301,11 +301,11 @@ class TokenAuthMiddleware:
     session-specific.
     """
 
-    PROTECTED = ("/mcp", "/api", "/ws", "/viewer", "/chat")
+    PROTECTED = ("/mcp", "/api", "/ws", "/viewer", "/chat", "/workflows")
     PUBLIC = ("/viewer/static", "/agents/static")
     # exact paths a browser navigates to; the page authenticates itself with
     # the fragment token. The boundary check still applies.
-    TOKEN_EXEMPT = ("/viewer", "/chat", "/ws")
+    TOKEN_EXEMPT = ("/viewer", "/chat", "/ws", "/workflows")
     MAX_MCP_BODY = 8 * 1024 * 1024
     MAX_CHAT_BODY = 4 * 1024 * 1024
     MAX_AGENT_UPLOAD_BODY = 25 * 1024 * 1024

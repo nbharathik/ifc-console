@@ -87,6 +87,36 @@ def _number(value: Any) -> float | None:
     return round(number, 6) if isfinite(number) else None
 
 
+_MAX_ANCHORS = 16
+_MAX_MEASUREMENT_LABEL = 120
+
+
+def _clean_anchors(value: Any) -> list[dict] | None:
+    """Which elements a measurement touched: guid plus a model-axis point.
+
+    Anchors are what let a skill or a report name the measured element after
+    the tab that took the measurement is gone.
+    """
+    if not isinstance(value, list):
+        return None
+    cleaned: list[dict] = []
+    for item in value[:_MAX_ANCHORS]:
+        if not isinstance(item, dict):
+            continue
+        guid = item.get("guid")
+        guid = guid if isinstance(guid, str) and 0 < len(guid) <= _MAX_GUID_LENGTH else None
+        world = _triple(item.get("world"))
+        if guid is None and world is None:
+            continue
+        entry: dict = {}
+        if guid is not None:
+            entry["guid"] = guid
+        if world is not None:
+            entry["world"] = world
+        cleaned.append(entry)
+    return cleaned or None
+
+
 def _clean_distance(item: dict) -> dict | None:
     start = _triple(item.get("from"))
     end = _triple(item.get("to"))
@@ -262,6 +292,12 @@ def _clean_measurements(items: Any) -> list[dict]:
         entry = _MEASUREMENT_KINDS[kind](item)
         if entry is None:
             continue
+        anchors = _clean_anchors(item.get("anchors"))
+        if anchors is not None:
+            entry["anchors"] = anchors
+        label = item.get("label")
+        if isinstance(label, str) and label.strip():
+            entry["label"] = label.strip()[:_MAX_MEASUREMENT_LABEL]
         if kind != "distance":
             entry = {"kind": kind, **entry}
         # A stable per-row id is what lets a caller name one measurement; tabs

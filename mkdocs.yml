@@ -62,6 +62,7 @@ nav:
   - Build and automate:
       - Python SDK: sdk.md
       - Agent applications: agents.md
+      - Agent workflows: agent-workflows.md
       - Automation workflows: workflows.md
       - Operation plugins: plugins.md
       - Testing the panel: testing.md

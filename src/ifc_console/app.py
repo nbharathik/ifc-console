@@ -302,6 +302,16 @@ class AppCore:
         """The panel on its own page, for a session with no viewer."""
         return f"http://127.0.0.1:{self.port}/chat#t={self.token}"
 
+    @property
+    def workflows_url(self) -> str:
+        """The workflows surface on its own page, beside the viewer."""
+        return f"http://127.0.0.1:{self.port}/workflows#t={self.token}"
+
+    @property
+    def workflows_public_url(self) -> str:
+        """Untokenized workflows URL safe for status and audit payloads."""
+        return f"http://127.0.0.1:{self.port}/workflows"
+
     def enable_chat(self) -> bool:
         """Enable the optional Agent panel backend (idempotent)."""
         if not self.extensions.available("agents"):

@@ -119,6 +119,14 @@ def build_chat_routes(core: AppCore) -> list[Route]:
             headers={"Content-Security-Policy": _CSP, "Cache-Control": "no-cache"},
         )
 
+    async def workflows_shell(_request) -> Response:
+        if not core.chat.enabled:
+            return _disabled()
+        return FileResponse(
+            assets.require_static_dir() / "workflows.html",
+            headers={"Content-Security-Policy": _CSP, "Cache-Control": "no-cache"},
+        )
+
     async def providers(_request) -> JSONResponse:
         if not core.chat.enabled:
             return _disabled()
@@ -444,6 +452,7 @@ def build_chat_routes(core: AppCore) -> list[Route]:
 
     return [
         Route("/chat", chat_shell, methods=["GET"]),
+        Route("/workflows", workflows_shell, methods=["GET"]),
         Route("/api/chat/providers", providers, methods=["GET"]),
         Route("/api/chat/credentials", credentials, methods=["GET", "POST"]),
         Route("/api/chat/models", models, methods=["POST"]),

@@ -1528,3 +1528,121 @@ async def test_selections_from_two_ifc_files_ride_with_one_prompt(
     user_text = next(message.text for message in reversed(messages) if message.role == "user")
     assert f"model_id={active_id}" in user_text and "main-guid" in user_text
     assert f"model_id={annex_id}" in user_text and "annex-guid" in user_text
+
+
+def _measurement_frame(model_id: str, guid: str) -> dict:
+    return {
+        "type": "measurements",
+        "model_id": model_id,
+        "items": [
+            {
+                "kind": "distance",
+                "from": [0.0, 0.0, 0.0],
+                "to": [0.3, 0.0, 0.0],
+                "distance": 0.3,
+                "axis": "x",
+                "ends": ["surface", "surface"],
+                "anchors": [
+                    {"guid": guid, "world": [0.0, 0.0, 0.0]},
+                    {"guid": guid, "world": [0.3, 0.0, 0.0]},
+                ],
+                "label": "wall thickness",
+            }
+        ],
+    }
+
+
+async def _seed_measurements(panel_core) -> str:
+    class _Ws:
+        async def send_text(self, text: str) -> None:
+            return None
+
+    from ifc_console.application.operations import build_operations
+    from ifc_console.sdk import AsyncWorkbench
+
+    build_operations(panel_core)
+    envelope = await AsyncWorkbench(panel_core).call(
+        "analyze_element_geometry", selector="IfcWall", max_elements=1
+    )
+    guid = envelope["data"]["elements"][0]["global_id"]
+    hub = panel_core.viewer_hub
+    viewer_client = hub.register(_Ws())
+    await hub.handle_frame(
+        viewer_client, _measurement_frame(panel_core.models.active_id, guid)
+    )
+    return guid
+
+
+async def test_recording_a_skill_from_viewer_measurements(panel_core):
+    """The record endpoint turns the hub's measurement list into a skill."""
+    guid = await _seed_measurements(panel_core)
+    response = _client(panel_core).post(
+        "/api/agents/skills/record",
+        headers=_auth(panel_core),
+        json={"name": "wall-pattern", "notes": "recorded in a test"},
+    )
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["recorded"]["name"] == "wall-pattern"
+    assert payload["analyzed"] is True
+    assert payload["classes"] == ["IfcWall"]
+    assert any(row["name"] == "wall-pattern" for row in payload["skills"])
+    saved = (panel_core.store.project_dir / payload["recorded"]["path"]).read_text(
+        encoding="utf-8"
+    )
+    assert "## Recorded example" in saved
+    assert guid in saved
+    assert "wall thickness;" in saved
+    assert "recorded in a test" in saved
+    assert "applies_to: IfcWall" in saved
+
+
+async def test_recording_without_measurements_is_a_409(panel_core):
+    response = _client(panel_core).post(
+        "/api/agents/skills/record",
+        headers=_auth(panel_core),
+        json={"name": "empty-pattern"},
+    )
+    assert response.status_code == 409
+    assert "no measurements" in response.json()["error"]
+
+
+async def test_recording_twice_needs_overwrite(panel_core):
+    await _seed_measurements(panel_core)
+    client = _client(panel_core)
+    first = client.post(
+        "/api/agents/skills/record",
+        headers=_auth(panel_core),
+        json={"name": "wall-pattern"},
+    )
+    assert first.status_code == 200
+    again = client.post(
+        "/api/agents/skills/record",
+        headers=_auth(panel_core),
+        json={"name": "wall-pattern"},
+    )
+    assert again.status_code == 409
+    assert again.json()["code"] == "FILE_EXISTS"
+    forced = client.post(
+        "/api/agents/skills/record",
+        headers=_auth(panel_core),
+        json={"name": "wall-pattern", "overwrite": True},
+    )
+    assert forced.status_code == 200
+
+
+async def test_measurements_ride_along_with_the_prompt(panel_core):
+    """"These measurements" should not cost a guessing round."""
+    pack = RecordingPack()
+    panel_core.agent_packs.register(pack)
+    await _seed_measurements(panel_core)
+    response = _client(panel_core).post(
+        "/api/agents/stream",
+        headers=_auth(panel_core),
+        json=_stream_body(agent="recorder", prompt="Do the same for all walls."),
+    )
+    assert response.status_code == 200
+    messages = pack.models[-1].turns[0]["messages"]
+    user_text = next(m.text for m in reversed(messages) if m.role == "user")
+    assert "1 measurement(s) are on screen" in user_text
+    assert "get_viewer_measurements" in user_text

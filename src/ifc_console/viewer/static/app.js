@@ -833,6 +833,7 @@ function viewerContext(reason = viewerContextReason) {
       total: elements.size,
     },
     focus: { active: Boolean(userIsolateSet), count: userIsolateSet?.size || 0 },
+    measurements: { count: measurements.length },
     views: Object.keys(VIEW_DIRECTIONS),
     projection: isOrtho() ? "orthographic" : "perspective",
     // Where the eye is, in the model's axes. Without it an agent is reasoning
@@ -4952,6 +4953,11 @@ function restoreMeasurements(items) {
 // axes: the tools on the other side speak IFC, not three.js.
 const SCENE_DELTA = { x: 0, y: 1, z: 2 };
 
+/** Which elements a measurement touched, in wire form: guid plus fallback point. */
+function wireAnchors(m) {
+  return (m.anchors || []).map((a) => ({ guid: a.guid || null, world: a.world }));
+}
+
 function sendMeasurements() {
   const row = currentModelRow();
   wsSend({
@@ -4970,8 +4976,10 @@ function sendMeasurements() {
             delta: ["x", "y", "z"].map((name) => m.delta[SCENE_DELTA[axisFrame[name].axis]]),
             axis: m.axis || null,
             ends: m.ends || null,
+            anchors: wireAnchors(m),
+            label: m.label || null,
           }
-        : { kind: m.kind, ...m.data }
+        : { kind: m.kind, ...m.data, anchors: wireAnchors(m), label: m.label || null }
     )),
     // The hub keeps one list per client and ignores a frame from a tab showing
     // some other model, so a second tab cannot erase the first tab's set.

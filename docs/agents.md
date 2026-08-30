@@ -379,3 +379,16 @@ instructions with `get_agent_skill`, and may write with `save_agent_skill`
 only after host approval. Import a skill from **Agent workspace > Skills**,
 `POST /api/agents/skills/import?name=<file>.md`, or by copying the file into
 the skills directory. Existing names are never overwritten during import.
+
+#### Recording a skill from the viewer
+
+Measure an element in the 3D viewer, then use the composer plus menu
+(**Save measurements as a skill**) or **Agent workspace > Skills > Record
+from viewer**. The console reads the viewer's measurement list, runs
+`analyze_element_geometry` on the measured elements, and writes a skill that
+names what each value means (for example "equals the element's
+wall_thickness"), so an agent can repeat the pattern on similar elements
+even when their shapes differ. The same recording is available to scripts as
+`POST /api/agents/skills/record` with `{"name", "notes", "overwrite"}`.
+Ask the agent to "apply the recorded skill to all similar elements" to get
+a per-element results table.

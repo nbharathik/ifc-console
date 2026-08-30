@@ -1,0 +1,88 @@
+version: "1"
+name: measurement-audit
+title: Measurement audit
+description: >-
+  Apply a saved skill or a stated dimension check across a set of elements and
+  report every deviation from the expected value.
+tags: [measurement, qa]
+
+inputs:
+  - id: selector
+    label: Elements
+    type: text
+    required: true
+    default: IfcWall
+    help: Selector for what to audit, e.g. IfcWall or IfcDoor.
+  - id: skill
+    label: Saved skill
+    type: text
+    required: false
+    help: Name of a saved skill holding the method. Leave empty to let the agent choose.
+  - id: expected
+    label: Expected value
+    type: text
+    required: false
+    help: The value to compare against, with its unit, e.g. "300 mm". Leave empty to report the spread.
+  - id: tolerance
+    label: Tolerance
+    type: text
+    required: false
+    default: "2%"
+    help: How far from the expected value still passes.
+
+steps:
+  - id: scope
+    kind: tool
+    title: Resolve the scope
+    tool: query_elements
+    arguments:
+      selector: "{{ inputs.selector }}"
+
+  - id: audit
+    kind: agent
+    title: Measure and compare
+    needs: [scope]
+    preset: measurement
+    max_tool_rounds: 24
+    max_tool_calls: 120
+    prompt: |
+      Audit the dimensions of these elements and report every deviation.
+
+      Scope selector: {{ inputs.selector }}
+      The scope query returned:
+      {{ steps.scope.text }}
+
+      Method: {{ inputs.skill }}
+      Expected value: {{ inputs.expected }}
+      Tolerance: {{ inputs.tolerance }}
+
+      Work like this:
+      1. If a skill name is given, load it with get_agent_skill and follow it.
+         If not, call get_measurement_recipe for the class and property in
+         question and follow that. Say which method you used, either way.
+      2. Measure the elements in the scope. Use analyze_element_geometry for a
+         full picture of one element. Report the method beside every number.
+      3. Compare each measurement against the expected value within the
+         tolerance. When no expected value was given, report the distribution
+         instead and name the outliers.
+
+      Answer with: the method and its source, how many elements you measured,
+      how many passed, and a table of every deviation with element name,
+      GlobalId, storey, measured value, expected value, and difference.
+      If the scope is larger than your tool budget allows, measure a stated
+      sample, say exactly how many you covered, and never present a sample as
+      the whole set.
+
+  - id: report
+    kind: export
+    title: Write the audit
+    needs: [audit]
+    name: measurement-audit
+    body: |
+      # Measurement audit
+
+      Scope: {{ inputs.selector }}
+      Method: {{ inputs.skill }}
+      Expected: {{ inputs.expected }} (tolerance {{ inputs.tolerance }})
+
+      {{ steps.audit.text }}

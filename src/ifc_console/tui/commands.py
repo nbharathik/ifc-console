@@ -1262,6 +1262,76 @@ async def _agent(console: ConsoleScreen, args: str) -> None:
     console.print("\n".join(lines))
 
 
+@command(
+    "workflows",
+    "/workflows [name|list]",
+    "open the workflows page, or list what this project can run",
+    "connect",
+    examples=("/workflows", "/workflows list", "/workflows revision-qa-gate"),
+)
+async def _workflows(console: ConsoleScreen, args: str) -> None:
+    if not _require_agents(console):
+        return
+    core = console.core
+    parts = args.strip().split()
+
+    from ifc_console_agents.workflows import WorkflowRegistry
+
+    registry = WorkflowRegistry(core.store.project_dir)
+    if parts and parts[0].casefold() == "list":
+        rows = await asyncio.to_thread(registry.entries)
+        lines = ["[b]available workflows[/b]"]
+        if not rows:
+            lines.append("  [dim]none installed[/dim]")
+        for row in rows:
+            origin = "project" if row["origin"] == "project" else "builtin"
+            lines.append(
+                f"  [cyan]{escape(row['name']):24}[/cyan] [dim]{origin}[/dim] "
+                f"{escape(row['description'][:90])}"
+            )
+        lines.append(
+            "[dim]/workflows opens the page; click one to fill its inputs and run it[/dim]"
+        )
+        console.print("\n".join(lines))
+        return
+
+    wanted = parts[0] if parts else None
+    if wanted:
+        try:
+            await asyncio.to_thread(registry.get, wanted)
+        except ToolError as exc:
+            console.print(f"[red]{escape(str(exc))}[/red] [dim]{escape(exc.hint)}[/dim]")
+            return
+
+    if not await _require_server(console):
+        return
+    core.enable_viewer()
+    newly_enabled = not core.chat.enabled
+    core.enable_chat()
+    head, _, fragment = core.workflows_url.partition("#")
+    query = f"?workflow={wanted}" if wanted else ""
+    url = f"{head}{query}" + (f"#{fragment}" if fragment else "")
+    console.app.copy_to_clipboard(url)
+    import webbrowser
+
+    try:
+        opened = webbrowser.open(url)
+    except Exception:
+        opened = False
+    if newly_enabled:
+        console.print(
+            "[yellow]Workflows run agents, so prompts and model context may go to the "
+            "provider you choose. Keys come from the environment or Agent settings and "
+            "are never written to project files.[/yellow]"
+        )
+    console.print(
+        f"[green]workflows opened in your browser[/green] (URL copied): {url}"
+        if opened
+        else f"workflows: URL copied: {url}"
+    )
+    console.refresh_status()
+
+
 @command("clear", "/clear", "clear the log", "console")
 async def _clear(console: ConsoleScreen, _args: str) -> None:
     console.clear_log()

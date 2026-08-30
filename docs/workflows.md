@@ -3,6 +3,12 @@
 Use a workflow for repeatable, read-only checks across one or more IFC files.
 No console, server, or LLM is required.
 
+!!! note "Looking for the click-to-run kind?"
+
+    This page is the deterministic batch engine: one operation over many
+    files, driven by a manifest. For staged runs over the open model that can
+    include agents and human gates, see [agent workflows](agent-workflows.md).
+
 ```text
 manifest -> plan -> reviewed plan -> run -> artifact manifest
               no work             jobs and batches

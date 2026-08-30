@@ -2,6 +2,33 @@
 
 ## Unreleased
 
+### Agent workflows
+
+- Add preconfigured workflows: a named sequence of steps a user starts with one
+  click instead of retyping a prompt. A step calls one console tool, runs one
+  agent over a scoped set of capability blocks, stops for a human decision, or
+  writes a report artifact. Values flow between steps through
+  `{{ inputs.x }}` and `{{ steps.y.text }}` references, which are substituted
+  literally: workflow files are content, not a template language.
+- Ship three built-ins: `revision-qa-gate` (validate, then triage the failures
+  into a punch list), `revision-diff-review` (compare two revisions and explain
+  what changed, with risk flags), and `measurement-audit` (apply a saved skill
+  across a selector and report deviations).
+- Serve the surface from two doors that share one component and one state: the
+  standalone `/workflows` page opened by the new `/workflows` slash command,
+  and a Workflows control in the Agent panel header. `/workflows list` prints
+  what a project can run; `/workflows <name>` opens straight into one.
+- Read workflow definitions from `.ifc-console/agents/workflows/*.yaml`
+  alongside the built-ins, where a project file overrides a built-in of the
+  same name, so a company can adapt a shipped workflow without forking the
+  package. One unreadable file no longer hides the rest.
+- Require a provider only when a workflow actually has an agent step: a
+  workflow of tools, gates, and a report is work the console does on its own,
+  and asking for an API key to run one would have been wrong.
+- Scope each agent step's tools to the blocks it declares, so a stage that
+  reads validation results does not carry the geometry, document, and code
+  schemas it will never call.
+
 ### Packaging and product boundaries
 
 - Move Agent conversation threads out of project repositories and into
@@ -61,6 +88,18 @@
 - Give `isolate`, `hide` and `select` an optional selector, resolved server side, so
   "isolate the doors on Level 2" is one call instead of a query followed by pasting
   five hundred GlobalIds back.
+- Record viewer measurements as an agent skill. Measurements now cross the wire
+  with element anchors (GlobalId plus a model-axis point) and an optional label,
+  so `get_viewer_measurements` can say what was measured, not only how much.
+  `POST /api/agents/skills/record` turns the on-screen measurement list into a
+  skill markdown: each value is matched against `analyze_element_geometry`'s
+  dimensions on the measured element and stored as an intent ("equals the
+  element's wall_thickness"), with steps that tell an agent how to repeat the
+  pattern on similar elements of a different shape. The Agent panel offers the
+  recording from the composer plus menu and the workspace Skills tab, and a
+  one-line viewer note tells the agent when measurements are on screen. The
+  plus menu also prefills a full geometry-analysis request for the selected
+  element.
 
 ### Viewer
 
