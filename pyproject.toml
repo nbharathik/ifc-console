@@ -1,5 +1,5 @@
 [build-system]
-requires = ["hatchling==1.31.0"]
+requires = ["hatchling==1.32.0"]
 build-backend = "hatchling.build"
 
 [project]
@@ -30,7 +30,7 @@ classifiers = [
 ]
 dependencies = [
     # 1.16 is the first release with FastMCP.remove_tool, which /viewer off needs.
-    "mcp>=1.16,<2",
+    "mcp>=1.16,<3",
     "ifcopenshell>=0.8.1,<0.9",
     "pydantic>=2.7,<3",
     "PyYAML>=6,<7",
