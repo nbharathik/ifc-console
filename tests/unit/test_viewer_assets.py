@@ -1021,8 +1021,15 @@ def test_geometry_measurements_are_taken_while_the_mesh_is_still_there(
     # divergence theorem over the same triangles the area came from
     assert "volume6 += ax * nx + ay * ny + az * nz;" in mass
     assert "area: area2 / 2" in mass and "volume: Math.abs(volume6) / 6" in mass
-    # deduplicated: once per shape however many times it is placed
-    assert "mass: geometryMass(positions, indices)" in script
+    # deduplicated and calculated in the parser worker: once per shape however
+    # many times it is placed, without repeating the triangle walk on the UI
+    parser = (STATIC / "parser.js").read_text(encoding="utf-8")
+    assert 'geometryMass,' in parser
+    assert "geometryMass(positions, indices)" in parser
+    assert "areas: Float64Array.from(this.areas)" in parser
+    assert "volumes: Float64Array.from(this.volumes)" in parser
+    # Inline or legacy chunks still have a correct fallback.
+    assert "? { area, volume } : geometryMass(positions, indices)" in script
     accrue = script.split("function accrueMass(", 1)[1].split(chr(10) + "function ", 1)[0]
     assert "rec.volume += geom.mass.volume * det;" in accrue
     # a scaled placement cannot report an exact area, and says so
@@ -1070,8 +1077,10 @@ def test_a_repeated_geometry_is_instanced_only_when_that_is_cheaper(
     dedicated, uncullable draw calls to save a few thousand vertices."""
     ingest = script.split("function ingestChunk(", 1)[1].split(chr(10) + "}", 1)[0]
     assert "const copies = uses.get(useKey) || 1;" in ingest
-    assert "if (copies < INSTANCE_MIN) {" in ingest
+    assert "shouldInstanceGeometry(" in ingest
+    assert "copies, vertices, INSTANCE_MIN, INSTANCE_MIN_VERTICES" in ingest
     assert "const INSTANCE_MIN = 8;" in script
+    assert "const INSTANCE_MIN_VERTICES = 2_000;" in script
     # nothing decides on a second sighting any more
     assert "Second sighting" not in script
     assert '"merged"' not in ingest
@@ -1085,6 +1094,43 @@ def test_a_repeated_geometry_is_instanced_only_when_that_is_cheaper(
     assert "(modelBox[k] + modelBox[k + 3]) / 2" in octant
     # the count is known up front, so the instance arrays are sized once
     assert "Math.max(16, this.expected)" in script
+
+
+def test_normals_are_packed_once_and_instanced_lod_does_not_break_picking(
+    script: str, measure_math: str
+) -> None:
+    """Direction does not need 32-bit components, and a display-only LOD must
+    never make an exact selection or measurement probe disagree with the IFC."""
+    parser = (STATIC / "parser.js").read_text(encoding="utf-8")
+    assert "const normals = new Int16Array(vTotal * 3);" in parser
+    assert "const normals = new Int16Array(count * 3);" in parser
+    assert "packNormalComponent(raw[s + 3])" in parser
+    assert "export function packNormalBuffer(source)" in measure_math
+    assert "this.normals = new GrowArray(Int16Array);" in script
+    assert "new THREE.BufferAttribute(acc.normals.trim(), 3, true)" in script
+    assert "new THREE.BufferAttribute(normals, 3, true)" in script
+
+    render = script.split("function renderNow()", 1)[1].split(chr(10) + "}", 1)[0]
+    assert "applyInstanceLod();" in render
+    lod = script.split("function applyInstanceLod()", 1)[1].split(
+        chr(10) + "}", 1
+    )[0]
+    assert "const spread = Math.max(0, entry.sphere.radius - radius);" in lod
+    assert "entry.mesh.visible = !entry.lodHidden;" in lod
+
+    pick = script.split("function pickElementAt(", 1)[1].split(
+        chr(10) + "// Click-to-select", 1
+    )[0]
+    assert "const lodWasSuspended = suspendInstanceLod();" in pick
+    assert "resumeInstanceLod(lodWasSuspended);" in pick
+    probe = script.split("function beginSceneProbe(", 1)[1].split(
+        chr(10) + "function endSceneProbe", 1
+    )[0]
+    assert "lodWasSuspended: suspendInstanceLod()," in probe
+    end = script.split("function endSceneProbe(", 1)[1].split(
+        chr(10) + "}", 1
+    )[0]
+    assert "resumeInstanceLod(state.lodWasSuspended);" in end
 
 
 def test_merged_chunks_are_bucketed_by_where_they_are(script: str) -> None:
@@ -1191,3 +1237,52 @@ def test_the_main_package_ships_the_complete_browser_runtime():
     static = base / "viewer" / "static"
     assert (static / "index.html").is_file()
     assert (static / "vendor" / "web-ifc.wasm").is_file()
+
+
+def test_the_viewer_reports_and_releases_its_memory(script: str) -> None:
+    """The Agent panel shows what the page holds and can ask for it back.
+    Parsed models re-parse on the next tab switch; the scene itself stays."""
+    context = script.split("function viewerContext(", 1)[1].split(
+        "function scheduleViewerContext", 1
+    )[0]
+    assert "memory: viewerMemory()," in context
+    assert '"release-memory",' in context
+    report = script.split("function viewerMemory()", 1)[1].split(chr(10) + "}", 1)[0]
+    for field in ("parsedCacheBytes", "parsedCacheEntries", "elements", "triangles", "workerAlive"):
+        assert f"{field}:" in report
+    release = script.split("function releaseViewerMemory(", 1)[1].split(chr(10) + "}", 1)[0]
+    assert "dropParsedCache()" in release
+    assert "releaseInlineParser()" in release
+    assert "stopIdleWorker && worker && !workerBusy" in release
+    assert 'command.action === "release-memory"' in script
+    passive = script.split("const passiveWhileClosed = new Set([", 1)[1].split("]);", 1)[0]
+    assert '"release-memory"' in passive
+    # Out of sight, the cache is given back after a grace period.
+    hidden = script.split('document.addEventListener("visibilitychange"', 1)[1].split(
+        "window.addEventListener(\"pagehide\"", 1
+    )[0]
+    assert "HIDDEN_CACHE_MS" in hidden
+    assert "dropParsedCache();" in hidden
+    assert "const HIDDEN_CACHE_MS = 60_000;" in script
+    # The inline web-ifc fallback must not keep its WebAssembly heap forever.
+    idle = script.split("function scheduleWorkerIdle()", 1)[1].split(chr(10) + "}", 1)[0]
+    assert "releaseInlineParser();" in idle
+    budget = script.split("const PARSED_CACHE_BUDGET = ", 1)[1].split(";", 1)[0]
+    assert "Math.min(160, Math.max(64," in budget
+
+
+def test_the_selection_can_launch_a_workflow_from_the_status_bar(
+    html: str, script: str
+) -> None:
+    """Click an object, press Run workflow: the agent panel opens on the
+    workflow library with the selection as the scope. The action is hidden
+    when nothing is selected or no agent panel is available."""
+    assert 'id="sel-workflow"' in html
+    block = script.split("function updateSelectionInfo", 1)[1].split(
+        "function updateHighlightInfo", 1
+    )[0]
+    assert '$("sel-workflow").hidden = !n || $("btn-chat").hidden' in block
+    handler = script.split('$("sel-workflow").addEventListener("click"', 1)[1]
+    assert handler.index("await setChat(true)") < handler.index(
+        'chatPanel?.openWorkflows?.({ scope: "selection" })'
+    )

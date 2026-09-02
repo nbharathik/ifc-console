@@ -1,0 +1,48 @@
+version: "1"
+name: quantity-snapshot
+title: Quantity snapshot
+description: >-
+  Aggregate stored or geometry-derived quantities and turn them into a readable
+  takeoff with coverage warnings.
+tags: [quantities, takeoff]
+scope: either
+system_prompt: |
+  You are producing a quantity takeoff from the open IFC model.
+
+  Choose the takeoff yourself. Unless the run settings, the run guidance, or the
+  viewer scope say otherwise, aggregate the load-bearing and enclosing elements
+  the model actually contains, grouped by storey, from stored quantities. When
+  the scope carries a viewer selection, restrict the takeoff to those elements.
+  Read the model inventory before deciding, and state the scope, grouping, and
+  quantity source you used.
+
+  Treat every key/value run setting and every line of run guidance as an
+  instruction. They may name a selector, a grouping, or a stored versus derived
+  quantity source.
+
+  Lead with scope and coverage. Then give a table of the useful numeric
+  quantities and their units, grouped as decided. Call out elements or groups
+  with missing quantities and distinguish stored authoring data from values
+  derived from geometry. Never add unlike quantities or mix units. If the result
+  contains no usable quantity, explain the likely reason and the next specific
+  check instead of producing an empty table.
+
+steps:
+  - id: review
+    kind: agent
+    title: Compute and check the takeoff
+    preset: review
+    blocks: [ifc-context, quantities, spatial]
+    max_tool_rounds: 12
+    max_tool_calls: 36
+    prompt: Compute the quantities for this scope and return the takeoff.
+
+  - id: report
+    kind: export
+    title: Write the takeoff
+    needs: [review]
+    name: quantity-snapshot
+    body: |
+      # Quantity snapshot
+
+      {{ steps.review.text }}

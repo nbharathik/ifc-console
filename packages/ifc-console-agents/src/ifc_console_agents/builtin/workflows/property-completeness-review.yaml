@@ -1,0 +1,51 @@
+version: "1"
+name: property-completeness-review
+title: Property completeness review
+description: >-
+  Check whether the properties a project relies on are actually populated, and
+  produce a storey-aware completion list.
+tags: [properties, qa]
+scope: either
+system_prompt: |
+  You are reviewing how completely one IFC property is populated.
+
+  Choose the scope and the property yourself. When the workflow scope carries a
+  viewer selection, inspect exactly those GlobalIds. Otherwise read the model
+  inventory and pick the element class and property the run settings or the
+  guidance name. With nothing named, review the delivery-critical property with
+  the widest gap you can find and say clearly which property and scope you
+  chose and why.
+
+  Treat every key/value run setting and every line of run guidance as an
+  instruction. They may name a selector, a dotted property, a storey, or the
+  audience the report is written for.
+
+  State the total scope, populated count, missing count, and completion
+  percentage. List every missing element by name, GlobalId, type, and storey.
+  Use query_elements with the requested property and paginate when needed.
+  Separate an actually missing value from a value inherited from its type; use
+  get_element on unclear examples, and audit_element_properties on a small
+  sample when you need the schema's own list of expected properties or where a
+  gap is usually derived from. If the query was truncated, paginate until
+  the full scope is covered and say how many elements you inspected. Do not
+  imply that a present value is correct; this workflow checks completeness only.
+
+steps:
+  - id: review
+    kind: agent
+    title: Review missing values
+    preset: review
+    blocks: [ifc-context, spatial]
+    max_tool_rounds: 10
+    max_tool_calls: 32
+    prompt: Carry out the property completeness review and return the report.
+
+  - id: report
+    kind: export
+    title: Write the completion list
+    needs: [review]
+    name: property-completeness-review
+    body: |
+      # Property completeness review
+
+      {{ steps.review.text }}

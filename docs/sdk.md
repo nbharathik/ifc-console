@@ -186,9 +186,68 @@ includes PDF text and rendered pages. Agent search hits retain document and
 page provenance.
 
 Geometry and measurement operations such as `get_element_geometry`,
-`measure_elements`, `measure_distance`, and `get_measurement_recipe` are
-available through `call()`. `get_viewer_screenshot` returns base64 images in
-`data.images`.
+`analyze_element_geometry`, `measure_elements`, `measure_distance`, and
+`get_measurement_recipe` are available through `call()`.
+`get_viewer_screenshot` returns base64 images in `data.images`.
+
+For a selected object, keep the viewer's model identity on the geometry call:
+
+```python
+selected = wb.call("get_viewer_selection")
+scope = selected["data"]["selections"][0]
+analysis = wb.call(
+    "analyze_element_geometry",
+    model=scope["model_id"],
+    global_ids=scope["guids"],
+    detail="compact",
+    frame="semantic",
+    station_strategy="auto",
+)
+for element in analysis["data"]["elements"]:
+    print(element["measurements"])
+    print(element["coverage"])
+```
+
+The version 2 inventory uses stable measurement ids and retains legacy
+`dimensions`, `box`, and `cross_section` compatibility views. Each normalized
+measurement carries SI and file values, method, source, frame, confidence,
+uncertainty, flags, and alternatives. Coverage distinguishes unavailable,
+ambiguous, and conflicting requests. Compact responses are bounded; use
+standard or full detail only when evidence is needed.
+
+When `ifc-console-agents` is installed, a validated structured skill can be
+previewed through the same operation surface:
+
+```python
+preview = wb.call(
+    "apply_measurement_skill",
+    name="member-profile",
+    model=scope["model_id"],
+    global_ids=scope["guids"],
+    dry_run=True,
+    include_evidence=False,
+)
+for row in preview["data"]["results"]:
+    print(row["applicability"], row["extracted"], row["skipped"])
+```
+
+Pass exactly one of `selector` or `global_ids`. Replay is paged and bounded,
+and does not create property proposals. Propose values only through a separate
+confirmed operation after inspecting the dry-run. Prose-only skills remain
+readable agent guidance but return a structured refusal from deterministic
+replay until a version 2 measurement spec is reviewed.
+
+Preview that migration without changing the skill:
+
+```python
+migration = wb.call("preview_measurement_skill_migration", name="legacy-profile")
+print(migration["data"]["review_items"])
+print(migration["data"]["suggestion"]["measurement_spec"])
+```
+
+The suggestion is deliberately non-executable and review-required. The call
+is read-only, reports no file writes, and leaves the source content unchanged;
+saving a reviewed version is a separate explicit operation.
 
 ## Modes and errors
 

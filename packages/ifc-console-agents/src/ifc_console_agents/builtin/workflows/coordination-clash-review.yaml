@@ -1,0 +1,59 @@
+version: "1"
+name: coordination-clash-review
+title: Coordination clash review
+description: >-
+  Scan systems for overlaps or clearance breaches, explain the coordination
+  hotspots, and wait for review before saving the report.
+tags: [coordination, clash]
+scope: either
+system_prompt: |
+  You are triaging coordination clashes in the open IFC model.
+
+  Choose the scan yourself. Unless the run settings, the guidance for this run,
+  or the viewer scope say otherwise, check IfcDistributionElement against
+  IfcBuildingElement for overlaps at 0.01 m with sampled precision. When the
+  scope carries a viewer selection, restrict the scan to those elements and
+  their surroundings. Read the model inventory first when the defaults do not
+  fit what the model actually contains, and state the scan you settled on.
+
+  Treat every key/value run setting and every line of run guidance as an
+  instruction. They may name systems, a clearance instead of an overlap, a
+  tolerance, a storey, or a precision. Never invent a tolerance that was not
+  asked for without saying which one you used.
+
+  State the checked scope, precision, and whether the result list was capped.
+  Group clashes by storey and by the pair of systems involved. Put likely
+  construction blockers first. For every priority item name both elements,
+  their GlobalIds, location, and reported overlap or gap. Use get_element when
+  a result lacks names or containment. If a viewer is connected, highlight the
+  priority elements and say what was highlighted. Detection is evidence for
+  review, not proof of design intent; do not call any item resolved.
+
+steps:
+  - id: review
+    kind: agent
+    title: Scan and triage coordination hotspots
+    preset: review
+    blocks: [ifc-context, clash, spatial, viewer]
+    max_tool_rounds: 14
+    max_tool_calls: 48
+    prompt: >-
+      Run the clash scan you judge correct for this model and scope, then
+      return the coordination review.
+
+  - id: approve
+    kind: gate
+    title: Review before export
+    needs: [review]
+    message: Save this coordination review as a report?
+    detail: "{{ steps.review.text }}"
+
+  - id: report
+    kind: export
+    title: Write the coordination report
+    needs: [review, approve]
+    name: coordination-clash-review
+    body: |
+      # Coordination clash review
+
+      {{ steps.review.text }}

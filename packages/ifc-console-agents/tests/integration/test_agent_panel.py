@@ -224,14 +224,159 @@ async def panel_core(core, work_model: Path):
     return core
 
 
+async def test_workflow_catalog_is_authenticated_and_lists_builtins(panel_core):
+    client = _client(panel_core)
+    assert client.get("/api/agents/workflows").status_code == 401
+
+    response = client.get("/api/agents/workflows", headers=_auth(panel_core))
+    assert response.status_code == 200
+    rows = {row["name"]: row for row in response.json()["workflows"]}
+    assert len(rows) == 9
+    assert rows["quick-model-check"]["requires_model"] is False
+    assert rows["coordination-clash-review"]["has_gate"] is True
+    assert rows["element-parameters"]["scope"] == "selection"
+    assert rows["element-parameters"]["has_gate"] is True
+    assert rows["model-quality-review"]["requires_model"] is True
+    assert response.json()["agents"]
+    assert "skills" in response.json()
+    assert "viewer" in response.json()
+
+
+async def test_compact_builder_saves_a_project_workflow(panel_core):
+    client = _client(panel_core)
+    response = client.post(
+        "/api/agents/workflows/create",
+        headers=_auth(panel_core),
+        json={
+            "title": "Selected door review",
+            "prompt": "Review the selected doors and report missing properties.",
+            "instructions": "Never invent a property value.",
+            "agent": "scripted",
+            "scope": "either",
+            "settings": {"audience": "coordinator"},
+        },
+    )
+
+    assert response.status_code == 201, response.text
+    row = response.json()["workflow"]
+    assert row["name"] == "selected-door-review"
+    assert row["origin"] == "project"
+    assert row["scope"] == "either"
+    assert "Review the selected doors" in row["system_prompt"]
+    assert row["additional_instructions"] == "Never invent a property value."
+    assert row["settings"] == {"audience": "coordinator"}
+    saved = panel_core.store.project_dir / ".ifc-console" / "agents" / "workflows"
+    assert (saved / "selected-door-review.yaml").is_file()
+
+    catalog = client.get("/api/agents/workflows", headers=_auth(panel_core)).json()
+    assert "selected-door-review" in {item["name"] for item in catalog["workflows"]}
+
+
+async def test_workflow_editor_saves_a_project_override(panel_core):
+    client = _client(panel_core)
+    response = client.post(
+        "/api/agents/workflows/update",
+        headers=_auth(panel_core),
+        json={
+            "workflow": "measurement-audit",
+            "title": "Project measurement review",
+            "description": "Review selected model dimensions.",
+            "system_prompt": "Measure the exact scope and cite every method.",
+            "additional_instructions": "Use the project's unit conventions.",
+            "settings": {"audience": "coordinator"},
+            "scope": "either",
+            "agent": "scripted",
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    row = response.json()["workflow"]
+    assert row["origin"] == "project"
+    assert row["title"] == "Project measurement review"
+    assert row["additional_instructions"] == "Use the project's unit conventions."
+    assert row["agents"] == ["scripted"]
+    saved = panel_core.store.project_dir / ".ifc-console" / "agents" / "workflows"
+    assert (saved / "measurement-audit.yaml").is_file()
+
+
+async def test_quick_model_workflow_runs_without_a_provider(panel_core):
+    response = _client(panel_core).post(
+        "/api/agents/workflows/run",
+        headers=_auth(panel_core),
+        json={"workflow": "quick-model-check", "inputs": {}},
+    )
+    assert response.status_code == 200, response.text
+    events = _events(response)
+    completed = next(event for event in events if event["type"] == "workflow_completed")
+    assert completed["state"] == "succeeded"
+    assert "# Quick model check" in completed["summary"]
+
+
+async def test_a_workflow_can_stand_behind_a_chat_conversation(panel_core):
+    """Attaching a workflow to a chat turn layers its prompt, scope, and
+    procedure onto the thread and answers an empty prompt with the workflow's
+    own task, so pressing Run with nothing typed is a complete request."""
+    client = _client(panel_core)
+    plain = _events(
+        client.post("/api/agents/stream", headers=_auth(panel_core), json=_stream_body())
+    )
+    response = client.post(
+        "/api/agents/stream",
+        headers=_auth(panel_core),
+        json=_stream_body(prompt="", workflow="quick-model-check"),
+    )
+    assert response.status_code == 200, response.text
+    events = _events(response)
+    kinds = [event["type"] for event in events]
+    assert kinds[:2] == ["thread", "workflow_context"]
+    context = events[1]
+    assert context["workflow"] == "quick-model-check"
+    assert context["title"] == "Quick model check"
+    assert context["scope"] == "model"
+    assert "Procedure for this workflow, in order:" in context["instructions"]
+    assert "call get_ifc_project_info" in context["instructions"]
+    # The workflow is part of the thread configuration, not a decoration.
+    assert events[0]["id"] != plain[0]["id"]
+    assert kinds[-1] == "done"
+    records = [row for row in panel_core.audit.tail(200) if row.get("ev") == "agent_panel_request"]
+    assert records[-1]["workflow"] == "quick-model-check"
+
+
+async def test_a_chat_workflow_is_validated_before_anything_streams(panel_core):
+    client = _client(panel_core)
+    unknown = client.post(
+        "/api/agents/stream",
+        headers=_auth(panel_core),
+        json=_stream_body(workflow="no-such-workflow"),
+    )
+    assert unknown.status_code == 404
+    malformed = client.post(
+        "/api/agents/stream",
+        headers=_auth(panel_core),
+        json=_stream_body(workflow="Not A Name!"),
+    )
+    assert malformed.status_code == 400
+    # A selection-scoped workflow needs a viewer selection, exactly as a run does.
+    unscoped = client.post(
+        "/api/agents/stream",
+        headers=_auth(panel_core),
+        json=_stream_body(workflow="element-parameters"),
+    )
+    assert unscoped.status_code == 400
+    assert "nothing is selected" in unscoped.json()["error"]
+    # Without a workflow an empty prompt is still refused.
+    empty = client.post(
+        "/api/agents/stream", headers=_auth(panel_core), json=_stream_body(prompt="   ")
+    )
+    assert empty.status_code == 400
+
+
 async def test_panel_threads_are_private_user_data_and_project_scoped(panel_core, tmp_path):
     from ifc_console_agents.panel import _thread_directory
 
     directory = _thread_directory(panel_core)
     assert directory.is_relative_to(panel_core.store.home.resolve())
-    assert directory != (
-        panel_core.store.project_dir / ".ifc-console" / "agents" / "threads"
-    )
+    assert directory != (panel_core.store.project_dir / ".ifc-console" / "agents" / "threads")
     assert directory.parts[-4:-1] == ("agents", "projects", directory.parts[-2])
 
     other = SimpleNamespace(
@@ -263,9 +408,9 @@ async def test_legacy_project_panel_threads_migrate_without_moving_sdk_records(p
     assert migrate_legacy_panel_threads(panel_core) == 1
     assert not panel_path.exists()
     assert sdk_path.exists()
-    assert [message.text for message in await JsonThreadStore(_thread_dir(panel_core)).load(panel_id)] == [
-        "legacy"
-    ]
+    assert [
+        message.text for message in await JsonThreadStore(_thread_dir(panel_core)).load(panel_id)
+    ] == ["legacy"]
 
 
 async def test_legacy_thread_migration_refuses_a_symlinked_directory(panel_core, tmp_path):
@@ -318,9 +463,7 @@ async def test_listing_shows_active_packs(panel_core):
 async def test_custom_agent_builder_lists_blocks_and_persists_a_pack(panel_core):
     client = _client(panel_core)
     blocks = client.get("/api/agents/blocks", headers=_auth(panel_core)).json()["blocks"]
-    assert {"documents", "measurements", "viewer"}.issubset(
-        {block["name"] for block in blocks}
-    )
+    assert {"documents", "measurements", "viewer"}.issubset({block["name"] for block in blocks})
     response = client.post(
         "/api/agents/custom",
         headers=_auth(panel_core),
@@ -362,9 +505,7 @@ async def test_custom_agent_workflow_is_validated_and_described(panel_core):
     assert response.status_code == 201
     name = response.json()["agent"]["name"]
 
-    workspace = client.get(
-        f"/api/agents/workspace?agent={name}", headers=_auth(panel_core)
-    ).json()
+    workspace = client.get(f"/api/agents/workspace?agent={name}", headers=_auth(panel_core)).json()
     assert workspace["workflow"] == {
         "strategy": "evidence-first",
         "max_tool_rounds": 10,
@@ -433,9 +574,7 @@ async def test_custom_agent_content_access_updates_its_blueprint(panel_core):
 
 async def test_stream_speaks_the_chat_vocabulary(panel_core):
     client = _client(panel_core)
-    response = client.post(
-        "/api/agents/stream", headers=_auth(panel_core), json=_stream_body()
-    )
+    response = client.post("/api/agents/stream", headers=_auth(panel_core), json=_stream_body())
     assert response.status_code == 200
     events = _events(response)
     kinds = [event["type"] for event in events]
@@ -558,9 +697,7 @@ async def test_workspace_reports_host_pack_declared_limits(panel_core):
     panel_core.agent_packs.register(pack)
     client = _client(panel_core)
 
-    workspace = client.get(
-        "/api/agents/workspace?agent=bounded", headers=_auth(panel_core)
-    ).json()
+    workspace = client.get("/api/agents/workspace?agent=bounded", headers=_auth(panel_core)).json()
 
     assert workspace["limits"]["max_tool_rounds"] == 3
     assert workspace["limits"]["max_tool_calls"] == 5
@@ -637,6 +774,7 @@ async def test_one_conversation_finishing_leaves_another_approval_waiting(panel_
     outcome: dict[str, object] = {}
 
     with _client(panel_core) as client:
+
         def ask_for_approval() -> None:
             try:
                 outcome["response"] = client.post(
@@ -657,9 +795,7 @@ async def test_one_conversation_finishing_leaves_another_approval_waiting(panel_
                 if state is not None and state.pending_approvals:
                     break
                 time.sleep(0.02)
-            assert state is not None and state.pending_approvals, (
-                "the approving run never asked"
-            )
+            assert state is not None and state.pending_approvals, "the approving run never asked"
             request_id = next(iter(state.pending_approvals))
 
             other = client.post(
@@ -720,9 +856,7 @@ async def test_panel_threads_survive_a_server_state_rebuild_and_can_be_deleted(p
 async def test_bulk_thread_clear_is_idempotent_and_preserves_non_panel_records(panel_core):
     thread_dir = _thread_dir(panel_core)
     with _client(panel_core) as client:
-        response = client.post(
-            "/api/agents/stream", headers=_auth(panel_core), json=_stream_body()
-        )
+        response = client.post("/api/agents/stream", headers=_auth(panel_core), json=_stream_body())
         assert response.status_code == 200
 
         corrupt_panel = _write_thread_record(
@@ -761,6 +895,7 @@ async def test_bulk_thread_clear_cancels_an_active_stream_before_unlinking(panel
     outcome: dict[str, object] = {}
 
     with _client(panel_core) as client:
+
         def send_delayed() -> None:
             try:
                 outcome["response"] = client.post(
@@ -797,6 +932,7 @@ async def test_content_access_change_cancels_runs_using_the_old_grant(panel_core
     outcome: dict[str, object] = {}
 
     with _client(panel_core) as client:
+
         def send_delayed() -> None:
             try:
                 outcome["response"] = client.post(
@@ -834,6 +970,7 @@ async def test_individual_thread_delete_cannot_be_undone_by_an_active_stream(pan
     outcome: dict[str, object] = {}
 
     with _client(panel_core) as client:
+
         def send_delayed() -> None:
             try:
                 outcome["response"] = client.post(
@@ -873,6 +1010,7 @@ async def test_interrupting_a_run_records_that_it_was_stopped(panel_core):
     outcome: dict[str, object] = {}
 
     with _client(panel_core) as client:
+
         def send_delayed() -> None:
             try:
                 outcome["response"] = client.post(
@@ -1153,13 +1291,9 @@ async def test_plain_chat_has_a_workspace_of_its_own(panel_core):
 
 async def test_workspace_tools_include_their_expandable_contract(panel_core):
     client = _client(panel_core)
-    response = client.get(
-        "/api/agents/workspace?agent=general", headers=_auth(panel_core)
-    )
+    response = client.get("/api/agents/workspace?agent=general", headers=_auth(panel_core))
     assert response.status_code == 200
-    tool = next(
-        row for row in response.json()["tools"] if row["name"] == "query_elements"
-    )
+    tool = next(row for row in response.json()["tools"] if row["name"] == "query_elements")
 
     assert tool["description"]
     assert tool["summary"] in tool["description"]
@@ -1221,9 +1355,7 @@ async def test_turn_upload_is_indexed_but_hidden_and_denied_on_a_later_run(panel
     path = payload["attachment"]["path"]
     key = hits[0]["key"]
 
-    library = client.get(
-        "/api/agents/content?agent=uploader", headers=_auth(panel_core)
-    ).json()
+    library = client.get("/api/agents/content?agent=uploader", headers=_auth(panel_core)).json()
     assert path not in {row["path"] for row in library["files"]}
 
     pack = DocumentPack(
@@ -1290,31 +1422,18 @@ async def test_agent_workspace_content_library_persists_selected_access(panel_co
     assert saved.status_code == 200
     assert saved.json()["access"] == {"mode": "selected", "paths": [first]}
 
-    content = client.get(
-        "/api/agents/content?agent=uploader", headers=_auth(panel_core)
-    ).json()
+    content = client.get("/api/agents/content?agent=uploader", headers=_auth(panel_core)).json()
     by_path = {row["path"]: row for row in content["files"]}
     assert by_path[first]["allowed"] is True
     assert by_path[second]["allowed"] is False
-    assert {"name", "path", "media", "size_bytes", "indexed", "allowed"}.issubset(
-        by_path[first]
-    )
+    assert {"name", "path", "media", "size_bytes", "indexed", "allowed"}.issubset(by_path[first])
 
-    workspace = client.get(
-        "/api/agents/workspace?agent=uploader", headers=_auth(panel_core)
-    ).json()
+    workspace = client.get("/api/agents/workspace?agent=uploader", headers=_auth(panel_core)).json()
     assert workspace["content"]["access"]["mode"] == "selected"
     assert [row["path"] for row in workspace["files"]] == [first]
 
-    access_file = (
-        panel_core.store.project_dir
-        / ".ifc-console"
-        / "agents"
-        / "content-access.json"
-    )
-    assert json.loads(access_file.read_text(encoding="utf-8"))["agents"]["uploader"] == [
-        first
-    ]
+    access_file = panel_core.store.project_dir / ".ifc-console" / "agents" / "content-access.json"
+    assert json.loads(access_file.read_text(encoding="utf-8"))["agents"]["uploader"] == [first]
 
 
 async def test_panel_enforces_content_selection_and_turn_attachments(panel_core):
@@ -1418,7 +1537,10 @@ async def test_skills_import_accepts_external_markdown(panel_core):
     assert payload["imported"]["name"] == "sheet-pile-profile"
     assert [row["name"] for row in payload["skills"]] == ["sheet-pile-profile"]
     saved = (
-        panel_core.store.project_dir / ".ifc-console" / "agents" / "skills"
+        panel_core.store.project_dir
+        / ".ifc-console"
+        / "agents"
+        / "skills"
         / "sheet-pile-profile.md"
     )
     assert saved.is_file()
@@ -1567,9 +1689,7 @@ async def _seed_measurements(panel_core) -> str:
     guid = envelope["data"]["elements"][0]["global_id"]
     hub = panel_core.viewer_hub
     viewer_client = hub.register(_Ws())
-    await hub.handle_frame(
-        viewer_client, _measurement_frame(panel_core.models.active_id, guid)
-    )
+    await hub.handle_frame(viewer_client, _measurement_frame(panel_core.models.active_id, guid))
     return guid
 
 
@@ -1586,15 +1706,197 @@ async def test_recording_a_skill_from_viewer_measurements(panel_core):
     assert payload["recorded"]["name"] == "wall-pattern"
     assert payload["analyzed"] is True
     assert payload["classes"] == ["IfcWall"]
+    assert payload["model_revision"]["model_id"] == panel_core.models.active_id
+    assert payload["recorded"]["structured"] is True
     assert any(row["name"] == "wall-pattern" for row in payload["skills"])
-    saved = (panel_core.store.project_dir / payload["recorded"]["path"]).read_text(
-        encoding="utf-8"
-    )
+    saved = (panel_core.store.project_dir / payload["recorded"]["path"]).read_text(encoding="utf-8")
     assert "## Recorded example" in saved
     assert guid in saved
     assert "wall thickness;" in saved
     assert "recorded in a test" in saved
     assert "applies_to: IfcWall" in saved
+    assert "kind: parametric_measurement" in saved
+    assert "schema_version: 2" in saved
+    assert "```measurement-spec" in saved
+
+
+async def test_recording_analyzes_every_referenced_element_without_list_truncation(
+    panel_core, monkeypatch
+):
+    from ifc_console.sdk import AsyncWorkbench
+
+    class _Ws:
+        async def send_text(self, text: str) -> None:
+            return None
+
+    model_id = panel_core.models.active_id
+    guids = ["record-first-guid", "record-second-guid"]
+    items = [_measurement_frame(model_id, guid)["items"][0] for guid in guids]
+    client = panel_core.viewer_hub.register(_Ws())
+    await panel_core.viewer_hub.handle_frame(
+        client,
+        {"type": "measurements", "model_id": model_id, "items": items},
+    )
+    calls = []
+
+    async def fake_call(_workbench, operation_name, **arguments):
+        calls.append((operation_name, arguments))
+        guid = arguments["global_ids"][0]
+        return {
+            "ok": True,
+            "data": {
+                "analysis_version": "2.0",
+                "model_revision": {
+                    "model_id": model_id,
+                    "fingerprint": panel_core.session.fingerprint,
+                    "revision": panel_core.session.revision,
+                },
+                "elements": [
+                    {
+                        "global_id": guid,
+                        "class": "IfcWall",
+                        "name": guid,
+                        "object": {
+                            "global_id": guid,
+                            "class": "IfcWall",
+                            "name": guid,
+                        },
+                        "geometry_family": "constant_profile_extrusion",
+                        "dimensions": {
+                            "wall_thickness": {
+                                "si": 0.3,
+                                "file": 300.0,
+                                "source": "profile_parameter",
+                            }
+                        },
+                        "measurements": [
+                            {
+                                "id": "profile.wall_thickness",
+                                "value_si": 0.3,
+                                "source": "profile_parameter",
+                                "method": "ifc_representation",
+                                "frame": "semantic",
+                                "direction": "transverse",
+                                "confidence": "high",
+                            }
+                        ],
+                        "coverage": {
+                            "requested": [],
+                            "extracted": ["profile.wall_thickness"],
+                            "unavailable": [],
+                            "ambiguous": [],
+                            "conflicting": [],
+                        },
+                        "flags": [],
+                    }
+                ],
+            },
+        }
+
+    monkeypatch.setattr(AsyncWorkbench, "call", fake_call)
+    response = _client(panel_core).post(
+        "/api/agents/skills/record",
+        headers=_auth(panel_core),
+        json={"name": "two-wall-pattern"},
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["analyzed_elements"] == 2
+    assert payload["analysis_failures"] == []
+    analyzed_ids = [arguments["global_ids"] for _, arguments in calls]
+    assert analyzed_ids == [[guids[0]], [guids[1]]]
+    saved = (panel_core.store.project_dir / payload["recorded"]["path"]).read_text(encoding="utf-8")
+    assert all(guid in saved for guid in guids)
+
+
+async def test_geometry_workspace_review_pins_recommended_options(panel_core, monkeypatch):
+    from ifc_console.sdk import AsyncWorkbench
+
+    calls = []
+
+    async def fake_call(_workbench, operation_name, **arguments):
+        calls.append((operation_name, arguments))
+        return {"ok": True, "data": {"analysis_version": "2.0", "elements": []}}
+
+    monkeypatch.setattr(AsyncWorkbench, "call", fake_call)
+    response = _client(panel_core).post(
+        "/api/agents/geometry/review",
+        headers=_auth(panel_core),
+        json={
+            "model": panel_core.models.active_id,
+            "global_ids": ["selected-guid"],
+            "detail": "standard",
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    name, arguments = calls[0]
+    assert name == "analyze_element_geometry"
+    assert arguments["model"] == panel_core.models.active_id
+    assert arguments["global_ids"] == ["selected-guid"]
+    assert arguments["detail"] == "standard"
+    assert arguments["frame"] == "semantic"
+    assert arguments["station_strategy"] == "auto"
+    assert arguments["include_alternatives"] is True
+    assert arguments["include_sections"] is True
+    assert response.json()["review"]["read_only"] is True
+    many = _client(panel_core).post(
+        "/api/agents/geometry/review",
+        headers=_auth(panel_core),
+        json={
+            "model": panel_core.models.active_id,
+            "global_ids": ["first-guid", "second-guid"],
+        },
+    )
+    assert many.status_code == 400
+    assert "exactly one" in many.json()["error"]
+
+
+async def test_skill_workspace_review_forces_a_read_only_dry_run(panel_core, monkeypatch):
+    from ifc_console.sdk import AsyncWorkbench
+
+    calls = []
+
+    async def fake_call(_workbench, operation_name, **arguments):
+        calls.append((operation_name, arguments))
+        return {"ok": True, "data": {"results": [], "summary": {}}}
+
+    monkeypatch.setattr(AsyncWorkbench, "call", fake_call)
+    response = _client(panel_core).post(
+        "/api/agents/skills/dry-run",
+        headers=_auth(panel_core),
+        json={
+            "name": "wall-pattern",
+            "model": panel_core.models.active_id,
+            "global_ids": ["selected-guid"],
+            # The review endpoint must ignore any attempt to widen this.
+            "dry_run": False,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    name, arguments = calls[0]
+    assert name == "apply_measurement_skill"
+    assert arguments["model"] == panel_core.models.active_id
+    assert arguments["global_ids"] == ["selected-guid"]
+    assert arguments["dry_run"] is True
+    assert arguments["limit"] == 25
+    review = response.json()["review"]
+    assert review["dry_run"] is True and review["read_only"] is True
+    assert "separate" in review["proposal_action"]
+    too_many = _client(panel_core).post(
+        "/api/agents/skills/dry-run",
+        headers=_auth(panel_core),
+        json={
+            "name": "wall-pattern",
+            "model": panel_core.models.active_id,
+            "global_ids": [f"selected-guid-{index}" for index in range(26)],
+        },
+    )
+    assert too_many.status_code == 400
+    assert "1 to 25" in too_many.json()["error"]
+    assert len(calls) == 1
 
 
 async def test_recording_without_measurements_is_a_409(panel_core):
@@ -1632,7 +1934,7 @@ async def test_recording_twice_needs_overwrite(panel_core):
 
 
 async def test_measurements_ride_along_with_the_prompt(panel_core):
-    """"These measurements" should not cost a guessing round."""
+    """ "These measurements" should not cost a guessing round."""
     pack = RecordingPack()
     panel_core.agent_packs.register(pack)
     await _seed_measurements(panel_core)
@@ -1646,3 +1948,64 @@ async def test_measurements_ride_along_with_the_prompt(panel_core):
     user_text = next(m.text for m in reversed(messages) if m.role == "user")
     assert "1 measurement(s) are on screen" in user_text
     assert "get_viewer_measurements" in user_text
+
+
+async def _saved_workflow(core) -> str:
+    response = _client(core).post(
+        "/api/agents/workflows/create",
+        headers=_auth(core),
+        json={
+            "title": "Door follow up",
+            "prompt": "Review the doors and report what is missing.",
+            "agent": "scripted",
+            "scope": "either",
+        },
+    )
+    assert response.status_code == 201, response.text
+    return response.json()["workflow"]["name"]
+
+
+async def test_a_run_can_be_continued_with_a_follow_up_question(panel_core):
+    name = await _saved_workflow(panel_core)
+    response = _client(panel_core).post(
+        "/api/agents/workflows/continue",
+        headers=_auth(panel_core),
+        json={
+            "workflow": name,
+            "message": "Which storey are those doors on?",
+            "report": "# Door review\n\nFour doors are unrated.",
+            "history": [{"question": "How many?", "answer": "Four."}],
+            "provider": "local",
+            "model": "m",
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    events = _events(response)
+    assert events[0]["type"] == "follow_up_started"
+    completed = next(item for item in events if item["type"] == "follow_up_completed")
+    assert completed["state"] == "succeeded"
+    assert completed["text"] == "hello from the pack"
+    started = next(item for item in events if item["type"] == "agent_started")
+    assert "Four doors are unrated." in started["system_prompt"]
+
+
+async def test_a_follow_up_needs_a_question_and_a_known_workflow(panel_core):
+    client = _client(panel_core)
+    name = await _saved_workflow(panel_core)
+
+    assert client.post("/api/agents/workflows/continue").status_code == 401
+
+    empty = client.post(
+        "/api/agents/workflows/continue",
+        headers=_auth(panel_core),
+        json={"workflow": name, "message": "   "},
+    )
+    assert empty.status_code == 400
+
+    unknown = client.post(
+        "/api/agents/workflows/continue",
+        headers=_auth(panel_core),
+        json={"workflow": "not-a-workflow", "message": "why?"},
+    )
+    assert unknown.status_code == 404

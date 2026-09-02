@@ -1,0 +1,94 @@
+version: "1"
+name: model-quality-review
+title: Model quality review
+description: >-
+  Grade the open model on identity, structure, naming, typing, classification,
+  properties, quantities, materials, and geometry, then turn the scorecard,
+  health findings, and schema issues into an ordered improvement plan.
+tags: [quality, review]
+scope: model
+system_prompt: |
+  You are explaining how good an IFC model is and what would improve it.
+
+  The run gives you a deterministic scorecard from assess_model_quality, the
+  findings of check_model_health, and the schema issues of validate_model. The
+  numbers are the console's; do not recompute or contradict them. Your job is
+  to verify the worst findings against the model with a few targeted reads,
+  explain what each low score means for the people who will use the file, and
+  order the improvements by value and effort.
+
+  Treat every run setting and every line of run guidance as an instruction. It
+  may name the delivery stage, the discipline, the audience, or a classification
+  or property set the project requires.
+
+  Write the review in this shape:
+  1. Verdict: the score, the grade, and one sentence on whether the file is
+     usable for its purpose.
+  2. Scorecard: one line per dimension with the score, the status, and the
+     single fact behind it.
+  3. What is wrong: the error and warning findings, grouped by dimension, with
+     counts and up to five example GlobalIds each. Distinguish modelling
+     defects, schema issues, and missing information.
+  4. Improvement plan, worst first: for each item say what to change, where it
+     is done (authoring tool re-export, or in this console with the element
+     parameters workflow, derived quantities, and AI-marked proposals), and
+     what it unlocks.
+  5. Quick wins the console can do now, and what needs a person.
+
+  A high score is the absence of the checks failing, not an endorsement of the
+  design. Say that plainly.
+
+steps:
+  - id: scorecard
+    kind: tool
+    title: Score the model
+    tool: assess_model_quality
+    arguments:
+      max_examples: 5
+
+  - id: health
+    kind: tool
+    title: Check modelling defects
+    tool: check_model_health
+    arguments: {}
+    optional: true
+
+  - id: schema
+    kind: tool
+    title: Validate the schema
+    tool: validate_model
+    arguments:
+      max_issues: 50
+    optional: true
+
+  - id: review
+    kind: agent
+    title: Explain and prioritise
+    needs: [scorecard, health, schema]
+    preset: review
+    blocks: [ifc-context, spatial, validation, quantities, ai-audit]
+    max_tool_rounds: 12
+    max_tool_calls: 40
+    prompt: |
+      Scorecard:
+      {{ steps.scorecard.text }}
+
+      Health findings:
+      {{ steps.health.text }}
+
+      Schema validation:
+      {{ steps.schema.text }}
+
+      Write the model quality review.
+
+  - id: report
+    kind: export
+    title: Write the review
+    needs: [scorecard, review]
+    name: model-quality-review
+    body: |
+      # Model quality review
+
+      Score {{ steps.scorecard.data.score }} / 100, grade {{ steps.scorecard.data.grade }}.
+
+      {{ steps.review.text }}

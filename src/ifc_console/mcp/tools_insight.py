@@ -1,5 +1,6 @@
-"""Whole-model insight tools: revision diff, geometric spatial relations, and
-the model health check. All three are reads: nothing here changes a model."""
+"""Whole-model insight tools: revision diff, geometric spatial relations, the
+model health check, the property gap audit, and the quality scorecard. All of
+them are reads: nothing here changes a model."""
 
 from __future__ import annotations
 
@@ -16,6 +17,10 @@ from ifc_console.ifc.compare import MAX_ELEMENTS as COMPARE_MAX
 from ifc_console.ifc.compare import compare_snapshots, snapshot
 from ifc_console.ifc.health import CHECKS, check_model_health
 from ifc_console.ifc.health import MAX_ELEMENTS as HEALTH_MAX
+from ifc_console.ifc.property_audit import MAX_ELEMENTS as AUDIT_MAX
+from ifc_console.ifc.property_audit import audit_element_properties
+from ifc_console.ifc.quality import MAX_EXAMPLES as QUALITY_EXAMPLES
+from ifc_console.ifc.quality import assess_model_quality
 from ifc_console.ifc.spatial_query import MAX_ELEMENTS as SPATIAL_MAX
 from ifc_console.ifc.spatial_query import query_spatial
 from ifc_console.mcp.tools_analysis import mesh_cache
@@ -27,12 +32,19 @@ if TYPE_CHECKING:
 INSIGHT_ANN = ToolAnnotations(readOnlyHint=True, destructiveHint=False)
 
 GEOMETRY_READ = (Capability.MODEL_READ, Capability.GEOMETRY)
+MODEL_READ = (Capability.MODEL_READ,)
 
 # Every tool here tessellates a whole model, so they get the load-scale budget
 # for the same reason the analysis family does: a timeout poisons the worker.
 _HEAVY_TIMEOUT = 600.0
 
-TOOL_NAMES = ("compare_models", "query_spatial", "check_model_health")
+TOOL_NAMES = (
+    "compare_models",
+    "query_spatial",
+    "check_model_health",
+    "audit_element_properties",
+    "assess_model_quality",
+)
 
 
 def register(mcp: OperationRegistry, core: AppCore) -> None:
@@ -277,6 +289,135 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
             job,
             key=(wanted, max_findings, max_elements),
             timeout=_HEAVY_TIMEOUT,
+            session=s,
+        )
+        return ok(
+            report, core.session_meta(), char_limit=limit_, cached=cached, **read_meta(core, s)
+        )
+
+    @mcp.tool(
+        name="audit_element_properties",
+        annotations=INSIGHT_ANN,
+        required_capabilities=MODEL_READ,
+        description=(
+            "[QUERY] What is an element missing? For a few elements, reads the "
+            "schema's property set templates for the class and predefined type "
+            "and reports, per applicable property and quantity set, which "
+            "properties are filled (on the occurrence or inherited from the "
+            "type), which are empty or absent, and where each gap is usually "
+            "filled from: geometry, material, spatial position, documents, the "
+            "type, or a person. `psets='core'` (default) covers the class's "
+            "Common set and BaseQuantities plus anything already present; "
+            "`'all'` lists every applicable template. `detail='full'` adds data "
+            "types and enumerations for every property. Call this before "
+            "deriving or proposing values; it is the gap list, not the answer."
+        ),
+    )
+    @enveloped(core, "audit_element_properties")
+    async def audit_element_properties_tool(
+        selector: Annotated[
+            str | None, Field(description="IfcOpenShell selector; or pass global_ids.")
+        ] = None,
+        global_ids: Annotated[
+            list[str] | None,
+            Field(max_length=AUDIT_MAX, description="Explicit GlobalIds, e.g. the viewer selection."),
+        ] = None,
+        psets: Annotated[
+            Literal["core", "present", "all"],
+            Field(description="Which applicable sets to audit."),
+        ] = "core",
+        pset_names: Annotated[
+            list[str] | None,
+            Field(max_length=20, description="Audit exactly these property set names instead."),
+        ] = None,
+        detail: Annotated[
+            Literal["compact", "full"],
+            Field(description="full adds a row per property with data type and enumeration."),
+        ] = "compact",
+        max_elements: Annotated[int, Field(ge=1, le=AUDIT_MAX)] = 10,
+        model: Annotated[str | None, Field(description=MODEL_ARG)] = None,
+    ) -> Envelope:
+        s = core.resolve_session(model)
+        gids = tuple(global_ids) if global_ids else None
+        names = tuple(pset_names) if pset_names else None
+
+        async def audit(level: str) -> tuple[dict, bool]:
+            def job() -> dict:
+                return audit_element_properties(
+                    s.ifc,
+                    selector=selector,
+                    global_ids=list(gids) if gids else None,
+                    psets=psets,
+                    pset_names=list(names) if names else None,
+                    detail=level,
+                    max_elements=max_elements,
+                )
+
+            return await core.cached_read(
+                "audit_element_properties",
+                job,
+                key=(selector, gids, psets, names, level, max_elements),
+                timeout=120,
+                session=s,
+            )
+
+        def envelope(report: dict, cached: bool) -> Envelope:
+            return ok(
+                report,
+                core.session_meta(),
+                char_limit=limit_,
+                cached=cached,
+                returned=report.get("returned"),
+                **read_meta(core, s),
+            )
+
+        report, cached = await audit(detail)
+        result = envelope(report, cached)
+        truncation = result.data.get("truncation") if isinstance(result.data, dict) else None
+        if detail == "full" and isinstance(truncation, dict) and truncation.get("kept") == 0:
+            # One element at full detail can outgrow a response; compact rows
+            # still answer the question, and pset_names narrows the rest.
+            report, cached = await audit("compact")
+            report["note"] = (
+                "full detail did not fit in one response, so this is compact detail; "
+                "pass pset_names or psets='core' to get property rows for fewer sets"
+            )
+            result = envelope(report, cached)
+        return result
+
+    @mcp.tool(
+        name="assess_model_quality",
+        annotations=INSIGHT_ANN,
+        required_capabilities=MODEL_READ,
+        description=(
+            "[QUERY] How good is this file, and what would improve it? Scores "
+            "the open model 0-100 with a letter grade over ten dimensions: "
+            "project identity, units and georeferencing, spatial containment, "
+            "naming, types and predefined types, classification, common "
+            "property sets and their key properties per class, base "
+            "quantities, materials, and shape representations. Every dimension "
+            "carries its metrics, findings with example global_ids, and the "
+            "concrete improvements, and `top_improvements` orders them worst "
+            "first. `text` is a short digest for a report. Pair it with "
+            "check_model_health for geometry defects and validate_model for "
+            "schema rules; this scores usefulness, not conformance."
+        ),
+    )
+    @enveloped(core, "assess_model_quality")
+    async def assess_model_quality_tool(
+        max_examples: Annotated[
+            int,
+            Field(ge=1, le=QUALITY_EXAMPLES, description="Example elements listed per finding."),
+        ] = 5,
+        model: Annotated[str | None, Field(description=MODEL_ARG)] = None,
+    ) -> Envelope:
+        s = core.resolve_session(model)
+
+        report, cached = await core.cached_read(
+            "assess_model_quality",
+            lambda: assess_model_quality(s.ifc, max_examples=max_examples),
+            key=(max_examples,),
+            timeout=120,
             session=s,
         )
         return ok(

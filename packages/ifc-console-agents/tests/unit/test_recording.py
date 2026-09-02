@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from ifc_console_agents.recording import build_recorded_skill, measured_guids
+from ifc_console_agents.skills import parse_measurement_spec
 
 WALL = "2O2Fr$t4X7Zf8NOew3FL9r"
 SLAB = "1xS3BCk291UvhgP2dvNsgp"
@@ -72,10 +73,36 @@ class TestSkillContent:
         assert "IfcWall" in skill.description
 
     def test_two_elements_read_as_a_clearance(self):
-        anchors = [{"guid": WALL, "world": [0, 0, 0]}, {"guid": SLAB, "world": [1, 0, 0]}]
+        anchors = [
+            {
+                "guid": WALL,
+                "world": [0, 0, 0],
+                "local": [0.25, 0.0, 0.0],
+                "reach": 4.1,
+            },
+            {
+                "guid": SLAB,
+                "world": [1, 0, 0],
+                "local": [-0.25, 0.0, 0.0],
+                "reach": 6.2,
+            },
+        ]
         skill = _build([_distance(1.0, anchors)])
         assert "clear distance between" in skill.content
         assert "clear_distance" in skill.intents
+        spec = parse_measurement_spec(skill.content, required=True)
+        assert spec is not None
+        rule = spec.measurements[0]
+        assert rule.rule_type == "relationship"
+        assert rule.unresolved is True
+        assert [role.role for role in rule.intent.object_roles] == ["from", "to"]
+        assert [role.global_id for role in rule.intent.object_roles] == [WALL, SLAB]
+        assert "ordered_object_roles" in rule.intent.matched_by
+        assert rule.intent.object_roles[0].local_point == (0.25, 0.0, 0.0)
+        assert rule.intent.object_roles[1].reach_si == 6.2
+        assert all(
+            "world" not in role.model_dump(exclude_none=True) for role in rule.intent.object_roles
+        )
 
     def test_axis_label_and_notes_travel(self):
         item = _distance(
@@ -125,11 +152,115 @@ class TestSkillContent:
 
     def test_pipes_in_names_cannot_break_the_table(self):
         analysis = {
+            "elements": [{"global_id": WALL, "class": "IfcWall", "name": "A|B", "dimensions": {}}]
+        }
+        skill = _build([_distance(1.0, [{"guid": WALL, "world": [0, 0, 0]}])], analysis=analysis)
+        assert "A\\|B" in skill.content
+
+    def test_v2_recording_keeps_stable_id_local_intent_signature_and_revision(self):
+        signature = {
+            "version": "1.0",
+            "class_family": "linear_member",
+            "ifc_class": "IfcMember",
+            "type_key": "ifcmembertype:ipe200",
+            "geometry_family": "constant_profile_extrusion",
+            "profile_family": "i_shape",
+            "normalized_extents": [1.0, 0.1, 0.05],
+            "fingerprint": "sha256:example",
+        }
+        analysis = {
+            "analysis_version": "2.0",
+            "model_revision": {
+                "model_id": "viewer-model",
+                "fingerprint": "model-fingerprint",
+                "revision": 7,
+            },
             "elements": [
-                {"global_id": WALL, "class": "IfcWall", "name": "A|B", "dimensions": {}}
+                {
+                    "object": {
+                        "global_id": WALL,
+                        "class": "IfcMember",
+                        "name": "M-01",
+                        "type": {"class": "IfcMemberType", "name": "IPE200"},
+                    },
+                    "geometry_family": "constant_profile_extrusion",
+                    "geometry_signature": signature,
+                    "frames": {
+                        "semantic": {
+                            "longitudinal": [1.0, 0.0, 0.0],
+                            "transverse": [0.0, 1.0, 0.0],
+                            "vertical": [0.0, 0.0, 1.0],
+                        }
+                    },
+                    "tolerance": {"absolute_si": 0.00001, "relative": 0.01},
+                    "measurements": [
+                        {
+                            "id": "profile.web_thickness",
+                            "value_si": 0.012,
+                            "source": "profile_parameter",
+                            "frame": "semantic",
+                            "direction": "transverse",
+                            "confidence": "high",
+                        },
+                        {
+                            "id": "envelope.overall_height",
+                            "value_si": 0.012,
+                            "source": "mesh_extent",
+                            "frame": "semantic",
+                            "direction": "vertical",
+                            "confidence": "high",
+                        },
+                    ],
+                }
+            ],
+        }
+        item = _distance(
+            0.012,
+            [
+                {"guid": WALL, "local": [0.0, 0.0, 0.0], "kind": "face"},
+                {"guid": WALL, "local": [0.0, 0.012, 0.0], "kind": "face"},
+            ],
+            delta=[0.0, 0.012, 0.0],
+            label="web thickness",
+        )
+        skill = _build([item], analysis=analysis)
+        parsed = parse_measurement_spec(skill.content, required=True)
+        assert parsed is not None
+        assert parsed.measurement_ids == ("profile.web_thickness",)
+        assert parsed.exemplar.model_revision.model_id == "viewer-model"
+        assert parsed.exemplar.model_revision.revision == 7
+        assert parsed.exemplar.objects[0].geometry_signature == signature
+        rule = parsed.measurements[0]
+        assert rule.intent.semantic_direction == "transverse"
+        assert rule.intent.local_direction == (0.0, 1.0, 0.0)
+        assert rule.intent.snap_kinds == ("face",)
+        assert "world" not in rule.intent.model_dump(exclude_none=True)
+        assert skill.unresolved_intents == ()
+
+    def test_scale_aware_matching_does_not_use_the_old_five_millimetre_floor(self):
+        analysis = {
+            "elements": [
+                {
+                    "global_id": WALL,
+                    "class": "IfcMember",
+                    "box": {"local_extents": {"x": 1.0, "y": 0.1, "z": 0.1}},
+                    "measurements": [
+                        {
+                            "id": "profile.web_thickness",
+                            "value_si": 0.01,
+                            "source": "profile_parameter",
+                            "confidence": "high",
+                        }
+                    ],
+                }
             ]
         }
+        # A 4 mm gap used to pass solely because of the global 5 mm floor. At
+        # this object scale it is far outside the derived absolute + relative bound.
         skill = _build(
-            [_distance(1.0, [{"guid": WALL, "world": [0, 0, 0]}])], analysis=analysis
+            [_distance(0.014, [{"guid": WALL, "local": [0.0, 0.0, 0.0]}])],
+            analysis=analysis,
         )
-        assert "A\\|B" in skill.content
+        assert skill.spec.executable is False
+        assert skill.spec.measurements[0].unresolved is True
+        assert skill.spec.measurements[0].output is None

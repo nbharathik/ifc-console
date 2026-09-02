@@ -136,6 +136,101 @@ def chat_css() -> str:
 
 
 @pytest.fixture(scope="module")
+def workflows_js() -> str:
+    return _agent_asset("workflows.js")
+
+
+@pytest.fixture(scope="module")
+def workflows_css() -> str:
+    return _agent_asset("workflows.css")
+
+
+def test_workflows_separate_authoring_from_concurrent_run_history(
+    workflows_js: str, workflows_css: str
+) -> None:
+    """Two views over one library: Library reads and runs, Runs streams and
+    keeps. Authoring is a page of the Library reached from Edit or New."""
+    for label in (
+        'data-section="launch"',
+        'data-section="runs"',
+        'data-act="switch-agent"',
+        'data-act="edit-workflow"',
+        'data-act="run-selected"',
+        'data-act="run-one"',
+        'class="wf-prompt-fold"',
+        'data-role="scope"',
+        'class="wf-pipeline"',
+    ):
+        assert label in workflows_js
+    # The editor is a state of the shell, not a third tab.
+    assert 'shell.dataset.section = editing() ? "workflows" : section' in workflows_js
+    assert 'data-section="workflows"' not in workflows_js
+    assert 'started.forEach((run) => { void executeRun(run); })' in workflows_js
+    assert 'runs.unshift(...started)' in workflows_js
+    assert 'workflows/${isNew ? "create" : "update"}' in workflows_js
+    assert 'Hidden reasoning is not displayed' in workflows_js
+    assert ".wf-name-row" in workflows_css
+    assert ".wf-prompt-fold" in workflows_css
+    assert ".wf-run-thread" in workflows_css
+    assert ".wf-setting-row" in workflows_css
+    assert ".wf-card" in workflows_css
+    assert ".wf-hero" in workflows_css
+    assert ".wf-pipeline" in workflows_css
+
+
+def test_a_streaming_run_is_patched_not_rebuilt(workflows_js: str) -> None:
+    """Rebuilding the thread on every token re-parsed every entry and made a
+    long run cost more the longer it went. New entries append; the growing
+    paragraph is the only thing repainted; detail is bounded at receipt."""
+    patch = workflows_js.split("function patchRunDetail(run", 1)[1].split(
+        "function renderRunsMain", 1
+    )[0]
+    assert "run.entries.slice(run.painted)" in patch
+    assert "if (!entry.dirty) continue;" in patch
+    assert 'canvas.dataset.run !== run.id' in patch
+    assert "const RUN_LIMIT = 30;" in workflows_js
+    assert "const ENTRY_LIMIT = 300;" in workflows_js
+    assert "const DETAIL_LIMIT = 6000;" in workflows_js
+    added = workflows_js.split("function addRunEntry(run", 1)[1].split("function applyRunEvent", 1)[0]
+    assert "clipText(valueText(detail), DETAIL_LIMIT)" in added
+    # The full tool envelope stays on the console; the panel keeps the preview.
+    result = workflows_js.split('event.type === "tool_result"', 1)[1].split(
+        'event.type === "usage"', 1
+    )[0]
+    assert "event.preview" in result
+    assert "payload = { ...event }" not in result
+
+
+def test_the_library_page_can_hand_a_workflow_to_the_chat(workflows_js: str) -> None:
+    assert 'data-act="attach-workflow"' in workflows_js
+    assert "options.onAttach?.(flow.name, { scope: resolveRunScope(flow), note: noteFor(flow.name).trim() })" in workflows_js
+    # The control only exists where a chat is listening.
+    assert "options.onAttach ? `<button" in workflows_js
+
+
+def test_starting_a_run_asks_for_nothing_but_a_prompt(workflows_js: str) -> None:
+    """A run is a click. The only thing a user may type is one run prompt, and
+    the declared-input fields survive for hand-written workflows only."""
+    assert "data-run-note" in workflows_js
+    assert "Prompt for this run" in workflows_js
+    assert "wf-card-legacy" in workflows_js
+    # No shared key/value editor on the way to a run: defaults live in Setup.
+    assert 'data-owner="launcher"' not in workflows_js
+    assert 'data-role="launcher-settings"' not in workflows_js
+
+
+def test_a_finished_run_can_be_continued_in_place(
+    workflows_js: str, workflows_css: str
+) -> None:
+    assert "/api/agents/workflows/continue" in workflows_js
+    assert 'data-role="composer"' in workflows_js
+    assert "follow_up_completed" in workflows_js
+    # A tool waiting on approval has to be answerable, or the run just stalls.
+    assert 'data-act="answer-approval"' in workflows_js
+    assert ".wf-composer" in workflows_css
+
+
+@pytest.fixture(scope="module")
 def chat_history_js() -> str:
     return _agent_asset("chat_history.js")
 
@@ -344,7 +439,11 @@ def test_chat_status_and_send_state_are_accessible(chat_js: str):
     assert 'role="log" aria-label="Conversation"' in chat_js
     assert 'data-role="announce" role="status"' in chat_js
     assert 'send.setAttribute("aria-label", "Stop response")' in chat_js
-    assert 'send.setAttribute("aria-label", "Send message")' in chat_js
+    # Idle, the control is Send, or Run while a workflow waits to start.
+    idle = chat_js.split("function syncSendIdle()", 1)[1].split(SPLIT_BLOCK_END, 1)[0]
+    assert '"Send message"' in idle
+    assert "`Run ${conversationWorkflow.title}`" in idle
+    assert 'send.classList.toggle("run", starting)' in idle
 
 
 def test_agent_setup_uses_allowlisted_blocks_inside_the_workspace(
@@ -420,6 +519,71 @@ def test_agent_workspace_connects_content_and_viewer_context(chat_js: str) -> No
     assert "viewer.subscribeResults?." in chat_js
     assert "const binary = atob(" in chat_js
     assert "fetch(result.dataUrl)" not in chat_js
+
+
+def test_workspace_reviews_v2_geometry_and_skills_without_writing(
+    chat_js: str, chat_css: str, chat_workspace_js: str
+) -> None:
+    assert 'postJSON("/api/agents/geometry/review"' in chat_js
+    assert 'postJSON("/api/agents/skills/dry-run"' in chat_js
+    assert 'detail: "standard"' in chat_js
+    assert 'model: selection.model_id' in chat_js
+    assert 'global_ids: [guids[0]]' in chat_js
+    assert "canonicalSelectionGuids(selection)" in chat_js
+    assert "Select exactly one object" in chat_js
+    assert "measurement spec v" in chat_js
+    assert 'area: "m^2"' in chat_js and 'volume: "m^3"' in chat_js
+    assert "Â" not in chat_js and "Ã" not in chat_js
+    assert "skill.executable" in chat_js
+    assert "applicability.reasons" in chat_js
+    assert "No IFC property was proposed" in chat_js
+    assert "Prepare a separate property proposal" in chat_js
+    assert "workspaceReviewSelectionToken" in chat_js
+    assert "workspaceReviewSelectionEpoch" in chat_js
+    assert "requestGeneration" in chat_js
+    assert "workspaceReviewRequestIsCurrent" in chat_js
+    assert "skillDryRunStateKey" in chat_js
+    assert "currentSkillDryRunState" in chat_js
+    assert "selectionTooLarge" in chat_js
+    assert "global_ids: guids" in chat_js
+    assert "limit: guids.length" in chat_js
+    assert ".slice(0, 200)" not in chat_js
+    assert "measurementDryRunCanPropose" in chat_js
+    for partial_marker in (
+        "targets.has_more",
+        "targets.truncated_by_max_matches",
+        "envelopeMeta.truncated",
+        "dataMeta.truncated",
+    ):
+        assert partial_marker in chat_workspace_js
+    assert '["extracted", "partial"].includes' in chat_workspace_js
+    assert "result.extracted.length > 0" in chat_workspace_js
+    assert ".chat-ws-data-table" in chat_css
+    assert ".chat-ws-review-state.bad" in chat_css
+
+
+def test_geometry_review_visualizes_frames_sections_and_evidence_read_only(
+    chat_js: str, chat_css: str, chat_workspace_js: str
+) -> None:
+    assert "appendSemanticFrame(detail, record)" in chat_js
+    assert 'document.createElementNS("http://www.w3.org/2000/svg"' in chat_js
+    for axis in ("longitudinal", "transverse", "vertical"):
+        assert f'["{axis}",' in chat_js
+        assert f".chat-ws-axis-{axis}" in chat_css
+    assert "frame.source" in chat_js and "frame.confidence" in chat_js
+    assert "Read-only 2D projection" in chat_js
+    assert "appendSectionBrowser(detail, record)" in chat_js
+    assert 'slider.type = "range"' in chat_js
+    assert "representativeSectionStations(analysis)" in chat_js
+    assert ".chat-ws-section-regions" in chat_css
+    assert "measurementEvidenceBadge(measurement)" in chat_js
+    assert "appendMeasurementEvidence(detail, record, measurement)" in chat_js
+    assert "Element length tolerance +/-" in chat_js
+    assert "No source was silently discarded" in chat_js
+    assert ".chat-ws-evidence-badge.exact" in chat_css
+    assert ".chat-ws-evidence-badge.measured" in chat_css
+    assert "measurementEvidenceKind" in chat_workspace_js
+    assert "measurementAlternativeRows" in chat_workspace_js
 
 
 def test_content_state_is_scoped_and_permission_writes_are_serialized(
@@ -669,10 +833,11 @@ def test_the_panel_never_calls_a_provider_directly(chat_js: str):
 
 
 def test_the_send_button_is_gated_until_a_model_is_chosen(chat_js: str):
-    assert (
-        "send.disabled = resetInProgress || uploadsInFlight() || (!ready && !busy)"
-        in chat_js
-    )
+    gate = chat_js.split("send.disabled = resetInProgress", 1)[1].split(";", 1)[0]
+    assert "|| uploadsInFlight()" in gate
+    assert "|| (!ready && !busy)" in gate
+    # A selection-scoped workflow cannot start on nothing.
+    assert "|| (!busy && workflowNeedsSelection())" in gate
 
 
 def test_a_composer_upload_shows_its_progress_and_holds_send(chat_js: str) -> None:
@@ -858,8 +1023,12 @@ def test_chat_header_shows_only_the_agent_name(chat_js: str) -> None:
     assert 'class="chat-title" data-role="title"' in header
     assert 'class="chat-subtitle" data-role="reach" hidden' in header
     # Capability counts and preview policy still exist in Agent workspace, but
-    # no longer take a second line under the active agent's name.
-    assert chat_js.count('el("reach").textContent = "";') == 2
+    # no longer take a second line under the active agent's name. The one
+    # thing the subtitle names is the workflow the conversation stands on.
+    assert 'el("reach").textContent = "";' not in chat_js
+    subtitle = chat_js.split("function syncSubtitle()", 1)[1].split(SPLIT_BLOCK_END, 1)[0]
+    assert "conversationWorkflow ? `Workflow · ${conversationWorkflow.title}` : \"\"" in subtitle
+    assert "reach.hidden = !conversationWorkflow" in subtitle
 
 
 def test_open_sidebars_hide_duplicate_header_launchers_and_keep_focus(
@@ -1591,6 +1760,83 @@ def test_at_mentions_and_slash_commands_share_one_popup(chat_js: str) -> None:
     assert "input.setRangeText" in apply
 
 
+def test_a_workflow_is_context_the_conversation_stands_on(
+    chat_js: str, chat_css: str, chat_ai_sdk_js: str, chat_history_js: str
+) -> None:
+    """`/` lists the library first; choosing one attaches it as a chip whose
+    hover preview is the exact text sent, Run starts it, and every later turn
+    names it again so the console keeps the same thread."""
+    commands = chat_js.split("function slashCommands()", 1)[1].split(SPLIT_BLOCK_END, 1)[0]
+    assert 'group: "Workflows"' in commands
+    assert "run: () => attachWorkflow(flow.name)" in commands
+    assert "...workflows," in commands
+    assert ".chat-suggest-group" in chat_css
+    attach = chat_js.split("function attachWorkflow(name", 1)[1].split(SPLIT_BLOCK_END, 1)[0]
+    # A workflow joins a fresh conversation and the assistant it names.
+    assert "if (wanted && wanted !== currentAgent) switchAgent(wanted);" in attach
+    assert "else if (turns.length || busy) startConversation(true, { focus: false });" in attach
+    tray = chat_js.split("function renderAttachments()", 1)[1].split(SPLIT_BLOCK_END, 1)[0]
+    assert "workflowChip(conversationWorkflow, { context: workflowContext })" in tray
+    preview = chat_js.split("function workflowPreviewNode(", 1)[1].split(SPLIT_BLOCK_END, 1)[0]
+    # The preview is content, never markup.
+    assert "innerHTML" not in preview
+    assert "pre.textContent = context?.instructions" in preview
+    assert ".chat-chip-preview" in chat_css
+    assert ".chat-attachment-chip.workflow:hover .chat-chip-preview" in chat_css
+    assert ".chat-attachment-chip.workflow.open .chat-chip-preview" in chat_css
+    for action in ("attach-workflow", "drop-workflow", "preview-workflow", "run-workflow"):
+        assert f'action === "{action}"' in chat_js, action
+    # Every turn of the conversation carries the workflow by name.
+    run = chat_js.split("async function run(", 1)[1].split("async function submit()", 1)[0]
+    assert "workflow: conversationWorkflow?.name || undefined" in run
+    assert 'event.type === "workflow_context"' in run
+    assert "body.workflow = workflow;" in chat_ai_sdk_js
+    assert "function cleanWorkflow(value)" in chat_history_js
+    record = chat_js.split("function conversationRecord()", 1)[1].split(SPLIT_BLOCK_END, 1)[0]
+    assert "workflow: conversationWorkflow" in record
+    restore = chat_js.split("function selectHistory(record)", 1)[1].split(SPLIT_BLOCK_END, 1)[0]
+    assert "conversationWorkflow = record.workflow ? resolveWorkflow(record.workflow) : null;" in restore
+    # An empty composer still sends when a workflow waits to start.
+    submit = chat_js.split("async function submit()", 1)[1].split(SPLIT_BLOCK_END, 1)[0]
+    assert "const runLabel = flow && !turns.length ? `Run ${flow.title}` : \"\";" in submit
+    assert "composerIntent({ busy, text: text || runLabel })" in submit
+    assert "turn.prompt = text;" in submit
+
+
+def test_the_panel_watches_memory_and_can_give_it_back(
+    chat_js: str, chat_css: str, chat_memory_js: str
+) -> None:
+    template = _template(chat_js)
+    assert 'data-role="memory" data-act="memory"' in template
+    assert 'data-level="ok"' in template
+    assert ".chat-memory[data-level=\"critical\"]" in chat_css
+    snapshot = chat_js.split("function memorySnapshot()", 1)[1].split(SPLIT_BLOCK_END, 1)[0]
+    for source in ("heap: sampleHeap()", "server: sessionStatus.memory", "sessionStatus.viewer_memory", "turns,"):
+        assert source in snapshot, source
+    # Automatic relief is rate limited; a press is not.
+    tick = chat_js.split("function memoryTick()", 1)[1].split(SPLIT_BLOCK_END, 1)[0]
+    assert "Date.now() - memoryRelievedAt > 60_000" in tick
+    relief = chat_js.split("function relieveMemory(", 1)[1].split(SPLIT_BLOCK_END, 1)[0]
+    assert 'action: "release-memory"' in relief
+    assert "trimTranscriptMemory(plan.keepTurns)" in relief
+    trim = chat_js.split("function trimTranscriptMemory(", 1)[1].split(SPLIT_BLOCK_END, 1)[0]
+    assert "block.output = null;" in trim
+    assert "export function reliefPlan(" in chat_memory_js
+    # The console's reading rides on /api/status; the viewer's on its context.
+    assert 'viewer_memory: viewerOpen' in chat_js
+    assert "sessionStatus = { ...nextStatus, viewer_memory: sessionStatus.viewer_memory || null };" in chat_js
+
+
+@pytest.fixture(scope="module")
+def chat_ai_sdk_js() -> str:
+    return _agent_asset("chat_ai_sdk.js")
+
+
+@pytest.fixture(scope="module")
+def chat_memory_js() -> str:
+    return _agent_asset("chat_memory.js")
+
+
 def test_the_pipeline_belongs_to_the_agent_that_has_it(chat_js: str) -> None:
     """Reachable stages follow from the blocks an agent holds, so a separate
     Pipeline page described no agent in particular."""
@@ -1955,3 +2201,14 @@ def test_section_slice_number_has_a_name_unit_and_fixed_layout(
     )[0]
     assert "min-width: 0" in input_style
     assert "text-align: right" in input_style
+
+
+def test_the_viewer_can_open_workflows_on_its_selection(chat_js: str, workflows_js: str):
+    """One call from the viewer lands on the Run door with the selection scope
+    already chosen, instead of asking the person to find the scope toggle."""
+    assert "openWorkflows: (options = {}) => openWorkflows(undefined, options)" in chat_js
+    assert 'else if (scope) workflowsPanel.launch?.({ scope });' in chat_js
+    launch = workflows_js.split("launch({ scope = \"\" } = {})", 1)[1].split("dispose()", 1)[0]
+    assert 'scope === "selection" && selectionCount(viewerContext)' in launch
+    assert 'launcherScope = "selection"' in launch
+    assert "renderAll()" in launch

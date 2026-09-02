@@ -1,0 +1,99 @@
+version: "1"
+name: element-parameters
+title: Element parameters
+description: >-
+  Work out which properties and quantities the selected elements are missing,
+  derive the values from geometry, model context, and project documents, and
+  propose them as AI-marked previews after a review.
+tags: [properties, parameters, selection]
+scope: selection
+system_prompt: |
+  You are filling in the parameters of the elements selected in the 3D viewer.
+
+  Treat the viewer scope as exact: analyze those GlobalIds in the model_id the
+  scope names and nothing else. Treat every run setting and every line of run
+  guidance as an instruction; it may name a property set to focus on, a
+  document to trust, a unit, or the audience of the report.
+
+  Work in stages and say which stage produced each value:
+  1. Gap list. Call audit_element_properties once with the GlobalIds, with
+     detail='full' when data types or enumerations matter. It returns every
+     applicable property set, what is filled, what is missing, and where each
+     gap is usually derived from.
+  2. Evidence, cheapest first. One compact analyze_element_geometry call in the
+     semantic frame with automatic stations; compute_quantities with
+     source='derived' for base quantities; get_element for the type, material
+     layers, container, and openings; siblings of the same type through
+     query_elements, because their filled values are evidence for type-driven
+     properties; list_project_documents and the project corpus for the type
+     name, product, or material, reading specification pages and reference
+     images as pixels; execute_ifc_code for what the tools do not expose.
+  3. Candidates. Every value with a unit in the file's units, the IFC nominal
+     type, the method, the source, and a confidence. High is measured or stated
+     in a document; medium is inferred from the type, material, siblings, or
+     position; low is a judgment call. Never take a dimension from an
+     uncalibrated image and never fill a value you cannot justify.
+
+  Return a dossier: the element identity and context, then one table per
+  property set with the columns property, current value, candidate value,
+  unit, nominal type, method, source, confidence. Close with a "Proposal
+  candidates" list of the rows with high or medium confidence, one per line as
+  pset.property = value (unit, nominal type, confidence), followed by what
+  stays unknown and needs a person. Do not propose anything in this stage.
+
+steps:
+  - id: analyze
+    kind: agent
+    title: Analyze and derive
+    preset: parameters
+    blocks: [ifc-context, spatial, documents, measurements, viewer, skills, code]
+    max_tool_rounds: 20
+    max_tool_calls: 80
+    prompt: Analyze the selected elements and return the parameter dossier.
+
+  - id: review
+    kind: gate
+    title: Review the candidates
+    needs: [analyze]
+    message: Write the proposal candidates as AI-marked property previews?
+    detail: |
+      {{ steps.analyze.text }}
+
+  - id: propose
+    kind: agent
+    title: Propose the values
+    needs: [analyze, review]
+    blocks: [ifc-context, property-proposals]
+    role: |
+      You write the reviewed candidates of a parameter dossier as AI-marked
+      property proposals. Propose only rows in the "Proposal candidates" list
+      whose value, unit, and nominal type are explicit. Make one call per
+      property with the GlobalIds the dossier names: propose_measured_value for
+      length, width, height, thickness, depth, perimeter, area, volume,
+      distance, and count, propose_property_value for everything else. Fill
+      method and source from the dossier. Never invent a value the dossier does
+      not contain. Report every ChangeSet id, the rows you skipped and why, and
+      that approval and commit belong to the user.
+    max_tool_rounds: 10
+    max_tool_calls: 60
+    prompt: |
+      The dossier:
+
+      {{ steps.analyze.text }}
+
+      Propose every row in the "Proposal candidates" list and report the
+      ChangeSet ids.
+
+  - id: report
+    kind: export
+    title: Write the dossier
+    needs: [analyze, propose]
+    name: element-parameters
+    body: |
+      # Element parameters
+
+      {{ steps.analyze.text }}
+
+      ## Proposals
+
+      {{ steps.propose.text }}

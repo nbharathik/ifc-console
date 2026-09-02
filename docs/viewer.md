@@ -117,8 +117,25 @@ Results use the live in-memory model, including unsaved edits.
 - **Measurements:** length, path, angle, area, element size, and clearance. All of
   them report metres in the model's own axes, and the model can read them back
   with `get_viewer_measurements`. Each measurement also carries anchors naming
-  the GlobalIds it touched, which is what lets the Agent panel record a
-  measurement pattern as a reusable skill.
+  the GlobalIds, snap kinds, and feature relationship it touched. The Agent
+  panel pins those records to the source tab's `model_id`, fingerprint, and
+  revision, then transforms direction evidence into an object-local or semantic
+  intent when it records a reusable skill. World coordinates are not replayed
+  on another object.
+- **Selected-object geometry:** **Agent workspace > Skills > Analyze selection**
+  runs a bounded standard-detail `analyze_element_geometry` call in the
+  semantic frame with automatic section stations. It renders the semantic axis
+  triad with world vectors, source, confidence, handedness, and ambiguity;
+  adaptive profile regions and a representative-station slider; grouped
+  measurements with exact IFC or measured badges; and expandable alternatives
+  with source deltas, tolerance, uncertainty, and conflict reasons. Unavailable,
+  ambiguous, and conflicting coverage remains explicit. The call is read-only
+  and is pinned to the selection's model and revision.
+- **Measurement skill review:** a structured version 2 skill can be dry-run on
+  selected candidates from the same workspace. The table shows applicability
+  score, match and mismatch reasons, extracted values, skipped targets, and
+  unresolved results. Property proposal is a separate follow-up control after
+  review and never occurs during the dry-run.
 - **Snapping:** measured points land on real mesh corners, edge midpoints,
   anywhere along an edge, or the exact visible surface, chosen by which is
   nearest the cursor on screen and guarded by the visible surface depth.
@@ -130,13 +147,37 @@ Results use the live in-memory model, including unsaved edits.
 - **Color themes:** labeled groups with a colorblind-safe legend.
 - **Grid and axes:** local visual aids that never modify the IFC model.
 
+The semantic triad and section browser are workspace visualizations of the
+version 2 analysis record. They do not draw temporary objects into the Three.js
+canvas. A true in-canvas axis or section overlay needs a versioned viewer
+component command, renderer-owned geometry, disposal on model or revision
+change, and the same model-scoped selection fence. That rendering subsystem is
+kept separate from the optional Agent panel instead of coupling panel DOM code
+to viewer internals.
+
 When several models are resident, Chrome-like tabs switch which IFC file is
 displayed. Tabs can be closed and reopened from the plus button, and each tab
 remembers its camera, selection, cuts, visibility, transparency, and
 measurements for the session. Up to two recent parsed IFC revisions stay in a
-device-aware 96–256 MB cache, so a normal tab switch skips the download and
-WebAssembly parse without letting typed arrays grow once per open model. The viewer
+device-aware 64–160 MB cache, so a normal tab switch skips the download and
+WebAssembly parse without letting typed arrays grow once per open model. The
+cache is given back after a minute out of sight, and the Agent panel's memory
+pill or a `release-memory` viewer command drops it on demand. The viewer
 renders one model at a time; it does not create a federated overlay.
+
+The Agent panel's workflow library subscribes to this same context. A workflow
+that supports `scope: either` offers **Viewer selection** as soon as any IFC
+tab has selected elements. The live count stays visible while the library is
+open, **Show in 3D** frames the selection, and pressing Run captures the
+model-scoped GlobalIds for the workflow agent. Clearing the selection returns
+the run sheet to whole-model scope. **Run workflow** in the status bar appears
+whenever something is selected and an agent panel is available; it opens the
+panel on the workflow library with the selection scope already chosen.
+
+The workflow **Runs** launcher holds this scope beside common key/value prompt
+settings. Each execution then gets its own chat-style activity history with
+the captured scope, LLM output, tool calls and results, and token usage.
+Several workflows can run concurrently against the same captured selection.
 
 ## MCP viewer tools
 
@@ -158,8 +199,10 @@ row for every IFC that has selected elements, while its compatibility fields
 describe the tab currently on screen. The optional Agent panel shows one selection chip
 per IFC and sends all of those model-scoped GlobalIds with the next message.
 Pass a selected `model_id` to `control_viewer`, `highlight_elements`,
-`apply_color_theme`, or `get_viewer_screenshot` when the target must be
-explicit. Selection-based actions also infer this id when it is omitted, so a
+`apply_color_theme`, `get_viewer_screenshot`, `analyze_element_geometry`, or
+`apply_measurement_skill` when the target must be explicit. Geometry and skill
+calls do not infer that a GlobalId belongs to whichever file is currently
+active. Selection-based viewer actions infer this id when it is omitted, so a
 hide, isolate, focus, fit, or measurement cannot be sent to a different active
 IFC by mistake. Every command frame carries its model id, and a tab refuses the
 command if it switched files while the call was in flight.
@@ -185,9 +228,20 @@ it does not load the built-in Agent panel or its provider runtime.
 - Model downloads fill the known-size response buffer directly instead of
   retaining all stream chunks plus a second full-size allocation.
 - Parsed-model caching is bounded by count and estimated typed-array bytes.
+- Normals stay in normalized 16-bit buffers from the parser worker to the GPU,
+  halving their transfer, cache, and graphics-memory footprint. Surface-area
+  and volume preprocessing also runs in the worker rather than blocking the UI.
+- Repeated high-detail geometry is instanced from its second copy, and instance
+  groups below two drawing-buffer pixels are omitted from display frames.
+  Picking and measurement probes temporarily restore them for exact results.
 - The web-ifc worker is kept briefly for a fast follow-up parse, then terminated
   after 30 seconds idle or when a hidden tab no longer needs it, releasing its
-  WebAssembly high-water memory.
+  WebAssembly high-water memory. The inline web-ifc fallback is released on the
+  same schedule instead of keeping its heap for the life of the page.
+- The viewer publishes its memory footprint (parsed cache bytes, products,
+  triangles, whether a parser worker is resident) with every context frame,
+  and answers a `release-memory` command by dropping the parsed cache and any
+  idle parser. The Agent panel uses both to keep a long run from swapping.
 - Completed parser callbacks are detached immediately so model buffers and
   geometry chunks are not kept alive by stale closures.
 

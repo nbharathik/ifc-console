@@ -18,6 +18,27 @@ _DIM_LABELS = (
     ("wall_thickness", "Wall thickness (t)"),
 )
 
+_MEASUREMENT_GROUPS = {
+    "envelope": "Envelope",
+    "mass": "Mass geometry",
+    "profile": "Profile",
+    "longitudinal": "Longitudinal form",
+    "section": "Sections",
+    "material": "Material",
+    "opening": "Openings and voids",
+    "topology": "Topology",
+    "stored": "Stored values",
+}
+
+_SI_UNITS = {
+    "length": "m",
+    "area": "m^2",
+    "volume": "m^3",
+    "angle": "deg",
+    "count": "",
+    "ratio": "",
+}
+
 
 def _escape(value: Any) -> str:
     text = str(value if value is not None else "")
@@ -48,6 +69,168 @@ def _dimension_rows(dimensions: dict[str, Any], length_unit: str | None) -> list
             f"| {_fmt(dim['si'])} m | {dim['source']} |"
         )
     return rows if len(rows) > 2 else []
+
+
+def _identity(analysis: dict[str, Any]) -> dict[str, Any]:
+    """The v2 object envelope is additive; legacy records stay flat."""
+    obj = analysis.get("object")
+    return obj if isinstance(obj, dict) else analysis
+
+
+def _measurement_group(record: dict[str, Any]) -> str:
+    identifier = str(record.get("id") or "other")
+    prefix = identifier.partition(".")[0]
+    return _MEASUREMENT_GROUPS.get(prefix, prefix.replace("_", " ").title() or "Other")
+
+
+def _measurement_label(record: dict[str, Any]) -> str:
+    identifier = str(record.get("id") or "measurement")
+    return str(record.get("label") or identifier).strip()
+
+
+def _si_value(record: dict[str, Any]) -> str:
+    unit = str(record.get("si_unit") or _SI_UNITS.get(record.get("quantity_kind"), ""))
+    value = record.get("value_si")
+    if value is not None:
+        return f"{_fmt(value, 6)}{f' {unit}' if unit else ''}"
+    value_range = record.get("range_si")
+    if isinstance(value_range, dict):
+        low = value_range.get("minimum", value_range.get("min"))
+        high = value_range.get("maximum", value_range.get("max"))
+        if low is not None or high is not None:
+            return f"{_fmt(low, 6)} to {_fmt(high, 6)}{f' {unit}' if unit else ''}"
+    if isinstance(value_range, (list, tuple)) and len(value_range) >= 2:
+        return f"{_fmt(value_range[0], 6)} to {_fmt(value_range[1], 6)}{f' {unit}' if unit else ''}"
+    return "unavailable"
+
+
+def _file_value(record: dict[str, Any], length_unit: str | None) -> str:
+    value = record.get("value_file")
+    if value is None:
+        return ""
+    unit = record.get("file_unit") or length_unit or "file units"
+    return f"{_fmt(value, 6)} {unit}"
+
+
+def _measurement_method(record: dict[str, Any]) -> str:
+    source = str(record.get("source") or "unspecified")
+    method = str(record.get("method") or "")
+    return source if not method or method == source else f"{source}; {method}"
+
+
+def _measurement_context(record: dict[str, Any]) -> str:
+    parts = []
+    frame = record.get("frame")
+    direction = record.get("direction")
+    station = record.get("station")
+    component = record.get("component")
+    if frame:
+        parts.append(str(frame))
+    if direction:
+        parts.append(str(direction))
+    if isinstance(station, (int, float)) and not isinstance(station, bool):
+        parts.append(f"station {_fmt(100 * float(station), 1)}%")
+    elif station is not None:
+        parts.append(f"station {station}")
+    if component and component != "whole_object":
+        parts.append(str(component))
+    return ", ".join(parts) or "whole object"
+
+
+def _measurement_quality(record: dict[str, Any]) -> str:
+    parts = [str(record.get("confidence") or "unknown")]
+    uncertainty = record.get("uncertainty_si")
+    if isinstance(uncertainty, (int, float)) and not isinstance(uncertainty, bool):
+        unit = str(record.get("si_unit") or _SI_UNITS.get(record.get("quantity_kind"), ""))
+        parts.append(f"+/- {_fmt(uncertainty, 6)}{f' {unit}' if unit else ''}")
+    flags = record.get("flags") or []
+    if flags:
+        parts.append(", ".join(_escape(flag) for flag in flags))
+    return "; ".join(parts)
+
+
+def _measurement_rows(measurements: list[dict[str, Any]], length_unit: str | None) -> list[str]:
+    lines: list[str] = []
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for record in measurements:
+        if isinstance(record, dict):
+            groups.setdefault(_measurement_group(record), []).append(record)
+    for group, records in groups.items():
+        lines += [f"#### {_escape(group)}", ""]
+        lines += [
+            "| Measurement | SI value | File value | Source and method | Frame / domain | Confidence |",
+            "| --- | --- | --- | --- | --- | --- |",
+        ]
+        for record in records:
+            identifier = str(record.get("id") or "")
+            label = _measurement_label(record)
+            display = (
+                f"{_escape(label)} (`{_escape(identifier)}`)" if identifier else _escape(label)
+            )
+            lines.append(
+                f"| {display} | {_escape(_si_value(record))} "
+                f"| {_escape(_file_value(record, length_unit))} "
+                f"| {_escape(_measurement_method(record))} "
+                f"| {_escape(_measurement_context(record))} "
+                f"| {_escape(_measurement_quality(record))} |"
+            )
+        lines.append("")
+    return lines
+
+
+def _alternative_rows(measurements: list[dict[str, Any]]) -> list[str]:
+    rows = [
+        "| Measurement | Alternative | Source and method | Delta | Confidence / status |",
+        "| --- | --- | --- | --- | --- |",
+    ]
+    for record in measurements:
+        if not isinstance(record, dict):
+            continue
+        for alternative in record.get("alternatives") or []:
+            if not isinstance(alternative, dict):
+                continue
+            delta = alternative.get("delta_si", alternative.get("absolute_delta_si"))
+            relative = alternative.get("relative_delta", alternative.get("delta_relative"))
+            delta_parts = []
+            if delta is not None:
+                delta_parts.append(f"{_fmt(delta, 6)} SI")
+            if relative is not None:
+                try:
+                    delta_parts.append(f"{100 * float(relative):.2f}%")
+                except (TypeError, ValueError):
+                    delta_parts.append(str(relative))
+            quality = str(alternative.get("confidence") or "unknown")
+            status = alternative.get("status")
+            flags = alternative.get("flags") or []
+            if status:
+                quality += f"; {status}"
+            if flags:
+                quality += "; " + ", ".join(str(flag) for flag in flags)
+            rows.append(
+                f"| `{_escape(record.get('id'))}` | {_escape(_si_value(alternative))} "
+                f"| {_escape(_measurement_method(alternative))} "
+                f"| {_escape(', '.join(delta_parts))} | {_escape(quality)} |"
+            )
+    return rows if len(rows) > 2 else []
+
+
+def _coverage_item(item: Any) -> str:
+    if not isinstance(item, dict):
+        return _escape(item)
+    identifier = item.get("id") or item.get("measurement_id") or item.get("output") or "item"
+    reason = item.get("reason") or item.get("detail") or item.get("status")
+    return f"`{_escape(identifier)}`" + (f": {_escape(reason)}" if reason else "")
+
+
+def _coverage_lines(coverage: dict[str, Any]) -> list[str]:
+    categories = ("requested", "extracted", "unavailable", "ambiguous", "conflicting")
+    rows = ["| Status | Count | Measurements |", "| --- | ---: | --- |"]
+    for category in categories:
+        value = coverage.get(category) or []
+        items = value if isinstance(value, list) else [value]
+        details = ", ".join(_coverage_item(item) for item in items)
+        rows.append(f"| {category.title()} | {len(items)} | {details} |")
+    return rows
 
 
 def _section_lines(cut: dict[str, Any], stations: list[dict[str, Any]] | None) -> list[str]:
@@ -127,13 +310,25 @@ def _quantity_lines(qtos: dict[str, Any]) -> list[str]:
 
 def element_section(entry: dict[str, Any], units: dict[str, Any], index: int) -> list[str]:
     analysis = entry["analysis"]
-    name = analysis.get("name") or analysis.get("class", "element")
+    identity = _identity(analysis)
+    name = identity.get("name") or identity.get("class", "element")
     lines = [f"## {index}. {_escape(name)}", ""]
-    lines.append(f"- GlobalId: `{analysis.get('global_id')}`")
-    lines.append(f"- Class: {analysis.get('class')}")
-    etype = analysis.get("type")
+    lines.append(f"- GlobalId: `{identity.get('global_id')}`")
+    lines.append(f"- Class: {identity.get('class')}")
+    etype = identity.get("type")
     if etype:
-        lines.append(f"- Type: {_escape(etype.get('name'))} ({etype.get('class')})")
+        if isinstance(etype, dict):
+            lines.append(f"- Type: {_escape(etype.get('name'))} ({etype.get('class')})")
+        else:
+            lines.append(f"- Type: {_escape(etype)}")
+    version = analysis.get("analysis_version") or (
+        "2.0" if isinstance(analysis.get("measurements"), list) else None
+    )
+    if version:
+        lines.append(f"- Analysis contract: {_escape(version)}")
+    family = analysis.get("geometry_family")
+    if family:
+        lines.append(f"- Geometry family: {_escape(family)}")
     material = analysis.get("material")
     if isinstance(material, dict):
         label = material.get("name") or ", ".join(
@@ -141,9 +336,21 @@ def element_section(entry: dict[str, Any], units: dict[str, Any], index: int) ->
         )
         lines.append(f"- Material: {_escape(label) or material.get('kind')}")
 
+    measurements = [item for item in (analysis.get("measurements") or []) if isinstance(item, dict)]
+    # The normalized inventory is additive. Keep this compatibility table in
+    # every report so existing readers do not change during the v2 migration.
     dims = _dimension_rows(analysis.get("dimensions") or {}, units.get("length_unit"))
     if dims:
         lines += ["", "### Dimensions", ""] + dims
+    if measurements:
+        lines += ["", "### Parametric measurements", ""]
+        lines += _measurement_rows(measurements, units.get("length_unit"))
+        alternatives = _alternative_rows(measurements)
+        if alternatives:
+            lines += ["### Alternative evidence and source deltas", ""] + alternatives
+        coverage = analysis.get("coverage")
+        if isinstance(coverage, dict):
+            lines += ["", "### Measurement coverage", ""] + _coverage_lines(coverage)
 
     cut = analysis.get("cross_section")
     if cut:
@@ -206,6 +413,8 @@ def build_measurement_report(
     entries: list[dict[str, Any]],
     notes: str | None = None,
     generated_at: str | None = None,
+    analysis_version: str | None = None,
+    model_revision: dict[str, Any] | None = None,
 ) -> str:
     lines = [f"# {_escape(title)}", ""]
     if model.get("project"):
@@ -218,6 +427,18 @@ def build_measurement_report(
     )
     if generated_at:
         lines.append(f"- Generated: {generated_at} by ifc-console")
+    if analysis_version:
+        lines.append(f"- Analysis contract: {_escape(analysis_version)}")
+    if model_revision:
+        revision_parts = []
+        if model_revision.get("model_id"):
+            revision_parts.append(f"model_id={_escape(model_revision['model_id'])}")
+        if model_revision.get("fingerprint"):
+            revision_parts.append(f"fingerprint={_escape(model_revision['fingerprint'])}")
+        if model_revision.get("revision") is not None:
+            revision_parts.append(f"revision={_escape(model_revision['revision'])}")
+        if revision_parts:
+            lines.append("- Model revision: " + ", ".join(revision_parts))
     lines.append(f"- Elements: {len(entries)}")
     if notes:
         lines += ["", _escape(notes)]
@@ -225,9 +446,10 @@ def build_measurement_report(
     for index, entry in enumerate(entries, start=1):
         lines += element_section(entry, units, index)
     lines.append(
-        "Values marked profile_parameter and extrusion_depth are exact from the "
-        "IFC definition; mesh_section and mesh_axis values are measured from the "
-        "tessellated geometry."
+        "Direct IFC representation parameters are exact only when their evidence "
+        "says transforms and Boolean modifications preserve them. Mesh-derived "
+        "values are estimates from tessellated geometry. Alternative sources and "
+        "conflicts remain separate; they are never silently averaged."
     )
     lines.append("")
     return "\n".join(lines)

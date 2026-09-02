@@ -4,7 +4,10 @@ change anything, and the CSV export writes an output file, never the model."""
 
 from __future__ import annotations
 
+import copy
 import csv
+import time
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Literal
@@ -57,6 +60,7 @@ _HEAVY_TIMEOUT = 600.0
 OFFSET_ARG = "Elements to skip in the deterministic order, for paging a large match."
 
 
+@contextmanager
 def mesh_cache(core: AppCore, session):
     """Serve the tessellation inside the block from the session's mesh cache.
 
@@ -64,24 +68,54 @@ def mesh_cache(core: AppCore, session):
     and the cache is keyed to the session that owns the file.
     """
 
+    stats = {
+        "mesh_requests": 0,
+        "requested_elements": 0,
+        "cache_hits": 0,
+        "cache_misses": 0,
+        "tessellation_batches": 0,
+        "tessellated_elements": 0,
+        "tessellated_triangles": 0,
+        "tessellation_failures": 0,
+        "tessellation_ms": 0.0,
+        "evicted_meshes": 0,
+        "uncached_federated_requests": 0,
+    }
+
     def provider(ifc, elements, *, profile="standard", max_triangles=None):
         # a federated job reads a second model on its own worker; only the
         # session's own file is cache-keyed here
         if ifc is not session.ifc:
-            return element_meshes(
+            started = time.perf_counter()
+            built = element_meshes(
                 ifc,
                 elements,
                 profile=profile,
                 max_triangles=max_triangles,
             )
+            stats["mesh_requests"] += 1
+            stats["requested_elements"] += len(elements)
+            stats["cache_misses"] += len(elements)
+            stats["tessellation_batches"] += bool(elements)
+            stats["tessellated_elements"] += len(built)
+            stats["tessellated_triangles"] += sum(int(len(mesh[1])) for mesh in built.values())
+            stats["tessellation_failures"] += max(0, len(elements) - len(built))
+            stats["tessellation_ms"] = round(
+                stats["tessellation_ms"] + (time.perf_counter() - started) * 1000.0,
+                3,
+            )
+            stats["uncached_federated_requests"] += 1
+            return built
         return core.element_meshes(
             elements,
             session=session,
             profile=profile,
             max_triangles=max_triangles,
+            stats=stats,
         )
 
-    return mesh_provider(provider)
+    with mesh_provider(provider):
+        yield stats
 
 
 def page_global_ids(
@@ -731,9 +765,7 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
             units = unit_info(s.ifc)
             factor = units["to_si_factor"]
             for interval in result["material_intervals"]:
-                interval["thickness_file"] = round(
-                    si_to_file(interval["thickness_si"], factor), 6
-                )
+                interval["thickness_file"] = round(si_to_file(interval["thickness_si"], factor), 6)
             for interval in result["non_material_intervals"]:
                 interval["clear_width_file"] = round(
                     si_to_file(interval["clear_width_si"], factor), 6
@@ -801,7 +833,9 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
         ] = None,
         qto_set: Annotated[
             str | None,
-            Field(description="stored_qto: restrict to one quantity set, e.g. 'Qto_WallBaseQuantities'."),
+            Field(
+                description="stored_qto: restrict to one quantity set, e.g. 'Qto_WallBaseQuantities'."
+            ),
         ] = None,
         include_layers: Annotated[
             list[str] | None,
@@ -856,7 +890,20 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
         report, cached = await core.cached_read(
             "measure_elements",
             job,
-            key=(selector, gids, method, metric, qto_set, quantity, include, exclude, axis, physical_only, max_elements, offset),
+            key=(
+                selector,
+                gids,
+                method,
+                metric,
+                qto_set,
+                quantity,
+                include,
+                exclude,
+                axis,
+                physical_only,
+                max_elements,
+                offset,
+            ),
             timeout=_HEAVY_TIMEOUT,
             session=s,
         )
@@ -928,17 +975,17 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
         name="analyze_element_geometry",
         annotations=ANALYSIS_ANN,
         description=(
-            "[QUERY] The full measurement probe for a few elements, made for "
-            "'measure everything about this object'. Reads exact profile "
-            "parameters from the IFC definition (widths, depths, flange and web "
-            "thicknesses, extrusion length) and independently slices the "
-            "triangle mesh across the element's long axis to measure the cross "
-            "section: width, height, wall-thickness distribution, perimeter, "
-            "and area. Both merge into `dimensions` with a named source per "
-            "value; disagreement over 5% is flagged. include_outline=true adds "
-            "the 2D section outline points. Works without the viewer and "
-            "without vision. Use measure_elements for one metric over many "
-            "elements."
+            "[QUERY] The high-level, versioned geometry analysis for a few objects, "
+            "made for 'measure everything about the selected object'. It combines "
+            "exact IFC representation parameters, semantic object frames, mesh "
+            "health, adaptive cross sections, topology, material thicknesses and "
+            "source reconciliation into stable namespaced measurements. Every value "
+            "carries units, method, source, frame, confidence and alternatives; "
+            "coverage lists unavailable, ambiguous and conflicting requests. detail "
+            "controls response size. Legacy dimensions, box and cross_section fields "
+            "remain for compatibility. Pass model from get_viewer_selection.model_id "
+            "when analyzing a viewer selection. Use measure_elements for one simple "
+            "metric over many elements."
         ),
     )
     @enveloped(core, "analyze_element_geometry")
@@ -953,12 +1000,66 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
         stations: Annotated[
             list[float] | None,
             Field(
-                max_length=7,
-                description="Cut positions as 0..1 fractions of the long axis; default 0.3, 0.5, 0.7.",
+                max_length=17,
+                description=(
+                    "Explicit 0..1 section fractions. Passing these without "
+                    "station_strategy selects fixed mode for compatibility."
+                ),
             ),
         ] = None,
+        detail: Annotated[
+            Literal["compact", "standard", "full"],
+            Field(
+                description=(
+                    "compact returns preferred measurements and coverage; standard "
+                    "adds alternatives and section summaries; full adds bounded "
+                    "representation, sampling and outline evidence."
+                )
+            ),
+        ] = "standard",
+        measurement_set: Annotated[
+            Literal["standard", "profile", "envelope", "fabrication"],
+            Field(description="Supported measurement inventory to evaluate."),
+        ] = "standard",
+        measurement_ids: Annotated[
+            list[str] | None,
+            Field(
+                max_length=80,
+                description=(
+                    "Optional stable namespaced measurement ids. When provided, "
+                    "coverage reports every requested id."
+                ),
+            ),
+        ] = None,
+        frame: Annotated[
+            Literal["semantic", "placement", "principal", "world"],
+            Field(description="Frame used for directional and envelope measurements."),
+        ] = "semantic",
+        station_strategy: Annotated[
+            Literal["auto", "fixed", "none"],
+            Field(
+                description=(
+                    "auto adaptively discovers profile regions; fixed uses stations; "
+                    "none skips mesh sections. Passing stations with auto selects fixed "
+                    "mode for compatibility."
+                )
+            ),
+        ] = "auto",
+        precision: Annotated[
+            Literal["standard", "high"],
+            Field(description="Documented tessellation and adaptive sampling budget."),
+        ] = "standard",
+        include_alternatives: Annotated[
+            bool,
+            Field(description="Keep independent evidence and source disagreements."),
+        ] = True,
+        include_sections: Annotated[
+            bool,
+            Field(description="Include bounded representative section summaries."),
+        ] = True,
         include_outline: Annotated[
-            bool, Field(description="Return the 2D outline points of the measured section.")
+            bool,
+            Field(description=("Return bounded 2D section outlines with standard or full detail.")),
         ] = False,
         physical_only: bool = True,
         max_elements: Annotated[int, Field(ge=1, le=25)] = 10,
@@ -968,9 +1069,13 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
         s = core.resolve_session(model)
         gids = tuple(global_ids) if global_ids else None
         cuts = tuple(stations) if stations else None
+        requested = tuple(dict.fromkeys(measurement_ids or ())) or None
+        resolved_station_strategy = (
+            "fixed" if cuts and station_strategy == "auto" else station_strategy
+        )
 
         def job() -> dict:
-            with mesh_cache(core, s):
+            with mesh_cache(core, s) as mesh_stats:
                 target = selector
                 ids = list(gids) if gids else None
                 if offset:
@@ -990,20 +1095,66 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
                     selector=target,
                     global_ids=ids,
                     stations=cuts,
+                    detail=detail,
+                    measurement_set=measurement_set,
+                    measurement_ids=requested,
+                    frame=frame,
+                    station_strategy=resolved_station_strategy,
+                    precision=precision,
+                    include_alternatives=include_alternatives,
+                    include_sections=include_sections,
                     include_outline=include_outline,
                     physical_only=physical_only,
                     max_elements=max_elements,
                 )
                 report["selector"] = selector
+                report["model_revision"] = {
+                    "model_id": s.model_id,
+                    "fingerprint": s.fingerprint,
+                    "revision": s.revision,
+                }
+                report.setdefault("performance", {})["mesh_cache"] = dict(mesh_stats)
+                report["performance"]["read_cache_hit"] = False
                 return report
 
         report, cached = await core.cached_read(
             "analyze_element_geometry",
             job,
-            key=(selector, gids, cuts, include_outline, physical_only, max_elements, offset),
+            key=(
+                selector,
+                gids,
+                cuts,
+                detail,
+                measurement_set,
+                requested,
+                frame,
+                resolved_station_strategy,
+                precision,
+                include_alternatives,
+                include_sections,
+                include_outline,
+                physical_only,
+                max_elements,
+                offset,
+            ),
             timeout=_HEAVY_TIMEOUT,
             session=s,
         )
+        if cached:
+            report = copy.deepcopy(report)
+            report.setdefault("performance", {})["read_cache_hit"] = True
+            report["performance"]["mesh_cache"] = {
+                "mesh_requests": 0,
+                "requested_elements": 0,
+                "cache_hits": 0,
+                "cache_misses": 0,
+                "tessellation_batches": 0,
+                "tessellated_elements": 0,
+                "tessellated_triangles": 0,
+                "tessellation_failures": 0,
+                "tessellation_ms": 0.0,
+                "skipped_due_to_read_cache": True,
+            }
         return ok(
             report,
             core.session_meta(),
@@ -1337,6 +1488,12 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
             entries=entries,
             notes=notes,
             generated_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            analysis_version=analysis.get("analysis_version"),
+            model_revision={
+                "model_id": session.model_id,
+                "fingerprint": session.fingerprint,
+                "revision": session.revision,
+            },
         )
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(text, encoding="utf-8")

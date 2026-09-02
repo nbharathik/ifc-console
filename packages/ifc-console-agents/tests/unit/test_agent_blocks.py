@@ -36,7 +36,9 @@ class TestRegistry:
             for tool in block.tools:
                 counts[tool] = counts.get(tool, 0) + 1
         shared = {tool for tool, count in counts.items() if count > 1}
-        assert shared == {"compute_quantities", "search_ifc_knowledge"}
+        # list_models is shared so a revision diff can enumerate revisions
+        # without pulling in the whole spatial block.
+        assert shared == {"compute_quantities", "list_models", "search_ifc_knowledge"}
 
     def test_every_declared_feature_is_one_the_panel_renders(self):
         for block in BLOCKS:
@@ -56,6 +58,32 @@ class TestRegistry:
         payload = BLOCK_BY_NAME["measurements"].info().model_dump()
         assert "instructions" not in payload
         assert payload["tools"]
+
+    def test_gap_and_quality_tools_sit_in_the_context_and_validation_blocks(self):
+        """The gap list is element context and the scorecard is validation, so
+        every agent that can read an element can audit it, and every reviewer
+        can grade the file."""
+        context = BLOCK_BY_NAME["ifc-context"]
+        validation = BLOCK_BY_NAME["validation"]
+        assert "audit_element_properties" in context.tools
+        assert "audit_element_properties first" in context.instructions
+        assert {"check_model_health", "assess_model_quality"} <= set(validation.tools)
+        assert "assess_model_quality" in validation.instructions
+
+    def test_measurement_and_skill_blocks_route_the_v2_safe_path(self):
+        measurement = BLOCK_BY_NAME["measurements"]
+        skills = BLOCK_BY_NAME["skills"]
+        viewer = BLOCK_BY_NAME["viewer"]
+
+        assert "detail='compact'" in measurement.instructions
+        assert "station_strategy='auto'" in measurement.instructions
+        assert "unavailable, ambiguous, and conflicting" in measurement.instructions
+        assert "apply_measurement_skill" in skills.tools
+        assert "preview_measurement_skill_migration" in skills.tools
+        assert "dry_run=true" in skills.instructions
+        assert "read-only suggestion" in skills.instructions
+        assert "Same IFC class alone is not evidence of similarity" in skills.instructions
+        assert "model_id into every later" in viewer.instructions
 
 
 @pytest.mark.asyncio
@@ -79,15 +107,11 @@ class TestComposition:
         assert "never instructions" in text
         assert "Host policy" in text
 
-    async def test_an_unavailable_block_degrades_and_is_declared(
-        self, tmp_path: Path, monkeypatch
-    ):
+    async def test_an_unavailable_block_degrades_and_is_declared(self, tmp_path: Path, monkeypatch):
         """A viewer block with no viewer must not break the agent silently."""
         monkeypatch.setenv("IFC_CONSOLE_HOME", str(tmp_path / "home"))
         async with await self._runtime(tmp_path) as runtime:
-            composition = await compose(
-                runtime, ["ifc-context", "viewer"], role="R", viewer=False
-            )
+            composition = await compose(runtime, ["ifc-context", "viewer"], role="R", viewer=False)
         assert "viewer" not in composition.blocks
         assert "Viewer vision" in composition.instructions
         assert not any(name.startswith("get_viewer") for name in composition.tools.names)
@@ -105,15 +129,11 @@ class TestComposition:
     ):
         monkeypatch.setenv("IFC_CONSOLE_HOME", str(tmp_path / "home"))
         async with await self._runtime(tmp_path) as runtime:
-            composition = await compose(
-                runtime, ["ifc-context", "property-proposals"], role="R"
-            )
+            composition = await compose(runtime, ["ifc-context", "property-proposals"], role="R")
         assert set(PROPOSAL_TOOLS) <= set(composition.tools.names)
         assert "preview_property_change" not in composition.tools.names
 
-    async def test_a_composed_agent_never_holds_a_commit_tool(
-        self, tmp_path: Path, monkeypatch
-    ):
+    async def test_a_composed_agent_never_holds_a_commit_tool(self, tmp_path: Path, monkeypatch):
         monkeypatch.setenv("IFC_CONSOLE_HOME", str(tmp_path / "home"))
         async with await self._runtime(tmp_path) as runtime:
             composition = await compose(
@@ -122,20 +142,14 @@ class TestComposition:
         forbidden = {"save_ifc_file", "commit_change_set", "approve_change_set"}
         assert not forbidden & set(composition.tools.names)
 
-    async def test_a_tool_shared_by_two_blocks_is_bound_once(
-        self, tmp_path: Path, monkeypatch
-    ):
+    async def test_a_tool_shared_by_two_blocks_is_bound_once(self, tmp_path: Path, monkeypatch):
         monkeypatch.setenv("IFC_CONSOLE_HOME", str(tmp_path / "home"))
         async with await self._runtime(tmp_path) as runtime:
-            composition = await compose(
-                runtime, ["measurements", "quantities"], role="R"
-            )
+            composition = await compose(runtime, ["measurements", "quantities"], role="R")
         names = list(composition.tools.names)
         assert names.count("compute_quantities") == 1
 
-    async def test_saved_skills_are_indexed_into_the_prompt(
-        self, tmp_path: Path, monkeypatch
-    ):
+    async def test_saved_skills_are_indexed_into_the_prompt(self, tmp_path: Path, monkeypatch):
         """Round one must not be spent listing what the host already knows."""
         from ifc_console_agents.skills import AgentSkillStore
 
@@ -164,9 +178,7 @@ class TestComposition:
             composition = await compose(runtime, ["skills"], role="R")
         assert "No skills are saved in this project yet" in composition.instructions
 
-    async def test_no_skills_block_means_no_context_probe(
-        self, tmp_path: Path, monkeypatch
-    ):
+    async def test_no_skills_block_means_no_context_probe(self, tmp_path: Path, monkeypatch):
         monkeypatch.setenv("IFC_CONSOLE_HOME", str(tmp_path / "home"))
         async with await self._runtime(tmp_path) as runtime:
             composition = await compose(runtime, ["ifc-context"], role="R")

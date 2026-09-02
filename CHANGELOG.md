@@ -2,22 +2,149 @@
 
 ## Unreleased
 
+### Workflows in the chat, a reworked workflow surface, and memory
+
+- Run a workflow from the Agent composer: `/` lists the library first, the
+  chosen workflow attaches to the conversation as a chip, and Run starts it
+  with the assistant the workflow names. The chip's hover preview shows the
+  exact text sent: system prompt, scope, settings, and a procedure written
+  from the workflow's steps. Every later turn carries the workflow, so the
+  console keeps one thread; a reopened conversation restores it.
+- `POST /api/agents/stream` accepts `workflow` and `workflow_scope`. The
+  workflow's instructions join the thread's standing instructions, an empty
+  prompt is answered with the workflow's own task, a selection-scoped
+  workflow refuses to start on nothing, and a `workflow_context` event
+  reports what was layered on. New `chat_instructions` and `chat_task_prompt`
+  helpers render it; `viewer_scope` is shared with the staged runner.
+- Rework the workflow surface into Library and Runs. Library is a list beside
+  a page: purpose, facts, a pipeline strip of the stages, the full system
+  prompt, defaults, one run prompt, Run, and Run in chat. Runs keeps its
+  stage bar, thread, result view, and follow-ups. Batch selection lives in
+  the list, the scope control in the top bar, and authoring is a page of the
+  Library reached from Edit or New workflow.
+- Render a streaming run incrementally: new entries append, only the growing
+  paragraph is repainted, tool results keep their preview rather than the
+  whole envelope, and a session keeps at most thirty runs with bounded
+  entries.
+- Add a memory pill under the composer. It reads the page heap, the console
+  process, and the machine's free memory, warns when any is high, and on a
+  press or automatically during a run releases the viewer's parsed-model
+  cache and idle parser and trims full tool output from older turns.
+- Report the console's resident memory on `/api/status`, publish the viewer's
+  footprint with every context frame, add a `release-memory` viewer command,
+  lower the parsed-model cache budget to 64–160 MB, give the cache back after
+  a minute out of sight, and release the inline web-ifc fallback when idle.
+- Group the slash list into Workflows, Commands, and Skills with substring
+  matching, offer the first workflows as starters on the empty state, and
+  add Run a workflow to the plus menu.
+
+### Element parameters and model quality
+
+- Add `audit_element_properties`: for a few elements, the schema's property
+  set templates against what the occurrence and its type actually carry, per
+  applicable property and quantity set, with where each gap is usually
+  derived from (geometry, material, spatial position, documents, the type,
+  or a person). Custom and AI-authored sets are listed separately.
+- Add `assess_model_quality`: a deterministic 0-100 scorecard with a letter
+  grade over project identity, units and georeferencing, spatial
+  containment, naming, typing, classification, common property sets and key
+  properties per class, base quantities, materials, and representations,
+  each with findings, example ids, and ordered improvements.
+- Add the `parameters` agent preset. It pins the viewer selection, takes the
+  gap list first, gathers evidence cheapest first (compact geometry analysis
+  and derived quantities, the type and its siblings, documents and images
+  read as pixels, generated code), reports every candidate with unit,
+  nominal type, method, source, and confidence, and proposes only on request
+  or behind a gate.
+- Teach the `general` agent to route "what is this element missing" to the
+  gap audit and "how good is this file" to the scorecard, and the `review`
+  agent to grade before it validates.
+- Add the `element-parameters` workflow (selection scoped: analyze, human
+  gate, propose, report; the analysis stage cannot reach a proposal tool) and
+  the `model-quality-review` workflow (scorecard, health, schema, then an
+  explained and prioritised improvement plan).
+- Add a **Run workflow** action to the viewer status bar that opens the agent
+  panel on the workflow library with the selection scope already chosen.
+- Put the gap audit in the `ifc-context` block and the health check and
+  scorecard in the `validation` block, so every composed agent inherits them.
+
+### Geometry analysis and measurement skills
+
+- Add a backward-compatible geometry analysis 2.0 contract with semantic
+  frames, stable measurement ids, adaptive sections, source reconciliation,
+  uncertainty, coverage, and bounded evidence.
+- Inventory mapped, Boolean, swept, tapered, material, topology, and opening
+  evidence while keeping approximate or pre-Boolean results explicitly marked.
+- Add explainable geometry signatures and deterministic structured measurement
+  skill application, with revision-aware matching and read-only dry-run as the
+  default.
+- Add non-mutating migration previews for legacy prose skills and preserve
+  ordered object roles for relationship measurements that require review.
+- Add grouped selected-object geometry review with semantic-axis and adaptive
+  station visualizations, exact versus measured evidence, and stale or partial
+  result protection.
+- Reuse repeated mapped geometry analysis and expose mesh/read cache, timing,
+  tessellation, budget, and skipped-work evidence.
+
 ### Agent workflows
 
+- Split Workflows into three surfaces that match what a person is doing: Run
+  lists every workflow as a row you expand, type one optional run prompt into,
+  and start; Runs streams and keeps every execution of the session; Setup owns
+  the prompts, agent, scope, and reusable defaults.
+- Make starting a run a click. Built-in workflows no longer declare form
+  inputs: each system prompt states what to do when nothing is specified, so a
+  run needs only the viewer scope and an optional prompt for that run. Declared
+  inputs still parse for hand-written files and appear in a fold.
+- Let a finished run be continued in place. A follow-up question keeps the
+  workflow's system prompt, tools, and scope, and carries the report it already
+  produced, so it re-checks the model instead of guessing.
+- Show tool approval requests inside a workflow run. A run that needed a
+  decision previously stalled behind a card nobody could see.
+- Add a `revisions` capability block (attached models and revision diffs) so a
+  revision comparison can pick its own baseline instead of asking for one.
+
+- Redesign Workflows as a compact prompt studio with collapsible Library and
+  Runs navigation, names-only workflow rows, summary bullets, a collapsed full
+  prompt, and an editable additional-instruction layer. Make activity the main
+  run view with chat-style LLM output, tool calls and results, stage states,
+  and token usage. Add a top-bar switch back to the Agent panel.
+- Add concurrent multi-workflow launches. Every selected workflow receives an
+  independent stream, stop control, result, and session run-history row, so a
+  coordinator can inspect one execution without interrupting the others.
+- Add a workflow editor endpoint. Editing a built-in saves a project override
+  while preserving its deterministic steps and review gates.
+- Make custom workflows store a first-class system prompt and optional default
+  settings. Simplify Measurement Audit to use that prompt, viewer scope, and
+  optional run settings instead of requiring element, expected-value, or
+  tolerance fields.
+
+- Connect workflows to the live 3D viewer scope. Compatible procedures can
+  run on the current model-scoped selection or the whole model, show the live
+  selection count, and frame it without leaving the run sheet. Collapse
+  defaulted inputs, add optional run guidance, and replace typed model ids
+  with a resident-model picker.
+- Add a compact workflow builder that saves a prompt, existing agent, optional
+  skill, scope policy, and standing instructions as a project workflow. Link
+  it to the existing agent builder, and expose the library through
+  `/workflow`, `/workflows`, and `/new-workflow` composer commands.
 - Add preconfigured workflows: a named sequence of steps a user starts with one
   click instead of retyping a prompt. A step calls one console tool, runs one
   agent over a scoped set of capability blocks, stops for a human decision, or
   writes a report artifact. Values flow between steps through
   `{{ inputs.x }}` and `{{ steps.y.text }}` references, which are substituted
   literally: workflow files are content, not a template language.
-- Ship three built-ins: `revision-qa-gate` (validate, then triage the failures
-  into a punch list), `revision-diff-review` (compare two revisions and explain
-  what changed, with risk flags), and `measurement-audit` (apply a saved skill
-  across a selector and report deviations).
+- Ship seven built-ins: a deterministic quick model check plus property
+  completeness, quantity, coordination clash, revision QA, revision diff, and
+  measurement procedures. The coordination and revision QA procedures pause
+  at an explicit reviewer gate before exporting.
 - Serve the surface from two doors that share one component and one state: the
   standalone `/workflows` page opened by the new `/workflows` slash command,
   and a Workflows control in the Agent panel header. `/workflows list` prints
   what a project can run; `/workflows <name>` opens straight into one.
+- Authenticate every catalog, run, and reviewer-gate request from both browser
+  doors. The workflow surface now explains an expired session instead of
+  reducing every HTTP failure to “Workflows are unavailable.”
 - Read workflow definitions from `.ifc-console/agents/workflows/*.yaml`
   alongside the built-ins, where a project file overrides a built-in of the
   same name, so a company can adapt a shipped workflow without forking the
@@ -108,6 +235,12 @@
   release idle web-ifc workers, and detach completed parser closures. This
   reduces background CPU and prevents large IFC buffers and WASM high-water
   memory from accumulating across tab switches.
+- Pack vertex normals to normalized 16-bit buffers from the parse worker
+  through the GPU, calculate geometry mass in that worker, instance repeated
+  high-detail shapes before they are duplicated into merged buffers, and cull
+  sub-pixel instance groups during display frames. Exact selection and
+  measurement passes reveal those groups, so the faster view does not make
+  small products unpickable.
 
 - Keep the top workspace row for IFC document tabs only. The agent name and
   settings stay in the agent header, IFC tabs begin at the viewer edge, and

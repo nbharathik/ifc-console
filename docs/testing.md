@@ -81,6 +81,8 @@ The panel's pure logic lives in ES modules with no DOM dependency:
 - `chat_markdown.js` - the renderer and its escaping
 - `chat_flow.js` - the tool-to-stage map and the SSE run reducer
 - `chat_history.js` - the local conversation archive and Markdown export
+- `chat_memory.js` - the memory report, relief plan, and sampling cadence
+  behind the composer's memory pill
 - `chat_sidebar.js` - assistant grouping and conversation bucketing
 - `chat_workspace.js` - the agent workspace model
 

@@ -23,6 +23,7 @@ export const STAGES = [
       "list_models",
       "get_georeferencing",
       "get_schema_docs",
+      "audit_element_properties",
     ],
   },
   {
@@ -64,6 +65,8 @@ export const STAGES = [
     tools: [
       "validate_model",
       "validate_ids",
+      "check_model_health",
+      "assess_model_quality",
       "highlight_elements",
       "apply_color_theme",
       "get_viewer_screenshot",

@@ -15,7 +15,9 @@ over the open model, where a stage's output is the next stage's prompt.
 
 from __future__ import annotations
 
+import os
 import re
+import uuid
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -47,7 +49,7 @@ class WorkflowInput(BaseModel):
 
     id: str = Field(pattern=r"^[a-z][a-z0-9_]{0,39}$")
     label: str = Field(min_length=1, max_length=80)
-    type: Literal["text", "number", "boolean", "choice", "path"] = "text"
+    type: Literal["text", "number", "boolean", "choice", "path", "model"] = "text"
     required: bool = False
     default: str | float | bool | None = None
     choices: tuple[str, ...] = ()
@@ -91,6 +93,7 @@ class AgentStep(BaseModel):
     needs: tuple[str, ...] = ()
     prompt: str = Field(min_length=1, max_length=20_000)
     role: str = Field(default="", max_length=8000)
+    agent: str = Field(default="", max_length=64)
     preset: str = Field(default="", max_length=64)
     blocks: tuple[str, ...] = ()
     max_tool_rounds: int = Field(default=8, ge=1, le=60)
@@ -98,8 +101,10 @@ class AgentStep(BaseModel):
 
     @model_validator(mode="after")
     def needs_a_source(self) -> AgentStep:
-        if not self.preset and not self.blocks:
-            raise ValueError(f"agent step {self.id!r} names neither a preset nor blocks")
+        if not self.agent and not self.preset and not self.blocks:
+            raise ValueError(
+                f"agent step {self.id!r} names no agent, preset, or capability blocks"
+            )
         return self
 
 
@@ -142,6 +147,10 @@ class WorkflowSpec(BaseModel):
     title: str = Field(min_length=1, max_length=100)
     description: str = Field(default="", max_length=500)
     tags: tuple[str, ...] = ()
+    scope: Literal["model", "selection", "either"] = "model"
+    system_prompt: str = Field(default="", max_length=20_000)
+    additional_instructions: str = Field(default="", max_length=8000)
+    settings: dict[str, str] = Field(default_factory=dict)
     inputs: tuple[WorkflowInput, ...] = ()
     steps: tuple[WorkflowStep, ...] = Field(min_length=1, max_length=40)
 
@@ -153,6 +162,13 @@ class WorkflowSpec(BaseModel):
         input_ids = [item.id for item in self.inputs]
         if len(input_ids) != len(set(input_ids)):
             raise ValueError("workflow input IDs must be unique")
+        if len(self.settings) > 32:
+            raise ValueError("workflow settings are limited to 32 entries")
+        for key, value in self.settings.items():
+            if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_. -]{0,63}", key):
+                raise ValueError(f"workflow setting key {key!r} is invalid")
+            if len(value) > 2000:
+                raise ValueError(f"workflow setting {key!r} is too long")
         seen: set[str] = set()
         for step in self.steps:
             unknown = set(step.needs).difference(seen)
@@ -171,6 +187,19 @@ class WorkflowSpec(BaseModel):
             "title": self.title,
             "description": self.description,
             "tags": list(self.tags),
+            "scope": self.scope,
+            "system_prompt": self.system_prompt or _primary_prompt(self),
+            "additional_instructions": self.additional_instructions,
+            "settings": dict(self.settings),
+            "requires_model": any(isinstance(step, AgentStep) for step in self.steps),
+            "has_gate": any(isinstance(step, GateStep) for step in self.steps),
+            "agents": list(
+                dict.fromkeys(
+                    step.agent or step.preset
+                    for step in self.steps
+                    if isinstance(step, AgentStep) and (step.agent or step.preset)
+                )
+            ),
             "inputs": [item.model_dump(mode="json") for item in self.inputs],
             "steps": [
                 {
@@ -183,11 +212,19 @@ class WorkflowSpec(BaseModel):
         }
 
 
+def _primary_prompt(spec: WorkflowSpec) -> str:
+    """Best prompt preview for older workflows without ``system_prompt``."""
+    for step in spec.steps:
+        if isinstance(step, AgentStep):
+            return step.prompt
+    return ""
+
+
 def _default_title(step: WorkflowStep) -> str:
     if isinstance(step, ToolStep):
         return step.tool.replace("_", " ")
     if isinstance(step, AgentStep):
-        return f"{step.preset or 'agent'} step"
+        return f"{step.agent or step.preset or 'agent'} step"
     if isinstance(step, GateStep):
         return "Approval"
     return "Report"
@@ -277,6 +314,36 @@ class WorkflowRegistry:
                 f"Available workflows: {known}.",
             )
         return spec
+
+    def save(self, spec: WorkflowSpec, *, overwrite: bool = False) -> Path:
+        """Save one project workflow without replacing it accidentally."""
+        self.directory.mkdir(parents=True, exist_ok=True)
+        target = self.directory / f"{spec.name}.yaml"
+        if target.exists() and not overwrite:
+            raise ToolError(
+                "FILE_EXISTS",
+                f"workflow {spec.name!r} already exists",
+                "Choose another name or edit the existing project workflow.",
+            )
+        payload = spec.model_dump(mode="json", exclude_defaults=True)
+        payload["version"] = "1"
+        text = yaml.safe_dump(payload, sort_keys=False, allow_unicode=True)
+        if len(text.encode("utf-8")) > MAX_WORKFLOW_BYTES:
+            raise ToolError(
+                "INVALID_INPUT",
+                "workflow is too large",
+                f"Keep the workflow below {MAX_WORKFLOW_BYTES // 1024} KB.",
+            )
+        temporary = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
+        try:
+            with temporary.open("x", encoding="utf-8", newline="\n") as handle:
+                handle.write(text)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, target)
+        finally:
+            temporary.unlink(missing_ok=True)
+        return target
 
 
 def _lookup(context: Mapping[str, Any], path: str) -> Any:
@@ -400,12 +467,181 @@ def validate_inputs(spec: WorkflowSpec, values: Mapping[str, Any]) -> dict[str, 
     return resolved
 
 
+def validate_settings(
+    spec: WorkflowSpec, values: Mapping[str, Any] | None
+) -> dict[str, str]:
+    """Merge free-form run settings over a workflow's reusable defaults."""
+    if values is not None and not isinstance(values, Mapping):
+        raise ToolError(
+            "INVALID_INPUT",
+            "workflow settings must be key/value pairs",
+            "Use a short setting name and a text value.",
+        )
+    # ``None`` means the caller did not submit settings and wants the saved
+    # defaults. A mapping is the complete run-time set, which lets the Setup
+    # panel remove a saved default by omitting its row.
+    merged: dict[str, str] = dict(spec.settings) if values is None else {}
+    for raw_key, raw_value in (values or {}).items():
+        key = str(raw_key).strip()
+        if not key and (raw_value is None or not str(raw_value).strip()):
+            continue
+        if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_. -]{0,63}", key):
+            raise ToolError(
+                "INVALID_INPUT",
+                f"workflow setting key {key!r} is invalid",
+                "Start with a letter and use up to 64 letters, numbers, spaces, dots, underscores, or hyphens.",
+            )
+        value = "" if raw_value is None else str(raw_value).strip()
+        if len(value) > 2000:
+            raise ToolError(
+                "INVALID_INPUT",
+                f"workflow setting {key!r} is too long",
+                "Keep each setting value below 2,000 characters.",
+            )
+        if value:
+            merged[key] = value
+        else:
+            merged.pop(key, None)
+    if len(merged) > 32:
+        raise ToolError(
+            "INVALID_INPUT",
+            "a workflow run can have at most 32 settings",
+            "Remove settings that do not affect this run.",
+        )
+    return merged
+
+
 def steps_in_order(spec: WorkflowSpec) -> Iterator[WorkflowStep]:
     """Declaration order, which validation already proved is dependency order."""
     yield from spec.steps
 
 
+# A workflow attached to a chat turn travels as standing instructions, so the
+# whole thing has to fit beside the agent's own prompt.
+CHAT_INSTRUCTIONS_CHARS = 30_000
+
+
+def _render_for_chat(template: str, context: Mapping[str, Any]) -> str:
+    """Render settings and scope, but show ``{{ steps.x.text }}`` as words.
+
+    In a chat there is no runner filling step results in, so a step reference
+    is shown to the model as the thing it stands for rather than as nothing.
+    """
+
+    def replace(match: re.Match[str]) -> str:
+        path = match.group(1)
+        if path.startswith("steps."):
+            return f"<{path}>"
+        return _as_text(_lookup(context, path))
+
+    return _PLACEHOLDER.sub(replace, template)
+
+
+def _render_arguments_for_chat(value: Any, context: Mapping[str, Any]) -> Any:
+    if isinstance(value, str):
+        return _render_for_chat(value, context)
+    if isinstance(value, Mapping):
+        return {key: _render_arguments_for_chat(item, context) for key, item in value.items()}
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+        return [_render_arguments_for_chat(item, context) for item in value]
+    return value
+
+
+def _step_kind_label(step: WorkflowStep) -> str:
+    if isinstance(step, ToolStep):
+        return "tool"
+    if isinstance(step, AgentStep):
+        return "agent"
+    if isinstance(step, GateStep):
+        return "decision"
+    return "report"
+
+
+def _chat_procedure(spec: WorkflowSpec, context: Mapping[str, Any]) -> str:
+    lines = ["Procedure for this workflow, in order:"]
+    for number, step in enumerate(spec.steps, start=1):
+        title = step.title or _default_title(step)
+        head = f"{number}. {title} ({_step_kind_label(step)}): "
+        if isinstance(step, ToolStep):
+            import json
+
+            arguments = _render_arguments_for_chat(dict(step.arguments), context)
+            rendered = json.dumps(arguments, ensure_ascii=False, default=str)
+            suffix = " Skip it if the call fails." if step.optional else ""
+            lines.append(f"{head}call {step.tool} with {rendered}.{suffix}")
+        elif isinstance(step, AgentStep):
+            lines.append(head + _render_for_chat(step.prompt, context).strip())
+        elif isinstance(step, GateStep):
+            message = _render_for_chat(step.message, context).strip()
+            lines.append(
+                f"{head}stop and ask the user before continuing: {message} "
+                "Wait for their answer; do not carry on without it."
+            )
+        else:
+            body = _render_for_chat(step.body, context).strip()
+            lines.append(f"{head}finish with a Markdown report in this shape:\n{body}")
+    return "\n".join(lines)
+
+
+def chat_instructions(
+    spec: WorkflowSpec,
+    *,
+    scope: Mapping[str, Any] | None = None,
+    settings: Mapping[str, str] | None = None,
+    note: str = "",
+) -> str:
+    """The workflow as standing instructions for one chat conversation.
+
+    The agent panel runs a workflow without the staged runner: the system
+    prompt, project instructions, run settings, viewer scope, and a procedure
+    written from the steps all become part of the agent's system prompt, and
+    the conversation carries on from there with the same tools and approvals.
+    """
+    run_settings = dict(spec.settings) if settings is None else dict(settings)
+    scope_context = dict(scope or {})
+    context: dict[str, Any] = {
+        "inputs": {},
+        "settings": run_settings,
+        "steps": {},
+        "scope": scope_context,
+        "run": {"note": note.strip()},
+    }
+    parts = [render(spec.system_prompt, context).strip()]
+    if spec.additional_instructions.strip():
+        parts.append(
+            "Additional instructions:\n" + render(spec.additional_instructions, context).strip()
+        )
+    run_context = ["Run context (treat these values as instructions for this run):"]
+    scope_text = str(scope_context.get("text") or "").strip()
+    if scope_text:
+        run_context.append(f"Scope:\n{scope_text}")
+    if run_settings:
+        rows = "\n".join(f"- {key}: {value}" for key, value in run_settings.items())
+        run_context.append(f"Settings:\n{rows}")
+    if note.strip():
+        run_context.append(f"Additional guidance:\n{note.strip()}")
+    if len(run_context) > 1:
+        parts.append("\n\n".join(run_context))
+    parts.append(_chat_procedure(spec, context))
+    text = "\n\n".join(part for part in parts if part)
+    if len(text) > CHAT_INSTRUCTIONS_CHARS:
+        text = text[:CHAT_INSTRUCTIONS_CHARS].rstrip() + "\n\n[workflow instructions truncated]"
+    return text
+
+
+def chat_task_prompt(spec: WorkflowSpec) -> str:
+    """What to ask when the person pressed Run without typing anything."""
+    context = {"inputs": {}, "settings": dict(spec.settings), "steps": {}, "scope": {}, "run": {}}
+    for step in spec.steps:
+        if isinstance(step, AgentStep):
+            prompt = _render_for_chat(step.prompt, context).strip()
+            if prompt:
+                return prompt
+    return "Carry out the workflow procedure above and return the report."
+
+
 __all__ = [
+    "CHAT_INSTRUCTIONS_CHARS",
     "MAX_WORKFLOW_BYTES",
     "WORKFLOWS_DIRNAME",
     "AgentStep",
@@ -417,10 +653,13 @@ __all__ = [
     "WorkflowRegistry",
     "WorkflowSpec",
     "WorkflowStep",
+    "chat_instructions",
+    "chat_task_prompt",
     "parse_workflow",
     "render",
     "render_arguments",
     "steps_in_order",
     "validate_inputs",
+    "validate_settings",
     "workflows_dir",
 ]

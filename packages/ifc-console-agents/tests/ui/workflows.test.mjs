@@ -2,13 +2,27 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import {
+  authenticatedOptions,
+  clipText,
+  initialScope,
   inputValue,
   missingInputs,
+  normalizeViewerContext,
   parseEventStream,
   runOutcome,
+  selectionCount,
 } from "../../src/ifc_console_agents/static/workflows_model.js";
 
 const frame = (payload) => `data: ${JSON.stringify(payload)}\n\n`;
+
+test("run detail is clipped with a visible marker and never grows past its limit", () => {
+  assert.equal(clipText("short", 100), "short");
+  const clipped = clipText("x".repeat(500), 100);
+  assert.equal(clipped.length, 100);
+  assert.match(clipped, /truncated$/);
+  assert.equal(clipText(null, 10), "");
+  assert.equal(clipText("keep me", 0), "keep me");
+});
 
 test("a whole buffer decodes to its events and leaves no tail", () => {
   const buffer = frame({ type: "step_started", id: "a" }) + frame({ type: "done" });
@@ -59,6 +73,18 @@ test("input values are coerced by their declared type", () => {
   assert.equal(inputValue({ type: "text" }, 5), "5");
 });
 
+test("workflow API requests carry the session token and preserve headers", () => {
+  const options = authenticatedOptions("secret", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+  });
+  assert.equal(options.method, "POST");
+  assert.deepEqual(options.headers, {
+    Authorization: "Bearer secret",
+    "Content-Type": "application/json",
+  });
+});
+
 test("missing required inputs are reported by label", () => {
   const inputs = [
     { id: "a", label: "Newer revision", required: true },
@@ -89,3 +115,30 @@ test("an error frame makes the run failed, not interrupted", () => {
   assert.equal(outcome.error, "internal workflow error");
 });
 
+test("viewer facade and API contexts normalize to model-scoped selections", () => {
+  const context = normalizeViewerContext({
+    open: true,
+    model: { id: "main", name: "Office.ifc" },
+    models: [{ id: "main", name: "Office.ifc" }, { model_id: "rev", name: "Rev B" }],
+    selections: [
+      { model_id: "main", model: "Office.ifc", guids: ["a", "b"] },
+      { model_id: "rev", model: "Rev B", guids: ["c"] },
+    ],
+  });
+  assert.equal(context.connected, true);
+  assert.equal(context.models[0].active, true);
+  assert.equal(selectionCount(context), 3);
+  assert.deepEqual(context.selections[1], {
+    model_id: "rev",
+    model: "Rev B",
+    guids: ["c"],
+  });
+});
+
+test("selection-aware workflows start focused only when a selection exists", () => {
+  const selected = { selections: [{ model_id: "main", guids: ["a"] }] };
+  assert.equal(initialScope({ scope: "either" }, selected), "selection");
+  assert.equal(initialScope({ scope: "either" }, { selections: [] }), "model");
+  assert.equal(initialScope({ scope: "model" }, selected), "model");
+  assert.equal(initialScope({ scope: "selection" }, { selections: [] }), "selection");
+});

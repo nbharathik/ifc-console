@@ -1,4 +1,4 @@
-/* The arithmetic behind the viewer's measurements and its batcher.
+/* The arithmetic behind the viewer's measurements, parser and batcher.
  *
  * Split out of app.js because these are the functions whose answers leave the
  * viewer: they end up in reports, in measure_elements results and in
@@ -20,6 +20,38 @@ const SCENE_INDEX = { x: 0, y: 1, z: 2 };
 // magnitude slower, which the per-vertex loops cannot afford.
 export function norm3(x, y, z) {
   return Math.sqrt(x * x + y * y + z * z);
+}
+
+/**
+ * Pack a unit normal for a normalized signed-short GPU attribute.
+ *
+ * WebGL expands the value back to [-1, 1] in the vertex shader. Direction is
+ * retained to roughly 3e-5 while the parser payload, resident cache and GPU
+ * normal buffer all use half the bytes of Float32 normals.
+ */
+export function packNormalComponent(value) {
+  return Math.round(Math.max(-1, Math.min(1, value || 0)) * 32767);
+}
+
+export function packNormalBuffer(source) {
+  const packed = new Int16Array(source.length);
+  for (let i = 0; i < source.length; i++) {
+    packed[i] = packNormalComponent(Number(source[i]));
+  }
+  return packed;
+}
+
+/**
+ * Whether copies deserve a draw call of their own instead of being baked.
+ *
+ * Small shapes wait for enough repetition to pay for an InstancedMesh. A
+ * large shape switches on its second placement because duplicating thousands
+ * of vertices costs more than the object and draw-call overhead.
+ */
+export function shouldInstanceGeometry(
+  copies, vertices, minCopies = 8, largeGeometryVertices = 2000,
+) {
+  return copies >= minCopies || (copies >= 2 && vertices > largeGeometryVertices);
 }
 
 export function emptyBox(target, at) {

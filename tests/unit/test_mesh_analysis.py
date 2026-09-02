@@ -261,3 +261,16 @@ class TestSliceMesh:
         assert result["intersects"] is False
         assert result["section"] is None
         assert "plane_misses_mesh" in result["flags"]
+
+    def test_requested_tolerance_reaches_section_welding_and_thickness(self):
+        vertices, faces = _box()
+        result = slice_mesh(
+            vertices,
+            faces,
+            [0, 0, 1],
+            origin=[0, 0, 0],
+            backend="builtin",
+            tolerance=2e-5,
+        )
+        assert result["section"]["effective_tolerance_si"] == pytest.approx(2e-5)
+        assert result["section"]["thickness_ray_budget"] == 2000

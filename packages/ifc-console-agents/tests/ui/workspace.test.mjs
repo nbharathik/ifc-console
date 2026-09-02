@@ -2,10 +2,18 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import {
+  canonicalSelectionGuids,
   TABS,
   fileGroups,
   formatBytes,
+  geometryRequestToken,
+  geometrySelectionToken,
+  measurementAlternativeRows,
+  measurementDryRunCanPropose,
+  measurementDryRunIsPartial,
+  measurementEvidenceKind,
   reachSentence,
+  representativeSectionStations,
   suggestedQuestions,
   tabsFor,
   toolsByStage,
@@ -110,6 +118,131 @@ test("Content, Skills, Models, and App remain available for an empty assistant",
   ]);
   assert.deepEqual(empty.skills, []);
   assert.equal(empty.counts.skills, 0);
+});
+
+test("geometry review tokens are model, revision, selection, and generation scoped", () => {
+  const status = {
+    fingerprint: "active-fingerprint",
+    models: [{ id: "model-a", active: true, etag: "model-a-fingerprint-7" }],
+  };
+  const selection = { model_id: "model-a", guids: ["guid-b", "guid-a", "guid-b"] };
+  const token = geometrySelectionToken(selection, status);
+
+  assert.deepEqual(canonicalSelectionGuids(selection), ["guid-a", "guid-b"]);
+  assert.equal(
+    token,
+    geometrySelectionToken({ model_id: "model-a", guids: ["guid-a", "guid-b"] }, status),
+  );
+  assert.notEqual(token, geometrySelectionToken(selection, {
+    ...status,
+    models: [{ id: "model-a", active: true, etag: "model-a-fingerprint-8" }],
+  }));
+  assert.notEqual(token, geometrySelectionToken({ ...selection, model_id: "model-b" }, status));
+  assert.notEqual(geometryRequestToken(token, 1), geometryRequestToken(token, 2));
+});
+
+test("skill proposals require a current complete preview with extracted values", () => {
+  const selectionToken = "model-and-selection";
+  const requestGeneration = 4;
+  const complete = {
+    selectionToken,
+    requestGeneration,
+    requestToken: geometryRequestToken(selectionToken, requestGeneration),
+    loading: false,
+    error: "",
+    complete: true,
+    payload: {
+      data: {
+        targets: { has_more: false, truncated_by_max_matches: false },
+        results: [{ status: "extracted", extracted: [{ output: "profile.width" }] }],
+      },
+      meta: { truncated: false },
+    },
+  };
+  const current = { selectionToken, requestGeneration };
+
+  assert.equal(measurementDryRunCanPropose(complete, current), true);
+  assert.equal(measurementDryRunCanPropose({
+    ...complete,
+    payload: { data: { results: [{ status: "skipped", extracted: [] }] } },
+  }, current), false);
+  assert.equal(measurementDryRunCanPropose({
+    ...complete,
+    payload: { data: { results: [{ status: "partial", extracted: [] }] } },
+  }, current), false);
+  assert.equal(measurementDryRunCanPropose(complete, {
+    selectionToken: "new-selection",
+    requestGeneration,
+  }), false);
+  assert.equal(measurementDryRunCanPropose(complete, {
+    selectionToken,
+    requestGeneration: requestGeneration + 1,
+  }), false);
+
+  for (const payload of [
+    { data: { targets: { has_more: true } } },
+    { data: { targets: { truncated_by_max_matches: true } } },
+    { data: { meta: { truncated: true } } },
+    { meta: { truncated: true } },
+  ]) {
+    assert.equal(measurementDryRunIsPartial(payload), true);
+    assert.equal(measurementDryRunCanPropose({ ...complete, payload }, current), false);
+  }
+});
+
+test("measurement evidence separates exact IFC parameters from measured geometry", () => {
+  const exact = {
+    value_si: 0.2,
+    source: "profile_parameter",
+    uncertainty_si: 0,
+    flags: [],
+  };
+  assert.equal(measurementEvidenceKind(exact).id, "exact");
+  assert.equal(measurementEvidenceKind({
+    ...exact,
+    flags: ["pre_boolean_parameter"],
+  }).id, "measured");
+  assert.equal(measurementEvidenceKind({
+    ...exact,
+    source: "analysis_mesh",
+  }).id, "measured");
+
+  const rows = measurementAlternativeRows({
+    ...exact,
+    alternatives: [{
+      value_si: 0.204,
+      source: "mesh_section",
+      uncertainty_si: 0.001,
+    }],
+  }, 0.002);
+  assert.equal(rows[0].evidence_kind.id, "exact");
+  assert.equal(rows[1].evidence_kind.id, "measured");
+  assert.ok(Math.abs(rows[1].delta_si - 0.004) < 1e-12);
+  assert.equal(rows[1].within_tolerance, false);
+  assert.equal(rows[1].assessment, "outside tolerance");
+});
+
+test("representative section stations merge roles and remain ordered", () => {
+  const stations = representativeSectionStations({
+    stations: [{ at: 0.5, descriptor: { area_si: 0.12 } }],
+    representative_sections: {
+      minimum: { at: 0.1, descriptor: { width_si: 0.3 } },
+      dominant: { at: 0.5, descriptor: { width_si: 0.5 }, closed: true },
+      transition_stations: [0.8],
+    },
+    profile_regions: [{
+      start: 0,
+      end: 0.4,
+      representative_station: 0.2,
+      descriptor: { height_si: 0.6 },
+    }],
+  });
+
+  assert.deepEqual(stations.map((station) => station.at), [0.1, 0.2, 0.5, 0.8]);
+  assert.deepEqual(stations[2].roles, ["evaluated station", "dominant"]);
+  assert.equal(stations[2].descriptor.area_si, 0.12);
+  assert.equal(stations[2].descriptor.width_si, 0.5);
+  assert.equal(stations[2].closed, true);
 });
 
 test("tools are grouped by stage, and stages with no tools disappear", () => {

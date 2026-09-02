@@ -242,14 +242,15 @@ adapter ships with `ifc-console-agents` and is described in the
 
 ## Built-in agents
 
-Four presets ship in `ifc_console_agents.presets`:
+Five presets ship in `ifc_console_agents.presets`:
 
 | preset | purpose |
 | ------ | ------- |
 | `general` | full query, document, measurement, review, proposal, and code surface |
-| `measurement` | recipe-driven measurement with cited evidence |
+| `measurement` | skill-first parametric measurement with cited, conflict-aware evidence |
+| `parameters` | gap list for a selected element, values derived from geometry, context, and documents, AI-marked proposals |
 | `docs` | answers from project references with page citations |
-| `review` | schema, IDS, clash, quantity, and data-quality review |
+| `review` | quality scorecard, schema, IDS, health, clash, and quantity review |
 
 They use the same public `Agent`, `Toolset`, and provider contracts as custom
 applications. `examples/sdk/quickstart_agent.py` is the smallest runnable
@@ -294,6 +295,15 @@ The corresponding local API is small:
 | `GET /api/agents/content?agent=<name>` | library and per-file access state |
 | `POST /api/agents/content/upload?name=<file>` | add and index a shared reference |
 | `POST /api/agents/content/access` | save `{agent, mode, paths}` |
+| `POST /api/agents/geometry/review` | bounded, read-only analysis of one model-scoped GlobalId |
+| `POST /api/agents/skills/dry-run` | read-only applicability and extraction preview for one v2 skill |
+
+The two review endpoints require `model`, so a selected GlobalId stays pinned
+to the IFC file that supplied it. The geometry endpoint fixes the frame to
+`semantic` and automatic station discovery; the workspace requests standard
+detail so it can review representative sections and independent alternatives.
+The skill endpoint always forces `dry_run=true`, even if a caller sends false.
+Neither endpoint proposes or writes properties.
 
 ## Capability blocks
 
@@ -302,13 +312,14 @@ the tool surface but never widen session policy.
 
 | block | adds |
 | ----- | ---- |
-| `ifc-context` | elements, types, properties, and schema docs |
+| `ifc-context` | elements, types, properties, schema docs, and the property gap audit |
 | `spatial` | hierarchy and georeferencing |
 | `documents` | project search, images, and rendered PDF pages |
 | `measurements` | recipes, geometry, distances, and reports |
 | `quantities` | takeoff and CSV artifacts |
-| `validation` | schema and IDS checks |
+| `validation` | schema and IDS checks, model health, and the quality scorecard |
 | `clash` | intersection and clearance checks |
+| `revisions` | attached models and revision diffs |
 | `viewer` | selection, screenshots, highlights, and viewport control |
 | `skills` | reusable project procedures |
 | `property-proposals` | marked, preview-only property changes |
@@ -334,6 +345,60 @@ In the browser use **Agent workspace > Agents**, or use `/agent new` in the
 terminal. Blueprints choose only reviewed blocks, instructions, limits, and
 starter prompts. They cannot load code, name arbitrary operations, approve a
 ChangeSet, or change runtime policy.
+
+## Selected-object geometry behavior
+
+The built-in `general` and `measurement` agents use the same deterministic
+path for geometry questions:
+
+1. For "this" or "selected", read `get_viewer_selection` and pass its
+   `model_id` to every following query, geometry, and skill call.
+2. Load a matching saved skill before inventing a method, then check the
+   measurement recipe when one applies.
+3. Start with one `analyze_element_geometry` call using compact detail, the
+   semantic frame, and automatic stations.
+4. Open detailed sections, local thickness, mesh health, or screenshots only
+   for flagged ambiguity, conflict, invalid topology, or requested evidence.
+5. Present extracted, unavailable, ambiguous, and conflicting measurements as
+   separate groups, retaining alternatives and source deltas.
+6. For repetition, review a structured skill and dry-run its explainable
+   similarity match before applying it.
+7. Keep property proposals as a later, separately confirmed action.
+
+Semantic ids keep one meaning across IFC classes. World rotation does not turn
+profile width into length. Variable profiles are reported as ranges and
+station domains. Hollow or non-manifold geometry can be refused when safe
+material interval pairing or volume cannot be established.
+
+## Element parameter inference
+
+Most delivered files carry elements whose property sets are absent or half
+empty. The `parameters` preset, and the `general` agent when asked what an
+element is missing, follow one procedure:
+
+1. Pin the viewer selection and its `model_id`.
+2. Call `audit_element_properties`. It reads the schema's property set
+   templates for the class and predefined type and returns, per applicable
+   property and quantity set, what is filled on the occurrence or inherited
+   from the type, what is empty or absent, and where each gap is usually
+   derived from: geometry, material, spatial position, documents, the type,
+   or a person.
+3. Gather evidence cheapest first: one compact geometry analysis and derived
+   quantities, the type and its filled siblings, the spatial position, then
+   the project documents and reference images read as pixels, then generated
+   code for anything the tools do not expose.
+4. Present every candidate with unit, IFC nominal type, method, source, and
+   confidence. Dimensions are never taken from an uncalibrated image, and a
+   value that cannot be justified is left out.
+5. Propose only on request or behind a workflow gate. Proposals land in the
+   reserved `IfcConsole_AI_` property sets with a provenance record, so the
+   AI-assisted layer stays separable from authored data.
+
+The `element-parameters` workflow packages this as a click on a selected
+object: an analysis stage that cannot reach a proposal tool, a human gate
+showing the dossier, and a proposal stage that writes only the reviewed
+candidates. `assess_model_quality` answers the whole-model question the same
+way: a deterministic scorecard the `review` agent explains and prioritises.
 
 ## AI-marked proposals
 
@@ -380,15 +445,101 @@ only after host approval. Import a skill from **Agent workspace > Skills**,
 `POST /api/agents/skills/import?name=<file>.md`, or by copying the file into
 the skills directory. Existing names are never overwritten during import.
 
+A version 2 parametric measurement skill adds these front-matter fields:
+
+```yaml
+kind: parametric_measurement
+schema_version: 2
+```
+
+Its Markdown body contains exactly one fenced `measurement-spec` JSON object.
+The validated object records applicability, stable output ids, preferred and
+fallback sources, semantic frame, confidence and tolerance requirements,
+exemplar revision and signatures, and verification behavior. For example:
+
+```measurement-spec
+{
+  "schema_version": 2,
+  "kind": "parametric_measurement",
+  "applicability": {
+    "ifc_classes": ["IfcMember"],
+    "profile_families": ["i_shape"],
+    "geometry_families": ["constant_profile_extrusion"],
+    "hard_requirements": ["constant_or_piecewise_profile"],
+    "similarity_threshold": 0.85
+  },
+  "measurements": [
+    {
+      "output": "profile.web_thickness",
+      "rule_type": "object_measurement",
+      "preferred_sources": ["profile_parameter", "mesh_section"],
+      "fallbacks": ["adaptive_section.thickness_modes"],
+      "frame": "semantic",
+      "minimum_confidence": "medium",
+      "tolerance": {"absolute_si": 0.001, "relative": 0.02},
+      "unresolved": false,
+      "intent": {"viewer_kind": "distance", "viewer_index": 0}
+    }
+  ],
+  "verification": {"cross_check": "second_source_when_available"},
+  "outputs": ["profile.web_thickness"]
+}
+```
+
+The executable block is authoritative for deterministic replay, but it is not
+a source of facts about the current model. `list_agent_skills` and the
+workspace expose `kind`, `schema_version`, `structured`, `executable`, and
+`spec_status`. Status is `valid`, `review_required`, `invalid`, or `none` for
+a prose-only skill. An unresolved output remains visible for naming and cannot
+execute by accident.
+
 #### Recording a skill from the viewer
 
 Measure an element in the 3D viewer, then use the composer plus menu
 (**Save measurements as a skill**) or **Agent workspace > Skills > Record
 from viewer**. The console reads the viewer's measurement list, runs
-`analyze_element_geometry` on the measured elements, and writes a skill that
-names what each value means (for example "equals the element's
-wall_thickness"), so an agent can repeat the pattern on similar elements
-even when their shapes differ. The same recording is available to scripts as
-`POST /api/agents/skills/record` with `{"name", "notes", "overwrite"}`.
-Ask the agent to "apply the recorded skill to all similar elements" to get
-a per-element results table.
+`analyze_element_geometry` on every referenced element, up to the explicit
+25-element endpoint limit, and pins the analysis to the measurement tab's
+`model_id`, fingerprint, and revision. It stores semantic or local direction,
+snap kinds, anchor relationship, stable measurement matches, tolerance, and
+the exemplar geometry signature. World coordinates are evidence for intent,
+not replay coordinates.
+
+Distance between two objects becomes a relationship intent rather than one
+object's dimension. Area, path, angle, clearance, and element-size records use
+distinct rule types. Relationship intents retain explicit `from` and `to`
+object roles, their GlobalIds, anchor indexes, and bounded local-point or reach
+evidence when available. A match uses semantic direction, feature relationship,
+and scale-aware value tolerance. Ambiguous matches stay unresolved for human
+review instead of being guessed. The same recording is available to scripts
+as `POST /api/agents/skills/record` with
+`{"name", "notes", "overwrite"}`. The response includes structured metadata,
+unresolved intent indexes, analysis status, and the pinned model revision.
+
+In **Agent workspace > Skills**, **Analyze selection** renders grouped version
+2 measurements and coverage. The read-only review also shows the semantic
+frame vectors and provenance, adaptive profile regions, a representative
+section-station slider, exact IFC versus measured evidence badges, and
+expandable source alternatives with deltas, tolerance, uncertainty, and
+conflict reasons. These are workspace diagrams from the analysis payload, not
+objects injected into the Three.js scene. An executable skill offers **Review
+dry run on selection**, which renders applicability score, match reasons,
+extracted values, skipped targets, and ambiguous outputs. **Prepare a separate
+property proposal** appears only as a follow-up action after a complete current
+dry-run with extracted values. It starts a proposal request; it does not change
+or commit the IFC.
+
+`apply_measurement_skill` requires exactly one of `selector` or `global_ids`,
+is paged and bounded, and defaults to `dry_run=true`. It returns a row for
+every accepted or rejected target. Type, profile and geometry family,
+representation compatibility, topology, normalized proportions, and intrinsic
+signature contribute to the score. Same class alone does not pass.
+
+Existing prose-only skills continue to load and guide an agent. They cannot use
+deterministic replay. `preview_measurement_skill_migration(name)` returns a
+read-only version 2 suggestion with inferred classes and outputs, unresolved
+measurement intents, canonical content, and explicit review items. The result
+is not executable and leaves the source unchanged. Review it, resolve every
+item, then save under a new name unless overwrite was explicitly approved.
+Reading, listing, importing, or previewing migration of an old skill never
+rewrites it.

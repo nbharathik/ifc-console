@@ -49,6 +49,15 @@ async def viewer_core(core, work_model: Path):
 
 
 # ------------------------------------------------------------------ HTTP routes
+async def test_status_reports_the_console_memory(viewer_core):
+    client = _http_client(viewer_core)
+    payload = client.get("/api/status", headers=_auth(viewer_core)).json()
+    memory = payload["memory"]
+    assert set(memory) == {"rss_bytes", "peak_rss_bytes", "total_bytes", "available_bytes"}
+    for value in memory.values():
+        assert value is None or (isinstance(value, int) and value >= 0)
+
+
 async def test_routes_require_token(viewer_core):
     client = _http_client(viewer_core)
     assert client.get("/api/model.ifc").status_code == 401

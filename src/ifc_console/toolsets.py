@@ -50,6 +50,8 @@ _INSPECT_TOOLS = frozenset(
     {
         "analyze_element_geometry",
         "apply_color_theme",
+        "assess_model_quality",
+        "audit_element_properties",
         "compute_quantities",
         "control_viewer",
         "describe_capabilities",

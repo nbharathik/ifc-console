@@ -38,6 +38,7 @@ STAGES: tuple[tuple[str, str, str, tuple[str, ...]], ...] = (
             "list_models",
             "get_georeferencing",
             "get_schema_docs",
+            "audit_element_properties",
         ),
     ),
     (
@@ -62,6 +63,7 @@ STAGES: tuple[tuple[str, str, str, tuple[str, ...]], ...] = (
             "get_measurement_recipe",
             "list_agent_skills",
             "get_agent_skill",
+            "apply_measurement_skill",
             "save_agent_skill",
             "measure_elements",
             "measure_distance",
@@ -83,6 +85,8 @@ STAGES: tuple[tuple[str, str, str, tuple[str, ...]], ...] = (
         (
             "validate_model",
             "validate_ids",
+            "check_model_health",
+            "assess_model_quality",
             "highlight_elements",
             "apply_color_theme",
             "get_viewer_screenshot",
@@ -182,9 +186,7 @@ async def describe(
 
     preset = PRESET_BY_NAME.get(info.name)
     blueprint = getattr(pack, "blueprint", None)
-    workflow = (
-        blueprint.workflow.model_dump(mode="json") if blueprint is not None else None
-    )
+    workflow = blueprint.workflow.model_dump(mode="json") if blueprint is not None else None
     declared_limits = getattr(pack, "declared_limits", None)
     if isinstance(declared_limits, AgentLimits):
         requested_limits = declared_limits

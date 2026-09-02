@@ -21,11 +21,14 @@ import {
   LENGTH_UNITS,
   norm3,
   outlinePoints,
+  packNormalBuffer,
+  packNormalComponent,
   planSpatialGrid,
   polylineMeasure,
   polygonMeasure,
   polygonNormal,
   spanMeasure,
+  shouldInstanceGeometry,
   unionBoxCorners,
   unitForFile,
   unitOf,
@@ -56,6 +59,24 @@ const FRAME = {
 };
 
 const identity = () => [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
+
+test("normal packing halves storage and preserves direction", () => {
+  const source = new Float32Array([1, -1, 0, 0.5, -0.25, Number.NaN]);
+  const packed = packNormalBuffer(source);
+  assert.ok(packed instanceof Int16Array);
+  assert.equal(packed.byteLength, source.byteLength / 2);
+  assert.deepEqual([...packed], [32767, -32767, 0, 16384, -8192, 0]);
+  assert.equal(packNormalComponent(2), 32767);
+  assert.equal(packNormalComponent(-2), -32767);
+});
+
+test("instancing waits for small repeats but protects large repeated geometry", () => {
+  assert.equal(shouldInstanceGeometry(2, 2000), false);
+  assert.equal(shouldInstanceGeometry(7, 32), false);
+  assert.equal(shouldInstanceGeometry(8, 32), true);
+  assert.equal(shouldInstanceGeometry(2, 2001), true);
+  assert.equal(shouldInstanceGeometry(1, 100000), false);
+});
 
 /** Column-major rotation about the scene's Y axis, columns scaled by `scale`. */
 function rotationY(degrees, scale = 1, translation = [0, 0, 0]) {

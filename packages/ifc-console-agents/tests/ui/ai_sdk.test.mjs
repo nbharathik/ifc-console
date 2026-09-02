@@ -421,6 +421,30 @@ test("transport drops invalid request context fields", async () => {
   assert.deepEqual(requestBody, { turns: [{ role: "user", text: "Hi" }] });
 });
 
+test("an attached workflow travels by name and keeps an empty prompt empty", () => {
+  const messages = [{ role: "user", text: "Run Measurement audit" }];
+  const body = agentChatRequest(messages, {
+    agent: "measurement",
+    model: "m",
+    prompt: "",
+    workflow: "measurement-audit",
+    workflow_scope: "selection",
+  });
+  assert.equal(body.workflow, "measurement-audit");
+  assert.equal(body.workflow_scope, "selection");
+  // The console supplies the workflow's own task for an empty prompt.
+  assert.equal(body.prompt, "");
+  const typed = agentChatRequest(messages, {
+    agent: "measurement",
+    prompt: "Only storey 2",
+    workflow: "measurement-audit",
+    workflow_scope: "anything-else",
+  });
+  assert.equal(typed.prompt, "Only storey 2");
+  assert.equal(typed.workflow_scope, "model");
+  assert.equal("workflow" in agentChatRequest(messages, { agent: "general" }), false);
+});
+
 test("transport errors use the Python route hint", async () => {
   const transport = createIfcChatTransport({
     fetcher: async () => new Response(JSON.stringify({

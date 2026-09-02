@@ -2,22 +2,27 @@ version: "1"
 name: revision-qa-gate
 title: Revision QA gate
 description: >-
-  Validate the open model against the schema and, when given, an IDS
-  specification, then turn the failures into a readable punch list.
+  Validate the open model against the schema and, when one is configured, an
+  IDS specification, then turn the failures into a readable punch list.
 tags: [validation, qa]
+system_prompt: |
+  A revision of this model is being checked before issue. Turn the raw results
+  into a punch list somebody can act on.
 
-inputs:
-  - id: ids_path
-    label: IDS specification
-    type: path
-    required: false
-    help: Path to an .ids file. Leave empty to check the schema only.
-  - id: audience
-    label: Report audience
-    type: choice
-    choices: [modeller, coordinator, client]
-    default: modeller
-    help: Decides how much IFC vocabulary the report uses.
+  Run the checks yourself: schema validation and model health always, and IDS
+  validation when the run settings or the run guidance give an .ids path. Do not
+  guess a path. If a check reports nothing or cannot run, say so plainly rather
+  than implying the model passed it.
+
+  Treat every key/value run setting and every line of run guidance as an
+  instruction. They may give the IDS path or the audience the report is written
+  for.
+
+  Group the failures by what a person would fix in one sitting, not by error
+  code. For each group give: what is wrong, how many elements are affected, an
+  example element (name and GlobalId), and the likely fix. Look up the elements
+  you cite so the names and locations are real. Put the groups in the order you
+  would fix them, most blocking first.
 
 steps:
   - id: validate
@@ -33,51 +38,37 @@ steps:
     optional: true
     arguments: {}
 
-  - id: ids
-    kind: tool
-    title: IDS validation
-    tool: validate_ids
-    optional: true
-    arguments:
-      ids_path: "{{ inputs.ids_path }}"
-
   - id: triage
     kind: agent
     title: Triage the failures
-    needs: [validate, health, ids]
+    needs: [validate, health]
     preset: review
     blocks: [ifc-context, validation, spatial]
-    max_tool_rounds: 10
+    max_tool_rounds: 12
+    max_tool_calls: 36
     prompt: |
-      A revision of this model has just been validated. Turn the raw results
-      into a punch list a {{ inputs.audience }} can act on.
-
       Schema validation returned:
       {{ steps.validate.text }}
 
       Model health returned:
       {{ steps.health.text }}
 
-      IDS validation returned:
-      {{ steps.ids.text }}
+      Run any further checks the settings ask for, then return the punch list.
 
-      Group the failures by what a person would fix in one sitting, not by
-      error code. For each group give: what is wrong, how many elements are
-      affected, an example element (name and GlobalId), and the likely fix.
-      Look up the elements you cite so the names and locations are real.
-      Put the groups in the order you would fix them, most blocking first.
-      If a validation step reported nothing or was skipped, say so plainly
-      rather than implying the model passed that check.
+  - id: approve
+    kind: gate
+    title: Review before export
+    needs: [triage]
+    message: Save this punch list as the revision QA report?
+    detail: "{{ steps.triage.text }}"
 
   - id: report
     kind: export
     title: Write the report
-    needs: [triage]
+    needs: [triage, approve]
     name: revision-qa-report
     body: |
       # Revision QA gate
-
-      Audience: {{ inputs.audience }}
 
       ## Punch list
 
@@ -90,6 +81,3 @@ steps:
 
       ### Model health
       {{ steps.health.text }}
-
-      ### IDS validation
-      {{ steps.ids.text }}

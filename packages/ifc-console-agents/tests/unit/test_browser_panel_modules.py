@@ -34,6 +34,7 @@ def test_every_panel_module_is_covered() -> None:
         "chat_markdown.js",
         "chat_flow.js",
         "chat_history.js",
+        "chat_memory.js",
         "chat_sidebar.js",
         "chat_studio.js",
         "chat_workspace.js",

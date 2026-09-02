@@ -85,6 +85,82 @@ async def test_a_step_result_reaches_the_next_prompt(workflow_core):
     assert len(prompt) > len("Summarise this project: ")
 
 
+async def test_named_agent_receives_scope_and_run_guidance(workflow_core):
+    spec = parse_workflow(
+        """
+version: "1"
+name: named-agent
+title: Named agent
+scope: either
+system_prompt: Review the IFC evidence without guessing.
+additional_instructions: Use project terminology.
+settings:
+  audience: coordinator
+steps:
+  - id: inspect
+    kind: agent
+    agent: general
+    prompt: Inspect the current workflow scope.
+"""
+    )
+    model = ScriptedAgentModel([text_round("done")])
+    runner = WorkflowRunner(workflow_core, model=model, auto_approve=True)
+    events = [
+        event
+        async for event in runner.stream(
+            spec,
+            {},
+            scope="model",
+            note="Prioritize missing classifications",
+            settings={"audience": "coordinator", "discipline": "architecture"},
+        )
+    ]
+
+    assert events[-1]["state"] == "succeeded"
+    prompt = model.turns[0]["messages"][-1].text
+    assert prompt == "Inspect the current workflow scope."
+    system = model.turns[0]["system"]
+    assert "Review the IFC evidence without guessing" in system
+    assert "Additional instructions:\nUse project terminology" in system
+    assert "Whole open model" in system
+    assert "Prioritize missing classifications" in system
+    assert "audience: coordinator" in system
+    assert "discipline: architecture" in system
+    context = next(event for event in events if event["type"] == "workflow_context")
+    assert context["settings"] == {
+        "audience": "coordinator",
+        "discipline": "architecture",
+    }
+    assert "Additional instructions:\nUse project terminology" in context["system_prompt"]
+    started = next(event for event in events if event["type"] == "agent_started")
+    assert started["task_prompt"] == prompt
+    assert any(event["type"] == "agent_finished" for event in events)
+
+
+async def test_viewer_selection_becomes_exact_workflow_scope(workflow_core):
+    class SelectedHub:
+        connected = True
+
+        @staticmethod
+        def selection_rows():
+            return [
+                {
+                    "model_id": "main",
+                    "model": "Office.ifc",
+                    "guids": ["2O2Fr$t4X7Zf8NOew3FLOH", "3O2Fr$t4X7Zf8NOew3FLOH"],
+                }
+            ]
+
+    workflow_core.viewer_hub = SelectedHub()
+    runner = WorkflowRunner(workflow_core, model=None, auto_approve=True)
+    scope = runner._viewer_scope("selection")
+
+    assert scope["mode"] == "selection"
+    assert scope["count"] == 2
+    assert "Office.ifc" in scope["text"]
+    assert "2O2Fr$t4X7Zf8NOew3FLOH" in scope["text"]
+
+
 async def test_an_agent_step_only_carries_the_blocks_it_declares(workflow_core):
     model = ScriptedAgentModel([text_round("done")])
     runner = WorkflowRunner(workflow_core, model=model, auto_approve=True)
@@ -352,3 +428,84 @@ steps:
     )
     with pytest.raises(ToolError):
         await _collect(runner, spec, {})
+
+
+FOLLOW_UP_FLOW = """
+version: "1"
+name: follow-up-flow
+title: Follow up flow
+system_prompt: Report on the model.
+steps:
+  - id: explain
+    kind: agent
+    title: Explain
+    blocks: [ifc-context]
+    prompt: Describe the project.
+"""
+
+
+async def test_a_follow_up_answers_with_the_report_in_context(workflow_core):
+    model = ScriptedAgentModel([text_round("Four doors are unrated.")])
+    runner = WorkflowRunner(workflow_core, model=model, auto_approve=True)
+    spec = parse_workflow(FOLLOW_UP_FLOW)
+
+    events = [
+        event
+        async for event in runner.follow_up(
+            spec,
+            "Which storey are they on?",
+            report="# Door review\n\nFour doors are unrated.",
+            history=[{"question": "How many?", "answer": "Four."}],
+        )
+    ]
+
+    assert events[0]["type"] == "follow_up_started"
+    assert events[0]["question"] == "Which storey are they on?"
+    assert events[-1]["type"] == "follow_up_completed"
+    assert events[-1]["state"] == "succeeded"
+    assert events[-1]["text"] == "Four doors are unrated."
+
+    started = next(event for event in events if event["type"] == "agent_started")
+    # The report and the earlier turn are context, not a new task prompt.
+    assert "Four doors are unrated." in started["system_prompt"]
+    assert "How many?" in started["system_prompt"]
+    assert started["task_prompt"] == "Which storey are they on?"
+
+
+async def test_a_follow_up_works_on_a_workflow_with_no_agent_step(workflow_core):
+    """quick-model-check has only tool steps; asking about it must still work."""
+    spec = parse_workflow(
+        """
+version: "1"
+name: tools-only
+title: Tools only
+steps:
+  - id: info
+    kind: tool
+    tool: get_ifc_project_info
+"""
+    )
+    runner = WorkflowRunner(
+        workflow_core,
+        model=ScriptedAgentModel([text_round("It is one building.")]),
+        auto_approve=True,
+    )
+    events = [
+        event
+        async for event in runner.follow_up(spec, "How many buildings?", report="{}")
+    ]
+    assert events[-1]["type"] == "follow_up_completed"
+    assert events[-1]["text"] == "It is one building."
+
+
+async def test_a_failed_follow_up_reports_instead_of_raising(workflow_core):
+    runner = WorkflowRunner(workflow_core, model=None, auto_approve=True)
+    events = [
+        event
+        async for event in runner.follow_up(
+            parse_workflow(FOLLOW_UP_FLOW), "Why?", report="x"
+        )
+    ]
+    assert events[-1]["type"] == "follow_up_completed"
+    assert events[-1]["state"] == "failed"
+    assert "language model" in events[-1]["error"]

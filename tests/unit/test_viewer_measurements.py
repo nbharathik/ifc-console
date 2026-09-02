@@ -137,8 +137,11 @@ class TestCleaning:
         assert [item["kind"] for item in cleaned] == ["angle"]
 
     def test_snapped_ends_travel_with_a_distance(self):
-        cleaned = _clean_measurements([{**MEASUREMENT, "ends": ["corner", "surface"]}])
+        cleaned = _clean_measurements(
+            [{**MEASUREMENT, "ends": ["corner", "surface"], "axis": "x"}]
+        )
         assert cleaned[0]["ends"] == ["corner", "surface"]
+        assert cleaned[0]["axis"] == "x"
 
     def test_anchors_and_label_travel_with_any_kind(self):
         """Anchors name the measured elements; without them a recorded
@@ -157,6 +160,23 @@ class TestCleaning:
         assert distance["label"] == "span"
         laser = _clean_measurements([{**LASER, "anchors": anchors[:1]}])[0]
         assert laser["anchors"][0]["guid"] == "3vB2YO$MX4xv5uCqZZG05x"
+
+    def test_object_local_anchor_metadata_survives_for_skill_recording(self):
+        anchor = {
+            "guid": "3vB2YO$MX4xv5uCqZZG05x",
+            "world": [2.0, 3.0, 4.0],
+            "local": [0.25, -0.5, 0.75],
+            "reach": 5.1234567,
+        }
+        cleaned = _clean_measurements([{**MEASUREMENT, "anchors": [anchor]}])[0]
+        assert cleaned["anchors"] == [
+            {
+                "guid": anchor["guid"],
+                "world": [2.0, 3.0, 4.0],
+                "local": [0.25, -0.5, 0.75],
+                "reach": 5.123457,
+            }
+        ]
 
     def test_bad_anchors_drop_without_taking_the_measurement(self):
         cleaned = _clean_measurements(

@@ -92,7 +92,7 @@ _MAX_MEASUREMENT_LABEL = 120
 
 
 def _clean_anchors(value: Any) -> list[dict] | None:
-    """Which elements a measurement touched: guid plus a model-axis point.
+    """Which elements a measurement touched and where it sits on the object.
 
     Anchors are what let a skill or a report name the measured element after
     the tab that took the measurement is gone.
@@ -106,13 +106,19 @@ def _clean_anchors(value: Any) -> list[dict] | None:
         guid = item.get("guid")
         guid = guid if isinstance(guid, str) and 0 < len(guid) <= _MAX_GUID_LENGTH else None
         world = _triple(item.get("world"))
-        if guid is None and world is None:
+        local = _triple(item.get("local"))
+        reach = _number(item.get("reach"))
+        if guid is None and world is None and local is None:
             continue
         entry: dict = {}
         if guid is not None:
             entry["guid"] = guid
         if world is not None:
             entry["world"] = world
+        if guid is not None and local is not None:
+            entry["local"] = local
+        if guid is not None and reach is not None and reach >= 0:
+            entry["reach"] = reach
         cleaned.append(entry)
     return cleaned or None
 
@@ -134,6 +140,9 @@ def _clean_distance(item: dict) -> dict | None:
     ends = item.get("ends")
     if isinstance(ends, list) and len(ends) == 2:
         entry["ends"] = [str(end)[:20] for end in ends]
+    axis = item.get("axis")
+    if axis in {"x", "y", "z"}:
+        entry["axis"] = axis
     return entry
 
 

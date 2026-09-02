@@ -12,6 +12,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 from collections import OrderedDict
 from collections.abc import Mapping, Sequence
 from contextlib import nullcontext, suppress
@@ -40,6 +41,7 @@ _MAX_UPLOAD_BYTES = MAX_REFERENCE_BYTES
 # The panel prints the call arguments beside the tool, so they have to be
 # whole enough to read. Still bounded: a model can pass a long selector.
 _MAX_ARGUMENT_CHARS = 2000
+_WORKFLOW_NAME = re.compile(r"^[a-z0-9][a-z0-9-]{1,63}$")
 
 
 async def _read_limited_body(request: Any, limit: int) -> bytes | None:
@@ -96,11 +98,7 @@ class AgentPanelState:
         self.threads.move_to_end(thread_id)
         while len(self.threads) > _MAX_THREADS:
             victim = next(
-                (
-                    candidate
-                    for candidate in self.threads
-                    if not self.active_streams.get(candidate)
-                ),
+                (candidate for candidate in self.threads if not self.active_streams.get(candidate)),
                 None,
             )
             if victim is None:
@@ -409,9 +407,7 @@ async def _invalidate_agent_threads(core: AppCore, name: str) -> int:
     state = _panel_state(core)
     async with state.lifecycle_lock:
         thread_ids = [
-            thread_id
-            for thread_id, thread in state.threads.items()
-            if thread.pack == name
+            thread_id for thread_id, thread in state.threads.items() if thread.pack == name
         ]
         active: set[asyncio.Task[Any]] = set()
         for thread_id in thread_ids:
@@ -492,9 +488,7 @@ def resolve_provider_model(
     provider_id = str(body.get("provider") or core.chat.provider or "openai").lower()
     provider = PROVIDERS.get(provider_id)
     if provider is None:
-        return None, JSONResponse(
-            {"error": f"unknown provider {provider_id!r}"}, status_code=400
-        )
+        return None, JSONResponse({"error": f"unknown provider {provider_id!r}"}, status_code=400)
     chosen = str(body.get("model") or core.chat.model or provider.suggested_model).strip()
     if not chosen:
         return None, JSONResponse(
@@ -750,9 +744,7 @@ def _typed_payloads(event: Any) -> list[dict[str, Any]]:
                 )
         return payloads
     if event.type == "usage" and event.usage is not None:
-        return [
-            {"type": "usage", "in": event.usage.input_tokens, "out": event.usage.output_tokens}
-        ]
+        return [{"type": "usage", "in": event.usage.input_tokens, "out": event.usage.output_tokens}]
     if event.type == "run_failed":
         return [{"type": "error", "text": event.text or "agent run failed"}]
     return []
@@ -787,9 +779,7 @@ async def _build_thread(
     except TypeError:
         # A pack registered by an embedding application may predate the
         # instructions parameter; its prompt simply stays fixed.
-        agent = await pack.build(
-            panel_runtime(core), model=model, viewer=core.viewer_supported
-        )
+        agent = await pack.build(panel_runtime(core), model=model, viewer=core.viewer_supported)
     if persistent:
         from ifc_console_agents.storage import JsonThreadStore
 
@@ -864,17 +854,13 @@ def build_agent_panel_routes(core: AppCore) -> list[Route]:
             )
         except Exception:
             log.exception("agent workspace for %s failed", name or "plain chat")
-            return JSONResponse(
-                {"error": f"could not describe agent {name!r}"}, status_code=500
-            )
+            return JSONResponse({"error": f"could not describe agent {name!r}"}, status_code=500)
         if pack is not None:
             try:
                 from ifc_console_agents.content import content_access_payload
 
                 library = await asyncio.to_thread(_library_entries, core)
-                content = content_access_payload(
-                    _content_configuration(core, pack), library
-                )
+                content = content_access_payload(_content_configuration(core, pack), library)
                 content["enabled"] = True
                 content["usable"] = "files" in pack.info.features
                 payload["content"] = content
@@ -907,9 +893,7 @@ def build_agent_panel_routes(core: AppCore) -> list[Route]:
             return _disabled()
         from ifc_console_agents.blocks import BLOCKS
 
-        return JSONResponse(
-            {"blocks": [block.info().model_dump(mode="json") for block in BLOCKS]}
-        )
+        return JSONResponse({"blocks": [block.info().model_dump(mode="json") for block in BLOCKS]})
 
     async def list_content(request) -> JSONResponse:
         """The shared project content library and optional agent access state."""
@@ -933,9 +917,7 @@ def build_agent_panel_routes(core: AppCore) -> list[Route]:
         if pack is not None:
             from ifc_console_agents.content import content_access_payload
 
-            payload.update(
-                content_access_payload(_content_configuration(core, pack), library)
-            )
+            payload.update(content_access_payload(_content_configuration(core, pack), library))
             payload["usable"] = "files" in pack.info.features
         if problem:
             payload["problem"] = problem
@@ -957,9 +939,7 @@ def build_agent_panel_routes(core: AppCore) -> list[Route]:
             return JSONResponse({"error": f"no agent named {name!r}"}, status_code=404)
         mode = body.get("mode")
         if mode not in {"all", "selected"}:
-            return JSONResponse(
-                {"error": "mode must be 'all' or 'selected'"}, status_code=400
-            )
+            return JSONResponse({"error": "mode must be 'all' or 'selected'"}, status_code=400)
         raw_paths = body.get("paths", [])
         if not isinstance(raw_paths, list) or len(raw_paths) > 500:
             return JSONResponse(
@@ -1024,7 +1004,7 @@ def build_agent_panel_routes(core: AppCore) -> list[Route]:
             counter = 2
             while requested_name in existing:
                 suffix = f"-{counter}"
-                requested_name = f"{base[:64-len(suffix)].rstrip('-')}{suffix}"
+                requested_name = f"{base[: 64 - len(suffix)].rstrip('-')}{suffix}"
                 counter += 1
         payload["name"] = requested_name
         try:
@@ -1071,9 +1051,7 @@ def build_agent_panel_routes(core: AppCore) -> list[Route]:
             agent=name,
             active_streams_cancelled=cancelled,
         )
-        return JSONResponse(
-            {"ok": True, "removed": name, "cancelled_runs": cancelled}
-        )
+        return JSONResponse({"ok": True, "removed": name, "cancelled_runs": cancelled})
 
     async def delete_thread(request) -> JSONResponse:
         """Forget one local agent conversation in memory and on disk."""
@@ -1174,9 +1152,7 @@ def build_agent_panel_routes(core: AppCore) -> list[Route]:
                 )
                 last = history[-1]
                 if last.role == "assistant" and not last.tool_calls:
-                    history[-1] = last.model_copy(
-                        update={"text": f"{last.text}\n\n{note}".strip()}
-                    )
+                    history[-1] = last.model_copy(update={"text": f"{last.text}\n\n{note}".strip()})
                 else:
                     history.append(AgentMessage(role="assistant", text=note))
                 with suppress(Exception):
@@ -1256,11 +1232,7 @@ def build_agent_panel_routes(core: AppCore) -> list[Route]:
             state.reset_epoch += 1
             state.thread_epochs.clear()
             state.threads.clear()
-            active = {
-                task
-                for tasks in state.active_streams.values()
-                for task in tasks
-            }
+            active = {task for tasks in state.active_streams.values() for task in tasks}
 
         cancelled = 0
         removed = 0
@@ -1277,9 +1249,7 @@ def build_agent_panel_routes(core: AppCore) -> list[Route]:
             removed_threads=removed,
             active_streams_cancelled=cancelled,
         )
-        return JSONResponse(
-            {"ok": True, "removed_threads": removed, "cancelled_runs": cancelled}
-        )
+        return JSONResponse({"ok": True, "removed_threads": removed, "cancelled_runs": cancelled})
 
     async def list_files(request) -> JSONResponse:
         if not core.chat.enabled:
@@ -1334,10 +1304,64 @@ def build_agent_panel_routes(core: AppCore) -> list[Route]:
                 status_code=404,
             )
         prompt = body.get("prompt")
-        if not isinstance(prompt, str) or not prompt.strip():
+        workflow_name = body.get("workflow")
+        if workflow_name is not None and (
+            not isinstance(workflow_name, str) or not _WORKFLOW_NAME.fullmatch(workflow_name)
+        ):
+            return JSONResponse({"error": "workflow must be a workflow name"}, status_code=400)
+        if not isinstance(prompt, str) or (not prompt.strip() and not workflow_name):
             return JSONResponse({"error": "prompt must be non-empty text"}, status_code=400)
         if len(prompt) > _MAX_PROMPT_CHARS:
             return JSONResponse({"error": "prompt is too long"}, status_code=400)
+        # A workflow attached to the conversation: its prompt, settings, scope,
+        # and procedure become standing instructions on this thread, so the
+        # same agent, tools, and approvals answer it turn after turn.
+        workflow_spec = None
+        workflow_scope: dict[str, Any] = {}
+        workflow_text = ""
+        if workflow_name:
+            from ifc_console.core.results import ToolError
+
+            from ifc_console_agents.workflow_runner import WorkflowRunError, viewer_scope
+            from ifc_console_agents.workflows import (
+                WorkflowRegistry,
+                chat_instructions,
+                chat_task_prompt,
+            )
+
+            registry = WorkflowRegistry(core.store.project_dir)
+            try:
+                workflow_spec = await asyncio.to_thread(registry.get, workflow_name)
+            except ToolError as exc:
+                status = 404 if exc.code == "NOT_FOUND" else 400
+                return JSONResponse(
+                    {"error": str(exc), "code": exc.code, "hint": exc.hint}, status_code=status
+                )
+            requested_scope = str(body.get("workflow_scope") or "model").strip()
+            if requested_scope not in {"model", "selection"}:
+                return JSONResponse(
+                    {"error": "workflow_scope must be model or selection"}, status_code=400
+                )
+            scope_mode = (
+                "model"
+                if workflow_spec.scope == "model"
+                else "selection"
+                if workflow_spec.scope == "selection"
+                else requested_scope
+            )
+            try:
+                workflow_scope = viewer_scope(core, scope_mode)
+            except WorkflowRunError as exc:
+                return JSONResponse(
+                    {
+                        "error": str(exc),
+                        "hint": "Select one or more elements in the 3D view, then run again.",
+                    },
+                    status_code=400,
+                )
+            workflow_text = chat_instructions(workflow_spec, scope=workflow_scope)
+            if not prompt.strip():
+                prompt = chat_task_prompt(workflow_spec)
         persist_history = body.get("persist_history", True)
         if not isinstance(persist_history, bool):
             return JSONResponse({"error": "persist_history must be true or false"}, status_code=400)
@@ -1369,13 +1393,14 @@ def build_agent_panel_routes(core: AppCore) -> list[Route]:
         capabilities = resolved.capabilities
 
         state = _panel_state(core)
-        session_instructions = (additional_instructions or "").strip()
+        session_instructions = "\n\n".join(
+            part for part in ((additional_instructions or "").strip(), workflow_text) if part
+        )
         content_paths = _content_configuration(core, pack)
         content_signature = (
             "content:all"
             if content_paths is None
-            else "content:"
-            + sha256("\x1f".join(sorted(content_paths)).encode("utf-8")).hexdigest()
+            else "content:" + sha256("\x1f".join(sorted(content_paths)).encode("utf-8")).hexdigest()
         )
         autonomy = "auto" if core.ai_autonomy else "approval"
         signature = (
@@ -1389,6 +1414,7 @@ def build_agent_panel_routes(core: AppCore) -> list[Route]:
             f"autonomy:{autonomy}",
             f"tools:{capabilities['tools_supported']}",
             f"vision:{capabilities['vision_supported']}",
+            f"workflow:{workflow_spec.name if workflow_spec else ''}",
         )
         requested_thread_id = (
             body.get("thread_id") if isinstance(body.get("thread_id"), str) else None
@@ -1414,8 +1440,8 @@ def build_agent_panel_routes(core: AppCore) -> list[Route]:
                 # archived conversation.
                 thread = None
                 thread_id = None
-            elif thread is None and thread_id and not _thread_matches_signature(
-                thread_id, signature
+            elif (
+                thread is None and thread_id and not _thread_matches_signature(thread_id, signature)
             ):
                 # A durable record has no in-memory signature after restart or
                 # LRU eviction. Its signed id is the configuration fence.
@@ -1456,6 +1482,7 @@ def build_agent_panel_routes(core: AppCore) -> list[Route]:
             provider=resolved.provider_id,
             model=chosen,
             thread=thread_id,
+            workflow=workflow_spec.name if workflow_spec else "",
         )
 
         attachments = body.get("attachments")
@@ -1463,8 +1490,7 @@ def build_agent_panel_routes(core: AppCore) -> list[Route]:
         from ifc_console_agents.content import managed_content_path, normalize_content_path
 
         available_content = {
-            str(row.get("path") or "")
-            for row in await asyncio.to_thread(_library_entries, core)
+            str(row.get("path") or "") for row in await asyncio.to_thread(_library_entries, core)
         }
         available_content.update(
             path
@@ -1559,6 +1585,19 @@ def build_agent_panel_routes(core: AppCore) -> list[Route]:
             try:
                 with access:
                     yield _sse({"type": "thread", "id": thread_id, "agent": pack.info.name})
+                    if workflow_spec is not None:
+                        # What the conversation is standing on, so the panel
+                        # can show the exact text the model was given.
+                        yield _sse(
+                            {
+                                "type": "workflow_context",
+                                "workflow": workflow_spec.name,
+                                "title": workflow_spec.title,
+                                "scope": workflow_scope.get("mode", "model"),
+                                "selected": int(workflow_scope.get("count") or 0),
+                                "instructions": workflow_text,
+                            }
+                        )
                     async for event in thread.agent.stream(
                         prompt.strip() + attachment_note,
                         thread_id=thread_id,
@@ -1646,9 +1685,7 @@ def build_agent_panel_routes(core: AppCore) -> list[Route]:
         name = request.query_params.get("agent") or ""
         pack = core.agent_packs.get(name) if name else None
         if not library_upload and (pack is None or "files" not in pack.info.features):
-            return JSONResponse(
-                {"error": "this agent does not accept uploads"}, status_code=403
-            )
+            return JSONResponse({"error": "this agent does not accept uploads"}, status_code=403)
         from pathlib import Path
 
         raw_name = Path(request.query_params.get("name") or "").name
@@ -1694,7 +1731,10 @@ def build_agent_panel_routes(core: AppCore) -> list[Route]:
             return JSONResponse(
                 {
                     "saved": str(target),
-                    "attachment": {"path": relative_target, "media": "image" if suffix in {".png", ".jpg", ".jpeg"} else "document"},
+                    "attachment": {
+                        "path": relative_target,
+                        "media": "image" if suffix in {".png", ".jpg", ".jpeg"} else "document",
+                    },
                     "indexed": False,
                     "error": exc.message,
                     "code": exc.code,
@@ -1713,7 +1753,10 @@ def build_agent_panel_routes(core: AppCore) -> list[Route]:
         )
         summary: dict[str, Any] = {
             "saved": str(target),
-            "attachment": {"path": relative_target, "media": "image" if suffix in {".png", ".jpg", ".jpeg"} else "document"},
+            "attachment": {
+                "path": relative_target,
+                "media": "image" if suffix in {".png", ".jpg", ".jpeg"} else "document",
+            },
             "indexed": True,
             "documents": report["documents"],
             "records": report["records"],
@@ -1738,9 +1781,7 @@ def build_agent_panel_routes(core: AppCore) -> list[Route]:
 
         raw_name = Path(request.query_params.get("name") or "").name
         if not raw_name or Path(raw_name).suffix.lower() not in (".md", ".markdown"):
-            return JSONResponse(
-                {"error": "pass name=<file> ending in .md"}, status_code=400
-            )
+            return JSONResponse({"error": "pass name=<file> ending in .md"}, status_code=400)
         declared = request.headers.get("content-length")
         if declared and declared.isdigit() and int(declared) > MAX_SKILL_BYTES:
             return JSONResponse({"error": "skill is larger than 64 KB"}, status_code=413)
@@ -1757,9 +1798,159 @@ def build_agent_panel_routes(core: AppCore) -> list[Route]:
                 {"error": str(exc), "code": exc.code, "hint": exc.hint}, status_code=400
             )
         core.audit.record("skill_import", file=raw_name, name=row["name"], path=row["path"])
-        return JSONResponse(
-            {"imported": row, "skills": await asyncio.to_thread(store.entries)}
+        return JSONResponse({"imported": row, "skills": await asyncio.to_thread(store.entries)})
+
+    async def geometry_review(request) -> JSONResponse:
+        """Run the bounded, read-only v2 geometry view for explicit targets."""
+        if not core.chat.enabled:
+            return _disabled()
+        try:
+            body = await request.json()
+        except (ValueError, UnicodeDecodeError):
+            return JSONResponse({"error": "request body is not valid JSON"}, status_code=400)
+        if not isinstance(body, dict):
+            return JSONResponse({"error": "request body must be a JSON object"}, status_code=400)
+        model = body.get("model")
+        global_ids = body.get("global_ids")
+        if not isinstance(model, str) or not model.strip():
+            return JSONResponse(
+                {"error": "model is required", "hint": "Pass the viewer selection model_id."},
+                status_code=400,
+            )
+        if (
+            not isinstance(global_ids, list)
+            or len(global_ids) != 1
+            or any(not isinstance(item, str) or not item for item in global_ids)
+        ):
+            return JSONResponse(
+                {
+                    "error": "global_ids must contain exactly one element GlobalId",
+                    "hint": "Select one object for the workspace geometry review.",
+                },
+                status_code=400,
+            )
+        detail = str(body.get("detail") or "compact")
+        if detail not in {"compact", "standard"}:
+            return JSONResponse({"error": "detail must be compact or standard"}, status_code=400)
+        measurement_set = str(body.get("measurement_set") or "standard")
+        if measurement_set not in {"standard", "profile", "envelope", "fabrication"}:
+            return JSONResponse({"error": "invalid measurement_set"}, status_code=400)
+
+        from ifc_console.sdk import AsyncWorkbench, IfcConsoleError
+
+        try:
+            payload = await AsyncWorkbench(core).call(
+                "analyze_element_geometry",
+                global_ids=list(dict.fromkeys(global_ids)),
+                model=model.strip(),
+                detail=detail,
+                measurement_set=measurement_set,
+                frame="semantic",
+                station_strategy="auto",
+                include_alternatives=detail == "standard",
+                include_sections=detail == "standard",
+            )
+        except IfcConsoleError as exc:
+            return JSONResponse(
+                {"error": exc.message, "code": exc.code, "hint": exc.hint},
+                status_code=400,
+            )
+        core.audit.record(
+            "geometry_workspace_review",
+            model=model.strip(),
+            elements=len(global_ids),
+            detail=detail,
+            measurement_set=measurement_set,
         )
+        payload["review"] = {
+            "read_only": True,
+            "frame": "semantic",
+            "station_strategy": "auto",
+            "proposal_action": "separate confirmation required",
+        }
+        return JSONResponse(payload)
+
+    async def skill_dry_run(request) -> JSONResponse:
+        """Preview one structured measurement skill without proposing properties."""
+        if not core.chat.enabled:
+            return _disabled()
+        try:
+            body = await request.json()
+        except (ValueError, UnicodeDecodeError):
+            return JSONResponse({"error": "request body is not valid JSON"}, status_code=400)
+        if not isinstance(body, dict):
+            return JSONResponse({"error": "request body must be a JSON object"}, status_code=400)
+        name = body.get("name")
+        model = body.get("model")
+        selector = body.get("selector")
+        global_ids = body.get("global_ids")
+        if not isinstance(name, str) or not name.strip():
+            return JSONResponse({"error": "name is required"}, status_code=400)
+        if not isinstance(model, str) or not model.strip():
+            return JSONResponse(
+                {"error": "model is required", "hint": "Pass the viewer selection model_id."},
+                status_code=400,
+            )
+        has_selector = isinstance(selector, str) and bool(selector.strip())
+        has_ids = isinstance(global_ids, list) and bool(global_ids)
+        if has_selector == has_ids:
+            return JSONResponse(
+                {"error": "pass exactly one of selector or global_ids"}, status_code=400
+            )
+        if has_ids and (
+            len(global_ids) > 25
+            or any(not isinstance(item, str) or not item for item in global_ids)
+        ):
+            return JSONResponse(
+                {
+                    "error": "global_ids must contain 1 to 25 element GlobalIds",
+                    "hint": "Page larger reviews through apply_measurement_skill directly.",
+                },
+                status_code=400,
+            )
+        limit = body.get("limit", 25)
+        if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 25:
+            return JSONResponse({"error": "limit must be from 1 to 25"}, status_code=400)
+        confidence = body.get("minimum_confidence")
+        if confidence is not None and confidence not in {"low", "medium", "high", "exact"}:
+            return JSONResponse({"error": "invalid minimum_confidence"}, status_code=400)
+
+        from ifc_console.sdk import AsyncWorkbench, IfcConsoleError
+
+        arguments: dict[str, Any] = {
+            "name": name.strip(),
+            "model": model.strip(),
+            "dry_run": True,
+            "limit": limit,
+            "include_evidence": body.get("include_evidence") is True,
+        }
+        if confidence is not None:
+            arguments["minimum_confidence"] = confidence
+        if has_selector:
+            arguments["selector"] = selector.strip()
+        else:
+            arguments["global_ids"] = list(dict.fromkeys(global_ids))
+        try:
+            payload = await AsyncWorkbench(core).call("apply_measurement_skill", **arguments)
+        except IfcConsoleError as exc:
+            status = 404 if exc.code == "NOT_FOUND" else 400
+            return JSONResponse(
+                {"error": exc.message, "code": exc.code, "hint": exc.hint},
+                status_code=status,
+            )
+        core.audit.record(
+            "measurement_skill_dry_run",
+            name=name.strip(),
+            model=model.strip(),
+            selector=selector.strip() if has_selector else None,
+            elements=len(arguments.get("global_ids") or []),
+        )
+        payload["review"] = {
+            "dry_run": True,
+            "read_only": True,
+            "proposal_action": "separate confirmation required",
+        }
+        return JSONResponse(payload)
 
     async def skills_record(request) -> JSONResponse:
         """Save the viewer's current measurements as a reusable skill.
@@ -1787,7 +1978,9 @@ def build_agent_panel_routes(core: AppCore) -> list[Route]:
         overwrite = body.get("overwrite") is True
 
         hub = core.viewer_hub
-        items, measured_at = hub.latest_measurements() if hub.connected else ([], None)
+        source = hub.measurement_source() if hub.connected else None
+        items = list(source.measurements) if source is not None else []
+        measured_at = source.measured_at if source is not None else None
         if not items:
             return JSONResponse(
                 {
@@ -1796,29 +1989,105 @@ def build_agent_panel_routes(core: AppCore) -> list[Route]:
                 },
                 status_code=409,
             )
+        model_id = source.measurement_model_id if source is not None else None
+        if not isinstance(model_id, str) or not model_id:
+            return JSONResponse(
+                {
+                    "error": "the measurement source has no model id",
+                    "hint": "Reopen the measured model in the viewer and measure again.",
+                },
+                status_code=409,
+            )
+
+        from ifc_console.core.results import ToolError
+
+        try:
+            source_session = core.resolve_session(model_id)
+        except ToolError as exc:
+            return JSONResponse(
+                {"error": str(exc), "code": exc.code, "hint": exc.hint}, status_code=409
+            )
 
         from ifc_console_agents.recording import build_recorded_skill, measured_guids
 
         guids = measured_guids(items)
+        if len(guids) > 25:
+            return JSONResponse(
+                {
+                    "error": f"the measurements reference {len(guids)} elements; the limit is 25",
+                    "hint": "Clear unrelated measurements, then record one pattern at a time.",
+                },
+                status_code=422,
+            )
         analysis = None
+        analysis_failures: list[dict[str, str]] = []
         if guids:
             from ifc_console.sdk import AsyncWorkbench
 
             # Read-only probe. The workbench wraps the live core and is never
             # closed here: closing it would close the console.
-            try:
-                envelope = await AsyncWorkbench(core).call(
-                    "analyze_element_geometry", global_ids=guids[:5]
-                )
-                if envelope.get("ok"):
-                    analysis = envelope.get("data")
-            except Exception:
-                analysis = None
-        meta = core.session_meta()
+            revision = {
+                "model_id": model_id,
+                "fingerprint": source_session.fingerprint,
+                "revision": source_session.revision,
+            }
+            analysis = {"model_revision": revision, "elements": []}
+            workbench = AsyncWorkbench(core)
+            # A standard v2 element can approach the operation envelope's
+            # output limit by itself. Probe one GlobalId per call so a list
+            # truncation cannot silently erase later exemplars.
+            for guid in guids:
+                try:
+                    envelope = await workbench.call(
+                        "analyze_element_geometry",
+                        global_ids=[guid],
+                        model=model_id,
+                        detail="standard",
+                        frame="semantic",
+                        station_strategy="auto",
+                    )
+                except Exception as exc:
+                    analysis_failures.append({"global_id": guid, "reason": str(exc)})
+                    continue
+                if not envelope.get("ok"):
+                    problem = envelope.get("error") or {}
+                    reason = problem.get("message") if isinstance(problem, dict) else problem
+                    analysis_failures.append(
+                        {"global_id": guid, "reason": str(reason or "analysis failed")}
+                    )
+                    continue
+                data = envelope.get("data")
+                records = data.get("elements") if isinstance(data, dict) else None
+                if not isinstance(records, list) or not records:
+                    analysis_failures.append(
+                        {
+                            "global_id": guid,
+                            "reason": "geometry analysis returned no element record",
+                        }
+                    )
+                    continue
+                analysis["elements"].append(records[0])
+                for key in (
+                    "analysis_version",
+                    "units",
+                    "tessellation",
+                    "analysis_options",
+                    "budgets",
+                ):
+                    if key in data and key not in analysis:
+                        analysis[key] = data[key]
+                returned_revision = data.get("model_revision")
+                if isinstance(returned_revision, dict):
+                    analysis["model_revision"] = returned_revision
+            analysis["matched"] = len(analysis["elements"])
+            analysis["recording_failures"] = analysis_failures
+        analysis_problem = (
+            "; ".join(f"{row['global_id']}: {row['reason']}" for row in analysis_failures) or None
+        )
         skill = build_recorded_skill(
             items=items,
             measured_at=measured_at,
-            model_name=str(meta.get("model") or "the open model"),
+            model_name=str(source_session.name or model_id),
             analysis=analysis,
             notes=notes or "",
         )
@@ -1834,8 +2103,6 @@ def build_agent_panel_routes(core: AppCore) -> list[Route]:
             if isinstance(applies_to, str) and applies_to.strip()
             else skill.applies_to
         )
-
-        from ifc_console.core.results import ToolError
 
         from ifc_console_agents.skills import AgentSkillStore
 
@@ -1860,13 +2127,29 @@ def build_agent_panel_routes(core: AppCore) -> list[Route]:
             path=row["path"],
             measurements=len(items),
             elements=len(guids),
+            model=model_id,
+            analyzed=len((analysis or {}).get("elements") or ()),
+            analysis_failures=len(analysis_failures),
         )
         return JSONResponse(
             {
                 "recorded": row,
                 "classes": list(skill.classes),
                 "intents": list(skill.intents),
-                "analyzed": analysis is not None,
+                "unresolved_intents": list(skill.unresolved_intents),
+                "analyzed": bool((analysis or {}).get("elements")),
+                "analyzed_elements": len((analysis or {}).get("elements") or ()),
+                "analysis_failures": analysis_failures,
+                "analysis_problem": analysis_problem,
+                "model_revision": (
+                    analysis.get("model_revision")
+                    if isinstance(analysis, dict)
+                    else {
+                        "model_id": model_id,
+                        "fingerprint": source_session.fingerprint,
+                        "revision": source_session.revision,
+                    }
+                ),
                 "skills": await asyncio.to_thread(store.entries),
             }
         )
@@ -1875,11 +2158,229 @@ def build_agent_panel_routes(core: AppCore) -> list[Route]:
         """Every workflow this project can run, built-in and its own."""
         if not core.chat.enabled:
             return _disabled()
+        from ifc_console_agents.skills import AgentSkillStore
         from ifc_console_agents.workflows import WorkflowRegistry
 
         registry = WorkflowRegistry(core.store.project_dir)
-        rows = await asyncio.to_thread(registry.entries)
-        return JSONResponse({"workflows": rows})
+        rows, skills = await asyncio.gather(
+            asyncio.to_thread(registry.entries),
+            asyncio.to_thread(AgentSkillStore(core.store.project_dir).entries),
+        )
+        return JSONResponse(
+            {
+                "workflows": rows,
+                "agents": [info.model_dump(mode="json") for info in core.agent_packs.active()],
+                "skills": skills,
+                "viewer": {
+                    "connected": core.viewer_hub.connected,
+                    "models": [
+                        {
+                            "id": row["model_id"],
+                            "name": row["name"],
+                            "active": row["active"],
+                        }
+                        for row in core.models.model_rows()
+                    ],
+                    "selections": core.viewer_hub.selection_rows(),
+                },
+            }
+        )
+
+    async def save_workflow(request) -> JSONResponse:
+        """Create one reusable agent workflow from the compact browser form."""
+        if not core.chat.enabled:
+            return _disabled()
+        from ifc_console.core.results import ToolError
+
+        try:
+            body = await request.json()
+        except (ValueError, UnicodeDecodeError):
+            return JSONResponse({"error": "request body is not valid JSON"}, status_code=400)
+        if not isinstance(body, dict):
+            return JSONResponse({"error": "request body must be a JSON object"}, status_code=400)
+
+        title = str(body.get("title") or "").strip()[:100]
+        task = str(body.get("prompt") or "").strip()[:20_000]
+        instructions = str(body.get("instructions") or "").strip()[:8000]
+        description = str(body.get("description") or "").strip()[:500]
+        agent_name = str(body.get("agent") or "general").strip()
+        skill_name = str(body.get("skill") or "").strip()
+        scope = str(body.get("scope") or "either").strip()
+        default_settings = body.get("settings") or {}
+        if not title or not task:
+            return JSONResponse(
+                {"error": "name and task are required", "hint": "Describe the repeatable result."},
+                status_code=400,
+            )
+        pack = core.agent_packs.get(agent_name)
+        if pack is None:
+            return JSONResponse({"error": f"no agent named {agent_name!r}"}, status_code=400)
+        if scope not in {"model", "selection", "either"}:
+            return JSONResponse(
+                {"error": "scope must be model, selection, or either"}, status_code=400
+            )
+        if not isinstance(default_settings, dict):
+            return JSONResponse({"error": "settings must be key/value pairs"}, status_code=400)
+        if skill_name:
+            from ifc_console_agents.skills import AgentSkillStore
+
+            try:
+                await asyncio.to_thread(AgentSkillStore(core.store.project_dir).read, skill_name)
+            except ToolError as exc:
+                return JSONResponse(
+                    {"error": str(exc), "code": exc.code, "hint": exc.hint}, status_code=400
+                )
+            task = (
+                f"Load and follow the saved skill {skill_name!r}. Adapt its variable "
+                f"values to the current workflow scope.\n\n{task}"
+            )[:20_000]
+        system_prompt = task[:20_000]
+
+        from ifc_console_agents.workflows import (
+            AgentStep,
+            ExportStep,
+            WorkflowRegistry,
+            WorkflowSpec,
+        )
+
+        registry = WorkflowRegistry(core.store.project_dir)
+        base = re.sub(r"[^a-z0-9]+", "-", title.casefold()).strip("-") or "workflow"
+        base = base[:63].rstrip("-")
+        name = base
+        existing = set(registry.all())
+        counter = 2
+        while name in existing:
+            suffix = f"-{counter}"
+            name = f"{base[: 63 - len(suffix)].rstrip('-')}{suffix}"
+            counter += 1
+        declared = getattr(pack, "declared_limits", AgentLimits())
+        try:
+            spec = WorkflowSpec(
+                name=name,
+                title=title,
+                description=description or f"{task[:180].rstrip('.')}.",
+                tags=("custom",),
+                scope=scope,
+                system_prompt=system_prompt,
+                additional_instructions=instructions,
+                settings=default_settings,
+                steps=(
+                    AgentStep(
+                        id="run",
+                        title="Run the procedure",
+                        agent=pack.info.name,
+                        prompt=(
+                            "Carry out the workflow system prompt using the current "
+                            "model scope and run settings. Return a complete report."
+                        ),
+                        max_tool_rounds=min(
+                            60, max(8, int(getattr(declared, "max_tool_rounds", 12)))
+                        ),
+                        max_tool_calls=min(
+                            400, max(32, int(getattr(declared, "max_tool_calls", 48)))
+                        ),
+                    ),
+                    ExportStep(
+                        id="report",
+                        title="Save the result",
+                        needs=("run",),
+                        name=name,
+                        body=f"# {title}\n\n{{{{ steps.run.text }}}}\n",
+                    ),
+                ),
+            )
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        try:
+            path = await asyncio.to_thread(registry.save, spec)
+        except ToolError as exc:
+            return JSONResponse(
+                {"error": str(exc), "code": exc.code, "hint": exc.hint}, status_code=409
+            )
+        core.audit.record(
+            "custom_workflow_saved", workflow=spec.name, agent=agent_name, path=str(path)
+        )
+        row = spec.summary()
+        row["origin"] = "project"
+        return JSONResponse({"workflow": row, "path": str(path)}, status_code=201)
+
+    async def update_workflow(request) -> JSONResponse:
+        """Save editor changes as a project workflow override."""
+        if not core.chat.enabled:
+            return _disabled()
+        try:
+            body = await request.json()
+        except (ValueError, UnicodeDecodeError):
+            return JSONResponse({"error": "request body is not valid JSON"}, status_code=400)
+        if not isinstance(body, dict):
+            return JSONResponse({"error": "request body must be a JSON object"}, status_code=400)
+
+        from ifc_console.core.results import ToolError
+
+        from ifc_console_agents.workflows import (
+            AgentStep,
+            WorkflowRegistry,
+            WorkflowSpec,
+        )
+
+        name = str(body.get("workflow") or "").strip()
+        registry = WorkflowRegistry(core.store.project_dir)
+        try:
+            spec = await asyncio.to_thread(registry.get, name)
+        except ToolError as exc:
+            return JSONResponse(
+                {"error": str(exc), "code": exc.code, "hint": exc.hint}, status_code=404
+            )
+
+        title = str(body.get("title", spec.title)).strip()[:100]
+        description = str(body.get("description", spec.description)).strip()[:500]
+        system_prompt = str(body.get("system_prompt", spec.system_prompt)).strip()[:20_000]
+        additional = str(body.get("additional_instructions", spec.additional_instructions)).strip()[
+            :8000
+        ]
+        scope = str(body.get("scope", spec.scope)).strip()
+        settings = body.get("settings", spec.settings)
+        agent_name = str(body.get("agent") or "").strip()
+        if not title:
+            return JSONResponse({"error": "workflow name is required"}, status_code=400)
+        if scope not in {"model", "selection", "either"}:
+            return JSONResponse(
+                {"error": "scope must be model, selection, or either"}, status_code=400
+            )
+        if not isinstance(settings, dict):
+            return JSONResponse({"error": "settings must be key/value pairs"}, status_code=400)
+        if agent_name and core.agent_packs.get(agent_name) is None:
+            return JSONResponse({"error": f"no agent named {agent_name!r}"}, status_code=400)
+
+        steps = list(spec.steps)
+        if agent_name:
+            for index, step in enumerate(steps):
+                if isinstance(step, AgentStep):
+                    steps[index] = step.model_copy(update={"agent": agent_name})
+                    break
+        try:
+            updated = WorkflowSpec.model_validate(
+                spec.model_copy(
+                    update={
+                        "title": title,
+                        "description": description,
+                        "system_prompt": system_prompt,
+                        "additional_instructions": additional,
+                        "settings": settings,
+                        "scope": scope,
+                        "steps": tuple(steps),
+                    }
+                ).model_dump()
+            )
+            path = await asyncio.to_thread(registry.save, updated, overwrite=True)
+        except (ToolError, ValueError) as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        core.audit.record(
+            "workflow_updated", workflow=updated.name, agent=agent_name, path=str(path)
+        )
+        row = updated.summary()
+        row["origin"] = "project"
+        return JSONResponse({"workflow": row, "path": str(path)})
 
     async def run_workflow(request) -> Response:
         """Run one workflow and stream its steps.
@@ -1901,20 +2402,49 @@ def build_agent_panel_routes(core: AppCore) -> list[Route]:
         inputs = body.get("inputs") or {}
         if not isinstance(inputs, dict):
             return JSONResponse({"error": "inputs must be a JSON object"}, status_code=400)
+        settings = body.get("settings") if "settings" in body else None
+        if settings is not None and not isinstance(settings, dict):
+            return JSONResponse({"error": "settings must be key/value pairs"}, status_code=400)
+        scope = str(body.get("scope") or "model").strip()
+        note = str(body.get("note") or "").strip()
+        if scope not in {"model", "selection"}:
+            return JSONResponse({"error": "scope must be model or selection"}, status_code=400)
+        if len(note) > 2000:
+            return JSONResponse({"error": "run guidance is too long"}, status_code=400)
 
         from ifc_console.core.results import ToolError
 
         from ifc_console_agents.workflow_runner import WorkflowRunner
-        from ifc_console_agents.workflows import AgentStep, WorkflowRegistry, validate_inputs
+        from ifc_console_agents.workflows import (
+            AgentStep,
+            WorkflowRegistry,
+            validate_inputs,
+            validate_settings,
+        )
 
         registry = WorkflowRegistry(core.store.project_dir)
         try:
             spec = await asyncio.to_thread(registry.get, name.strip())
             validate_inputs(spec, inputs)
+            validate_settings(spec, settings)
         except ToolError as exc:
             status = 404 if exc.code == "NOT_FOUND" else 400
             return JSONResponse(
                 {"error": str(exc), "code": exc.code, "hint": exc.hint}, status_code=status
+            )
+        if spec.scope == "model" and scope != "model":
+            return JSONResponse(
+                {"error": "this workflow runs over the whole model"}, status_code=400
+            )
+        if spec.scope == "selection":
+            scope = "selection"
+        if scope == "selection" and not core.viewer_hub.selection_rows():
+            return JSONResponse(
+                {
+                    "error": "nothing is selected in the viewer",
+                    "hint": "Select one or more elements in the 3D view, then run again.",
+                },
+                status_code=400,
             )
 
         # A workflow of tools, gates, and a report needs no provider at all.
@@ -1931,9 +2461,7 @@ def build_agent_panel_routes(core: AppCore) -> list[Route]:
         runner = WorkflowRunner(
             core,
             model=resolved.model if resolved else None,
-            model_label=(
-                f"{resolved.provider_id}/{resolved.model_id}" if resolved else ""
-            ),
+            model_label=(f"{resolved.provider_id}/{resolved.model_id}" if resolved else ""),
             auto_approve=bool(core.ai_autonomy),
         )
         core.audit.record(
@@ -1951,7 +2479,9 @@ def build_agent_panel_routes(core: AppCore) -> list[Route]:
                 async with state.lifecycle_lock:
                     state.active_streams.setdefault(thread_key, set()).add(stream_task)
             try:
-                async for event in runner.stream(spec, inputs):
+                async for event in runner.stream(
+                    spec, inputs, scope=scope, note=note, settings=settings
+                ):
                     yield _sse(event)
             except asyncio.CancelledError:
                 raise
@@ -1975,11 +2505,131 @@ def build_agent_panel_routes(core: AppCore) -> list[Route]:
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
 
+    async def continue_workflow(request) -> Response:
+        """Answer one follow-up question about a run the reader is looking at.
+
+        A finished run is a conversation, not a receipt: the reader keeps the
+        workflow's prompt and tools and simply asks the next question.
+        """
+        if not core.chat.enabled:
+            return _disabled()
+        try:
+            body = await request.json()
+        except (ValueError, UnicodeDecodeError):
+            return JSONResponse({"error": "request body is not valid JSON"}, status_code=400)
+        if not isinstance(body, dict):
+            return JSONResponse({"error": "request body must be a JSON object"}, status_code=400)
+        name = body.get("workflow")
+        if not isinstance(name, str) or not name.strip():
+            return JSONResponse({"error": "workflow must be a name"}, status_code=400)
+        message = str(body.get("message") or "").strip()
+        if not message:
+            return JSONResponse({"error": "ask a question first"}, status_code=400)
+        if len(message) > 8000:
+            return JSONResponse({"error": "the question is too long"}, status_code=400)
+        settings = body.get("settings") if "settings" in body else None
+        if settings is not None and not isinstance(settings, dict):
+            return JSONResponse({"error": "settings must be key/value pairs"}, status_code=400)
+        history = body.get("history") or []
+        if not isinstance(history, list):
+            return JSONResponse({"error": "history must be a list of turns"}, status_code=400)
+        report = str(body.get("report") or "")
+        note = str(body.get("note") or "").strip()[:2000]
+        scope = str(body.get("scope") or "model").strip()
+        if scope not in {"model", "selection"}:
+            return JSONResponse({"error": "scope must be model or selection"}, status_code=400)
+
+        from ifc_console.core.results import ToolError
+
+        from ifc_console_agents.workflow_runner import WorkflowRunner
+        from ifc_console_agents.workflows import WorkflowRegistry, validate_settings
+
+        registry = WorkflowRegistry(core.store.project_dir)
+        try:
+            spec = await asyncio.to_thread(registry.get, name.strip())
+            validate_settings(spec, settings)
+        except ToolError as exc:
+            status = 404 if exc.code == "NOT_FOUND" else 400
+            return JSONResponse(
+                {"error": str(exc), "code": exc.code, "hint": exc.hint}, status_code=status
+            )
+        if scope == "selection" and not core.viewer_hub.selection_rows():
+            return JSONResponse(
+                {
+                    "error": "nothing is selected in the viewer",
+                    "hint": "Select elements in the 3D view, or ask about the whole model.",
+                },
+                status_code=400,
+            )
+        resolved, error = resolve_provider_model(core, body)
+        if error is not None:
+            return error
+        assert resolved is not None
+
+        state = _panel_state(core)
+        runner = WorkflowRunner(
+            core,
+            model=resolved.model,
+            model_label=f"{resolved.provider_id}/{resolved.model_id}",
+            auto_approve=bool(core.ai_autonomy),
+        )
+        core.audit.record(
+            "workflow_follow_up_request",
+            workflow=spec.name,
+            provider=resolved.provider_id,
+            model=resolved.model_id,
+            run=runner.run_id,
+        )
+        thread_key = f"workflow:{runner.run_id}"
+
+        turns = [row for row in history if isinstance(row, dict)]
+
+        async def events():
+            stream_task = asyncio.current_task()
+            if stream_task is not None:
+                async with state.lifecycle_lock:
+                    state.active_streams.setdefault(thread_key, set()).add(stream_task)
+            try:
+                async for event in runner.follow_up(
+                    spec,
+                    message,
+                    report=report,
+                    history=turns,
+                    scope=scope,
+                    note=note,
+                    settings=settings,
+                ):
+                    yield _sse(event)
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # the panel must always finish cleanly
+                log.exception("workflow %s follow-up failed", spec.name)
+                yield _sse({"type": "error", "text": "internal workflow error"})
+            finally:
+                state.deny_owned(runner)
+                if stream_task is not None:
+                    async with state.lifecycle_lock:
+                        active = state.active_streams.get(thread_key)
+                        if active is not None:
+                            active.discard(stream_task)
+                            if not active:
+                                state.active_streams.pop(thread_key, None)
+            yield _sse({"type": "done"})
+
+        return StreamingResponse(
+            events(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
     return [
         Route("/api/agents", list_agents, methods=["GET"]),
         Route("/api/agents/blocks", list_blocks, methods=["GET"]),
         Route("/api/agents/workflows", list_workflows, methods=["GET"]),
+        Route("/api/agents/workflows/create", save_workflow, methods=["POST"]),
+        Route("/api/agents/workflows/update", update_workflow, methods=["POST"]),
         Route("/api/agents/workflows/run", run_workflow, methods=["POST"]),
+        Route("/api/agents/workflows/continue", continue_workflow, methods=["POST"]),
         Route("/api/agents/workspace", agent_workspace, methods=["GET"]),
         Route("/api/agents/content", list_content, methods=["GET"]),
         Route("/api/agents/content/access", set_content_access, methods=["POST"]),
@@ -1996,6 +2646,8 @@ def build_agent_panel_routes(core: AppCore) -> list[Route]:
         Route("/api/agents/approve", approve, methods=["POST"]),
         Route("/api/agents/upload", upload, methods=["POST"]),
         Route("/api/agents/skills/import", skills_import, methods=["POST"]),
+        Route("/api/agents/geometry/review", geometry_review, methods=["POST"]),
+        Route("/api/agents/skills/dry-run", skill_dry_run, methods=["POST"]),
         Route("/api/agents/skills/record", skills_record, methods=["POST"]),
     ]
 

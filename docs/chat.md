@@ -146,6 +146,37 @@ Turn `chat.tools` off for conversation without IFC tools.
 
 For viewer navigation and measurement controls, see [3D viewer](viewer.md).
 
+## Workflows in the composer
+
+Type `/` to open the command list. Saved workflows come first, then the
+panel commands, then the saved skills of the active assistant. Choosing a
+workflow attaches it to the conversation as a chip above the composer:
+
+- Hover the chip, focus it, or press its name to read exactly what it adds.
+  Before the first turn that is the workflow's system prompt, stages, and
+  scope; afterwards it is the instructions the console actually sent.
+- Send reads **Run** while the workflow waits to start. An empty composer
+  sends the workflow's own task; anything typed is the prompt for this run.
+- The chip stays pinned. Every later turn names the workflow again, so the
+  console keeps one thread with the workflow's prompt in place. Removing the
+  chip starts a fresh conversation without it.
+- The empty state lists the first workflows as one-press starters, and the
+  plus menu's **Run a workflow** opens the same list.
+
+See [Agent workflows](agent-workflows.md) for what a workflow is and how the
+chat path differs from a staged run.
+
+## Memory
+
+A memory pill under the composer reads what this page holds, what the console
+process holds, and what the machine has left. It turns amber when any of
+them is high and red when the machine is close to running out. Pressing it
+releases what can be rebuilt: the viewer's parsed-model cache and idle parser
+worker, and the full tool output kept on older turns, which keep their
+previews. While a run is live the panel samples every few seconds and applies
+the same relief on its own, at most once a minute, so a long run on a large
+model does not push the machine into swapping.
+
 ## Python
 
 The optional SDK exposes the same provider-neutral loop. Agent types use the

@@ -1,0 +1,56 @@
+version: "1"
+name: quick-model-check
+title: Quick model check
+description: >-
+  Capture the open model's identity, spatial structure, and health findings in
+  one deterministic report. Runs locally without a language model.
+tags: [overview, health]
+
+steps:
+  - id: project
+    kind: tool
+    title: Read project inventory
+    tool: get_ifc_project_info
+    arguments: {}
+
+  - id: spatial
+    kind: tool
+    title: Read spatial structure
+    tool: get_spatial_structure
+    arguments:
+      depth: 4
+      include_element_counts: true
+
+  - id: health
+    kind: tool
+    title: Run model health checks
+    tool: check_model_health
+    arguments: {}
+
+  - id: report
+    kind: export
+    title: Save the snapshot
+    needs: [project, spatial, health]
+    name: quick-model-check
+    body: |
+      # Quick model check
+
+      Generated from deterministic IFC Console tools. No AI interpretation was used.
+
+      ## Project inventory
+
+      ```json
+      {{ steps.project.text }}
+      ```
+
+      ## Spatial structure
+
+      ```json
+      {{ steps.spatial.text }}
+      ```
+
+      ## Model health
+
+      ```json
+      {{ steps.health.text }}
+      ```

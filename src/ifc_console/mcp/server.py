@@ -568,6 +568,7 @@ def build_http_app(
         )
 
     async def status(_request: Request) -> JSONResponse:
+        from ifc_console.resources import process_memory
         from ifc_console.themes import resolve_theme
 
         s = core.session
@@ -575,6 +576,9 @@ def build_http_app(
             {
                 "server": {"name": "ifc-console"},
                 "meta": core.session_meta(),
+                # What the console process holds, so the panel can show it
+                # beside the browser's own use and back off when it is high.
+                "memory": process_memory(),
                 "model": s.name,
                 "models": core.viewer_hub.model_rows(),
                 "schema": s.schema,

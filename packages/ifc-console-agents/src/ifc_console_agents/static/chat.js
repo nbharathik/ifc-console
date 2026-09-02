@@ -28,6 +28,13 @@ import {
   toolHeadline,
   transcriptBlocks,
 } from "./chat_flow.js";
+import {
+  formatBytes as formatMemoryBytes,
+  memoryReport,
+  reliefPlan,
+  sampleHeap,
+  sampleInterval,
+} from "./chat_memory.js";
 import { PLAIN_CHAT, initials as initialsOf, sidebarModel } from "./chat_sidebar.js";
 import {
   StudioDraftStore,
@@ -37,7 +44,20 @@ import {
   studioModel,
   studioPayload,
 } from "./chat_studio.js";
-import { formatBytes, reachSentence, workspaceModel } from "./chat_workspace.js";
+import {
+  SKILL_DRY_RUN_SELECTION_LIMIT,
+  canonicalSelectionGuids,
+  formatBytes,
+  geometryRequestToken,
+  geometrySelectionToken,
+  measurementAlternativeRows,
+  measurementDryRunCanPropose,
+  measurementDryRunIsPartial,
+  measurementEvidenceKind,
+  reachSentence,
+  representativeSectionStations,
+  workspaceModel,
+} from "./chat_workspace.js";
 
 /* ifc-console Agent panel.
  *
@@ -149,6 +169,8 @@ const I = {
     15,
   ),
   warning: svg('<path d="M8 2.2 14 13H2zM8 5.7v3.6M8 11.4h.01"/>', 15),
+  play: svg('<path d="M4.6 3.2 12.4 8l-7.8 4.8z"/>', 15),
+  gauge: svg('<path d="M2.6 11.4a5.6 5.6 0 1 1 10.8 0"/><path d="M8 11.4 10.6 6.6"/><circle cx="8" cy="11.4" r=".9"/>', 13),
 };
 
 // -------------------------------------------------------------------- markup
@@ -301,7 +323,15 @@ const TEMPLATE = `
     <input type="file" data-role="file" hidden multiple
            accept=".md,.markdown,.txt,.pdf,.png,.jpg,.jpeg" aria-hidden="true">
     <textarea data-role="system" hidden aria-hidden="true" tabindex="-1"></textarea>
-    <div class="chat-hint" data-role="hint" role="status" aria-live="polite"></div>
+    <div class="chat-foot-row">
+      <div class="chat-hint" data-role="hint" role="status" aria-live="polite"></div>
+      <!-- What this page, the console, and the machine hold. Pressing it
+           releases what can be released without losing the conversation. -->
+      <button class="chat-memory" data-role="memory" data-act="memory" type="button" hidden
+              data-level="ok" title="Memory">
+        <i>${I.gauge}</i><span data-role="memory-label"></span>
+      </button>
+    </div>
     <div class="chat-sr" data-role="announce" role="status" aria-live="polite"></div>
   </footer>
 
@@ -792,6 +822,12 @@ export function mountChat(root, options = {}) {
   let workspaceOpen = false;
   let workspaceRequest = 0;
   let workspaceError = "";
+  let geometryReview = null;
+  let workspaceReviewSelectionToken = null;
+  let workspaceReviewSelectionEpoch = 0;
+  let geometryReviewRequestGeneration = 0;
+  const skillDryRuns = new Map();
+  const skillDryRunRequestGenerations = new Map();
   let contentLibrary = null;
   let contentLibraryAgent = "";
   let contentLibraryError = "";
@@ -811,6 +847,14 @@ export function mountChat(root, options = {}) {
   // handoff keeps its scoping and the server thread stays append-only.
   let carryOffer = null;
   let pendingAttachments = [];
+  // A workflow is context for the whole conversation, not one message: the
+  // console layers its prompt onto the thread, so every turn must name it.
+  let workflowCatalog = [];
+  let conversationWorkflow = null;
+  let workflowContext = null;
+  let memoryTimer = 0;
+  let memoryState = null;
+  let memoryRelievedAt = 0;
   // Thread ids belong to conversations, not assistants. Keying this map by an
   // assistant made a visually blank New Chat silently resume its last context.
   let conversationThreads = {};
@@ -1382,13 +1426,19 @@ export function mountChat(root, options = {}) {
     el("title").textContent = agentTitle();
     el("avatar").textContent = initialsOf(agentTitle());
     // The compact header identifies the active agent; capability counts and
-    // write policy belong in Agent workspace, not beneath the agent name.
-    el("reach").textContent = "";
+    // write policy belong in Agent workspace, not beneath the agent name. The
+    // one exception is the workflow the conversation stands on.
+    syncSubtitle();
     el("identity").title = active
       ? active.description
       : "Plain chat over the open model. Open the workspace to see its reach.";
-    input.placeholder = active ? `Ask ${active.title.toLowerCase()}...` : "Ask about the model...";
-    send.disabled = resetInProgress || uploadsInFlight() || (!ready && !busy);
+    input.placeholder = workflowPlaceholder()
+      || (active ? `Ask ${active.title.toLowerCase()}...` : "Ask about the model...");
+    send.disabled = resetInProgress
+      || uploadsInFlight()
+      || (!ready && !busy)
+      || (!busy && workflowNeedsSelection());
+    if (!busy) syncSendIdle();
     el("export").hidden = turns.length === 0;
     if (!turns.length && !busy && (!log.children.length || log.querySelector(".chat-empty"))) {
       empty();
@@ -1413,8 +1463,29 @@ export function mountChat(root, options = {}) {
     else if (!model) el("hint").innerHTML = 'choose a model in <b>Agent workspace</b>';
     else if (!hasKey(p)) el("hint").innerHTML = 'add an API key in <b>Agent workspace</b>';
     else if (uploadsInFlight()) el("hint").textContent = "indexing the attachment...";
-    else el("hint").textContent = "";
+    else if (workflowNeedsSelection()) {
+      el("hint").textContent = `select elements in the 3D view to run ${conversationWorkflow.title}`;
+    } else if (conversationWorkflow && !turns.length && !busy) {
+      el("hint").innerHTML = "press <b>Run</b>, or type what this run should focus on first";
+    } else el("hint").textContent = "";
     renderContext();
+  }
+
+  function syncSubtitle() {
+    const reach = el("reach");
+    if (!reach) return;
+    reach.textContent = conversationWorkflow ? `Workflow · ${conversationWorkflow.title}` : "";
+    reach.hidden = !conversationWorkflow;
+  }
+
+  // Send reads Run while a workflow waits to start: the composer may be empty
+  // then, and the click is the whole request.
+  function syncSendIdle() {
+    const starting = Boolean(conversationWorkflow) && !turns.length;
+    send.innerHTML = starting ? I.play : I.send;
+    send.classList.toggle("run", starting);
+    send.title = starting ? `Run ${conversationWorkflow.title}` : "Send";
+    send.setAttribute("aria-label", starting ? `Run ${conversationWorkflow.title}` : "Send message");
   }
 
   async function refreshContext() {
@@ -1437,7 +1508,11 @@ export function mountChat(root, options = {}) {
       }
       historyScope = nextScope;
       historyStore.setScope(nextScope);
-      sessionStatus = nextStatus;
+      // The 3D component's reading arrives on its own channel; keep it.
+      sessionStatus = { ...nextStatus, viewer_memory: sessionStatus.viewer_memory || null };
+      memoryState = memorySnapshot();
+      renderMemory();
+      const workspaceSelectionChanged = syncWorkspaceReviewSelection();
       if (UI_THEME_IDS.includes(nextStatus.theme)) {
         workspaceTheme = nextStatus.theme;
         if (settings.theme === "system") applyThemePreference("system");
@@ -1445,6 +1520,9 @@ export function mountChat(root, options = {}) {
       if (changedScope) startConversation(false, { focus: false });
       renderContext();
       renderSidebar();
+      if (workspaceSelectionChanged && workspaceOpen && workspaceView === "skills") {
+        renderWorkspace();
+      }
       if (!turns.length && !busy && (!log.children.length || log.querySelector(".chat-empty"))) {
         empty();
       }
@@ -1754,7 +1832,331 @@ export function mountChat(root, options = {}) {
       loadWorkspace();
     }
     loadBlocks();
+    void loadWorkflowCatalog();
     renderSidebar();
+  }
+
+  // ---------------------------------------------------------------- workflows
+  // The library is read once and kept: the composer's slash list and the
+  // empty state both answer from it without a round trip.
+  async function loadWorkflowCatalog() {
+    try {
+      const response = await api("/api/agents/workflows");
+      if (!response.ok) return;
+      const payload = await response.json();
+      setWorkflowCatalog(payload.workflows);
+    } catch {
+      /* the composer simply offers no workflows until the next load */
+    }
+  }
+
+  function setWorkflowCatalog(rows) {
+    workflowCatalog = (Array.isArray(rows) ? rows : [])
+      .filter((row) => row && typeof row.name === "string")
+      .map((row) => ({
+        name: row.name,
+        title: String(row.title || row.name),
+        description: String(row.description || ""),
+        scope: ["model", "selection", "either"].includes(row.scope) ? row.scope : "model",
+        agents: Array.isArray(row.agents) ? row.agents.map(String) : [],
+        steps: Array.isArray(row.steps) ? row.steps : [],
+        has_gate: Boolean(row.has_gate),
+        requires_model: Boolean(row.requires_model),
+        origin: row.origin === "project" ? "project" : "builtin",
+        system_prompt: String(row.system_prompt || ""),
+        settings: isPlainObject(row.settings) ? row.settings : {},
+      }));
+    if (conversationWorkflow) {
+      const fresh = workflowByName(conversationWorkflow.name);
+      if (fresh) conversationWorkflow = { ...fresh, scope: conversationWorkflow.scope };
+    }
+    if (!turns.length && !busy && log.querySelector(".chat-empty")) empty();
+    renderAttachments();
+  }
+
+  const workflowByName = (name) => workflowCatalog.find((flow) => flow.name === name) || null;
+
+  function workflowScopeFor(flow) {
+    if (flow.scope === "selection") return "selection";
+    if (flow.scope === "either" && viewerSelectionCount()) return "selection";
+    return "model";
+  }
+
+  /* Put a workflow behind this conversation.
+   *
+   * The console forks the thread whenever its standing instructions change,
+   * so a workflow joins a fresh conversation rather than silently splitting an
+   * old one. When the workflow names an assistant that is installed, that
+   * assistant answers it: its tool set is the one the workflow was written for.
+   */
+  function attachWorkflow(name, { scope = "" } = {}) {
+    const flow = workflowByName(name);
+    if (!flow) {
+      note(`No workflow named ${name}.`, true);
+      return false;
+    }
+    // Plain chat has no thread to hold standing instructions, so a workflow
+    // always runs under an assistant: the one it names, else the general one.
+    const wanted = flow.agents.find((agent) => agents.some((row) => row.name === agent))
+      || (currentAgent ? "" : defaultAgent());
+    if (wanted && wanted !== currentAgent) switchAgent(wanted);
+    else if (turns.length || busy) startConversation(true, { focus: false });
+    conversationWorkflow = {
+      ...flow,
+      scope: scope === "selection" || scope === "model" ? scope : workflowScopeFor(flow),
+    };
+    workflowContext = null;
+    renderAttachments();
+    render();
+    if (!turns.length && log.querySelector(".chat-empty")) empty();
+    input.placeholder = workflowPlaceholder();
+    input.focus();
+    el("announce").textContent = `${flow.title} attached. Press Run to start it.`;
+    return true;
+  }
+
+  /* A stored turn keeps only the workflow's name, title, and scope. */
+  function resolveWorkflow(ref) {
+    const known = workflowByName(ref?.name);
+    if (known) return { ...known, scope: ref.scope === "selection" ? "selection" : known.scope };
+    return {
+      name: String(ref?.name || ""),
+      title: String(ref?.title || ref?.name || "Workflow"),
+      description: "",
+      scope: ref?.scope === "selection" ? "selection" : "model",
+      agents: [],
+      steps: [],
+      has_gate: false,
+      requires_model: true,
+      origin: "builtin",
+      system_prompt: "",
+      settings: {},
+    };
+  }
+
+  function detachWorkflow() {
+    if (!conversationWorkflow) return;
+    const title = conversationWorkflow.title;
+    conversationWorkflow = null;
+    workflowContext = null;
+    if (turns.length) {
+      startConversation(true, { focus: false });
+      note(`${title} detached. A fresh conversation is ready.`);
+    } else if (log.querySelector(".chat-empty")) empty();
+    renderAttachments();
+    render();
+    input.focus();
+  }
+
+  const workflowPlaceholder = () => conversationWorkflow
+    ? (turns.length
+      ? `Ask a follow-up in ${conversationWorkflow.title}...`
+      : `Anything specific for ${conversationWorkflow.title}? Press Run to start.`)
+    : "";
+
+  const workflowNeedsSelection = () => Boolean(
+    conversationWorkflow
+    && conversationWorkflow.scope === "selection"
+    && !viewerSelectionCount(),
+  );
+
+  function workflowScopeLabel(flow) {
+    if (flow.scope === "selection") {
+      const count = viewerSelectionCount();
+      return count ? `${count} selected element${count === 1 ? "" : "s"}` : "viewer selection";
+    }
+    return "whole model";
+  }
+
+  /* The exact text behind a workflow chip, readable before it is sent.
+   *
+   * Once the console has answered, the instructions it reported replace the
+   * catalog's prompt, so a reader verifies what the model was given and not a
+   * summary of it. Everything lands as text nodes: a prompt is content.
+   */
+  function workflowPreviewNode(flow, context = null) {
+    const box = document.createElement("div");
+    box.className = "chat-chip-preview";
+    box.setAttribute("role", "tooltip");
+    const head = document.createElement("header");
+    const title = document.createElement("b");
+    title.textContent = flow.title;
+    const meta = document.createElement("small");
+    const facts = [
+      context ? `${context.scope === "selection" ? `${context.selected} selected` : "whole model"}` : workflowScopeLabel(flow),
+      flow.agents.length ? `agent: ${flow.agents.join(", ")}` : "local tools",
+      `${flow.steps.length} stage${flow.steps.length === 1 ? "" : "s"}`,
+      flow.has_gate ? "asks before saving" : "",
+    ].filter(Boolean);
+    meta.textContent = facts.join(" · ");
+    head.append(title, meta);
+    box.appendChild(head);
+    if (flow.description) {
+      const lead = document.createElement("p");
+      lead.textContent = flow.description;
+      box.appendChild(lead);
+    }
+    if (flow.steps.length) {
+      const stages = document.createElement("ol");
+      for (const step of flow.steps) {
+        const item = document.createElement("li");
+        item.dataset.kind = String(step.kind || "");
+        item.textContent = String(step.title || step.id || step.kind || "");
+        stages.appendChild(item);
+      }
+      box.appendChild(stages);
+    }
+    const label = document.createElement("span");
+    label.className = "chat-chip-preview-label";
+    label.textContent = context ? "Instructions the model was given" : "System prompt";
+    const pre = document.createElement("pre");
+    pre.tabIndex = 0;
+    pre.textContent = context?.instructions
+      || flow.system_prompt
+      || "No system prompt. The procedure below is written from the workflow's steps.";
+    box.append(label, pre);
+    return box;
+  }
+
+  function workflowChip(flow, { removable = true, context = null } = {}) {
+    const chip = document.createElement("span");
+    chip.className = "chat-attachment-chip workflow";
+    chip.dataset.pinned = String(Boolean(turns.length));
+    const mark = document.createElement("i");
+    mark.innerHTML = I.pipeline;
+    const name = document.createElement("button");
+    name.type = "button";
+    name.className = "chat-chip-name";
+    name.dataset.act = "preview-workflow";
+    name.setAttribute("aria-haspopup", "true");
+    name.setAttribute("aria-expanded", "false");
+    name.title = "Show the exact instructions this workflow adds";
+    name.textContent = flow.title;
+    const scope = document.createElement("em");
+    scope.textContent = workflowScopeLabel(flow);
+    chip.append(mark, name, scope);
+    if (removable) {
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.className = "chat-attachment-remove";
+      remove.dataset.act = "drop-workflow";
+      remove.setAttribute("aria-label", `Detach ${flow.title}`);
+      remove.innerHTML = I.close;
+      chip.appendChild(remove);
+    }
+    chip.appendChild(workflowPreviewNode(flow, context));
+    return chip;
+  }
+
+  function closeChipPreviews(except = null) {
+    for (const chip of root.querySelectorAll(".chat-attachment-chip.workflow.open")) {
+      if (chip === except) continue;
+      chip.classList.remove("open");
+      chip.querySelector(".chat-chip-name")?.setAttribute("aria-expanded", "false");
+    }
+  }
+
+  function toggleChipPreview(button) {
+    const chip = button.closest(".chat-attachment-chip.workflow");
+    if (!chip) return;
+    const open = !chip.classList.contains("open");
+    closeChipPreviews(chip);
+    chip.classList.toggle("open", open);
+    button.setAttribute("aria-expanded", String(open));
+  }
+
+  // ------------------------------------------------------------------- memory
+  // The numbers come from three places: this page, the console process, and
+  // the 3D component. One reading decides the pill and whether to act.
+  function memorySnapshot() {
+    return memoryReport({
+      heap: sampleHeap(),
+      server: sessionStatus.memory || null,
+      viewer: viewerLinked ? sessionStatus.viewer_memory || null : null,
+      turns,
+    });
+  }
+
+  function renderMemory() {
+    const pill = el("memory");
+    const report = memoryState;
+    if (!pill) return;
+    if (!report || (!report.headline && !report.server?.total)) {
+      pill.hidden = true;
+      return;
+    }
+    pill.hidden = false;
+    pill.dataset.level = report.level;
+    el("memory-label").textContent = report.headline || report.summary;
+    pill.title = `${report.summary}\n${report.detail}\nPress to release parsed models and old tool output.`;
+    pill.setAttribute(
+      "aria-label",
+      `Memory ${report.level === "ok" ? "" : report.level + ": "}${report.summary}. Press to free memory.`,
+    );
+  }
+
+  function memoryTick() {
+    memoryState = memorySnapshot();
+    renderMemory();
+    // One automatic pass per minute at most: releasing twice frees nothing
+    // and would only churn the parsed-model cache during a long run.
+    if (memoryState.level !== "ok" && Date.now() - memoryRelievedAt > 60_000) {
+      relieveMemory({ auto: true });
+    }
+    scheduleMemoryTick();
+  }
+
+  function scheduleMemoryTick() {
+    clearTimeout(memoryTimer);
+    memoryTimer = setTimeout(memoryTick, sampleInterval({ busy, level: memoryState?.level }));
+  }
+
+  /* Drop full tool output from turns older than the newest few.
+   *
+   * A tool card keeps the whole envelope so the reader can inspect it. On a
+   * long conversation that is the largest thing the page holds, and an old
+   * card's preview says what the call did just as well.
+   */
+  function trimTranscriptMemory(keepTurns) {
+    const messages = [...log.querySelectorAll(".chat-msg.assistant")];
+    let trimmed = 0;
+    for (const message of messages.slice(0, Math.max(0, messages.length - keepTurns))) {
+      for (const card of message.querySelectorAll(".chat-tool-card")) {
+        const block = card._toolBlock;
+        if (!block || block.output === null || block.output === undefined) continue;
+        block.output = null;
+        block.v = (block.v || 0) + 1;
+        const body = card.querySelector(".chat-tool-body");
+        if (body) body.dataset.state = "";
+        if (card.open) paintToolBody(card, block);
+        trimmed += 1;
+      }
+    }
+    return trimmed;
+  }
+
+  function relieveMemory({ auto = false } = {}) {
+    memoryRelievedAt = Date.now();
+    const report = memoryState || memorySnapshot();
+    const plan = reliefPlan(report, { turnCount: turns.length, force: !auto });
+    const trimmed = plan.trimTurns ? trimTranscriptMemory(plan.keepTurns) : 0;
+    if (plan.releaseViewer && viewerLinked) {
+      sendViewerCommand({
+        action: "release-memory",
+        commandId: `chat-memory-${Date.now()}`,
+        stopWorker: plan.stopWorker,
+      });
+    }
+    if (!auto) {
+      const freed = report.viewer?.parsedCacheBytes
+        ? `Released ${formatMemoryBytes(report.viewer.parsedCacheBytes)} of parsed models.`
+        : "No parsed models were cached.";
+      note(`${freed}${trimmed ? ` Kept full tool output for the last ${plan.keepTurns} turns.` : ""}`);
+    } else if (report.level === "critical") {
+      note(`Memory is ${report.level}: ${report.summary}. Parsed models and old tool output were released.`, "warn");
+    }
+    memoryState = memorySnapshot();
+    renderMemory();
   }
 
   async function loadBlocks() {
@@ -1792,6 +2194,8 @@ export function mountChat(root, options = {}) {
     // is an explicit action in Conversations, never a side effect of a row click.
     currentConversationId = conversationId();
     approvalAllowlist.clear();
+    conversationWorkflow = null;
+    workflowContext = null;
     empty();
     saveSettings();
     syncReferenceFiles();
@@ -1872,6 +2276,19 @@ export function mountChat(root, options = {}) {
         note: "Also saved views and the 3D selection",
         available: usesFiles || viewerLinked,
         run: () => insertAtCaret("@"),
+      },
+      {
+        icon: I.pipeline,
+        label: "Run a workflow",
+        note: `${workflowCatalog.length} saved procedure${workflowCatalog.length === 1 ? "" : "s"}`,
+        available: workflowCatalog.length > 0,
+        run: () => {
+          input.focus();
+          input.value = "/";
+          grow();
+          input.setSelectionRange(1, 1);
+          updateSuggest();
+        },
       },
       {
         icon: I.cube,
@@ -2009,6 +2426,9 @@ export function mountChat(root, options = {}) {
       hint: "Switch assistant",
       run: () => openWorkspace(input, "agent"),
     },
+    { name: "workflow", hint: "Open reusable workflows", run: () => { void openWorkflows(input); } },
+    { name: "workflows", hint: "Open reusable workflows", run: () => { void openWorkflows(input); } },
+    { name: "new-workflow", hint: "Build a workflow from a prompt", run: () => { void openWorkflows(input, { create: true }); } },
     { name: "model", hint: "Choose the AI model", run: () => openSettings(input) },
     { name: "content", hint: "Manage project content", run: () => openWorkspace(input, "content") },
     { name: "tools", hint: "Inspect the tool surface", run: () => openWorkspace(input, "tools") },
@@ -2055,18 +2475,35 @@ export function mountChat(root, options = {}) {
 
   let suggestState = null;
 
-  // A skill is a saved measurement procedure the agent can follow, so it reads
-  // as a command rather than as something to go and find in the workspace.
+  // A workflow is the first thing `/` offers: choosing one attaches it to the
+  // conversation, and Run starts it. A skill is a saved measurement procedure
+  // the agent can follow, so it reads as a command too rather than as
+  // something to go and find in the workspace.
   function slashCommands() {
+    const taken = new Set(STATIC_SLASH_COMMANDS.map((item) => item.name));
+    const workflows = workflowCatalog
+      .filter((flow) => !taken.has(flow.name))
+      .map((flow) => ({
+        name: flow.name,
+        hint: flow.description || flow.title,
+        group: "Workflows",
+        run: () => attachWorkflow(flow.name),
+      }));
+    for (const flow of workflows) taken.add(flow.name);
     const loaded = workspace && workspace.name === currentAgent ? workspace.skills : [];
     const skills = (Array.isArray(loaded) ? loaded : [])
       .map((skill) => ({
         name: String(skill.name || "").trim().replace(/\s+/g, "-").toLowerCase(),
         hint: skill.description || "saved procedure",
+        group: "Skills",
         run: () => insertAtCaret(`Follow the ${skill.name} skill: `),
       }))
-      .filter((row) => row.name && !STATIC_SLASH_COMMANDS.some((item) => item.name === row.name));
-    return [...STATIC_SLASH_COMMANDS, ...skills];
+      .filter((row) => row.name && !taken.has(row.name));
+    return [
+      ...workflows,
+      ...STATIC_SLASH_COMMANDS.map((item) => ({ ...item, group: "Commands" })),
+      ...skills,
+    ];
   }
 
   function mentionableFiles() {
@@ -2132,10 +2569,16 @@ export function mountChat(root, options = {}) {
   function suggestionsFor(token) {
     const needle = token.query.toLowerCase();
     if (token.kind === "command") {
-      return slashCommands()
-        .filter((item) => item.name.startsWith(needle))
-        .slice(0, 8)
-        .map((item) => ({ label: `/${item.name}`, note: item.hint, command: item }));
+      // A prefix match ranks above a match inside the name, so `/measure`
+      // lists measurement-audit first and still finds it typed as `/audit`.
+      const rows = slashCommands();
+      const matches = [
+        ...rows.filter((item) => item.name.startsWith(needle)),
+        ...rows.filter((item) => !item.name.startsWith(needle) && item.name.includes(needle)),
+      ];
+      return matches
+        .slice(0, 14)
+        .map((item) => ({ label: `/${item.name}`, note: item.hint, group: item.group, command: item }));
     }
     return mentionRows()
       .filter((row) => !needle || row.label.toLowerCase().includes(needle))
@@ -2153,7 +2596,15 @@ export function mountChat(root, options = {}) {
     const box = el("suggest");
     box.innerHTML = "";
     if (!suggestState) return;
+    let group = "";
     suggestState.items.forEach((item, index) => {
+      if (item.group && item.group !== group) {
+        group = item.group;
+        const label = document.createElement("span");
+        label.className = "chat-suggest-group";
+        label.textContent = group;
+        box.appendChild(label);
+      }
       const row = document.createElement("button");
       row.type = "button";
       row.className = "chat-suggest-item" + (index === suggestState.active ? " active" : "");
@@ -2233,8 +2684,27 @@ export function mountChat(root, options = {}) {
     const tray = el("attachments");
     const selections = viewerSelections();
     const selected = viewerSelectionCount();
-    tray.hidden = !pendingAttachments.length && !selected && !queuedPrompt;
+    // Viewer context frames arrive on every selection change, and the
+    // workflow chip carries its whole prompt. Rebuild only when something in
+    // the tray actually changed.
+    const signature = JSON.stringify([
+      conversationWorkflow?.name || "",
+      conversationWorkflow?.scope || "",
+      workflowContext?.instructions.length || 0,
+      turns.length > 0,
+      queuedPrompt,
+      selections.map((row) => `${row.model_id}:${row.guids.length}`),
+      pendingAttachments.map((item) => `${item.path || ""}:${item.name}:${Boolean(item.pending)}`),
+    ]);
+    if (tray.dataset.signature === signature) return;
+    tray.dataset.signature = signature;
+    tray.hidden = !pendingAttachments.length && !selected && !queuedPrompt && !conversationWorkflow;
     tray.innerHTML = "";
+    // The workflow leads the tray: it is the context every other chip is
+    // read under, and the hover preview is where its text is checked.
+    if (conversationWorkflow) {
+      tray.appendChild(workflowChip(conversationWorkflow, { context: workflowContext }));
+    }
     // A message typed mid-answer is waiting, not lost, and it can be taken
     // back before the run it is queued behind finishes.
     if (queuedPrompt) {
@@ -2779,7 +3249,7 @@ export function mountChat(root, options = {}) {
       workspaceError = exc.message || String(exc);
     }
     renderWorkspace();
-    el("reach").textContent = "";
+    syncSubtitle();
   }
 
   function setWorkspaceView(view, { focus = false } = {}) {
@@ -2937,7 +3407,7 @@ export function mountChat(root, options = {}) {
     if (restoreFocus) focusQuietly(overlayReturnTarget(target));
   }
 
-  async function openWorkflows(trigger = document.activeElement) {
+  async function openWorkflows(trigger = document.activeElement, { create = false, scope = "" } = {}) {
     const host = el("workflows");
     if (!host) return;
     workflowsReturnFocus = trigger;
@@ -2949,7 +3419,29 @@ export function mountChat(root, options = {}) {
     if (!workflowsPanel) {
       try {
         const module = await import("/agents/static/workflows.js");
-        workflowsPanel = module.mountWorkflows(host, { onClose: () => closeWorkflows() });
+        workflowsPanel = module.mountWorkflows(host, {
+          viewer,
+          onClose: () => closeWorkflows(),
+          // Both doors read one library: a workflow saved in the overlay is
+          // offered by the composer's slash list at once.
+          onCatalog: (rows) => setWorkflowCatalog(rows),
+          onAttach: (name, launchOptions = {}) => {
+            closeWorkflows({ restoreFocus: false });
+            if (!attachWorkflow(name, launchOptions)) return;
+            // The run prompt typed on the library page is this run's prompt.
+            const noteText = String(launchOptions.note || "").trim();
+            if (noteText) {
+              input.value = noteText;
+              grow();
+              input.setSelectionRange(input.value.length, input.value.length);
+            }
+          },
+          onCreateAgent: () => {
+            const returnFocus = host.querySelector(".wf-builder-actions > button") || trigger;
+            closeWorkflows({ restoreFocus: false });
+            openBuilder(returnFocus);
+          },
+        });
       } catch {
         host.innerHTML = `<p class="chat-empty">Workflows could not be loaded.</p>`;
         return;
@@ -2957,7 +3449,9 @@ export function mountChat(root, options = {}) {
     } else {
       void workflowsPanel.refresh();
     }
-    workflowsPanel.focus();
+    if (create) workflowsPanel.create();
+    else if (scope) workflowsPanel.launch?.({ scope });
+    else workflowsPanel.focus();
   }
 
   function toggleWorkflows(trigger) {
@@ -3318,7 +3812,797 @@ export function mountChat(root, options = {}) {
     }
   }
 
+  const GEOMETRY_GROUPS = {
+    envelope: "Envelope",
+    mass: "Mass geometry",
+    profile: "Profile",
+    longitudinal: "Longitudinal form",
+    section: "Sections",
+    material: "Material",
+    opening: "Openings and voids",
+    topology: "Topology",
+    stored: "Stored values",
+  };
+
+  function workspaceSelection() {
+    const selections = viewerSelections();
+    return selections.find((row) => row.model_id === sessionStatus.view_model_id)
+      || selections[0]
+      || null;
+  }
+
+  function syncWorkspaceReviewSelection(selection = workspaceSelection()) {
+    const nextToken = geometrySelectionToken(selection, sessionStatus);
+    if (workspaceReviewSelectionToken === nextToken) return false;
+    workspaceReviewSelectionToken = nextToken;
+    workspaceReviewSelectionEpoch += 1;
+    geometryReview = null;
+    skillDryRuns.clear();
+    return true;
+  }
+
+  function workspaceReviewRequestIsCurrent(state, activeGeneration) {
+    if (!state || state.selectionEpoch !== workspaceReviewSelectionEpoch) return false;
+    if (state.selectionToken !== workspaceReviewSelectionToken) return false;
+    if (state.selectionToken !== geometrySelectionToken(workspaceSelection(), sessionStatus)) return false;
+    if (state.requestGeneration !== activeGeneration) return false;
+    return state.requestToken === geometryRequestToken(
+      state.selectionToken,
+      state.requestGeneration,
+    );
+  }
+
+  function skillDryRunStateKey(skillName, selectionToken, requestGeneration) {
+    return `${skillName}\n${geometryRequestToken(selectionToken, requestGeneration)}`;
+  }
+
+  function currentSkillDryRunState(skillName) {
+    const requestGeneration = skillDryRunRequestGenerations.get(skillName) || 0;
+    const key = skillDryRunStateKey(
+      skillName,
+      workspaceReviewSelectionToken || "",
+      requestGeneration,
+    );
+    return skillDryRuns.get(key);
+  }
+
+  function wsDataTable(headings, rows) {
+    const wrap = wsNode("div", "chat-ws-data-wrap");
+    const table = wsNode("table", "chat-ws-data-table");
+    const head = document.createElement("thead");
+    const headRow = document.createElement("tr");
+    for (const heading of headings) headRow.appendChild(wsNode("th", "", heading));
+    head.appendChild(headRow);
+    const body = document.createElement("tbody");
+    for (const values of rows) {
+      const row = document.createElement("tr");
+      for (const value of values) {
+        const cell = wsNode("td", "");
+        if (value && typeof value === "object" && Number.isInteger(value.nodeType)) {
+          cell.appendChild(value);
+        } else {
+          cell.textContent = String(value ?? "");
+        }
+        row.appendChild(cell);
+      }
+      body.appendChild(row);
+    }
+    table.append(head, body);
+    wrap.appendChild(table);
+    return wrap;
+  }
+
+  function compactList(value, limit = 5) {
+    const rows = Array.isArray(value) ? value : [];
+    const text = rows.slice(0, limit).map((item) => {
+      if (!item || typeof item !== "object") return String(item ?? "");
+      const id = item.id || item.measurement_id || item.output || item.reason || "item";
+      const reason = item.reason || item.detail || item.status || "";
+      return reason && reason !== id ? `${id}: ${reason}` : String(id);
+    }).filter(Boolean);
+    if (rows.length > limit) text.push(`and ${rows.length - limit} more`);
+    return text.join("; ");
+  }
+
+  function geometryNumber(value) {
+    const number = Number(value);
+    return Number.isFinite(number)
+      ? number.toLocaleString(undefined, { maximumFractionDigits: 6 })
+      : "?";
+  }
+
+  function measurementValue(record) {
+    const unit = record.si_unit || ({ length: "m", area: "m^2", volume: "m^3" })[record.quantity_kind] || "";
+    const value = Number(record.value_si);
+    if (Number.isFinite(value)) return `${geometryNumber(value)}${unit ? ` ${unit}` : ""}`;
+    const range = record.range_si;
+    if (Array.isArray(range) && range.length >= 2) {
+      return `${geometryNumber(range[0])} to ${geometryNumber(range[1])}${unit ? ` ${unit}` : ""}`;
+    }
+    if (range && typeof range === "object") {
+      const low = range.minimum ?? range.min;
+      const high = range.maximum ?? range.max;
+      if (low !== undefined || high !== undefined) {
+        return `${geometryNumber(low)} to ${geometryNumber(high)}${unit ? ` ${unit}` : ""}`;
+      }
+    }
+    return "unavailable";
+  }
+
+  function geometryIdentity(record) {
+    return record?.object && typeof record.object === "object" ? record.object : (record || {});
+  }
+
+  function geometryLabel(value) {
+    return String(value || "unknown").replaceAll("_", " ");
+  }
+
+  function measurementEvidenceBadge(measurement) {
+    const kind = measurementEvidenceKind(measurement);
+    const badge = wsNode(
+      "span",
+      `chat-ws-evidence-badge ${kind.id}`,
+      kind.label,
+    );
+    badge.title = kind.description;
+    return badge;
+  }
+
+  function geometryVector(value) {
+    if (!Array.isArray(value) || value.length !== 3) return "unavailable";
+    return `[${value.map((item) => geometryNumber(item)).join(", ")}]`;
+  }
+
+  function svgElement(tag, attributes = {}) {
+    const node = document.createElementNS("http://www.w3.org/2000/svg", tag);
+    for (const [name, value] of Object.entries(attributes)) {
+      node.setAttribute(name, String(value));
+    }
+    return node;
+  }
+
+  function appendSemanticFrame(parent, record) {
+    const selected = record.selected_frame || "semantic";
+    const frames = record.frames && typeof record.frames === "object" ? record.frames : {};
+    const frame = frames[selected] || frames.semantic;
+    if (!frame || typeof frame !== "object") return;
+    parent.appendChild(wsNode("h4", "chat-ws-data-heading", "Semantic frame"));
+    const panel = wsNode("div", "chat-ws-frame-panel");
+    const visual = wsNode("div", "chat-ws-frame-visual");
+    const svg = svgElement("svg", {
+      viewBox: "0 0 170 130",
+      role: "img",
+      "aria-label": `${selected} frame axis triad in world coordinates`,
+    });
+    const origin = [80, 69];
+    svg.appendChild(svgElement("circle", {
+      cx: origin[0], cy: origin[1], r: 4, class: "chat-ws-axis-origin",
+    }));
+    const axes = [
+      ["longitudinal", "L"],
+      ["transverse", "T"],
+      ["vertical", "V"],
+    ];
+    for (const [name, short] of axes) {
+      const vector = Array.isArray(frame[name]) ? frame[name].map(Number) : [];
+      if (vector.length !== 3 || vector.some((value) => !Number.isFinite(value))) continue;
+      const projected = [
+        (vector[0] - vector[1]) * 0.72,
+        (vector[0] + vector[1]) * 0.34 - vector[2] * 0.82,
+      ];
+      const projectedLength = Math.hypot(...projected);
+      const foreshortened = projectedLength < 0.08;
+      const scale = foreshortened ? 0 : 44 / projectedLength;
+      const end = foreshortened
+        ? [origin[0], origin[1] - 9]
+        : [origin[0] + projected[0] * scale, origin[1] + projected[1] * scale];
+      const className = `chat-ws-axis chat-ws-axis-${name}${foreshortened ? " foreshortened" : ""}`;
+      const line = svgElement("line", {
+        x1: origin[0], y1: origin[1], x2: end[0], y2: end[1], class: className,
+      });
+      line.appendChild(svgElement("title"));
+      line.firstChild.textContent = `${geometryLabel(name)} ${geometryVector(vector)}`;
+      svg.appendChild(line);
+      svg.appendChild(svgElement("circle", {
+        cx: end[0], cy: end[1], r: foreshortened ? 5 : 3.5, class: className,
+      }));
+      const label = svgElement("text", {
+        x: end[0] + 6,
+        y: end[1] - 5,
+        class: className,
+      });
+      label.textContent = short;
+      svg.appendChild(label);
+    }
+    visual.appendChild(svg);
+    visual.appendChild(wsNode(
+      "small",
+      "chat-ws-muted",
+      "Read-only 2D projection. Vector values are authoritative.",
+    ));
+    const facts = wsNode("div", "chat-ws-frame-facts");
+    const tags = wsNode("div", "chat-ws-tags");
+    tags.append(
+      wsNode("span", "chat-ws-tag", selected),
+      wsNode("span", `chat-ws-tag confidence-${frame.confidence || "unknown"}`, geometryLabel(frame.confidence)),
+      wsNode("span", "chat-ws-tag", geometryLabel(frame.source)),
+      wsNode("span", "chat-ws-tag", geometryLabel(frame.handedness)),
+    );
+    facts.appendChild(tags);
+    facts.appendChild(wsDataTable(
+      ["Axis", "World vector"],
+      axes.map(([name]) => [geometryLabel(name), geometryVector(frame[name])]),
+    ));
+    const ambiguity = Array.isArray(frame.ambiguity) ? frame.ambiguity : [];
+    if (ambiguity.length) {
+      facts.appendChild(wsNode(
+        "p",
+        "chat-ws-review-state bad",
+        `Frame ambiguity: ${ambiguity.map(geometryLabel).join("; ")}`,
+      ));
+    }
+    panel.append(visual, facts);
+    parent.appendChild(panel);
+  }
+
+  function sectionMetricRows(station) {
+    const descriptor = station?.descriptor || {};
+    const rows = [];
+    for (const [key, label, unit] of [
+      ["width_si", "Width", "m"],
+      ["height_si", "Height", "m"],
+      ["area_si", "Area", "m^2"],
+      ["perimeter_si", "Perimeter", "m"],
+    ]) {
+      const value = Number(descriptor[key]);
+      if (Number.isFinite(value)) rows.push([label, `${geometryNumber(value)} ${unit}`]);
+    }
+    for (const [key, label] of [["loop_count", "Loops"], ["hole_count", "Holes"]]) {
+      const value = Number(descriptor[key]);
+      if (Number.isFinite(value)) rows.push([label, String(value)]);
+    }
+    const modes = Array.isArray(descriptor.thickness_modes_si)
+      ? descriptor.thickness_modes_si.map(Number).filter(Number.isFinite)
+      : [];
+    if (modes.length) {
+      rows.push(["Thickness modes", modes.map((value) => `${geometryNumber(value)} m`).join(", ")]);
+    }
+    if (station.closed !== null) rows.push(["Boundary", station.closed ? "closed" : "open"]);
+    return rows;
+  }
+
+  function appendSectionBrowser(parent, record) {
+    const analysis = record.section_analysis;
+    if (!analysis || typeof analysis !== "object") return;
+    parent.appendChild(wsNode("h4", "chat-ws-data-heading", "Adaptive sections"));
+    const panel = wsNode("div", "chat-ws-section-browser");
+    const tags = wsNode("div", "chat-ws-tags");
+    tags.append(
+      wsNode("span", "chat-ws-tag", geometryLabel(analysis.strategy)),
+      wsNode("span", "chat-ws-tag", geometryLabel(analysis.variation)),
+      wsNode(
+        "span",
+        "chat-ws-tag",
+        `${Number(analysis.stations_evaluated) || 0} station${Number(analysis.stations_evaluated) === 1 ? "" : "s"} evaluated`,
+      ),
+    );
+    const tolerance = Number(analysis.absolute_tolerance_si ?? record.tolerance?.absolute_si);
+    if (Number.isFinite(tolerance)) {
+      tags.appendChild(wsNode("span", "chat-ws-tag", `tolerance +/-${geometryNumber(tolerance)} m`));
+    }
+    if (Number(analysis.regions_omitted) > 0) {
+      tags.appendChild(wsNode(
+        "span",
+        "chat-ws-tag bad",
+        `${analysis.regions_omitted} region summaries omitted by response budget`,
+      ));
+    }
+    panel.appendChild(tags);
+    const sectionFlags = Array.isArray(analysis.flags) ? analysis.flags : [];
+    if (sectionFlags.length) {
+      panel.appendChild(wsNode(
+        "p",
+        "chat-ws-review-state bad",
+        `Section flags: ${sectionFlags.map(geometryLabel).join("; ")}`,
+      ));
+    }
+
+    const regions = Array.isArray(analysis.profile_regions) ? analysis.profile_regions : [];
+    if (regions.length) {
+      const track = wsNode("div", "chat-ws-section-regions");
+      track.setAttribute("role", "img");
+      track.setAttribute(
+        "aria-label",
+        `${regions.length} adaptive profile region${regions.length === 1 ? "" : "s"} along the longitudinal axis`,
+      );
+      regions.forEach((region, index) => {
+        const start = Math.max(0, Math.min(1, Number(region?.start) || 0));
+        const end = Math.max(start, Math.min(1, Number(region?.end) || 0));
+        const segment = wsNode("span", "", String(index + 1));
+        segment.style.flexGrow = String(Math.max(end - start, 0.01));
+        segment.title = `Region ${index + 1}: ${Math.round(start * 100)}% to ${Math.round(end * 100)}%`;
+        track.appendChild(segment);
+      });
+      panel.appendChild(track);
+    }
+
+    const stations = representativeSectionStations(analysis);
+    if (!stations.length) {
+      panel.appendChild(wsNode(
+        "p",
+        "chat-ws-muted",
+        analysis.strategy === "none"
+          ? "Section analysis was not requested for this response."
+          : "No representative section intersected the analysis mesh.",
+      ));
+      parent.appendChild(panel);
+      return;
+    }
+    const control = wsNode("label", "chat-ws-section-control");
+    control.appendChild(wsNode("span", "", "Representative station"));
+    const slider = document.createElement("input");
+    slider.type = "range";
+    slider.min = "0";
+    slider.max = String(stations.length - 1);
+    slider.step = "1";
+    const initialStationIndex = Math.max(
+      0,
+      stations.findIndex((station) => station.roles.includes("dominant")),
+    );
+    slider.value = String(initialStationIndex);
+    slider.disabled = stations.length === 1;
+    slider.setAttribute("aria-label", "Browse representative section stations");
+    const position = wsNode("output", "chat-ws-section-position");
+    control.append(slider, position);
+    panel.appendChild(control);
+    const stationDetail = wsNode("div", "chat-ws-section-detail");
+    panel.appendChild(stationDetail);
+    const showStation = (index) => {
+      const station = stations[Math.max(0, Math.min(stations.length - 1, index))];
+      const percent = `${geometryNumber(station.at * 100)}%`;
+      position.textContent = `${percent} along axis`;
+      slider.setAttribute(
+        "aria-valuetext",
+        `${percent}, ${station.roles.join(", ") || "representative station"}`,
+      );
+      stationDetail.innerHTML = "";
+      stationDetail.appendChild(wsNode(
+        "b",
+        "",
+        station.roles.map(geometryLabel).join(" / ") || "representative station",
+      ));
+      const rows = sectionMetricRows(station);
+      if (rows.length) stationDetail.appendChild(wsDataTable(["Section metric", "SI value"], rows));
+      else stationDetail.appendChild(wsNode("p", "chat-ws-muted", "Station position only; no metric summary was retained."));
+    };
+    slider.addEventListener("input", () => showStation(Number(slider.value)));
+    showStation(initialStationIndex);
+    parent.appendChild(panel);
+  }
+
+  function coverageConflictsFor(record, measurementId) {
+    const conflicts = Array.isArray(record.coverage?.conflicting)
+      ? record.coverage.conflicting
+      : [];
+    return conflicts.filter((item) => (
+      item === measurementId
+      || (item && typeof item === "object"
+        && (item.id || item.measurement_id || item.output) === measurementId)
+    ));
+  }
+
+  function alternativeDelta(row, unit) {
+    if (row.role === "preferred" || row.delta_si === null) return "-";
+    const sign = row.delta_si > 0 ? "+" : "";
+    const relative = Number.isFinite(row.relative_delta)
+      ? ` (${geometryNumber(row.relative_delta * 100)}%)`
+      : "";
+    return `${sign}${geometryNumber(row.delta_si)} ${unit}${relative}`;
+  }
+
+  function appendMeasurementEvidence(parent, record, measurement) {
+    const alternatives = Array.isArray(measurement.alternatives) ? measurement.alternatives : [];
+    const conflicts = coverageConflictsFor(record, measurement.id);
+    if (!alternatives.length && !conflicts.length) return;
+    const tolerance = Number(record.tolerance?.absolute_si);
+    const toleranceSi = measurement.quantity_kind === "length" && Number.isFinite(tolerance)
+      ? tolerance
+      : null;
+    const unit = measurement.si_unit || "SI";
+    const rows = measurementAlternativeRows(measurement, toleranceSi);
+    const details = wsNode("details", "chat-ws-evidence-review");
+    const summary = wsNode("summary", "");
+    summary.append(
+      wsNode("b", "", measurement.label || measurement.id || "Measurement evidence"),
+      wsNode(
+        "span",
+        conflicts.length ? "chat-ws-evidence-conflict" : "chat-ws-disclosure-state",
+        conflicts.length
+          ? "source conflict"
+          : `${rows.length} independent source${rows.length === 1 ? "" : "s"}`,
+      ),
+    );
+    const body = wsNode("div", "chat-ws-evidence-body");
+    if (conflicts.length) {
+      body.appendChild(wsNode(
+        "p",
+        "chat-ws-review-state bad",
+        `Conflict: ${compactList(conflicts)}. No source was silently discarded.`,
+      ));
+    }
+    const uncertainty = Number(measurement.uncertainty_si);
+    body.appendChild(wsNode(
+      "p",
+      "chat-ws-muted",
+      [
+        toleranceSi === null
+          ? "No dimensionally comparable absolute tolerance supplied"
+          : `Element length tolerance +/-${geometryNumber(toleranceSi)} m`,
+        Number.isFinite(uncertainty)
+          ? `preferred uncertainty +/-${geometryNumber(uncertainty)} ${unit}`
+          : "preferred uncertainty not claimed",
+      ].join("; "),
+    ));
+    body.appendChild(wsDataTable(
+      ["Candidate", "Evidence", "Value", "Delta", "Source", "Assessment"],
+      rows.map((row) => [
+        row.role,
+        measurementEvidenceBadge(row.record),
+        measurementValue(row.record),
+        alternativeDelta(row, unit),
+        [row.record.source, row.record.method].filter(Boolean).join(" / ") || "unspecified",
+        [row.assessment, compactList(row.record.flags)].filter(Boolean).join("; "),
+      ]),
+    ));
+    details.append(summary, body);
+    parent.appendChild(details);
+  }
+
+  function appendCoverage(parent, coverage) {
+    if (!coverage || typeof coverage !== "object") return;
+    const rows = ["requested", "extracted", "unavailable", "ambiguous", "conflicting"]
+      .map((status) => {
+        const values = Array.isArray(coverage[status]) ? coverage[status] : [];
+        return [status, String(values.length), compactList(values)];
+      });
+    parent.appendChild(wsNode("h4", "chat-ws-data-heading", "Coverage"));
+    parent.appendChild(wsDataTable(["Status", "Count", "Measurements"], rows));
+  }
+
+  function appendGeometryElements(parent, payload) {
+    const data = payload?.data && typeof payload.data === "object" ? payload.data : {};
+    const elements = Array.isArray(data.elements) ? data.elements : [];
+    if (!elements.length) {
+      parent.appendChild(wsNode("p", "chat-ws-muted", "No analyzable elements were returned."));
+      return;
+    }
+    for (const record of elements) {
+      const identity = geometryIdentity(record);
+      const card = wsNode("details", "chat-ws-geometry-element");
+      card.open = elements.length === 1;
+      const measurements = Array.isArray(record.measurements) ? record.measurements : [];
+      const summary = wsNode("summary", "");
+      summary.append(
+        wsNode("b", "", identity.name || identity.class || identity.global_id || "Element"),
+        wsNode(
+          "span",
+          "chat-ws-disclosure-state",
+          `${measurements.length} measurement${measurements.length === 1 ? "" : "s"}`,
+        ),
+      );
+      const detail = wsNode("div", "chat-ws-geometry-detail");
+      const meta = wsNode("div", "chat-ws-tags");
+      if (identity.class) meta.appendChild(wsNode("span", "chat-ws-tag", identity.class));
+      if (record.geometry_family) meta.appendChild(wsNode("span", "chat-ws-tag", record.geometry_family));
+      if (record.analysis_version || data.analysis_version) {
+        meta.appendChild(wsNode("span", "chat-ws-tag", `contract ${record.analysis_version || data.analysis_version}`));
+      }
+      if (identity.global_id) meta.appendChild(wsNode("code", "", identity.global_id));
+      detail.appendChild(meta);
+      appendSemanticFrame(detail, record);
+      appendSectionBrowser(detail, record);
+      const groups = new Map();
+      for (const measurement of measurements) {
+        if (!measurement || typeof measurement !== "object") continue;
+        const prefix = String(measurement.id || "other").split(".", 1)[0];
+        if (!groups.has(prefix)) groups.set(prefix, []);
+        groups.get(prefix).push(measurement);
+      }
+      for (const [prefix, records] of groups) {
+        detail.appendChild(wsNode(
+          "h4",
+          "chat-ws-data-heading",
+          GEOMETRY_GROUPS[prefix] || prefix.replaceAll("_", " "),
+        ));
+        detail.appendChild(wsDataTable(
+          ["Measurement", "Value", "Evidence", "Source", "Frame", "Confidence"],
+          records.map((measurement) => [
+            measurement.label || measurement.id || "measurement",
+            measurementValue(measurement),
+            measurementEvidenceBadge(measurement),
+            [measurement.source, measurement.method].filter(Boolean).join(" / ") || "unspecified",
+            [measurement.frame, measurement.direction].filter(Boolean).join(" / ") || "-",
+            [
+              measurement.confidence || "unknown",
+              (measurement.alternatives || []).length
+                ? `${measurement.alternatives.length} alternative(s)`
+                : "",
+              compactList(measurement.flags),
+            ].filter(Boolean).join("; "),
+          ]),
+        ));
+        for (const measurement of records) {
+          appendMeasurementEvidence(detail, record, measurement);
+        }
+      }
+      if (!measurements.length && record.dimensions && typeof record.dimensions === "object") {
+        detail.appendChild(wsNode("h4", "chat-ws-data-heading", "Legacy dimensions"));
+        detail.appendChild(wsDataTable(
+          ["Dimension", "SI value", "Source"],
+          Object.entries(record.dimensions).map(([name, value]) => [
+            name,
+            value?.si === undefined ? "unavailable" : `${geometryNumber(value.si)} m`,
+            value?.source || "unspecified",
+          ]),
+        ));
+      }
+      appendCoverage(detail, record.coverage);
+      card.append(summary, detail);
+      parent.appendChild(card);
+    }
+  }
+
+  async function reviewSelectedGeometry() {
+    const selection = workspaceSelection();
+    const guids = canonicalSelectionGuids(selection);
+    if (!selection || guids.length !== 1) return;
+    syncWorkspaceReviewSelection(selection);
+    const selectionToken = workspaceReviewSelectionToken;
+    const selectionEpoch = workspaceReviewSelectionEpoch;
+    const requestGeneration = ++geometryReviewRequestGeneration;
+    const requestToken = geometryRequestToken(selectionToken, requestGeneration);
+    const requestState = { selectionToken, selectionEpoch, requestGeneration, requestToken };
+    geometryReview = {
+      ...requestState,
+      loading: true,
+      error: "",
+      payload: null,
+      complete: false,
+    };
+    renderWorkspace();
+    try {
+      const response = await postJSON("/api/agents/geometry/review", {
+        model: selection.model_id,
+        global_ids: [guids[0]],
+        detail: "standard",
+        measurement_set: "standard",
+      });
+      const payload = await response.json();
+      if (!response.ok || payload.ok === false) {
+        throw new Error(payload.error?.message || payload.error || payload.hint || `HTTP ${response.status}`);
+      }
+      if (!workspaceReviewRequestIsCurrent(requestState, geometryReviewRequestGeneration)) return;
+      geometryReview = {
+        ...requestState,
+        loading: false,
+        error: "",
+        payload,
+        complete: !measurementDryRunIsPartial(payload),
+      };
+    } catch (exc) {
+      if (!workspaceReviewRequestIsCurrent(requestState, geometryReviewRequestGeneration)) return;
+      geometryReview = {
+        ...requestState,
+        loading: false,
+        error: String(exc.message || exc),
+        payload: null,
+        complete: false,
+      };
+    }
+    renderWorkspace();
+  }
+
+  function appendGeometryReview(parent) {
+    const selection = workspaceSelection();
+    const guids = canonicalSelectionGuids(selection);
+    const review = workspaceReviewRequestIsCurrent(
+      geometryReview,
+      geometryReviewRequestGeneration,
+    ) ? geometryReview : null;
+    const section = wsNode("section", "chat-ws-geometry-review");
+    const head = wsNode("div", "chat-ws-review-head");
+    const copy = wsNode("span", "");
+    copy.append(
+      wsNode("b", "", "Selected-object geometry"),
+      wsNode(
+        "small",
+        "",
+        selection
+          ? guids.length === 1
+            ? `1 selected in ${selection.model || selection.model_id}`
+            : `Select exactly one object (${guids.length} currently selected)`
+          : "Select one object in the 3D view",
+      ),
+    );
+    const analyze = wsNode("button", "chat-btn primary t-press", "Analyze selection");
+    analyze.type = "button";
+    analyze.disabled = !selection || guids.length !== 1 || review?.loading;
+    analyze.addEventListener("click", () => { void reviewSelectedGeometry(); });
+    head.append(copy, analyze);
+    section.appendChild(head);
+    section.appendChild(wsNode(
+      "p",
+      "chat-ws-muted",
+      "Runs one bounded standard analysis in the semantic frame, pinned to the selected model. "
+        + "It is read-only and retains section stations, alternatives, and conflicts for review.",
+    ));
+    if (review?.loading) {
+      section.appendChild(wsNode("p", "chat-ws-review-state", "Analyzing geometry..."));
+    } else if (review?.error) {
+      section.appendChild(wsNode("p", "chat-ws-review-state bad", review.error));
+    } else if (review?.payload) {
+      const state = review.complete
+        ? wsNode("p", "chat-ws-review-state ok", "Read-only analysis. No property proposal was created.")
+        : wsNode(
+          "p",
+          "chat-ws-review-state bad",
+          "Partial analysis response. Review the visible results, but do not treat them as complete.",
+        );
+      section.appendChild(state);
+      appendGeometryElements(section, review.payload);
+    }
+    parent.appendChild(section);
+  }
+
+  function skillTarget(result) {
+    const target = result?.object && typeof result.object === "object" ? result.object : result;
+    return target?.name || target?.global_id || target?.class || "target";
+  }
+
+  function appendSkillDryRun(parent, skill, state) {
+    if (!state) return;
+    const activeGeneration = skillDryRunRequestGenerations.get(skill.name) || 0;
+    if (!workspaceReviewRequestIsCurrent(state, activeGeneration)) return;
+    if (state.loading) {
+      parent.appendChild(wsNode("p", "chat-ws-review-state", "Checking applicability and replaying the exemplar..."));
+      return;
+    }
+    if (state.error) {
+      parent.appendChild(wsNode("p", "chat-ws-review-state bad", state.error));
+      return;
+    }
+    const data = state.payload?.data && typeof state.payload.data === "object"
+      ? state.payload.data
+      : {};
+    const results = Array.isArray(data.results) ? data.results : [];
+    const partial = state.complete !== true || measurementDryRunIsPartial(state.payload);
+    parent.appendChild(partial
+      ? wsNode(
+        "p",
+        "chat-ws-review-state bad",
+        "Partial dry run. Some targets or response data were omitted, so property proposal is disabled.",
+      )
+      : wsNode(
+        "p",
+        "chat-ws-review-state ok",
+        "Dry run only. Applicability and extraction were reviewed. No IFC property was proposed.",
+      ));
+    if (results.length) {
+      parent.appendChild(wsDataTable(
+        ["Target", "Status", "Score", "Why it matches", "Extracted", "Skipped / ambiguous"],
+        results.map((result) => {
+          const applicability = result.applicability || {};
+          return [
+            skillTarget(result),
+            result.status || "unknown",
+            Number.isFinite(Number(applicability.score))
+              ? `${Math.round(Number(applicability.score) * 100)}%`
+              : (applicability.applicable ? "applicable" : "not applicable"),
+            compactList(applicability.reasons),
+            compactList(result.extracted),
+            [compactList(result.skipped), compactList(result.ambiguous)].filter(Boolean).join("; "),
+          ];
+        }),
+      ));
+    } else {
+      parent.appendChild(wsNode("p", "chat-ws-muted", "No candidate result rows were returned."));
+    }
+    const actions = wsNode("div", "chat-ws-review-actions");
+    const propose = wsNode("button", "chat-btn t-press", "Prepare a separate property proposal");
+    propose.type = "button";
+    const canPropose = measurementDryRunCanPropose(state, {
+      selectionToken: workspaceReviewSelectionToken,
+      requestGeneration: activeGeneration,
+    });
+    propose.disabled = !canPropose;
+    propose.title = partial
+      ? "Run a complete dry review for the current selection before preparing a proposal."
+      : canPropose
+        ? "Prepare a separate preview from the reviewed extracted values."
+        : "No extracted values from an extracted or partial target are available to propose.";
+    propose.addEventListener("click", () => {
+      if (!workspaceReviewRequestIsCurrent(state, activeGeneration)) return;
+      if (!measurementDryRunCanPropose(state, {
+        selectionToken: workspaceReviewSelectionToken,
+        requestGeneration: activeGeneration,
+      })) return;
+      closeWorkspace({ restoreFocus: false });
+      insertAtCaret(
+        `Using the reviewed dry run of the ${skill.name} skill, prepare a separate `
+          + "AI-marked property proposal for the accepted extracted values. Show the "
+          + "preview and provenance, and do not commit it.",
+      );
+    });
+    actions.appendChild(propose);
+    parent.appendChild(actions);
+  }
+
+  async function dryRunSkill(skill) {
+    const selection = workspaceSelection();
+    const guids = canonicalSelectionGuids(selection);
+    if (
+      !selection
+      || !skill?.executable
+      || !guids.length
+      || guids.length > SKILL_DRY_RUN_SELECTION_LIMIT
+    ) return;
+    syncWorkspaceReviewSelection(selection);
+    const selectionToken = workspaceReviewSelectionToken;
+    const selectionEpoch = workspaceReviewSelectionEpoch;
+    const requestGeneration = (skillDryRunRequestGenerations.get(skill.name) || 0) + 1;
+    skillDryRunRequestGenerations.set(skill.name, requestGeneration);
+    const requestToken = geometryRequestToken(selectionToken, requestGeneration);
+    const requestState = { selectionToken, selectionEpoch, requestGeneration, requestToken };
+    const stateKey = skillDryRunStateKey(skill.name, selectionToken, requestGeneration);
+    skillDryRuns.set(stateKey, {
+      ...requestState,
+      loading: true,
+      error: "",
+      payload: null,
+      complete: false,
+    });
+    renderWorkspace();
+    try {
+      const response = await postJSON("/api/agents/skills/dry-run", {
+        name: skill.name,
+        model: selection.model_id,
+        global_ids: guids,
+        include_evidence: false,
+        limit: guids.length,
+      });
+      const payload = await response.json();
+      if (!response.ok || payload.ok === false) {
+        throw new Error(payload.error?.message || payload.error || payload.hint || `HTTP ${response.status}`);
+      }
+      if (!workspaceReviewRequestIsCurrent(
+        requestState,
+        skillDryRunRequestGenerations.get(skill.name),
+      )) return;
+      skillDryRuns.set(stateKey, {
+        ...requestState,
+        loading: false,
+        error: "",
+        payload,
+        complete: !measurementDryRunIsPartial(payload),
+      });
+    } catch (exc) {
+      if (!workspaceReviewRequestIsCurrent(
+        requestState,
+        skillDryRunRequestGenerations.get(skill.name),
+      )) return;
+      skillDryRuns.set(stateKey, {
+        ...requestState,
+        loading: false,
+        error: String(exc.message || exc),
+        payload: null,
+        complete: false,
+      });
+    }
+    renderWorkspace();
+  }
+
   function wsSkills(body) {
+    syncWorkspaceReviewSelection();
     const model = workspace;
     const count = model.skills.length;
     wsPageHeading(
@@ -3329,6 +4613,7 @@ export function mountChat(root, options = {}) {
         + ".ifc-console/agents/skills. Agents check them at the start of a task "
         + "and follow the one that matches.",
     );
+    appendGeometryReview(body);
     const recordRow = wsNode("div", "chat-ws-skill-record");
     const measured = Number(sessionStatus.measurements) || 0;
     recordRow.appendChild(wsNode(
@@ -3411,13 +4696,47 @@ export function mountChat(root, options = {}) {
       if (skill.description) detail.appendChild(wsNode("p", "", skill.description));
       const chips = wsNode("div", "chat-ws-tags");
       if (skill.applies_to) chips.appendChild(wsNode("span", "chat-ws-tag", skill.applies_to));
+      chips.appendChild(wsNode(
+        "span",
+        `chat-ws-tag ${skill.spec_status === "invalid" ? "bad" : ""}`,
+        skill.structured
+          ? `measurement spec v${skill.schema_version || "?"} / ${skill.spec_status || "unknown"}`
+          : "prose-only",
+      ));
       if (skill.updated_at) {
         chips.appendChild(wsNode("span", "chat-ws-tag", `updated ${String(skill.updated_at).slice(0, 10)}`));
       }
       detail.appendChild(chips);
+      if (skill.spec_error) {
+        detail.appendChild(wsNode("p", "chat-ws-review-state bad", skill.spec_error));
+      }
       const where = wsNode("div", "chat-ws-code-list");
       where.appendChild(wsNode("code", "", skill.path));
       detail.appendChild(where);
+      const selection = workspaceSelection();
+      const selectionGuids = canonicalSelectionGuids(selection);
+      const selectionTooLarge = selectionGuids.length > SKILL_DRY_RUN_SELECTION_LIMIT;
+      const dryRunState = currentSkillDryRunState(skill.name);
+      const actions = wsNode("div", "chat-ws-review-actions");
+      const dryRun = wsNode("button", "chat-btn t-press", "Review dry run on selection");
+      dryRun.type = "button";
+      dryRun.disabled = !selection
+        || selectionTooLarge
+        || !skill.executable
+        || dryRunState?.loading;
+      dryRun.title = !skill.structured
+        ? "Prose-only skills guide the agent but cannot run deterministically."
+        : !skill.executable
+          ? "Resolve the skill's unfinished measurement intents before replay."
+          : !selection
+            ? "Select candidate objects in the 3D view first."
+            : selectionTooLarge
+              ? `Select at most ${SKILL_DRY_RUN_SELECTION_LIMIT} objects for one complete workspace dry run.`
+            : "Preview applicability and extraction without proposing properties.";
+      dryRun.addEventListener("click", () => { void dryRunSkill(skill); });
+      actions.appendChild(dryRun);
+      detail.appendChild(actions);
+      appendSkillDryRun(detail, skill, dryRunState);
       details.append(summary, detail);
       list.appendChild(details);
     }
@@ -4065,13 +5384,32 @@ export function mountChat(root, options = {}) {
         : !hasKey(selectedProvider)
           ? `Add the API key required by ${selectedProvider.label}.`
           : "Finish the model setup.";
-    const body = ready
+    const flow = conversationWorkflow;
+    const workflowRows = workflowCatalog.slice(0, 6);
+    const scopeWords = (row) => (row.scope === "selection"
+      ? "needs a 3D selection"
+      : row.scope === "either" ? "model or selection" : "whole model");
+    const body = ready && flow
+      ? `<p class="chat-empty-lead">${esc(flow.description || "A saved procedure with its own system prompt, scope, and stages.")}</p>
+         <div class="chat-empty-run">
+           <button class="chat-btn primary t-press" data-act="run-workflow" type="button">${I.play}<span>Run ${esc(flow.title)}</span></button>
+           <small>${esc(flow.scope === "selection" ? "Runs on the elements selected in the 3D view." : `Runs on the ${esc(workflowScopeLabel(flow))}.`)} Type in the composer first to steer this run. Hover the chip below to read its instructions.</small>
+         </div>`
+      : ready
       ? `<p class="chat-empty-lead">${esc(lead)}</p>
          <div class="chat-starters" aria-label="Suggested questions">
            ${starters.map((s) =>
              `<button class="chat-starter"><span>${esc(s)}</span>${I.send}</button>`
            ).join("")}
-         </div>`
+         </div>
+         ${workflowRows.length ? `<div class="chat-empty-workflows" aria-label="Workflows">
+           <span class="chat-empty-label">Or run a workflow <small>type / in the composer for the whole list</small></span>
+           <div class="chat-workflow-starters">
+             ${workflowRows.map((row) =>
+               `<button class="chat-workflow-starter t-press" type="button" data-act="attach-workflow" data-workflow="${esc(row.name)}" title="${esc(row.description)}"><i>${I.pipeline}</i><span><b>${esc(row.title)}</b><small>${esc(scopeWords(row))}</small></span></button>`
+             ).join("")}
+           </div>
+         </div>` : ""}`
       : `<p class="chat-empty-lead">Connect a model once, then ask grounded questions about the IFC file open in the console.</p>
          <div class="chat-setup">
            <span class="chat-setup-status" aria-hidden="true"></span>
@@ -4082,8 +5420,8 @@ export function mountChat(root, options = {}) {
     log.innerHTML = `
       <div class="chat-empty">
         <span class="chat-empty-mark" aria-hidden="true">${I.agent}</span>
-        <span class="chat-empty-eyebrow">${esc(agentTitle())}</span>
-        <h1 class="chat-empty-title">${ready ? "What do you want to inspect?" : "Ask the open model"}</h1>
+        <span class="chat-empty-eyebrow">${esc(flow && ready ? `${agentTitle()} · workflow` : agentTitle())}</span>
+        <h1 class="chat-empty-title">${ready ? (flow ? esc(flow.title) : "What do you want to inspect?") : "Ask the open model"}</h1>
         ${body}
         <p class="chat-empty-note">${ready
           ? `Uses the open IFC model and respects ${esc(sessionStatus.mode || "ask")} mode.`
@@ -4162,7 +5500,11 @@ export function mountChat(root, options = {}) {
     input.setSelectionRange(input.value.length, input.value.length);
   }
 
-  function addUser(text, attachments = [], { animate = true, index = turns.length } = {}) {
+  function addUser(
+    text,
+    attachments = [],
+    { animate = true, index = turns.length, workflow = null } = {},
+  ) {
     if (!turns.length) log.innerHTML = "";
     const div = document.createElement("div");
     div.className = "chat-msg user" + (animate ? " is-new" : "");
@@ -4185,6 +5527,17 @@ export function mountChat(root, options = {}) {
         chip.appendChild(document.createTextNode(item.name || item.path));
         row.appendChild(chip);
       }
+      div.appendChild(row);
+    }
+    // The turn that started a workflow wears it, with the same preview the
+    // composer chip had, so the transcript still says what was asked for.
+    if (workflow) {
+      const row = document.createElement("div");
+      row.className = "chat-user-attachments chat-user-workflow";
+      row.appendChild(workflowChip(resolveWorkflow(workflow), {
+        removable: false,
+        context: workflowContext,
+      }));
       div.appendChild(row);
     }
     const tools = document.createElement("div");
@@ -4681,6 +6034,13 @@ export function mountChat(root, options = {}) {
       updated_at: Date.now(),
       thread_id: currentAgent ? (conversationThreads[currentConversationId] || "") : "",
       turns: turns.slice(-HISTORY_LIMIT),
+      workflow: conversationWorkflow
+        ? {
+            name: conversationWorkflow.name,
+            title: conversationWorkflow.title,
+            scope: conversationWorkflow.scope,
+          }
+        : undefined,
     };
   }
 
@@ -4717,7 +6077,11 @@ export function mountChat(root, options = {}) {
     log.innerHTML = "";
     turns.forEach((turn, index) => {
       if (turn.role === "user") {
-        addUser(turn.text, turn.attachments || [], { animate: false, index });
+        addUser(turn.text, turn.attachments || [], {
+          animate: false,
+          index,
+          workflow: turn.workflow || null,
+        });
       } else paintTurn(turn, { animate: false });
     });
     if (!turns.length) empty();
@@ -4736,6 +6100,10 @@ export function mountChat(root, options = {}) {
     approvalAllowlist.clear();
     carryOffer = null;
     pendingAttachments = [];
+    // The workflow travels with the record: without it the console would
+    // fork the thread on the next turn and the agent would lose its context.
+    conversationWorkflow = record.workflow ? resolveWorkflow(record.workflow) : null;
+    workflowContext = null;
     resetContentLibrary();
     renderAttachments();
     if (currentAgent && record.thread_id) conversationThreads[record.id] = record.thread_id;
@@ -4791,13 +6159,17 @@ export function mountChat(root, options = {}) {
     currentConversationId = conversationId();
     // Both are scoped to the conversation that is ending: a standing approval
     // must not survive into the next one, and a carry is a handoff, not a
-    // property of "new chat".
+    // property of "new chat". The workflow ends with it as well.
     approvalAllowlist.clear();
     carryOffer = null;
+    conversationWorkflow = null;
+    workflowContext = null;
     saveThreads();
     log.innerHTML = "";
     empty();
+    renderAttachments();
     renderSideHistory();
+    render();
     if (focus) input.focus();
   }
 
@@ -4986,10 +6358,8 @@ export function mountChat(root, options = {}) {
 
   function resetRunChrome() {
     log.setAttribute("aria-busy", "false");
-    send.innerHTML = I.send;
     send.classList.remove("stop");
-    send.title = "Send";
-    send.setAttribute("aria-label", "Send message");
+    syncSendIdle();
   }
 
   function runIsCurrent(runIdentity) {
@@ -5051,6 +6421,7 @@ export function mountChat(root, options = {}) {
     // Enter means something else while a run is live. The stable keyboard popover
     // explains that shortcut without adding and removing a row below input.
     render();
+    scheduleMemoryTick();
     // One run object holds every derived fact about this turn: the ordered
     // blocks, which stage is live, which tools ran, what came back. The view
     // reads it; nothing else has to track partial state.
@@ -5128,7 +6499,9 @@ export function mountChat(root, options = {}) {
             agent: runAgent,
             prompt: retryInExistingAgentThread
               ? "Retry the preceding user request and return a complete answer."
-              : (lastUser?.text ?? ""),
+              : (lastUser?.prompt ?? lastUser?.text ?? ""),
+            workflow: conversationWorkflow?.name || undefined,
+            workflow_scope: conversationWorkflow?.scope || undefined,
             thread_id: conversationThreads[runConversation] || undefined,
             persist_history: settings.history,
             additional_instructions: el("system").value.trim() || undefined,
@@ -5192,6 +6565,15 @@ export function mountChat(root, options = {}) {
             // A tool landing is the thing the reader is waiting for: paint it
             // immediately rather than on the next text tick.
             draw(true);
+          } else if (event.type === "workflow_context") {
+            // The exact text the model was given, for the chip's preview.
+            workflowContext = {
+              workflow: String(event.workflow || ""),
+              scope: event.scope === "selection" ? "selection" : "model",
+              selected: Number(event.selected) || 0,
+              instructions: String(event.instructions || ""),
+            };
+            renderAttachments();
           } else if (event.type === "thread") {
             conversationThreads[runConversation] = event.id;
             saveThreads();
@@ -5307,6 +6689,7 @@ export function mountChat(root, options = {}) {
     resetRunChrome();
     render();
     refreshContext();
+    memoryTick();
     input.focus();
     // The follow-up typed while this turn was streaming. It goes out only now,
     // so the model sees the finished turn ahead of it. A draft typed after it
@@ -5333,10 +6716,18 @@ export function mountChat(root, options = {}) {
       note("This message is too long. Shorten it to 100,000 characters before sending.", true);
       return;
     }
-    const intent = composerIntent({ busy, text });
+    // With a workflow waiting to start, pressing Run on an empty composer is
+    // a complete request: the console supplies the workflow's own task.
+    const flow = conversationWorkflow;
+    const runLabel = flow && !turns.length ? `Run ${flow.title}` : "";
+    const intent = composerIntent({ busy, text: text || runLabel });
     if (intent === "ignore") return;
     if (intent === "stop") {
       aborter?.abort();
+      return;
+    }
+    if (intent === "send" && workflowNeedsSelection()) {
+      note(`Select elements in the 3D view first; ${flow.title} runs on a selection.`, true);
       return;
     }
     if (intent === "queue") {
@@ -5359,9 +6750,16 @@ export function mountChat(root, options = {}) {
     carryOffer = null;
     const attachments = pendingAttachments;
     pendingAttachments = [];
+    const shown = text || runLabel;
+    const workflowRef = flow ? { name: flow.name, title: flow.title, scope: flow.scope } : null;
+    addUser(shown, attachments, { workflow: workflowRef && !turns.length ? workflowRef : null });
+    const turn = { role: "user", text: shown, attachments };
+    if (workflowRef) {
+      turn.workflow = workflowRef;
+      turn.prompt = text;
+    }
+    turns.push(turn);
     renderAttachments();
-    addUser(text, attachments);
-    turns.push({ role: "user", text, attachments });
     saveHistory();
     saveSettings();
     await run();
@@ -5479,6 +6877,7 @@ export function mountChat(root, options = {}) {
     }
     if (event.key !== "Escape") return;
     if (suggestState) closeSuggest();
+    else if (root.querySelector(".chat-attachment-chip.workflow.open")) closeChipPreviews();
     else if (!el("shortcuts").hidden) closeShortcuts({ restoreFocus: true });
     else if (!el("plus-menu").hidden) closePlusMenu({ restoreFocus: true });
     else if (armedDelete) disarmDelete();
@@ -5499,6 +6898,7 @@ export function mountChat(root, options = {}) {
     if (!event.target.closest(".chat-side-delete")) disarmDelete();
     if (!event.target.closest(".chat-plus-menu, .chat-plus")) closePlusMenu();
     if (!event.target.closest(".chat-shortcuts, .chat-shortcuts-toggle")) closeShortcuts();
+    if (!event.target.closest(".chat-attachment-chip.workflow")) closeChipPreviews();
     const workspaceNav = event.target.closest("[data-workspace-view]");
     if (workspaceNav) {
       setWorkspaceView(workspaceNav.dataset.workspaceView, { focus: true });
@@ -5525,6 +6925,13 @@ export function mountChat(root, options = {}) {
       } else input.focus();
     }
     else if (action === "toggle-side") setSide(!sideOpen, { trigger: actionButton });
+    else if (action === "attach-workflow") attachWorkflow(actionButton.dataset.workflow || "");
+    else if (action === "run-workflow") {
+      if (!busy) submit();
+    }
+    else if (action === "drop-workflow") detachWorkflow();
+    else if (action === "preview-workflow") toggleChipPreview(actionButton);
+    else if (action === "memory") relieveMemory();
     else if (action === "settings") openSettings(actionButton);
     else if (action === "export") exportConversation();
     else if (action === "builder") openBuilder(actionButton);
@@ -5812,11 +7219,17 @@ export function mountChat(root, options = {}) {
       // The viewer already publishes its saved views with every context frame,
       // so `@view:` costs nothing beyond reading them.
       saved_views: Array.isArray(detail.savedViews) ? detail.savedViews : sessionStatus.saved_views,
+      viewer_memory: viewerOpen
+        ? (detail.memory && typeof detail.memory === "object"
+          ? detail.memory
+          : sessionStatus.viewer_memory || null)
+        : null,
       mode: detail.mode || sessionStatus.mode,
       ai_autonomy: sessionStatus.ai_autonomy,
       dirty: sessionStatus.dirty,
       viewer_theme: viewerTheme || sessionStatus.viewer_theme,
     };
+    const workspaceSelectionChanged = syncWorkspaceReviewSelection();
     if (UI_THEME_IDS.includes(viewerTheme)) {
       workspaceTheme = viewerTheme;
       // The dock and Agent workspace are part of this viewer, not a separately
@@ -5826,6 +7239,9 @@ export function mountChat(root, options = {}) {
       if (settings.theme !== viewerTheme) rememberThemePreference(viewerTheme);
     }
     renderContext();
+    if (workspaceSelectionChanged && workspaceOpen && workspaceView === "skills") {
+      renderWorkspace();
+    }
   }
 
   async function handleViewerResult(detail) {
@@ -5835,6 +7251,14 @@ export function mountChat(root, options = {}) {
     }
     if (String(detail?.commandId || "").startsWith("chat-guid-") && !detail.ok) {
       note(`Could not show that IFC element: ${detail.error || "element unavailable"}`, true);
+      return;
+    }
+    if (String(detail?.commandId || "").startsWith("chat-memory-")) {
+      if (detail.ok && detail.result && typeof detail.result === "object") {
+        sessionStatus.viewer_memory = detail.result.memory || sessionStatus.viewer_memory;
+        memoryState = memorySnapshot();
+        renderMemory();
+      }
       return;
     }
     if (!detail || detail.commandId !== pendingCaptureCommand) return;
@@ -5904,6 +7328,7 @@ export function mountChat(root, options = {}) {
   renderSidebar();
   finishInitialHistoryReset();
   refreshContext();
+  scheduleMemoryTick();
   loadProviders();
   loadCapabilities();
   loadAgents().then(() => {
@@ -5915,6 +7340,10 @@ export function mountChat(root, options = {}) {
       input.value = text;
       submit();
     },
+    // The viewer's "Run workflow" status action lands here with the selection scope.
+    openWorkflows: (options = {}) => openWorkflows(undefined, options),
+    // Put a workflow behind the conversation, as the `/` list does.
+    attachWorkflow: (name, options = {}) => attachWorkflow(name, options),
     refresh: refreshContext,
     setVisible: (visible) => {
       if (!visible) {

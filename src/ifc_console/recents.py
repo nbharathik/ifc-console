@@ -68,7 +68,7 @@ class RecentsStore:
     @contextlib.contextmanager
     def _locked(self) -> Iterator[None]:
         with self._lock, exclusive_file_lock(
-            self.path.with_name(f".{self.path.name}.lock"), timeout_s=1
+            self.path.with_name(f".{self.path.name}.lock"), timeout_s=5
         ):
             yield
 

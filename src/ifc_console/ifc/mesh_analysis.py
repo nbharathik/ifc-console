@@ -24,6 +24,83 @@ FRAMES = ("world", "local", "principal")
 _EPS = 1e-12
 
 
+def scale_aware_tolerance(
+    vertices: np.ndarray,
+    *,
+    file_unit_scale: float = 1.0,
+    tessellation: dict[str, Any] | None = None,
+    precision: str = "standard",
+    user_tolerance: float | None = None,
+) -> dict[str, Any]:
+    """Build an SI tolerance policy from scale, units, mesh settings, and coordinates."""
+    if precision not in {"standard", "high"}:
+        raise ToolError(
+            "INVALID_INPUT",
+            "precision must be standard or high",
+            "Use standard for routine analysis and high for small features.",
+        )
+    verts = np.asarray(vertices, dtype=np.float64)
+    finite = verts[np.all(np.isfinite(verts), axis=1)]
+    if not len(finite):
+        raise ToolError(
+            "INVALID_GEOMETRY",
+            "a tolerance cannot be derived from a mesh without finite vertices",
+            "Inspect the mesh health and re-tessellate the element.",
+        )
+    if not np.isfinite(file_unit_scale) or file_unit_scale <= 0:
+        raise ToolError(
+            "INVALID_INPUT",
+            "file_unit_scale must be a finite positive SI factor",
+            "Pass the model length unit conversion to metres.",
+        )
+    if user_tolerance is not None and (
+        not np.isfinite(user_tolerance) or user_tolerance <= 0
+    ):
+        raise ToolError(
+            "INVALID_INPUT",
+            "user_tolerance must be a finite positive SI distance",
+            "Omit it to use the derived scale-aware policy.",
+        )
+
+    envelope = float(np.max(np.ptp(finite, axis=0)))
+    coordinate = float(np.max(np.abs(finite)))
+    floating_resolution = float(abs(np.spacing(coordinate))) * 64.0 if coordinate else _EPS
+    relative = 2e-7 if precision == "high" else 1e-6
+    unit_resolution = file_unit_scale * (1e-7 if precision == "high" else 1e-6)
+    settings = (tessellation or {}).get("settings") or {}
+    deflection = settings.get("mesher-linear-deflection", 0.0)
+    if not isinstance(deflection, (int, float)) or not np.isfinite(deflection):
+        deflection = 0.0
+    tessellation_component = float(deflection) * (0.005 if precision == "high" else 0.02)
+    scale_component = max(envelope, file_unit_scale) * relative * 0.02
+    derived = max(
+        1e-10,
+        floating_resolution,
+        unit_resolution,
+        tessellation_component,
+        scale_component,
+    )
+    absolute = max(derived, float(user_tolerance or 0.0))
+    comparison_relative = 0.002 if precision == "high" else 0.01
+    return {
+        "policy": "scale_aware_v1",
+        "precision": precision,
+        "absolute_si": round(absolute, 12),
+        "relative": comparison_relative,
+        "object_envelope_si": round(envelope, 9),
+        "file_unit_scale_si": float(file_unit_scale),
+        "tessellation_deflection_si": round(float(deflection), 12),
+        "floating_point_resolution_si": round(floating_resolution, 12),
+        "user_tolerance_si": user_tolerance,
+        "components_si": {
+            "unit": round(unit_resolution, 12),
+            "scale": round(scale_component, 12),
+            "tessellation": round(tessellation_component, 12),
+            "coordinates": round(floating_resolution, 12),
+        },
+    }
+
+
 def _arrays(
     vertices: np.ndarray, faces: np.ndarray
 ) -> tuple[np.ndarray, np.ndarray]:
@@ -465,6 +542,88 @@ def principal_frame(vertices: np.ndarray) -> tuple[np.ndarray, np.ndarray, list[
     return basis, values, flags
 
 
+def surface_principal_frame(
+    vertices: np.ndarray, faces: np.ndarray
+) -> tuple[np.ndarray, np.ndarray, list[str]]:
+    """Deterministic surface-area-weighted principal basis in world coordinates."""
+    verts, tris = _arrays(vertices, faces)
+    facts = _face_facts(verts, tris, tolerance=1e-12)
+    usable = tris[facts["usable_mask"]]
+    if not len(usable):
+        raise ToolError(
+            "INVALID_GEOMETRY",
+            "the mesh has no usable faces for a surface principal frame",
+            "Inspect mesh health or use the placement frame.",
+        )
+    triangle = verts[usable]
+    cross = np.cross(triangle[:, 1] - triangle[:, 0], triangle[:, 2] - triangle[:, 0])
+    weights = np.linalg.norm(cross, axis=1) / 2.0
+    centres = triangle.mean(axis=1)
+    total = float(weights.sum())
+    if total <= _EPS:
+        raise ToolError(
+            "INVALID_GEOMETRY",
+            "the mesh has no positive-area faces for a surface principal frame",
+            "Inspect mesh health or use the placement frame.",
+        )
+    centroid = np.average(centres, axis=0, weights=weights)
+    centred = centres - centroid
+    covariance = (centred * weights[:, None]).T @ centred / total
+    values, basis = np.linalg.eigh(covariance)
+    order = np.argsort(values)[::-1]
+    values, basis = values[order], basis[:, order]
+    for column in range(3):
+        vector = basis[:, column]
+        anchor = int(np.argmax(np.abs(vector)))
+        if vector[anchor] < 0:
+            basis[:, column] *= -1
+    if np.linalg.det(basis) < 0:
+        basis[:, 2] *= -1
+    flags: list[str] = []
+    scale = max(float(values[0]), _EPS)
+    if abs(float(values[0] - values[1])) / scale < 1e-4:
+        flags.append("surface_principal_axis_1_2_ambiguous")
+    if abs(float(values[1] - values[2])) / scale < 1e-4:
+        flags.append("surface_principal_axis_2_3_ambiguous")
+    return basis, values, flags
+
+
+def topology_summary(
+    vertices: np.ndarray,
+    faces: np.ndarray,
+    *,
+    tolerance: float = 1e-9,
+    backend: str = "builtin",
+) -> dict[str, Any]:
+    """Compact topology evidence with conservative hole and shell counts."""
+    health = mesh_health(vertices, faces, backend=backend, tolerance=tolerance)
+    components = int(health["connected_components"])
+    euler = int(health["euler_characteristic"])
+    closed_shells = components if health["watertight"] else 0
+    through_holes: int | None = None
+    if health["watertight"] and components:
+        through_holes = max(0, int(round((2 * components - euler) / 2.0)))
+    return {
+        "connected_components": components,
+        "closed_shells": closed_shells,
+        "boundary_edges": int(health["boundary_edges"]),
+        "non_manifold_edges": int(health["non_manifold_edges"]),
+        "euler_characteristic": euler,
+        "through_holes": through_holes,
+        "cavities": None,
+        "overlap_status": "not_evaluated" if components > 1 else "not_applicable",
+        "classification": (
+            "closed_solid"
+            if health["valid_volume"] and components == 1
+            else "multiple_closed_solids"
+            if health["valid_volume"] and components > 1
+            else "open_or_surface_geometry"
+        ),
+        "confidence": "high" if health["watertight"] else "low",
+        "flags": list(health["flags"]),
+    }
+
+
 def resolve_direction(
     vertices: np.ndarray,
     direction: Any,
@@ -617,6 +776,7 @@ def slice_mesh(
         world_normal,
         include_outline=include_outline,
         outline_points=outline_points,
+        tolerance=max(tolerance, 1e-12),
     )
     if metrics is None:
         flags.append("plane_misses_mesh")
@@ -914,6 +1074,9 @@ __all__ = [
     "principal_frame",
     "ray_intervals",
     "resolve_direction",
+    "scale_aware_tolerance",
     "slice_mesh",
+    "surface_principal_frame",
     "to_trimesh",
+    "topology_summary",
 ]

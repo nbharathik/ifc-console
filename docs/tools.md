@@ -77,7 +77,7 @@ See [Knowledge](knowledge.md) and [Measurement recipes](agents.md#measurement-re
 | `detect_clashes` | sampled mesh or bounding-box overlap and clearance |
 | `get_element_geometry` | SI bounding box, axes, footprint, volume, and confidence |
 | `inspect_element_mesh` | raw mesh topology and health evidence |
-| `analyze_element_geometry` | IFC profile parameters cross-checked with mesh sections |
+| `analyze_element_geometry` | versioned parametric inventory with exact IFC and mesh evidence |
 | `measure_elements` | stored quantity, layer sum, or geometry extent |
 | `measure_directional_extent` | support extent along a world, local, or principal direction |
 | `measure_local_thickness` | ordered material and void intervals through one point |
@@ -87,9 +87,45 @@ See [Knowledge](knowledge.md) and [Measurement recipes](agents.md#measurement-re
 | `export_csv` | audited CSV inside an allowed directory |
 | `export_measurement_report` | audited Markdown report registered as an artifact |
 
-`analyze_element_geometry` is the broad single-element probe. It reports exact
-profile values where available, measured mesh values, their sources, and
-mismatch flags. Dedicated measurement tools are better for repeatable batches.
+`analyze_element_geometry` is the safe high-level default for one or a few
+objects. For a viewer selection, pass the `model_id` returned by
+`get_viewer_selection` as `model`; a GlobalId is not resolved against another
+open file. The recommended first call uses `detail="compact"`,
+`frame="semantic"`, and `station_strategy="auto"`. It performs one exact
+representation inventory, mesh-health pass, frame resolution, adaptive
+section analysis, and source reconciliation.
+
+The additive version 2 response keeps legacy `dimensions`, `box`, and
+`cross_section` fields, and adds:
+
+- stable namespaced measurement ids such as `envelope.overall_length` and
+  `profile.web_thickness`;
+- SI and file values, source, method, frame, direction, station or spatial
+  domain, confidence, uncertainty, flags, and independent alternatives;
+- `coverage.requested`, `extracted`, `unavailable`, `ambiguous`, and
+  `conflicting`, so a missing result is never silently omitted;
+- semantic frames, geometry family, topology, bounded representative
+  sections, model revision, and geometry signature where available.
+
+`detail="compact"` returns preferred measurements and coverage. `standard`
+adds alternatives and representative section summaries. `full` adds bounded
+representation, sampling, and outline evidence. `measurement_set` selects
+`standard`, `profile`, `envelope`, or the more expensive `fabrication`
+inventory; `measurement_ids` requests an explicit stable-id list. Arrays,
+stations, rays, triangles, elements, and evidence are capped. Use the low-level
+mesh tools only to investigate a flag or answer an explicitly local question.
+
+An exact representation value can have zero uncertainty only when transforms
+and Boolean modifications preserve its meaning. A mesh value remains an
+estimate. Tapered and variable objects report ranges, station domains, or
+multiple thickness modes instead of one unlabeled median. Unsafe topology can
+return observations while refusing reliable volume or paired thickness.
+
+`export_measurement_report` renders version 2 records by measurement group,
+including coverage, alternatives, source deltas, frame, confidence, and
+uncertainty. The report header pins the analysis contract, model id,
+fingerprint, and revision. Reports built from a version 2 record also retain
+the previous Dimensions, cross-section, profile, box, and quantity sections.
 
 Mesh analysis uses the opt-in analysis tessellation profile and records its
 settings and source hash. It does not repair the source mesh. Invalid,
@@ -110,6 +146,8 @@ produce false positives. Clearance always reports its bounding-box method.
 | `compare_models` | changes between two open revisions |
 | `query_spatial` | geometric relations to an element or box |
 | `check_model_health` | duplicate IDs, orphaning, geometry, placement, storey, and type findings |
+| `audit_element_properties` | expected versus present properties per element, with where each gap is derived from |
+| `assess_model_quality` | a 0-100 scorecard over ten dimensions with ordered improvements |
 
 `compare_models` pairs by GlobalId, then falls back to class, type, and name.
 It reports added, removed, moved, geometry, property, type, and container
@@ -122,6 +160,26 @@ mesh-dependent confidence drops when the target is not watertight.
 `check_model_health` complements `validate_model`: it finds modeling defects
 that may still satisfy the IFC schema. Geometry checks are skipped, never
 silently sampled, when the model exceeds `max_elements`.
+
+`audit_element_properties` reads the schema's property set templates for an
+element's class and predefined type and reports, per applicable property and
+quantity set, which properties are filled on the occurrence or inherited from
+the type, which are empty or absent, and where each gap is usually filled
+from (`geometry`, `material`, `spatial`, `document`, `type`, `project`, or
+`manual`). `psets='core'` covers the class's Common set, its BaseQuantities,
+and whatever is already present; `'all'` lists every applicable template;
+`pset_names` narrows to named sets. `detail='full'` adds data types and
+enumerations per property. Custom sets and the reserved `IfcConsole_AI_` sets
+are listed separately.
+
+`assess_model_quality` scores usefulness rather than conformance: project
+identity, units and georeferencing, spatial containment, naming, types and
+predefined types, classification, common property sets and their key
+properties per class, base quantities, materials, and shape representations.
+Each dimension carries metrics, findings with example `global_ids`, and
+concrete improvements; `top_improvements` orders them by weighted loss and
+`text` is a digest for reports. Every score is a fraction of elements that
+pass, so two revisions of one file are comparable.
 
 ## Jobs and artifacts
 
@@ -198,7 +256,32 @@ are registered by the optional `ifc-console-agents` distribution through the
 | ---- | ------- |
 | `list_agent_skills` | names, descriptions, and applicability |
 | `get_agent_skill` | one complete procedure |
+| `preview_measurement_skill_migration` | read-only v2 suggestion and review checklist for one legacy skill |
+| `apply_measurement_skill` | validate applicability and replay a v2 skill; dry-run by default |
 | `save_agent_skill` | create or update a skill with host approval |
+
+Every skill stays one reviewable Markdown file. A deterministic measurement
+skill declares `kind: parametric_measurement` and `schema_version: 2` in front
+matter and contains exactly one fenced `measurement-spec` JSON object. Skill
+list and workspace rows expose `structured`, `executable`, `spec_status`, and
+the validated metadata. Unresolved recorded intents have
+`spec_status="review_required"` and cannot execute until reviewed.
+
+`apply_measurement_skill` requires a name, a model, and exactly one of
+`selector` or `global_ids`. It defaults to `dry_run=true`, returns an
+applicability score with match and mismatch reasons for every target, and
+lists extracted, skipped, and ambiguous outputs. Same IFC class is never
+sufficient similarity evidence. Applying a skill is read-only and never
+creates an IFC property proposal; that is a separate confirmed action.
+
+Prose-only skills remain readable and useful as agent guidance. They cannot be
+replayed deterministically. `preview_measurement_skill_migration` infers a
+bounded version 2 suggestion, marks it non-executable and review-required, and
+returns unresolved intents plus review items. It is read-only, reports zero
+file writes, and leaves the source skill unchanged. Migrating means resolving
+that checklist and explicitly saving a reviewed version 2 spec in a new or
+approved overwritten file; loading or previewing an old skill never rewrites
+it.
 
 ## Viewer operations
 

@@ -179,6 +179,27 @@
       "destructive": false,
       "input_schema": {
         "properties": {
+          "detail": {
+            "default": "standard",
+            "description": "compact returns preferred measurements and coverage; standard adds alternatives and section summaries; full adds bounded representation, sampling and outline evidence.",
+            "enum": [
+              "compact",
+              "standard",
+              "full"
+            ],
+            "type": "string"
+          },
+          "frame": {
+            "default": "semantic",
+            "description": "Frame used for directional and envelope measurements.",
+            "enum": [
+              "semantic",
+              "placement",
+              "principal",
+              "world"
+            ],
+            "type": "string"
+          },
           "global_ids": {
             "anyOf": [
               {
@@ -195,9 +216,19 @@
             "default": null,
             "description": "Explicit GlobalIds, e.g. the viewer selection."
           },
+          "include_alternatives": {
+            "default": true,
+            "description": "Keep independent evidence and source disagreements.",
+            "type": "boolean"
+          },
           "include_outline": {
             "default": false,
-            "description": "Return the 2D outline points of the measured section.",
+            "description": "Return bounded 2D section outlines with standard or full detail.",
+            "type": "boolean"
+          },
+          "include_sections": {
+            "default": true,
+            "description": "Include bounded representative section summaries.",
             "type": "boolean"
           },
           "max_elements": {
@@ -205,6 +236,33 @@
             "maximum": 25,
             "minimum": 1,
             "type": "integer"
+          },
+          "measurement_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 80,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional stable namespaced measurement ids. When provided, coverage reports every requested id."
+          },
+          "measurement_set": {
+            "default": "standard",
+            "description": "Supported measurement inventory to evaluate.",
+            "enum": [
+              "standard",
+              "profile",
+              "envelope",
+              "fabrication"
+            ],
+            "type": "string"
           },
           "model": {
             "anyOf": [
@@ -228,6 +286,15 @@
             "default": true,
             "type": "boolean"
           },
+          "precision": {
+            "default": "standard",
+            "description": "Documented tessellation and adaptive sampling budget.",
+            "enum": [
+              "standard",
+              "high"
+            ],
+            "type": "string"
+          },
           "selector": {
             "anyOf": [
               {
@@ -240,13 +307,23 @@
             "default": null,
             "description": "IfcOpenShell selector; or pass global_ids."
           },
+          "station_strategy": {
+            "default": "auto",
+            "description": "auto adaptively discovers profile regions; fixed uses stations; none skips mesh sections. Passing stations with auto selects fixed mode for compatibility.",
+            "enum": [
+              "auto",
+              "fixed",
+              "none"
+            ],
+            "type": "string"
+          },
           "stations": {
             "anyOf": [
               {
                 "items": {
                   "type": "number"
                 },
-                "maxItems": 7,
+                "maxItems": 17,
                 "type": "array"
               },
               {
@@ -254,7 +331,7 @@
               }
             ],
             "default": null,
-            "description": "Cut positions as 0..1 fractions of the long axis; default 0.3, 0.5, 0.7."
+            "description": "Explicit 0..1 section fractions. Passing these without station_strategy selects fixed mode for compatibility."
           }
         },
         "type": "object"
@@ -354,6 +431,142 @@
       "destructive": false,
       "input_schema": {
         "properties": {
+          "dry_run": {
+            "default": true,
+            "description": "Preview applicability and extraction; defaults true.",
+            "type": "boolean"
+          },
+          "global_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 200,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Explicit GlobalIds; pass exactly one target form."
+          },
+          "include_evidence": {
+            "default": false,
+            "description": "Include bounded signatures, signals and analysis evidence.",
+            "type": "boolean"
+          },
+          "limit": {
+            "default": 10,
+            "description": "Targets in this page.",
+            "maximum": 25,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "max_matches": {
+            "default": 100,
+            "description": "Hard cap across pages for this application.",
+            "maximum": 200,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "minimum_confidence": {
+            "anyOf": [
+              {
+                "enum": [
+                  "low",
+                  "medium",
+                  "high",
+                  "exact"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional confidence floor across every skill rule."
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "model_id from the selection or attached-model list."
+          },
+          "name": {
+            "description": "Structured skill name.",
+            "type": "string"
+          },
+          "offset": {
+            "default": 0,
+            "description": "Targets to skip for paging.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "selector": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "IfcOpenShell selector; pass exactly one target form."
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
+      "name": "apply_measurement_skill",
+      "output_schema": null,
+      "read_only": true
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
+          "max_examples": {
+            "default": 5,
+            "description": "Example elements listed per finding.",
+            "maximum": 20,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "model_id of an attached model (see list_models); omit for the active model."
+          }
+        },
+        "type": "object"
+      },
+      "name": "assess_model_quality",
+      "output_schema": null,
+      "read_only": true
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
           "alias": {
             "anyOf": [
               {
@@ -379,6 +592,98 @@
       "name": "attach",
       "output_schema": null,
       "read_only": false
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
+          "detail": {
+            "default": "compact",
+            "description": "full adds a row per property with data type and enumeration.",
+            "enum": [
+              "compact",
+              "full"
+            ],
+            "type": "string"
+          },
+          "global_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 50,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Explicit GlobalIds, e.g. the viewer selection."
+          },
+          "max_elements": {
+            "default": 10,
+            "maximum": 50,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "model_id of an attached model (see list_models); omit for the active model."
+          },
+          "pset_names": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 20,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Audit exactly these property set names instead."
+          },
+          "psets": {
+            "default": "core",
+            "description": "Which applicable sets to audit.",
+            "enum": [
+              "core",
+              "present",
+              "all"
+            ],
+            "type": "string"
+          },
+          "selector": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "IfcOpenShell selector; or pass global_ids."
+          }
+        },
+        "type": "object"
+      },
+      "name": "audit_element_properties",
+      "output_schema": null,
+      "read_only": true
     },
     {
       "destructive": true,
@@ -2978,6 +3283,24 @@
       "destructive": false,
       "input_schema": {
         "properties": {
+          "name": {
+            "description": "Prose-only skill name to preview.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
+      "name": "preview_measurement_skill_migration",
+      "output_schema": null,
+      "read_only": true
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
           "create_missing": {
             "default": false,
             "type": "boolean"
@@ -3367,6 +3690,19 @@
             "maxLength": 200,
             "type": "string"
           },
+          "kind": {
+            "anyOf": [
+              {
+                "const": "parametric_measurement",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Structured skill kind; omit for prose skills."
+          },
           "name": {
             "description": "Lowercase slug, e.g. 'sheet-pile-profile'.",
             "maxLength": 64,
@@ -3375,6 +3711,19 @@
           "overwrite": {
             "default": false,
             "type": "boolean"
+          },
+          "schema_version": {
+            "anyOf": [
+              {
+                "const": 2,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Structured schema version; omit for prose skills."
           }
         },
         "required": [

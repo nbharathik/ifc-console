@@ -23,8 +23,255 @@ const ALL_TABS = [
 // empty because it is also where people upload and configure references.
 export const TABS = ALL_TABS;
 
+export const SKILL_DRY_RUN_SELECTION_LIMIT = 25;
+
 const plain = (value) =>
   value !== null && typeof value === "object" && !Array.isArray(value);
+
+/** Canonical target order for review requests and their cache keys. */
+export function canonicalSelectionGuids(selection) {
+  const guids = Array.isArray(selection?.guids) ? selection.guids : [];
+  return [...new Set(guids.filter((guid) => typeof guid === "string" && guid))].sort();
+}
+
+/**
+ * Stable identity for a model-scoped viewer selection.
+ *
+ * Model rows expose an etag even when the underlying fingerprint and revision
+ * are not sent separately, so prefer every available revision signal.
+ */
+export function geometrySelectionToken(selection, status = {}) {
+  const modelId = typeof selection?.model_id === "string" ? selection.model_id : "";
+  if (!modelId) return "";
+  const models = Array.isArray(status?.models) ? status.models : [];
+  const model = models.find((row) => row?.id === modelId) || {};
+  const revision = [
+    selection?.fingerprint,
+    selection?.revision,
+    model.fingerprint,
+    model.revision,
+    model.etag,
+    model.active ? status?.fingerprint : null,
+  ].filter((value) => value !== undefined && value !== null && value !== "");
+  return JSON.stringify({
+    model_id: modelId,
+    revision: revision.length ? revision.map(String) : null,
+    global_ids: canonicalSelectionGuids(selection),
+  });
+}
+
+/** Add a request generation so two races for one selection cannot share state. */
+export function geometryRequestToken(selectionToken, requestGeneration) {
+  return `${selectionToken}#request:${requestGeneration}`;
+}
+
+/** Server paging or response-envelope truncation makes a review incomplete. */
+export function measurementDryRunIsPartial(payload) {
+  const data = plain(payload?.data) ? payload.data : {};
+  const targets = plain(data.targets) ? data.targets : {};
+  const envelopeMeta = plain(payload?.meta) ? payload.meta : {};
+  const dataMeta = plain(data.meta) ? data.meta : {};
+  return Boolean(
+    targets.has_more
+      || targets.truncated_by_max_matches
+      || envelopeMeta.truncated
+      || dataMeta.truncated
+  );
+}
+
+/** A proposal can follow only a complete, current preview with extracted values. */
+export function measurementDryRunCanPropose(
+  state,
+  { selectionToken = "", requestGeneration = 0 } = {},
+) {
+  if (!state || state.loading || state.error || state.complete !== true) return false;
+  if (state.selectionToken !== selectionToken) return false;
+  if (state.requestGeneration !== requestGeneration) return false;
+  if (state.requestToken !== geometryRequestToken(selectionToken, requestGeneration)) return false;
+  if (measurementDryRunIsPartial(state.payload)) return false;
+  const data = plain(state.payload?.data) ? state.payload.data : {};
+  const results = Array.isArray(data.results) ? data.results : [];
+  return results.some((result) => (
+    ["extracted", "partial"].includes(String(result?.status || "").toLowerCase())
+      && Array.isArray(result?.extracted)
+      && result.extracted.length > 0
+  ));
+}
+
+const EXACT_IFC_SOURCES = new Set([
+  "extrusion_depth",
+  "ifc_relationship",
+  "material_layer_parameter",
+  "profile_curve",
+  "profile_parameter",
+]);
+
+/** Distinguish exact IFC parameters from sampled or derived observations. */
+export function measurementEvidenceKind(measurement) {
+  const flags = Array.isArray(measurement?.flags)
+    ? measurement.flags.map((flag) => String(flag).toLowerCase())
+    : [];
+  const disqualified = flags.some((flag) => (
+    flag.includes("approximate") || flag.includes("pre_boolean")
+  ));
+  const exact = measurement?.uncertainty_si === 0
+    && EXACT_IFC_SOURCES.has(String(measurement?.source || ""))
+    && !disqualified;
+  return exact
+    ? {
+      id: "exact",
+      label: "Exact IFC",
+      description: "Read from an IFC parameter or relationship with zero stated uncertainty.",
+    }
+    : {
+      id: "measured",
+      label: "Measured",
+      description: "Sampled, tessellated, approximated, or otherwise derived geometry evidence.",
+    };
+}
+
+/** Normalize preferred and alternative evidence into comparable delta rows. */
+export function measurementAlternativeRows(measurement, absoluteToleranceSi = null) {
+  if (!plain(measurement)) return [];
+  const preferred = Number(measurement.value_si);
+  const tolerance = absoluteToleranceSi === null || absoluteToleranceSi === undefined
+    ? Number.NaN
+    : Number(absoluteToleranceSi);
+  const toleranceSi = Number.isFinite(tolerance) && tolerance >= 0 ? tolerance : null;
+  const alternatives = Array.isArray(measurement.alternatives) ? measurement.alternatives : [];
+  const rows = [{
+    role: "preferred",
+    record: measurement,
+    delta_si: 0,
+    relative_delta: 0,
+    tolerance_si: toleranceSi,
+    assessment: "preferred source",
+    evidence_kind: measurementEvidenceKind(measurement),
+  }];
+  for (const alternative of alternatives) {
+    if (!plain(alternative)) continue;
+    const value = Number(alternative.value_si);
+    const evidenceDelta = alternative?.evidence?.delta_si === null
+      || alternative?.evidence?.delta_si === undefined
+      ? Number.NaN
+      : Number(alternative.evidence.delta_si);
+    const explicitDelta = alternative.absolute_delta_si === null
+      || alternative.absolute_delta_si === undefined
+      ? Number.NaN
+      : Number(alternative.absolute_delta_si);
+    const delta = Number.isFinite(evidenceDelta)
+      ? evidenceDelta
+      : Number.isFinite(value) && Number.isFinite(preferred)
+          ? value - preferred
+          : Number.isFinite(explicitDelta)
+            ? explicitDelta
+            : null;
+    const explicitRelative = alternative.relative_delta === null
+      || alternative.relative_delta === undefined
+      ? Number.NaN
+      : Number(alternative.relative_delta);
+    const relative = Number.isFinite(explicitRelative)
+      ? explicitRelative
+      : delta !== null && Number.isFinite(preferred) && preferred !== 0
+        ? delta / preferred
+        : null;
+    const withinTolerance = delta !== null && toleranceSi !== null
+      ? Math.abs(delta) <= toleranceSi
+      : null;
+    const explicitStatus = String(alternative.status || "").replaceAll("_", " ");
+    const assessment = explicitStatus
+      || (withinTolerance === null
+        ? "not tolerance-assessed"
+        : withinTolerance ? "within tolerance" : "outside tolerance");
+    rows.push({
+      role: "alternative",
+      record: alternative,
+      delta_si: delta,
+      relative_delta: relative,
+      tolerance_si: toleranceSi,
+      within_tolerance: withinTolerance,
+      assessment,
+      evidence_kind: measurementEvidenceKind(alternative),
+    });
+  }
+  return rows;
+}
+
+/** Representative and adaptive section positions, deduplicated and ordered. */
+export function representativeSectionStations(sectionAnalysis) {
+  if (!plain(sectionAnalysis)) return [];
+  const byStation = new Map();
+  const add = (at, role, section = {}) => {
+    const station = Number(at);
+    if (!Number.isFinite(station) || station < 0 || station > 1) return;
+    const key = station.toFixed(9);
+    const current = byStation.get(key) || {
+      at: station,
+      roles: [],
+      descriptor: {},
+      closed: null,
+    };
+    if (role && !current.roles.includes(role)) current.roles.push(role);
+    const descriptor = plain(section?.descriptor) ? section.descriptor : {};
+    current.descriptor = {
+      ...current.descriptor,
+      ...descriptor,
+    };
+    for (const [target, source] of [
+      ["width_si", "width"],
+      ["height_si", "height"],
+      ["area_si", "area"],
+      ["perimeter_si", "perimeter"],
+      ["loop_count", "loop_count"],
+      ["hole_count", "hole_count"],
+    ]) {
+      if (current.descriptor[target] === undefined && section?.[source] !== undefined) {
+        current.descriptor[target] = section[source];
+      }
+    }
+    if (Array.isArray(section?.thickness?.modes)) {
+      current.descriptor.thickness_modes_si = section.thickness.modes
+        .map((mode) => Number(mode?.value_si))
+        .filter(Number.isFinite);
+    }
+    if (section?.closed !== undefined) current.closed = Boolean(section.closed);
+    byStation.set(key, current);
+  };
+
+  for (const station of Array.isArray(sectionAnalysis.stations) ? sectionAnalysis.stations : []) {
+    add(station?.at, "evaluated station", station);
+  }
+  const representatives = plain(sectionAnalysis.representative_sections)
+    ? sectionAnalysis.representative_sections
+    : {};
+  for (const [name, label] of [
+    ["dominant", "dominant"],
+    ["minimum", "minimum area"],
+    ["maximum", "maximum area"],
+  ]) {
+    const section = representatives[name];
+    if (plain(section)) add(section.at, label, section);
+  }
+  for (const transition of Array.isArray(representatives.transitions)
+    ? representatives.transitions
+    : []) {
+    add(transition?.at, "adaptive transition", transition);
+  }
+  for (const at of Array.isArray(representatives.transition_stations)
+    ? representatives.transition_stations
+    : []) {
+    add(at, "adaptive transition");
+  }
+  const regions = Array.isArray(sectionAnalysis.profile_regions)
+    ? sectionAnalysis.profile_regions
+    : [];
+  regions.forEach((region, index) => {
+    add(region?.representative_station, `region ${index + 1}`, {
+      descriptor: region?.descriptor,
+    });
+  });
+  return [...byStation.values()].sort((left, right) => left.at - right.at);
+}
 
 /** Group the agent's tools by pipeline stage, in stage order. */
 export function toolsByStage(payload) {

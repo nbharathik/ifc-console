@@ -10,6 +10,11 @@
  * a float64 matrix and a color. The viewer bakes or instances on its side.
  */
 
+import {
+  geometryMass,
+  packNormalComponent,
+} from "./measure_math.js";
+
 // Flush a chunk at this many placements or roughly this payload size.
 const BATCH_PLACEMENTS = 2048;
 const BATCH_BYTES = 8 * 1024 * 1024;
@@ -25,6 +30,8 @@ class ChunkBuilder {
     this.vertexCounts = [];
     this.indexCounts = [];
     this.bounds = [];
+    this.areas = [];
+    this.volumes = [];
     this.posParts = [];
     this.normParts = [];
     this.idxParts = [];
@@ -35,15 +42,17 @@ class ChunkBuilder {
     this.bytes = 0;
   }
 
-  addGeometry(id, positions, normals, indices, box) {
+  addGeometry(id, positions, normals, indices, box, mass) {
     this.geomIds.push(id);
     this.vertexCounts.push(positions.length / 3);
     this.indexCounts.push(indices.length);
     for (let i = 0; i < 6; i++) this.bounds.push(box[i]);
+    this.areas.push(mass.area);
+    this.volumes.push(mass.volume);
     this.posParts.push(positions);
     this.normParts.push(normals);
     this.idxParts.push(indices);
-    this.bytes += positions.length * 8 + indices.length * 4;
+    this.bytes += positions.byteLength + normals.byteLength + indices.byteLength + 16;
   }
 
   addPlacement(expressID, geometryID, matrix, color) {
@@ -68,7 +77,7 @@ class ChunkBuilder {
     for (const c of this.vertexCounts) vTotal += c;
     for (const c of this.indexCounts) iTotal += c;
     const positions = new Float32Array(vTotal * 3);
-    const normals = new Float32Array(vTotal * 3);
+    const normals = new Int16Array(vTotal * 3);
     const indices = new Uint32Array(iTotal);
     let po = 0;
     let io = 0;
@@ -86,6 +95,8 @@ class ChunkBuilder {
         vertexCounts: Uint32Array.from(this.vertexCounts),
         indexCounts: Uint32Array.from(this.indexCounts),
         bounds: Float64Array.from(this.bounds),
+        areas: Float64Array.from(this.areas),
+        volumes: Float64Array.from(this.volumes),
         positions,
         normals,
         indices,
@@ -101,6 +112,7 @@ class ChunkBuilder {
     const p = chunk.placements;
     emit(chunk, [
       g.ids.buffer, g.vertexCounts.buffer, g.indexCounts.buffer, g.bounds.buffer,
+      g.areas.buffer, g.volumes.buffer,
       g.positions.buffer, g.normals.buffer, g.indices.buffer,
       p.expressIDs.buffer, p.geometryIDs.buffer, p.matrices.buffer, p.colors.buffer,
     ]);
@@ -161,7 +173,7 @@ export async function parseModel(api, buffer, emit) {
           // De-interleave once per unique geometry; local AABB in the same pass.
           const count = raw.length / 6;
           const positions = new Float32Array(count * 3);
-          const normals = new Float32Array(count * 3);
+          const normals = new Int16Array(count * 3);
           const box = [Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity];
           for (let v = 0; v < count; v++) {
             const s = v * 6;
@@ -170,9 +182,9 @@ export async function parseModel(api, buffer, emit) {
             positions[o] = x;
             positions[o + 1] = y;
             positions[o + 2] = z;
-            normals[o] = raw[s + 3];
-            normals[o + 1] = raw[s + 4];
-            normals[o + 2] = raw[s + 5];
+            normals[o] = packNormalComponent(raw[s + 3]);
+            normals[o + 1] = packNormalComponent(raw[s + 4]);
+            normals[o + 2] = packNormalComponent(raw[s + 5]);
             if (x < box[0]) box[0] = x;
             if (y < box[1]) box[1] = y;
             if (z < box[2]) box[2] = z;
@@ -181,7 +193,9 @@ export async function parseModel(api, buffer, emit) {
             if (z > box[5]) box[5] = z;
           }
           seen.add(gid);
-          builder.addGeometry(gid, positions, normals, new Uint32Array(rawIndex), box);
+          const indices = new Uint32Array(rawIndex);
+          builder.addGeometry(
+            gid, positions, normals, indices, box, geometryMass(positions, indices));
           triangles += rawIndex.length / 3;
         }
         builder.addPlacement(id, gid, placed.flatTransformation, placed.color);

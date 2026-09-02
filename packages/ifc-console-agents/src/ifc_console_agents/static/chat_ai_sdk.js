@@ -205,10 +205,17 @@ export function agentChatRequest(messages = [], options = {}) {
   const latestUser = [...(Array.isArray(messages) ? messages : [])]
     .reverse()
     .find((message) => message?.role === "user");
+  // With a workflow attached an empty prompt is a real request: the console
+  // answers it with the workflow's own task, so no text is invented here.
+  const workflow = text(options.workflow);
   const body = copySharedOptions({
     agent: text(options.agent),
-    prompt: text(options.prompt) || messageText(latestUser),
+    prompt: text(options.prompt) || (workflow ? "" : messageText(latestUser)),
   }, options);
+  if (workflow) {
+    body.workflow = workflow;
+    body.workflow_scope = options.workflow_scope === "selection" ? "selection" : "model";
+  }
   if (typeof options.thread_id === "string" && options.thread_id) {
     body.thread_id = options.thread_id;
   }

@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Mapping, Sequence
 from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
@@ -30,12 +30,19 @@ from ifc_console_agents.workflows import (
     render_arguments,
     steps_in_order,
     validate_inputs,
+    validate_settings,
 )
 
 log = logging.getLogger("ifc-console.agents")
 
 # A gate is a person reading, not the run working, so it gets its own clock.
 GATE_TIMEOUT_S = 3600.0
+
+# A follow-up carries the finished run back to the model. Caps keep a long
+# report from crowding out the question itself.
+FOLLOW_UP_REPORT_CHARS = 12_000
+FOLLOW_UP_TURN_CHARS = 4_000
+FOLLOW_UP_TURNS = 8
 
 
 def _now() -> datetime:
@@ -82,15 +89,29 @@ class WorkflowRunner:
         return PanelApprovalHandler(state, owner=self)
 
     async def stream(
-        self, spec: WorkflowSpec, inputs: Mapping[str, Any] | None = None
+        self,
+        spec: WorkflowSpec,
+        inputs: Mapping[str, Any] | None = None,
+        *,
+        scope: str = "model",
+        note: str = "",
+        settings: Mapping[str, Any] | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
         """Yield panel-shaped events for one whole run."""
         from ifc_console_agents.panel import panel_runtime
 
         values = validate_inputs(spec, inputs or {})
+        run_settings = validate_settings(spec, settings)
         runtime = panel_runtime(self.core)
         toolset = await runtime.toolset()
-        context: dict[str, Any] = {"inputs": values, "steps": {}}
+        viewer_scope = self._viewer_scope(scope)
+        context: dict[str, Any] = {
+            "inputs": values,
+            "settings": run_settings,
+            "steps": {},
+            "scope": viewer_scope,
+            "run": {"note": note.strip()},
+        }
         outcomes: list[StepOutcome] = []
 
         self.core.audit.record(
@@ -101,10 +122,20 @@ class WorkflowRunner:
             "run_id": self.run_id,
             "workflow": spec.name,
             "title": spec.title,
+            "scope": viewer_scope,
             "steps": [
                 {"id": step.id, "kind": step.kind, "title": step.title or step.id}
                 for step in spec.steps
             ],
+        }
+        yield {
+            "type": "workflow_context",
+            "run_id": self.run_id,
+            "system_prompt": self._workflow_instructions(spec, context),
+            "settings": run_settings,
+            "guidance": note.strip(),
+            "scope": viewer_scope,
+            "model": self.model_label,
         }
 
         failed = False
@@ -121,18 +152,31 @@ class WorkflowRunner:
                 yield {"type": "step_finished", **outcome.as_json()}
                 continue
 
-            yield {
+            started_event: dict[str, Any] = {
                 "type": "step_started",
                 "id": step.id,
                 "kind": step.kind,
                 "title": title,
             }
+            if isinstance(step, ToolStep):
+                started_event["tool"] = step.tool
+                started_event["arguments"] = render_arguments(
+                    dict(step.arguments), context
+                )
+            yield started_event
             outcome = StepOutcome(id=step.id, kind=step.kind, title=title, state="succeeded")
             try:
                 if isinstance(step, ToolStep):
                     await self._run_tool(step, toolset, context, outcome)
                 elif isinstance(step, AgentStep):
-                    async for event in self._run_agent(step, runtime, context, outcome):
+                    async for event in self._run_agent(
+                        step,
+                        runtime,
+                        context,
+                        outcome,
+                        workflow_prompt=spec.system_prompt,
+                        additional_instructions=spec.additional_instructions,
+                    ):
                         yield event
                 elif isinstance(step, GateStep):
                     async for event in self._run_gate(step, context, outcome):
@@ -172,6 +216,87 @@ class WorkflowRunner:
             "summary": _final_text(outcomes),
         }
 
+    async def follow_up(
+        self,
+        spec: WorkflowSpec,
+        message: str,
+        *,
+        report: str = "",
+        history: Sequence[Mapping[str, Any]] = (),
+        scope: str = "model",
+        note: str = "",
+        settings: Mapping[str, Any] | None = None,
+    ) -> AsyncIterator[dict[str, Any]]:
+        """Answer one question about a run that already finished.
+
+        The reader stays in the run they were reading: the same workflow
+        prompt, the same tool surface, and the report already on screen are
+        the context, so a follow-up is a continuation rather than a new run.
+        """
+        from ifc_console_agents.panel import panel_runtime
+
+        run_settings = validate_settings(spec, settings)
+        runtime = panel_runtime(self.core)
+        viewer_scope = self._viewer_scope(scope)
+        context: dict[str, Any] = {
+            "inputs": {},
+            "settings": run_settings,
+            "steps": {},
+            "scope": viewer_scope,
+            "run": {"note": note.strip()},
+        }
+        base = next((step for step in spec.steps if isinstance(step, AgentStep)), None)
+        step = AgentStep(
+            id="follow-up",
+            title="Follow-up",
+            prompt=message.strip() or "Explain the result in more detail.",
+            agent=base.agent if base else "",
+            preset=base.preset if base else "review",
+            blocks=base.blocks if base else (),
+            role=base.role if base else "",
+            max_tool_rounds=base.max_tool_rounds if base else 10,
+            max_tool_calls=base.max_tool_calls if base else 40,
+        )
+        outcome = StepOutcome(
+            id=step.id, kind=step.kind, title=step.title, state="succeeded"
+        )
+        self.core.audit.record(
+            "workflow_follow_up", workflow=spec.name, run=self.run_id
+        )
+        yield {
+            "type": "follow_up_started",
+            "run_id": self.run_id,
+            "workflow": spec.name,
+            "question": message.strip(),
+        }
+        try:
+            async for event in self._run_agent(
+                step,
+                runtime,
+                context,
+                outcome,
+                workflow_prompt=spec.system_prompt,
+                additional_instructions=spec.additional_instructions,
+                extra_context=_follow_up_context(report, history),
+            ):
+                yield event
+        except (ToolError, WorkflowRunError, ValueError, RuntimeError) as exc:
+            outcome.state = "failed"
+            outcome.error = str(exc)
+            log.info("workflow %s follow-up failed: %s", spec.name, exc)
+        outcome.finished_at = _now()
+        yield {
+            "type": "follow_up_completed",
+            "run_id": self.run_id,
+            "workflow": spec.name,
+            "state": outcome.state,
+            "text": outcome.text,
+            "error": outcome.error,
+        }
+
+    def _viewer_scope(self, mode: str) -> dict[str, Any]:
+        return viewer_scope(self.core, mode)
+
     async def _run_tool(
         self,
         step: ToolStep,
@@ -206,56 +331,132 @@ class WorkflowRunner:
         runtime: Any,
         context: Mapping[str, Any],
         outcome: StepOutcome,
+        *,
+        workflow_prompt: str = "",
+        additional_instructions: str = "",
+        extra_context: str = "",
     ) -> AsyncIterator[dict[str, Any]]:
         from ifc_console_agents.agent import Agent
         from ifc_console_agents.blocks import compose
-        from ifc_console_agents.panel import _typed_payloads, panel_limits
+        from ifc_console_agents.panel import _build_thread, _typed_payloads, panel_limits
         from ifc_console_agents.presets import PRESET_BY_NAME
 
         if self.model is None:
             raise WorkflowRunError(
                 "this step needs a language model; choose a provider and model first"
             )
-        blocks = step.blocks
         role = step.role
-        if step.preset:
-            preset = PRESET_BY_NAME.get(step.preset)
-            if preset is None:
-                raise WorkflowRunError(f"unknown agent preset {step.preset!r}")
-            blocks = blocks or preset.blocks
-            role = role or preset.role
-        composition = await compose(
-            runtime,
-            blocks,
-            role=role,
-            extra_instructions=self.instructions,
-            viewer=getattr(self.core, "viewer_supported", False),
-            agent=f"workflow-{step.id}",
-            model_label=self.model_label,
+        rendered_system = "\n\n".join(
+            part
+            for part in (
+                render(workflow_prompt, context).strip(),
+                (
+                    "Additional instructions:\n"
+                    + render(additional_instructions, context).strip()
+                    if additional_instructions.strip()
+                    else ""
+                ),
+                # Never rendered: this carries a finished report, and a report
+                # is data, not a template.
+                extra_context.strip(),
+            )
+            if part
         )
-        agent = Agent(
-            name=f"workflow-{step.id}",
-            model=self.model,
-            tools=composition.tools,
-            instructions=composition.instructions,
-            limits=panel_limits(
+        runtime_context = self._runtime_instructions(context)
+        if step.agent:
+            pack = self.core.agent_packs.get(step.agent)
+            if pack is None:
+                raise WorkflowRunError(f"unknown agent {step.agent!r}")
+            instructions = "\n\n".join(
+                part
+                for part in (
+                    rendered_system,
+                    role.strip(),
+                    self.instructions.strip(),
+                    runtime_context,
+                )
+                if part
+            )
+            thread = await _build_thread(
+                self.core,
+                pack,
+                signature=(self.run_id, step.id),
+                model=self.model,
+                persistent=False,
+                instructions=instructions,
+                model_label=self.model_label,
+                approval_handler=self._approval_handler(),
+            )
+            agent = thread.agent
+            agent.limits = panel_limits(
                 self.core,
                 AgentLimits(
                     max_tool_rounds=step.max_tool_rounds,
                     max_tool_calls=step.max_tool_calls,
                 ),
-            ),
-            approval_handler=self._approval_handler(),
-        )
+            )
+        else:
+            blocks = step.blocks
+            if step.preset:
+                preset = PRESET_BY_NAME.get(step.preset)
+                if preset is None:
+                    raise WorkflowRunError(f"unknown agent preset {step.preset!r}")
+                blocks = blocks or preset.blocks
+                role = role or preset.role
+            composition = await compose(
+                runtime,
+                blocks,
+                role=role,
+                extra_instructions="\n\n".join(
+                    part
+                    for part in (
+                        rendered_system,
+                        self.instructions.strip(),
+                        runtime_context,
+                    )
+                    if part
+                ),
+                viewer=getattr(self.core, "viewer_supported", False),
+                agent=f"workflow-{step.id}",
+                model_label=self.model_label,
+            )
+            agent = Agent(
+                name=f"workflow-{step.id}",
+                model=self.model,
+                tools=composition.tools,
+                instructions=composition.instructions,
+                limits=panel_limits(
+                    self.core,
+                    AgentLimits(
+                        max_tool_rounds=step.max_tool_rounds,
+                        max_tool_calls=step.max_tool_calls,
+                    ),
+                ),
+                approval_handler=self._approval_handler(),
+            )
         prompt = render(step.prompt, context)
+        yield {
+            "type": "agent_started",
+            "step_id": step.id,
+            "agent": step.agent or step.preset or "workflow agent",
+            "model": self.model_label,
+            "system_prompt": rendered_system,
+            "task_prompt": prompt,
+            "runtime_context": runtime_context,
+        }
         text_parts: list[str] = []
         completed = False
+        usage: dict[str, int | None] = {"in": None, "out": None}
         async for event in agent.stream(prompt, thread_id=f"{self.run_id}-{step.id}"):
             if event.type == "text_delta" and event.text:
                 text_parts.append(event.text)
             elif event.type == "run_completed" and event.run_result is not None:
                 completed = True
                 outcome.text = event.run_result.text
+                usage = {
+                    "in": event.run_result.usage.input_tokens,
+                    "out": event.run_result.usage.output_tokens,
+                }
             elif event.type == "run_failed":
                 raise WorkflowRunError(event.text or "the agent step failed")
             for payload in _typed_payloads(event):
@@ -264,6 +465,47 @@ class WorkflowRunner:
             outcome.text = "".join(text_parts).strip()
         if not completed and not outcome.text:
             raise WorkflowRunError("the agent step produced no answer")
+        yield {
+            "type": "agent_finished",
+            "step_id": step.id,
+            "agent": step.agent or step.preset or "workflow agent",
+            "usage": usage,
+            "text": outcome.text,
+        }
+
+    @staticmethod
+    def _workflow_instructions(
+        spec: WorkflowSpec, context: Mapping[str, Any]
+    ) -> str:
+        return "\n\n".join(
+            part
+            for part in (
+                render(spec.system_prompt, context).strip(),
+                (
+                    "Additional instructions:\n"
+                    + render(spec.additional_instructions, context).strip()
+                    if spec.additional_instructions.strip()
+                    else ""
+                ),
+            )
+            if part
+        )
+
+    @staticmethod
+    def _runtime_instructions(context: Mapping[str, Any]) -> str:
+        """Stable run context appended to the provider system prompt."""
+        scope = str(context.get("scope", {}).get("text") or "").strip()
+        settings = context.get("settings") or {}
+        note = str(context.get("run", {}).get("note") or "").strip()
+        parts = ["Run context (treat these values as instructions for this run):"]
+        if scope:
+            parts.append(f"Scope:\n{scope}")
+        if settings:
+            rows = "\n".join(f"- {key}: {value}" for key, value in settings.items())
+            parts.append(f"Settings:\n{rows}")
+        if note:
+            parts.append(f"Additional guidance:\n{note}")
+        return "\n\n".join(parts)
 
     async def _run_gate(
         self, step: GateStep, context: Mapping[str, Any], outcome: StepOutcome
@@ -342,6 +584,76 @@ class WorkflowRunner:
         }
 
 
+def viewer_scope(core: Any, mode: str) -> dict[str, Any]:
+    """The run scope as the agent reads it: the whole model or exact GlobalIds.
+
+    Shared by the staged runner and the chat route, so a workflow attached to
+    a conversation names the same selection the Runs surface would.
+    """
+    hub = core.viewer_hub
+    rows = hub.selection_rows() if hub.connected else []
+    selections = [
+        {
+            "model_id": str(row.get("model_id") or ""),
+            "model": str(row.get("model") or row.get("model_id") or "IFC"),
+            "guids": [str(item) for item in row.get("guids") or []],
+        }
+        for row in rows
+        if row.get("guids")
+    ]
+    count = sum(len(row["guids"]) for row in selections)
+    if mode == "selection" and not count:
+        raise WorkflowRunError(
+            "the workflow is scoped to the viewer selection, but nothing is selected"
+        )
+    if mode != "selection":
+        return {
+            "mode": "model",
+            "count": 0,
+            "selections": [],
+            "text": "Whole open model. No viewer selection restricts this run.",
+        }
+    lines = [
+        "Use only the elements selected in the 3D viewer as the workflow scope.",
+        "Do not broaden the scope unless the task explicitly requires surrounding context.",
+    ]
+    for row in selections:
+        lines.append(
+            f"- {row['model']} (model_id={row['model_id']}): " + ", ".join(row["guids"])
+        )
+    return {
+        "mode": "selection",
+        "count": count,
+        "selections": selections,
+        "text": "\n".join(lines),
+    }
+
+
+def _follow_up_context(report: str, history: Sequence[Mapping[str, Any]]) -> str:
+    """What the model needs to answer a question about a run it already did."""
+    parts = ["You are continuing a workflow run you already carried out."]
+    if report.strip():
+        parts.append(
+            "The report you produced:\n" + report.strip()[:FOLLOW_UP_REPORT_CHARS]
+        )
+    rows: list[str] = []
+    for turn in list(history)[-FOLLOW_UP_TURNS:]:
+        question = str(turn.get("question") or "").strip()[:FOLLOW_UP_TURN_CHARS]
+        answer = str(turn.get("answer") or "").strip()[:FOLLOW_UP_TURN_CHARS]
+        if question:
+            rows.append(f"Question: {question}")
+        if answer:
+            rows.append(f"Your answer: {answer}")
+    if rows:
+        parts.append("Earlier follow-up turns:\n" + "\n\n".join(rows))
+    parts.append(
+        "Answer the new question against the open model. Where the answer needs "
+        "evidence the report does not already contain, check with tools instead "
+        "of restating the report."
+    )
+    return "\n\n".join(parts)
+
+
 def _envelope_text(result: Any) -> str:
     """A short, readable digest of one tool envelope for the next prompt."""
     if not isinstance(result, Mapping):
@@ -381,4 +693,11 @@ def _final_text(outcomes: list[StepOutcome]) -> str:
     return ""
 
 
-__all__ = ["GATE_TIMEOUT_S", "WorkflowRunError", "WorkflowRunner"]
+__all__ = [
+    "FOLLOW_UP_REPORT_CHARS",
+    "FOLLOW_UP_TURNS",
+    "GATE_TIMEOUT_S",
+    "WorkflowRunError",
+    "WorkflowRunner",
+    "viewer_scope",
+]

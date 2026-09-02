@@ -33,10 +33,13 @@ import {
   LENGTH_UNITS,
   norm3,
   outlinePoints,
+  packNormalBuffer,
+  packNormalComponent,
   planSpatialGrid,
   polylineMeasure as polylineCore,
   polygonMeasure as polygonCore,
   spanMeasure,
+  shouldInstanceGeometry,
   unionBoxCorners,
   unitForFile,
   unitOf,
@@ -594,6 +597,7 @@ function renderNow() {
   grid.position.x = Math.round(controls.target.x / 100) * 100;
   grid.position.z = Math.round(controls.target.z / 100) * 100;
   syncScreenMarkers();
+  applyInstanceLod();
   const t0 = performance.now();
   renderer.render(scene, camera);
   lastRenderMs = performance.now() - t0;
@@ -677,10 +681,16 @@ const modelTabViews = new Map();
 // arrays: an unlimited cache duplicated the GPU scene for every resident file.
 const parsedModelCache = new Map(); // model id -> { etag, parsed, bytes }
 const PARSED_CACHE_MAX_ENTRIES = 2;
+// Sized to the machine, and modest: a tab switch that re-parses costs a few
+// seconds, a laptop that starts swapping costs the whole session.
 const PARSED_CACHE_BUDGET = Math.round(
-  Math.min(256, Math.max(96, (Number(navigator.deviceMemory) || 4) * 64)) * 1_048_576,
+  Math.min(160, Math.max(64, (Number(navigator.deviceMemory) || 4) * 32)) * 1_048_576,
 );
+// A hidden tab does not switch models. After this long out of sight the
+// parsed cache goes back to the browser; a visible tab keeps it.
+const HIDDEN_CACHE_MS = 60_000;
 let parsedModelCacheBytes = 0;
+let hiddenCacheTimer = 0;
 
 function parsedModelBytes(parsed) {
   let bytes = 0;
@@ -730,6 +740,45 @@ function cachedParsedModel(modelId, etag) {
   parsedModelCache.delete(modelId);
   parsedModelCache.set(modelId, entry);
   return entry;
+}
+
+function dropParsedCache() {
+  const freed = parsedModelCacheBytes;
+  for (const modelId of [...parsedModelCache.keys()]) dropParsedModel(modelId);
+  return freed;
+}
+
+/** What this page holds for the model, for the Agent panel's memory pill. */
+function viewerMemory() {
+  return {
+    parsedCacheBytes: parsedModelCacheBytes,
+    parsedCacheEntries: parsedModelCache.size,
+    elements: elements.size,
+    triangles: triangleCount,
+    workerAlive: Boolean(worker),
+  };
+}
+
+/**
+ * Give back everything that can be rebuilt: the parsed-model cache, an idle
+ * parser worker, and the inline web-ifc instance. The scene stays; the next
+ * tab switch re-parses instead of hitting the cache.
+ */
+function releaseViewerMemory({ stopWorker: stopIdleWorker = true } = {}) {
+  const freed = dropParsedCache();
+  let workerStopped = false;
+  if (stopIdleWorker && worker && !workerBusy) {
+    stopWorker();
+    workerStopped = true;
+  }
+  const inlineReleased = releaseInlineParser();
+  scheduleViewerContext("memory");
+  return {
+    freed_bytes: freed,
+    worker_stopped: workerStopped,
+    inline_parser_released: inlineReleased,
+    memory: viewerMemory(),
+  };
 }
 // A selection belongs to its IFC, not to whichever tab happens to be visible.
 // GlobalIds make these snapshots stable across rebuilds and let the chat carry
@@ -860,6 +909,7 @@ function viewerContext(reason = viewerContextReason) {
     },
     section: sectionState(),
     savedViews: savedViews().map((view) => view.name),
+    memory: viewerMemory(),
     panels: {
       model: !$("tree-panel")?.classList.contains("collapsed"),
       properties: !$("props-panel")?.classList.contains("collapsed"),
@@ -899,6 +949,7 @@ function viewerContext(reason = viewerContextReason) {
         "save-view",
         "restore-view",
         "list-views",
+        "release-memory",
       ],
     },
   };
@@ -1412,6 +1463,11 @@ const SPATIAL_SPLIT_VERTS = 50_000;
 // neighbourhood: one InstancedMesh per pair of mirrored doors cost thousands
 // of uncullable draw calls to save a few thousand vertices.
 const INSTANCE_MIN = 8;
+// A repeated high-detail shape is expensive even before it reaches the copy
+// threshold. IFCViewX switches these on their second placement; because this
+// viewer knows the final copy count up front it can instance every copy rather
+// than leaving the first one duplicated in a merged chunk.
+const INSTANCE_MIN_VERTICES = 2_000;
 // Past this many copies one instanced mesh spans the whole model and can never
 // be culled, so it is split by octant. Splitting on the finer merge grid
 // instead turns a curtain wall into one draw call per panel, which is the bug
@@ -1430,6 +1486,7 @@ const elements = new Map();       // expressID -> {index, box: number[6]}
 const elementsByIndex = [];       // dense index -> expressID
 const registry = new Map();       // geometryID -> {positions, normals, indices, box, radius}
 const geomUse = new Map();        // `${gid}:${alphaKey}[#cell]` -> InstEntry
+const instancedEntries = new Set(); // retained after geomUse is released, for LOD
 let accumulators = new Map();     // cellKey -> Accumulator
 let modelBox = null;              // [minx,miny,minz,maxx,maxy,maxz] world f64
 let cellSize = 0;                 // batching grid pitch, 0 while unsplit
@@ -1464,7 +1521,7 @@ class Accumulator {
   constructor(transparent) {
     this.transparent = transparent;
     this.positions = new GrowArray(Float32Array);
-    this.normals = new GrowArray(Float32Array);
+    this.normals = new GrowArray(Int16Array);
     this.colors = new GrowArray(Float32Array);
     this.elementIndex = new GrowArray(Float32Array);
     this.index = new GrowArray(Uint32Array);
@@ -1668,7 +1725,7 @@ function finalizeAccumulator(acc) {
   if (!acc.vertexCount) return;
   const geo = new THREE.BufferGeometry();
   const pos = new THREE.BufferAttribute(acc.positions.trim(), 3);
-  const nor = new THREE.BufferAttribute(acc.normals.trim(), 3);
+  const nor = new THREE.BufferAttribute(acc.normals.trim(), 3, true);
   const col = new THREE.BufferAttribute(acc.colors.trim(), acc.transparent ? 4 : 3);
   const idx = new THREE.BufferAttribute(acc.elementIndex.trim(), 1);
   geo.setAttribute("position", pos);
@@ -1766,9 +1823,9 @@ function bakeMerged(rec, geom, matrix, color, transparent, key) {
     let ty = n[1] * nx + n[4] * ny + n[7] * nz;
     let tz = n[2] * nx + n[5] * ny + n[8] * nz;
     const len = norm3(tx, ty, tz) || 1;
-    N.data[N.length++] = tx / len;
-    N.data[N.length++] = ty / len;
-    N.data[N.length++] = tz / len;
+    N.data[N.length++] = packNormalComponent(tx / len);
+    N.data[N.length++] = packNormalComponent(ty / len);
+    N.data[N.length++] = packNormalComponent(tz / len);
     C.data[C.length++] = r;
     C.data[C.length++] = g;
     C.data[C.length++] = b;
@@ -1832,11 +1889,15 @@ class InstEntry {
     // parser chunk: a subarray view would pin the whole 8 MB chunk for the
     // life of the model.
     this.posAttr = new THREE.BufferAttribute(geom.positions.slice(), 3);
-    this.norAttr = new THREE.BufferAttribute(geom.normals.slice(), 3);
+    const normals = geom.normals instanceof Int16Array
+      ? geom.normals.slice() : packNormalBuffer(geom.normals);
+    this.norAttr = new THREE.BufferAttribute(normals, 3, true);
     this.idxAttr = new THREE.BufferAttribute(geom.indices.slice(), 1);
     this.sphere = new THREE.Sphere();
     this.mesh = null;
     this.elementIndexAttr = null;
+    this.lodHidden = false;
+    instancedEntries.add(this);
     this._grow();
   }
 
@@ -1912,6 +1973,59 @@ class InstEntry {
 }
 const _instColor = new THREE.Color();
 
+// Groups whose individual copies are smaller than two drawing-buffer pixels
+// contribute no useful image, but each still costs an object traversal, a
+// frustum test, a bind and a draw. This is deliberately limited to instanced
+// groups: a merged chunk contains many differently sized products and cannot
+// be hidden as one object. Exact GPU probes temporarily reveal every group so
+// LOD never makes a small visible product impossible to select or measure.
+const INSTANCE_LOD_PX = 2;
+
+function applyInstanceLod() {
+  if (!instancedEntries.size || !viewportHeight) return;
+  const perspective = camera.isPerspectiveCamera === true;
+  const pixelScale = perspective
+    ? renderer.domElement.height
+      / (2 * Math.tan((camera.fov * Math.PI) / 360))
+    : renderer.domElement.height
+      / Math.max(1e-6, (camera.top - camera.bottom) / camera.zoom);
+  for (const entry of instancedEntries) {
+    if (!entry.mesh || !entry.count) continue;
+    const radius = entry.geomRadius * entry.maxScale;
+    let pixels;
+    if (perspective) {
+      // The cluster sphere is the spread of all placements plus the radius of
+      // one copy. Use its near side to avoid dropping a close copy merely
+      // because its siblings reach across the building.
+      const spread = Math.max(0, entry.sphere.radius - radius);
+      const nearest = camera.position.distanceTo(entry.sphere.center) - spread;
+      pixels = nearest <= radius ? Infinity : (radius * 2 * pixelScale) / nearest;
+    } else {
+      pixels = radius * 2 * pixelScale;
+    }
+    entry.lodHidden = pixels < INSTANCE_LOD_PX;
+    entry.mesh.visible = !entry.lodHidden;
+  }
+}
+
+/** Reveal LOD-only groups for a pick/depth pass; returns whether any changed. */
+function suspendInstanceLod() {
+  let changed = false;
+  for (const entry of instancedEntries) {
+    if (!entry.lodHidden || !entry.mesh) continue;
+    entry.mesh.visible = true;
+    changed = true;
+  }
+  return changed;
+}
+
+function resumeInstanceLod(changed) {
+  if (!changed) return;
+  for (const entry of instancedEntries) {
+    if (entry.lodHidden && entry.mesh) entry.mesh.visible = false;
+  }
+}
+
 function registerChunkGeometry(chunk) {
   const g = chunk.geometry;
   let po = 0;
@@ -1922,6 +2036,8 @@ function registerChunkGeometry(chunk) {
     const ic = g.indexCounts[i];
     const positions = g.positions.subarray(po, po + vc * 3);
     const indices = g.indices.subarray(io, io + ic);
+    const area = g.areas?.[i];
+    const volume = g.volumes?.[i];
     registry.set(g.ids[i], {
       positions,
       normals: g.normals.subarray(po, po + vc * 3),
@@ -1929,7 +2045,11 @@ function registerChunkGeometry(chunk) {
       box: g.bounds.subarray(bo, bo + 6),
       // Deduplicated, so this runs once per shape however many times it is
       // placed. Doing it later is not an option: the arrays are freed.
-      mass: geometryMass(positions, indices),
+      // Normal worker parses arrive with this already calculated. The fallback
+      // keeps inline/legacy parsed chunks valid without charging the UI thread
+      // in the normal path.
+      mass: Number.isFinite(area) && Number.isFinite(volume)
+        ? { area, volume } : geometryMass(positions, indices),
     });
     po += vc * 3;
     io += ic;
@@ -2004,7 +2124,9 @@ function ingestChunk(chunk, layout, uses) {
     // Decided once for the whole model rather than on the second sighting, so
     // a shape placed twice no longer buys a draw call of its own.
     const copies = uses.get(useKey) || 1;
-    if (copies < INSTANCE_MIN) {
+    const vertices = geom.positions.length / 3;
+    if (!shouldInstanceGeometry(
+      copies, vertices, INSTANCE_MIN, INSTANCE_MIN_VERTICES)) {
       bakeMerged(
         rec, geom, matrix, color, transparent, cellKeyFor(boxes, at, transparent));
       continue;
@@ -2048,6 +2170,7 @@ function disposeModel() {
   elementsByIndex.length = 0;
   registry.clear();
   geomUse.clear();
+  instancedEntries.clear();
   accumulators = new Map();
   modelBox = null;
   cellSize = 0;
@@ -2127,7 +2250,9 @@ function scheduleWorkerIdle() {
   // web-ifc closes the model but its WASM heap stays at its high-water mark.
   // Keep it briefly for a tab switch, then return that memory to the browser.
   workerIdleTimer = setTimeout(() => {
-    if (!workerBusy) stopWorker();
+    if (workerBusy) return;
+    stopWorker();
+    releaseInlineParser();
   }, WORKER_IDLE_MS);
 }
 
@@ -2252,9 +2377,26 @@ function parseBuffer(buffer) {
 }
 
 document.addEventListener("visibilitychange", () => {
-  if (document.hidden && !workerBusy) stopWorker();
+  clearTimeout(hiddenCacheTimer);
+  hiddenCacheTimer = 0;
+  if (!document.hidden) return;
+  if (!workerBusy) stopWorker();
+  hiddenCacheTimer = setTimeout(() => {
+    hiddenCacheTimer = 0;
+    if (!document.hidden) return;
+    dropParsedCache();
+    releaseInlineParser();
+    scheduleViewerContext("memory");
+  }, HIDDEN_CACHE_MS);
 });
 window.addEventListener("pagehide", stopWorker);
+
+/** The inline web-ifc fallback keeps a WebAssembly heap; let it go when idle. */
+function releaseInlineParser() {
+  if (!parseInline.api) return false;
+  parseInline.api = null;
+  return true;
+}
 
 async function fetchModelBytes(res) {
   const total = Number(res.headers.get("content-length")) || 0;
@@ -2873,6 +3015,8 @@ function updateSelectionInfo() {
   const status = $("sel-info");
   const propertiesTab = $("props-panel-tab");
   status.dataset.selectionCount = String(n);
+  // A workflow on the selection needs the agent panel, so the action follows it.
+  $("sel-workflow").hidden = !n || $("btn-chat").hidden;
   propertiesTab.classList.toggle("has-context", n > 0);
   propertiesTab.title = n ? `Open properties for ${n} selected` : "Open properties panel";
   propertiesTab.setAttribute(
@@ -2934,6 +3078,7 @@ function pickElementAt(clientX, clientY) {
   const snapWasVisible = snapGroup.visible;
   const edgesWereVisible = edgeRoot.visible;
   const sectionHelperWasVisible = sectionHelperRoot.visible;
+  const lodWasSuspended = suspendInstanceLod();
   const prevTarget = renderer.getRenderTarget();
   const prevClearColor = renderer.getClearColor(new THREE.Color()).clone();
   const prevClearAlpha = renderer.getClearAlpha();
@@ -2968,6 +3113,7 @@ function pickElementAt(clientX, clientY) {
     snapGroup.visible = snapWasVisible;
     edgeRoot.visible = edgesWereVisible;
     sectionHelperRoot.visible = sectionHelperWasVisible;
+    resumeInstanceLod(lodWasSuspended);
     // Only a resolution change owes the canvas a redraw; the pass itself never
     // touched it.
     if (scaled) invalidate();
@@ -3986,6 +4132,7 @@ function beginSceneProbe(scaled) {
     snapWasVisible: snapGroup.visible,
     edgesWereVisible: edgeRoot.visible,
     sectionHelperWasVisible: sectionHelperRoot.visible,
+    lodWasSuspended: suspendInstanceLod(),
     target: renderer.getRenderTarget(),
     clearColor: renderer.getClearColor(new THREE.Color()).clone(),
     clearAlpha: renderer.getClearAlpha(),
@@ -4012,6 +4159,7 @@ function endSceneProbe(state) {
   snapGroup.visible = state.snapWasVisible;
   edgeRoot.visible = state.edgesWereVisible;
   sectionHelperRoot.visible = state.sectionHelperWasVisible;
+  resumeInstanceLod(state.lodWasSuspended);
   if (state.scaled) invalidate();
 }
 
@@ -4953,9 +5101,14 @@ function restoreMeasurements(items) {
 // axes: the tools on the other side speak IFC, not three.js.
 const SCENE_DELTA = { x: 0, y: 1, z: 2 };
 
-/** Which elements a measurement touched, in wire form: guid plus fallback point. */
+/** Which elements a measurement touched, including a reusable object-local point. */
 function wireAnchors(m) {
-  return (m.anchors || []).map((a) => ({ guid: a.guid || null, world: a.world }));
+  return (m.anchors || []).map((a) => ({
+    guid: a.guid || null,
+    world: a.world,
+    local: a.local || null,
+    reach: Number.isFinite(a.reach) ? a.reach : null,
+  }));
 }
 
 function sendMeasurements() {
@@ -6573,6 +6726,10 @@ function clearSections() {
 $("tool-section-clear").addEventListener("click", clearSections);
 $("vis-show-all").addEventListener("click", showEverything);
 $("vis-clear-section").addEventListener("click", clearSections);
+$("sel-workflow").addEventListener("click", async () => {
+  await setChat(true);
+  chatPanel?.openWorkflows?.({ scope: "selection" });
+});
 
 // -- measurement controls
 const measureQuickActions = document.querySelector(
@@ -7441,6 +7598,7 @@ function runViewerCommand(command) {
   {
     const passiveWhileClosed = new Set([
       "get-context", "set-theme", "set-model", "reveal-guids", "isolate-guids",
+      "release-memory",
     ]);
     if (!viewerDocumentOpen && !passiveWhileClosed.has(command.action)) {
       throw new Error("No IFC view is open; open a model tab and retry");
@@ -7461,6 +7619,8 @@ function runViewerCommand(command) {
     } else if (command.action === "set-theme") {
       setThemePreference(command.theme);
       result = viewerContext("theme").theme;
+    } else if (command.action === "release-memory") {
+      result = releaseViewerMemory({ stopWorker: command.stopWorker !== false });
     } else if (command.action === "set-model") {
       if (!selectViewerModel(command.modelId || command.model_id)) {
         throw new Error("The requested model is not attached");

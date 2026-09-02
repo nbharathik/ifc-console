@@ -81,7 +81,24 @@ function cleanTurn(value) {
     : "complete";
   const error = typeof value.error === "string" ? value.error.slice(0, 1000) : "";
   if (!text.trim() && !blocks.length && !error) return null;
-  return { role: value.role, text, attachments, blocks, status, error };
+  const turn = { role: value.role, text, attachments, blocks, status, error };
+  // A turn that started a workflow keeps the name it ran under, and the raw
+  // typed prompt when it differs from the line shown for it.
+  const workflow = cleanWorkflow(value.workflow);
+  if (workflow) turn.workflow = workflow;
+  if (typeof value.prompt === "string" && value.prompt !== text) {
+    turn.prompt = value.prompt.slice(0, TEXT_LIMIT);
+  }
+  return turn;
+}
+
+function cleanWorkflow(value) {
+  if (!plain(value) || typeof value.name !== "string" || !value.name) return null;
+  return {
+    name: value.name.slice(0, 64),
+    title: String(value.title || value.name).slice(0, 100),
+    scope: value.scope === "selection" ? "selection" : "model",
+  };
 }
 
 function cleanRecord(value) {
@@ -89,7 +106,7 @@ function cleanRecord(value) {
   const turns = Array.isArray(value.turns)
     ? value.turns.slice(-TURN_LIMIT).map(cleanTurn).filter(Boolean)
     : [];
-  return {
+  const record = {
     id: value.id.slice(0, 100),
     scope: typeof value.scope === "string" ? value.scope.slice(0, 160) : "",
     agent: typeof value.agent === "string" ? value.agent.slice(0, 100) : "",
@@ -99,6 +116,11 @@ function cleanRecord(value) {
     thread_id: typeof value.thread_id === "string" ? value.thread_id.slice(0, 100) : "",
     turns,
   };
+  // The workflow a conversation stands on is part of its configuration: a
+  // reopened conversation must send it again or the console forks the thread.
+  const workflow = cleanWorkflow(value.workflow);
+  if (workflow) record.workflow = workflow;
+  return record;
 }
 
 export function conversationId() {

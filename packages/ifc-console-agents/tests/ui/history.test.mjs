@@ -379,6 +379,42 @@ test("one oversized latest message is explicitly clipped instead of dropped", ()
   assert.match(bounded.text, /truncated/);
 });
 
+test("a conversation remembers the workflow it stands on", () => {
+  const store = new ChatHistoryStore(storage(), "h", 10, "model-a");
+  store.save({
+    id: "wf",
+    agent: "measurement",
+    updated_at: 1,
+    workflow: { name: "measurement-audit", title: "Measurement audit", scope: "selection", extra: 1 },
+    turns: [
+      {
+        role: "user",
+        text: "Run Measurement audit",
+        prompt: "",
+        workflow: { name: "measurement-audit", title: "Measurement audit" },
+      },
+      { role: "assistant", text: "done" },
+    ],
+  });
+  const record = store.get("wf");
+  assert.deepEqual(record.workflow, {
+    name: "measurement-audit",
+    title: "Measurement audit",
+    scope: "selection",
+  });
+  assert.deepEqual(record.turns[0].workflow, {
+    name: "measurement-audit",
+    title: "Measurement audit",
+    scope: "model",
+  });
+  // The raw typed prompt is kept only when it differs from the shown line.
+  assert.equal(record.turns[0].prompt, "");
+  assert.equal("prompt" in record.turns[1], false);
+  // A conversation without one carries no key at all.
+  store.save({ id: "plain", agent: "", updated_at: 2, turns: [{ role: "user", text: "hi" }] });
+  assert.equal("workflow" in store.get("plain"), false);
+});
+
 test("plain-chat request turns also respect the server's per-turn limit", () => {
   const [bounded] = boundedChatTurns(
     [{ role: "user", text: "x".repeat(150_000) }],

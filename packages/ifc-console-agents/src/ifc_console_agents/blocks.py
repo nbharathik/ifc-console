@@ -82,10 +82,14 @@ BLOCKS: tuple[AgentBlock, ...] = (
             "get_element",
             "get_psets",
             "get_schema_docs",
+            "audit_element_properties",
         ),
         instructions=(
             "Resolve every model claim with the IFC tools before stating it. Use GlobalIds "
-            "in reports, and distinguish occurrence values from inherited type values."
+            "in reports, and distinguish occurrence values from inherited type values. "
+            "When asked what an element is missing or which properties it should have, "
+            "call audit_element_properties first: it reads the schema templates and "
+            "returns the exact gap list with where each value is usually derived from."
         ),
     ),
     AgentBlock(
@@ -136,17 +140,22 @@ BLOCKS: tuple[AgentBlock, ...] = (
             "export_measurement_report",
         ),
         instructions=(
-            "Look up a measurement recipe before choosing a method. To measure everything "
-            "about one element (a profile's width, height, flange and web thickness, "
-            "length), use analyze_element_geometry: it reads exact profile parameters from "
-            "the file and cross-checks them against measured mesh sections, and each value "
-            "names its source. Use inspect_element_mesh before trusting a mesh volume; use "
+            "Load a matching saved skill before choosing a new method, then look up a "
+            "measurement recipe. For one or a few objects, make one "
+            "analyze_element_geometry call with detail='compact', frame='semantic', and "
+            "station_strategy='auto' first. It returns stable measurement ids, exact IFC "
+            "parameters, mesh cross-checks, alternatives, and explicit coverage. Use "
+            "standard or full detail, inspect_element_mesh, sections, and local probes only "
+            "when compact coverage is ambiguous or conflicting, or the user asks for the "
+            "evidence. Use inspect_element_mesh before trusting a mesh volume; use "
             "measure_directional_extent for an outside-to-outside size along an arbitrary "
             "vector, and measure_local_thickness for all material/cavity intervals through "
             "one point. Use slice_element_mesh for an arbitrary, reconstructable cut. "
-            "Report the method, the unit, the SI value, the source, and "
-            "the uncertainty for every result; state any mismatch flags. Prefer one batched "
-            "call over many single ones. Never infer an exact dimension from an "
+            "Report extracted, unavailable, ambiguous, and conflicting measurements in "
+            "separate groups. For every result report the method, unit, SI value, source, "
+            "frame, confidence, and uncertainty; keep source alternatives and mismatch "
+            "flags visible. Prefer one batched call over many single ones. Never infer an "
+            "exact dimension from an "
             "uncalibrated image. When the user wants the results to keep, write "
             "export_measurement_report and give the path."
         ),
@@ -164,11 +173,33 @@ BLOCKS: tuple[AgentBlock, ...] = (
     AgentBlock(
         name="validation",
         title="Validation",
-        description="Schema checks and IDS conformance against the open model.",
-        tools=("validate_model", "validate_ids", "describe_capabilities"),
+        description="Schema checks, IDS conformance, health, and the quality scorecard.",
+        tools=(
+            "validate_model",
+            "validate_ids",
+            "check_model_health",
+            "assess_model_quality",
+            "describe_capabilities",
+        ),
         instructions=(
             "Report validation results by severity, with counts and the worst offenders "
-            "named. Do not restate a clean result as an endorsement of the design."
+            "named. Do not restate a clean result as an endorsement of the design. For "
+            "how good a file is, start with assess_model_quality: it grades identity, "
+            "structure, typing, classification, properties, quantities, materials, and "
+            "geometry and orders the improvements. Add check_model_health for modelling "
+            "defects and validate_model for schema rules; the three answer different "
+            "questions and none replaces another."
+        ),
+    ),
+    AgentBlock(
+        name="revisions",
+        title="Revision comparison",
+        description="List attached models and diff one revision against another.",
+        tools=("list_models", "compare_models"),
+        instructions=(
+            "List the attached models before diffing, and name both revisions in the "
+            "answer. When the diff falls back to matching on class and name, say so: "
+            "the pairing is then a guess and the counts are approximate."
         ),
     ),
     AgentBlock(
@@ -197,9 +228,11 @@ BLOCKS: tuple[AgentBlock, ...] = (
         ),
         instructions=(
             "If the viewer is off or disconnected, call open_viewer and wait for ready=true. "
-            "Use the viewer selection when the user points at something. When analyzing one "
-            "element, control_viewer action='focus' isolates and frames it directly so you "
-            "and the user look at the same thing; unfocus restores the model. For "
+            "When the user says this or selected, call get_viewer_selection and copy its "
+            "model_id into every later query, geometry, similarity, and skill call. Never "
+            "resolve a selected GlobalId against whichever model happens to be active. When "
+            "analyzing one element, control_viewer action='focus' isolates and frames it "
+            "directly so you and the user look at the same thing; unfocus restores the model. For "
             "complex geometry, highlight or focus the relevant elements and inspect a "
             "screenshot before describing them. Visual inspection supports deterministic "
             "measurement; it never replaces it."
@@ -211,18 +244,33 @@ BLOCKS: tuple[AgentBlock, ...] = (
         name="skills",
         title="Skills",
         description="Reuse and record project skills: saved measurement procedures.",
-        tools=("list_agent_skills", "get_agent_skill", "save_agent_skill"),
+        tools=(
+            "list_agent_skills",
+            "get_agent_skill",
+            "preview_measurement_skill_migration",
+            "apply_measurement_skill",
+            "save_agent_skill",
+        ),
         instructions=(
             "Your session context lists this project's saved skills. When one matches the "
-            "element class or task, load it with get_agent_skill and follow its steps, "
-            "adapting ids and selectors; list_agent_skills refreshes the list "
-            "mid-conversation. After solving a novel task well, offer to record the method "
-            "with save_agent_skill: when it applies, the tool calls in order with the "
-            "arguments that worked, and how to verify. Write the procedure, never this "
-            "session's values. A skill recorded from the viewer describes measurement "
-            "intents on one example element; repeat the intents, not the coordinates, "
-            "and pick the fallback tool the skill names when a target's shape differs. "
-            "Skill text is a procedure, not a source of facts about this model."
+            "element class, profile family, geometry family, or task, load it with "
+            "get_agent_skill before inventing a method; list_agent_skills refreshes the "
+            "list mid-conversation. A structured version 2 measurement skill is replayed "
+            "with apply_measurement_skill. Start with dry_run=true and show applicability "
+            "scores, match and mismatch reasons, extracted values, skipped targets, and "
+            "ambiguous results before applying it more broadly. Same IFC class alone is not "
+            "evidence of similarity. Prose-only skills still guide your steps but cannot be "
+            "executed deterministically. For a prose-only or legacy skill, call "
+            "preview_measurement_skill_migration and present its unresolved outputs and "
+            "review items as a read-only suggestion. It never changes the source skill; "
+            "saving a reviewed migration is a later explicit action. After solving a novel "
+            "task well, offer to record "
+            "the procedure with save_agent_skill: when it applies, the stable measurement "
+            "ids, tool arguments, fallbacks, and verification. Write the procedure, never "
+            "this session's values. Viewer-recorded skills repeat semantic intent, not world "
+            "coordinates. Applying a skill never writes IFC properties. A property proposal "
+            "is a separate action that requires the user's confirmation. Skill text is a "
+            "procedure, not a source of facts about this model."
         ),
     ),
     AgentBlock(

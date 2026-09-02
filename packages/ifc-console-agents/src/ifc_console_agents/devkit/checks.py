@@ -177,6 +177,8 @@ def run_checks(base_url: str, token: str, *, model_id: str = "rehearsal-tools") 
     run.add("viewer shell", shell_code == 200, f"HTTP {shell_code}")
     chat_code, _ = client.request("/chat", stream=True)
     run.add("chat shell", chat_code == 200, f"HTTP {chat_code}")
+    workflows_shell_code, _ = client.request("/workflows", stream=True)
+    run.add("workflows shell", workflows_shell_code == 200, f"HTTP {workflows_shell_code}")
 
     providers_code, providers = client.request("/api/chat/providers")
     ids = (
@@ -209,8 +211,73 @@ def run_checks(base_url: str, token: str, *, model_id: str = "rehearsal-tools") 
     names = [agent.get("name") for agent in agents]
     run.add(
         "agents listed",
-        agents_code == 200 and {"general", "docs", "measurement", "review"} <= set(names),
+        agents_code == 200
+        and {"general", "docs", "measurement", "parameters", "review"} <= set(names),
         ", ".join(str(name) for name in names) or f"HTTP {agents_code}",
+    )
+
+    workflows_code, workflows_payload = client.request("/api/agents/workflows")
+    workflows = (
+        workflows_payload.get("workflows", [])
+        if isinstance(workflows_payload, dict)
+        else []
+    )
+    workflow_names = {row.get("name") for row in workflows}
+    expected_workflows = {
+        "coordination-clash-review",
+        "element-parameters",
+        "measurement-audit",
+        "model-quality-review",
+        "property-completeness-review",
+        "quantity-snapshot",
+        "quick-model-check",
+        "revision-diff-review",
+        "revision-qa-gate",
+    }
+    run.add(
+        "workflows listed",
+        workflows_code == 200 and expected_workflows <= workflow_names,
+        f"HTTP {workflows_code}, {len(workflows)} workflow(s)",
+    )
+
+    quick_code, quick_stream = client.request(
+        "/api/agents/workflows/run",
+        method="POST",
+        json_body={"workflow": "quick-model-check", "inputs": {}},
+        stream=True,
+    )
+    quick_events = list(sse_events(quick_stream if isinstance(quick_stream, str) else ""))
+    quick_completed = next(
+        (event for event in quick_events if event.get("type") == "workflow_completed"),
+        {},
+    )
+    run.add(
+        "workflow without a provider",
+        quick_code == 200 and quick_completed.get("state") == "succeeded",
+        f"HTTP {quick_code}, {quick_completed.get('state', 'no completion event')}",
+    )
+
+    follow_code, follow_stream = client.request(
+        "/api/agents/workflows/continue",
+        method="POST",
+        json_body={
+            "workflow": "quick-model-check",
+            "message": "How many storeys does the report cover?",
+            "report": quick_completed.get("summary", ""),
+            "provider": "rehearsal",
+            "model": model_id,
+        },
+        stream=True,
+    )
+    follow_events = list(sse_events(follow_stream if isinstance(follow_stream, str) else ""))
+    follow_completed = next(
+        (event for event in follow_events if event.get("type") == "follow_up_completed"),
+        {},
+    )
+    run.add(
+        "run follow-up",
+        follow_code == 200 and follow_completed.get("state") == "succeeded",
+        f"HTTP {follow_code}, {follow_completed.get('state', 'no completion event')}",
     )
 
     blocks_code, blocks_payload = client.request("/api/agents/blocks")
@@ -221,7 +288,7 @@ def run_checks(base_url: str, token: str, *, model_id: str = "rehearsal-tools") 
         f"{len(blocks)} blocks",
     )
 
-    for agent_name in ("general", "measurement", "docs", "review"):
+    for agent_name in ("general", "measurement", "parameters", "docs", "review"):
         ws_code, ws = client.request(f"/api/agents/workspace?agent={agent_name}")
         ok = (
             ws_code == 200
@@ -403,6 +470,7 @@ def run_checks(base_url: str, token: str, *, model_id: str = "rehearsal-tools") 
         expect_proposal: bool = False,
         attachments: tuple[str, ...] = (),
         instructions: str = "",
+        workflow: str = "",
     ) -> dict[str, Any]:
         if agent:
             path = "/api/agents/stream"
@@ -416,6 +484,8 @@ def run_checks(base_url: str, token: str, *, model_id: str = "rehearsal-tools") 
                 body["attachments"] = list(attachments)
             if instructions:
                 body["additional_instructions"] = instructions
+            if workflow:
+                body["workflow"] = workflow
         else:
             path = "/api/chat/stream"
             body = {
@@ -455,6 +525,19 @@ def run_checks(base_url: str, token: str, *, model_id: str = "rehearsal-tools") 
         "general",
         "What is in this model, and what do the documents say about it?",
         expect_tools=("query_elements", "list_project_documents"),
+    )
+    # A workflow attached to a chat turn: the empty prompt is answered with the
+    # workflow's own task and the thread carries its instructions.
+    in_chat = stream_check(
+        "workflow in chat",
+        "general",
+        "",
+        workflow="quick-model-check",
+    )
+    run.add(
+        "workflow context reaches the panel",
+        bool(in_chat["kinds"].get("workflow_context")),
+        f"{in_chat['kinds'].get('workflow_context', 0)} workflow_context event(s)",
     )
     docs = stream_check(
         "docs agent stream",

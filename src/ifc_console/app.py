@@ -409,6 +409,7 @@ class AppCore:
         session: ModelSession | None = None,
         profile: Literal["standard", "analysis"] = "standard",
         max_triangles: int | None = None,
+        stats: dict[str, Any] | None = None,
     ) -> dict[int, Any]:
         """World-space meshes per element id, tessellating only the misses.
 
@@ -436,7 +437,13 @@ class AppCore:
                 else:
                     self._mesh_cache.move_to_end(cache_key)
                     found[element.id()] = entry
+        if stats is not None:
+            stats["mesh_requests"] = stats.get("mesh_requests", 0) + 1
+            stats["requested_elements"] = stats.get("requested_elements", 0) + len(elements)
+            stats["cache_hits"] = stats.get("cache_hits", 0) + len(found)
+            stats["cache_misses"] = stats.get("cache_misses", 0) + len(misses)
         if misses:
+            tessellation_started = time.perf_counter()
             if profile == "standard" and max_triangles is None:
                 built = tessellate(s.ifc, misses)
             else:
@@ -446,14 +453,33 @@ class AppCore:
                     profile=profile,
                     max_triangles=max_triangles,
                 )
+            tessellation_ms = (time.perf_counter() - tessellation_started) * 1000.0
             found.update(built)
             with self._mesh_lock:
-                self._store_meshes(
+                evicted = self._store_meshes(
                     stamp,
                     built,
                     profile=profile,
                     max_triangles=budget,
                 )
+            if stats is not None:
+                stats["tessellation_batches"] = stats.get("tessellation_batches", 0) + 1
+                stats["tessellated_elements"] = stats.get("tessellated_elements", 0) + len(built)
+                stats["tessellated_triangles"] = stats.get("tessellated_triangles", 0) + sum(
+                    int(len(mesh[1])) for mesh in built.values()
+                )
+                stats["tessellation_failures"] = stats.get("tessellation_failures", 0) + max(
+                    0, len(misses) - len(built)
+                )
+                stats["tessellation_ms"] = round(
+                    stats.get("tessellation_ms", 0.0) + tessellation_ms,
+                    3,
+                )
+                stats["evicted_meshes"] = stats.get("evicted_meshes", 0) + evicted
+        if stats is not None:
+            with self._mesh_lock:
+                stats["cache_entries_after"] = len(self._mesh_cache)
+                stats["cache_triangles_after"] = self._mesh_triangles
         return found
 
     def _store_meshes(
@@ -463,7 +489,8 @@ class AppCore:
         *,
         profile: Literal["standard", "analysis"],
         max_triangles: int,
-    ) -> None:
+    ) -> int:
+        evicted_count = 0
         for element_id, mesh in built.items():
             cache_key = (stamp, profile, max_triangles, element_id)
             if cache_key in self._mesh_cache:
@@ -473,6 +500,8 @@ class AppCore:
         while self._mesh_triangles > self.MESH_CACHE_MAX_TRIANGLES and self._mesh_cache:
             _, evicted = self._mesh_cache.popitem(last=False)
             self._mesh_triangles -= int(len(evicted[1]))
+            evicted_count += 1
+        return evicted_count
 
     # -- allowed directories ------------------------------------------------------
     def generated_code_deny_paths(self) -> list[Path]:

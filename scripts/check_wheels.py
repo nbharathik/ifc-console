@@ -57,6 +57,7 @@ REQUIRED_AGENT_ASSETS = (
     "chat_flow.js",
     "chat_history.js",
     "chat_markdown.js",
+    "chat_memory.js",
     "chat_sidebar.js",
     "chat_studio.js",
     "chat_workspace.js",

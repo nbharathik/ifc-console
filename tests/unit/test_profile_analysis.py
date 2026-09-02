@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import numpy as np
 import pytest
 
@@ -160,6 +162,36 @@ def pile_model():
     return ifc, plate, box
 
 
+def _profile_model(profile_builder, *, tapered: bool = False):
+    import ifcopenshell.api.geometry
+    import ifcopenshell.api.project
+    import ifcopenshell.api.root
+
+    ifc = ifcopenshell.api.project.create_file(version="IFC4")
+    body = _project(ifc)
+    element = ifcopenshell.api.root.create_entity(
+        ifc, ifc_class="IfcMember", name="Profile-Test"
+    )
+    start, end = profile_builder(ifc)
+    direction = ifc.createIfcDirection((0.0, 0.0, 1.0))
+    if tapered:
+        solid = ifc.create_entity(
+            "IfcExtrudedAreaSolidTapered",
+            SweptArea=start,
+            ExtrudedDirection=direction,
+            Depth=3000.0,
+            EndSweptArea=end,
+        )
+    else:
+        solid = ifc.createIfcExtrudedAreaSolid(start, None, direction, 3000.0)
+    representation = ifc.createIfcShapeRepresentation(body, "Body", "SweptSolid", [solid])
+    ifcopenshell.api.geometry.assign_representation(
+        ifc, product=element, representation=representation
+    )
+    ifcopenshell.api.geometry.edit_object_placement(ifc, product=element)
+    return ifc, element
+
+
 class TestAnalyzeElements:
     def test_profile_curve_and_mesh_agree_on_the_plate(self, pile_model):
         ifc, plate, _ = pile_model
@@ -218,3 +250,161 @@ class TestAnalyzeElements:
         with pytest.raises(ToolError) as caught:
             analyze_elements(ifc, global_ids=[plate.GlobalId], stations=(1.5,))
         assert caught.value.code == "INVALID_INPUT"
+
+    def test_v2_contract_adds_orthonormal_frames_coverage_and_budgets(self, pile_model):
+        ifc, plate, _ = pile_model
+        report = analyze_elements(ifc, global_ids=[plate.GlobalId], detail="compact")
+        assert report["analysis_version"] == "2.0"
+        assert report["budgets"]["max_stations_per_element"] == 17
+        record = report["elements"][0]
+        axes = np.asarray(
+            [
+                record["frames"]["semantic"]["longitudinal"],
+                record["frames"]["semantic"]["transverse"],
+                record["frames"]["semantic"]["vertical"],
+            ]
+        )
+        np.testing.assert_allclose(axes @ axes.T, np.eye(3), atol=1e-7)
+        assert record["coverage"]["extracted"]
+        assert record["geometry_signature"]["version"] == "1.0"
+        assert record["analysis_evidence"]["stations_evaluated"] <= 17
+
+    def test_fabrication_inventory_adds_exact_parameters_and_section_inertia(
+        self, pile_model
+    ):
+        ifc, _, box = pile_model
+        standard = analyze_elements(
+            ifc, global_ids=[box.GlobalId], measurement_set="standard"
+        )["elements"][0]
+        fabrication = analyze_elements(
+            ifc, global_ids=[box.GlobalId], measurement_set="fabrication"
+        )["elements"][0]
+        standard_ids = {item["id"] for item in standard["measurements"]}
+        fabrication_ids = {item["id"] for item in fabrication["measurements"]}
+        assert standard_ids < fabrication_ids
+        assert "profile.parameter.wall_thickness" in fabrication_ids
+        assert "section.second_moment_x" in fabrication_ids
+        exact = next(
+            item
+            for item in fabrication["measurements"]
+            if item["id"] == "profile.parameter.wall_thickness"
+        )
+        assert exact["evidence"]["ifc_attribute"] == "WallThickness"
+        assert exact["uncertainty_si"] == 0.0
+
+    def test_explicit_unknown_measurement_is_accounted_for(self, pile_model):
+        ifc, plate, _ = pile_model
+        requested = ["envelope.overall_height", "custom.not_supported"]
+        record = analyze_elements(
+            ifc,
+            global_ids=[plate.GlobalId],
+            measurement_ids=requested,
+            include_sections=False,
+        )["elements"][0]
+        assert record["coverage"]["requested"] == requested
+        assert record["coverage"]["extracted"] == ["envelope.overall_height"]
+        assert record["coverage"]["unavailable"] == [
+            {
+                "id": "custom.not_supported",
+                "reason": "not_supported_or_not_available_for_element",
+            }
+        ]
+        assert record["section_analysis"]["strategy"] == "none"
+        assert record["analysis_evidence"]["sections_skipped"] is True
+        assert record["analysis_evidence"]["station_budget"] == 0
+
+    def test_tapered_profile_emits_station_endpoints_not_a_singular_scalar(self):
+        def profiles(ifc):
+            return (
+                ifc.createIfcRectangleProfileDef("AREA", "Start", None, 400.0, 300.0),
+                ifc.createIfcRectangleProfileDef("AREA", "End", None, 200.0, 100.0),
+            )
+
+        ifc, element = _profile_model(profiles, tapered=True)
+        record = analyze_elements(
+            ifc,
+            global_ids=[element.GlobalId],
+            measurement_set="fabrication",
+        )["elements"][0]
+        by_id = {item["id"]: item for item in record["measurements"]}
+        assert "profile.overall_width" not in by_id
+        assert by_id["profile.overall_width.start"]["value_si"] == pytest.approx(0.4)
+        assert by_id["profile.overall_width.start"]["station"] == 0.0
+        assert by_id["profile.overall_width.end"]["value_si"] == pytest.approx(0.2)
+        assert by_id["profile.overall_width.end"]["station"] == 1.0
+        assert "profile.parameter.x_dim" not in by_id
+        assert by_id["profile.parameter.x_dim.start"]["confidence"] == "high"
+        ambiguity = {item["id"]: item for item in record["coverage"]["ambiguous"]}
+        assert ambiguity["profile.overall_width"]["station_domain"] == [0.0, 1.0]
+        assert ambiguity["profile.parameter.x_dim"]["reason"] == (
+            "tapered_profile_requires_station"
+        )
+        assert record["profile_ranges"][0]["source"] == "tapered_profile_parameters"
+        assert "tapered_profile_station_dependent" in record["flags"]
+
+    def test_indexed_profile_segments_are_not_reported_as_exact(self):
+        def profiles(ifc):
+            points = ifc.createIfcCartesianPointList2D(
+                ((0.0, 0.0), (500.0, 0.0), (500.0, 10.0), (0.0, 10.0))
+            )
+            segments = (ifc.createIfcLineIndex((1, 2, 3, 4, 1)),)
+            curve = ifc.createIfcIndexedPolyCurve(points, segments, False)
+            profile = ifc.createIfcArbitraryClosedProfileDef("AREA", "Indexed", curve)
+            return profile, None
+
+        ifc, element = _profile_model(profiles)
+        record = analyze_elements(ifc, global_ids=[element.GlobalId])["elements"][0]
+        width = next(
+            item for item in record["measurements"] if item["id"] == "profile.overall_width"
+        )
+        assert width["source"] == "profile_curve_approximation"
+        assert width["method"] == "sampled_or_chord_profile_curve"
+        assert width["confidence"] == "medium"
+        assert width["uncertainty_si"] > 0.0
+        assert "indexed_segments_approximated" in width["flags"]
+        assert "approximate_profile_curve_dimensions" in record["flags"]
+
+    def test_high_precision_has_real_sampling_budgets(self, pile_model):
+        ifc, plate, _ = pile_model
+        standard = analyze_elements(
+            ifc, global_ids=[plate.GlobalId], precision="standard"
+        )
+        high = analyze_elements(ifc, global_ids=[plate.GlobalId], precision="high")
+        assert standard["budgets"]["max_stations_per_element"] == 17
+        assert standard["budgets"]["max_thickness_rays_per_section"] == 2000
+        assert high["budgets"]["max_stations_per_element"] == 33
+        assert high["budgets"]["max_thickness_rays_per_section"] == 4000
+        evidence = high["elements"][0]["analysis_evidence"]
+        assert evidence["station_budget"] == 33
+        assert evidence["thickness_ray_budget"] == 4000
+        assert evidence["precision"] == {
+            "mode": "high",
+            "mesh_profile": "analysis",
+            "mesh_reused": True,
+            "higher_sampling": True,
+        }
+
+    def test_scale_aware_tolerance_reaches_sections(self, pile_model):
+        ifc, plate, _ = pile_model
+        record = analyze_elements(
+            ifc,
+            global_ids=[plate.GlobalId],
+            detail="full",
+        )["elements"][0]
+        tolerance = record["tolerance"]["absolute_si"]
+        analysis = record["section_analysis"]
+        assert analysis["absolute_tolerance_si"] == pytest.approx(tolerance)
+        dominant = analysis["representative_sections"]["dominant"]
+        assert dominant["effective_tolerance_si"] == pytest.approx(tolerance)
+        assert dominant["thickness_ray_budget"] == 2000
+
+    @pytest.mark.parametrize("detail", ["compact", "standard", "full"])
+    def test_single_element_response_is_bounded(self, pile_model, detail):
+        ifc, _, box = pile_model
+        report = analyze_elements(
+            ifc,
+            global_ids=[box.GlobalId],
+            detail=detail,
+            include_outline=True,
+        )
+        assert len(json.dumps(report, indent=2)) < 36_000

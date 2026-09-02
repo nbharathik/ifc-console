@@ -470,3 +470,85 @@ async def test_geometry_checks_are_skipped_with_a_stated_reason(
     }
     assert "max_elements" in data["checks"]["placement_outliers"]["reason"]
     assert data["checks"]["duplicate_global_ids"]["status"] == "findings"
+
+
+# -- audit_element_properties and assess_model_quality ----------------------
+
+
+async def test_audit_element_properties_reports_the_gap_list(
+    harness_factory, work_model: Path
+) -> None:
+    h = await harness_factory(model=work_model)
+    out = await h.call("audit_element_properties", selector="IfcWall", max_elements=2)
+
+    assert out["ok"] is True
+    data = out["data"]
+    assert data["returned"] == 2
+    assert data["total"] == 3
+    assert data["truncated"] is True
+    rows = {row["name"]: row for row in data["elements"][0]["psets"]}
+    assert "LoadBearing" in rows["Pset_WallCommon"]["missing"]
+    assert "Qto_WallBaseQuantities.Length" in data["elements"][0]["derivable"]["geometry"]
+
+    by_id = await h.call(
+        "audit_element_properties",
+        global_ids=[data["elements"][0]["global_id"]],
+        detail="full",
+        psets="all",
+    )
+    assert by_id["ok"] is True
+    element = by_id["data"]["elements"][0]
+    assert len(element["psets"]) == len(element["applicable_psets"])
+    assert by_id["data"]["hints"]["LoadBearing"]
+    # Every template at full detail is the heaviest shape one element can
+    # take; when it outgrows a response the tool answers in compact detail
+    # and says so rather than returning nothing.
+    if "note" in by_id["data"]:
+        assert "compact detail" in by_id["data"]["note"]
+        assert all("properties" not in row for row in element["psets"])
+    else:
+        assert all("properties" in row for row in element["psets"])
+
+    narrowed = await h.call(
+        "audit_element_properties",
+        global_ids=[data["elements"][0]["global_id"]],
+        detail="full",
+        pset_names=["Pset_WallCommon"],
+    )
+    assert narrowed["ok"] is True
+    assert "note" not in narrowed["data"]
+    rows = narrowed["data"]["elements"][0]["psets"]
+    assert [row["name"] for row in rows] == ["Pset_WallCommon"]
+    assert all("data_type" in prop for prop in rows[0]["properties"])
+
+    # Three walls at full detail over every template do not fit one envelope,
+    # so the list is paged by element rather than cut mid-record.
+    paged = await h.call(
+        "audit_element_properties", selector="IfcWall", detail="full", psets="all"
+    )
+    assert paged["ok"] is True
+    assert paged["meta"]["truncated"] is True
+    assert 1 <= len(paged["data"]["elements"]) < 3
+    assert paged["data"]["truncation"]["of"] == 3
+
+    nothing = await h.call("audit_element_properties")
+    assert nothing["ok"] is False
+    assert nothing["error"]["code"] == "INVALID_INPUT"
+
+
+async def test_assess_model_quality_returns_a_graded_scorecard(
+    harness_factory, work_model: Path
+) -> None:
+    h = await harness_factory(model=work_model)
+    out = await h.call("assess_model_quality")
+
+    assert out["ok"] is True
+    data = out["data"]
+    assert data["grade"] in "ABCDE"
+    assert len(data["dimensions"]) == 10
+    assert data["top_improvements"]
+    assert data["text"].startswith("Model quality")
+    assert out["meta"].get("cached") is False
+
+    again = await h.call("assess_model_quality")
+    assert again["meta"].get("cached") is True

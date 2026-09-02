@@ -116,9 +116,7 @@ async def test_export_csv_in_ask_mode(harness_factory, work_model: Path, tmp_pat
     assert "artifact_write" in events
 
 
-async def test_analyze_element_geometry_reads_profile_and_mesh(
-    harness_factory, work_model: Path
-):
+async def test_analyze_element_geometry_reads_profile_and_mesh(harness_factory, work_model: Path):
     h = await harness_factory(model=work_model)
     out = await h.call("analyze_element_geometry", selector="IfcWall, Name=Wall-1")
     assert out["ok"] is True
@@ -219,9 +217,7 @@ async def test_slice_element_mesh_returns_outline_with_world_frame(
     assert len(data["section"]["outline_frame"]["origin"]) == 3
 
 
-async def test_directional_extent_rejects_a_zero_direction(
-    harness_factory, work_model: Path
-):
+async def test_directional_extent_rejects_a_zero_direction(harness_factory, work_model: Path):
     h = await harness_factory(model=work_model)
     out = await h.call(
         "measure_directional_extent",
@@ -356,13 +352,14 @@ async def test_export_measurement_report_writes_and_registers(
     assert "# Wall 1 measurement" in text
     assert "| Width (b) | 5000" in text
     assert "MILLIMETRE" in text
+    assert "- Analysis contract: 2.0" in text
+    assert "- Model revision: model_id=" in text
+    assert "fingerprint=" in text and "revision=" in text
     listed = await h.call("list_artifacts")
     kinds = [row["kind"] for row in listed["data"]["artifacts"]]
     assert "measurement-report" in kinds
 
-    again = await h.call(
-        "export_measurement_report", selector="IfcWall", path=str(target)
-    )
+    again = await h.call("export_measurement_report", selector="IfcWall", path=str(target))
     assert again["ok"] is False
     assert again["error"]["code"] == "FILE_EXISTS"
 
@@ -384,9 +381,7 @@ async def test_export_csv_refuses_overwrite_and_bad_paths(
     assert out["ok"] is False
     assert out["error"]["code"] == "INVALID_INPUT"
 
-    out = await h.call(
-        "export_csv", selector="IfcWall", path="/definitely/not/allowed/walls.csv"
-    )
+    out = await h.call("export_csv", selector="IfcWall", path="/definitely/not/allowed/walls.csv")
     assert out["ok"] is False
     assert out["error"]["code"] == "PATH_NOT_ALLOWED"
 
@@ -440,9 +435,7 @@ async def test_orient_without_model(harness_factory):
     assert "open_ifc_file" in out["data"]["hint"]
 
 
-async def test_describe_capabilities_tracks_viewer_category(
-    harness_factory, work_model: Path
-):
+async def test_describe_capabilities_tracks_viewer_category(harness_factory, work_model: Path):
     h = await harness_factory(model=work_model)
     out = await h.call("describe_capabilities")
     assert out["ok"] is True
