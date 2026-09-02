@@ -576,32 +576,6 @@
 }
 .chat-log > * { max-width: 760px; margin-inline: auto; }
 
-/* A note is the panel talking about the session, not a turn in the
-   conversation, so it sits centred between the two columns of turns rather
-   than aligning with either speaker. */
-.chat-note {
-  display: block;
-  width: fit-content;
-  max-width: min(90%, 460px);
-  margin: 10px auto;
-  padding: 5px 12px;
-  color: var(--chat-dim);
-  background: color-mix(in srgb, var(--chat-raise) 70%, transparent);
-  border: 1px solid var(--chat-line);
-  border-radius: 999px;
-  font-size: 14px;
-  text-align: center;
-}
-.chat-note.bad {
-  color: var(--chat-bad);
-  background: color-mix(in srgb, var(--chat-bad) 12%, transparent);
-  border-color: color-mix(in srgb, var(--chat-bad) 50%, transparent);
-}
-.chat-note.warn {
-  color: var(--chat-warn);
-  background: color-mix(in srgb, var(--chat-warn) 12%, transparent);
-  border-color: color-mix(in srgb, var(--chat-warn) 50%, transparent);
-}
 
 /* -- nothing asked yet: one clear setup action, or model-specific starters */
 .chat-empty {
@@ -802,6 +776,7 @@
 .chat-body { min-width: 0; max-width: 100%; }
 .chat-stream { display: flex; flex-direction: column; }
 .chat-stream > * + * { margin-top: 10px; }
+.chat-stream > .chat-tool-card + .chat-tool-card { margin-top: 3px; }
 
 .chat-answer { word-break: break-word; }
 .chat-answer.stopped { color: var(--chat-dim); font-style: italic; }
@@ -942,23 +917,37 @@
   color: var(--chat-text);
   background: color-mix(in srgb, var(--chat-raise) 96%, transparent);
   border: 1px solid var(--chat-line-strong);
-  border-left: 3px solid var(--chat-bad);
+  border-left: 3px solid var(--chat-accent);
   border-radius: 9px;
   box-shadow: var(--shadow-pop, 0 14px 34px rgba(0, 0, 0, 0.4));
   pointer-events: auto;
 }
+.chat-notification.bad { border-left-color: var(--chat-bad); }
+.chat-notification.warn { border-left-color: var(--chat-warn); }
 .chat-notification-mark {
   display: grid;
   width: 28px;
   height: 28px;
   place-items: center;
+  color: var(--chat-accent-bright);
+  background: color-mix(in srgb, var(--chat-accent) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--chat-accent) 36%, transparent);
+  border-radius: 7px;
+}
+.chat-notification.bad .chat-notification-mark {
   color: var(--chat-bad);
   background: color-mix(in srgb, var(--chat-bad) 12%, transparent);
-  border: 1px solid color-mix(in srgb, var(--chat-bad) 36%, transparent);
-  border-radius: 7px;
+  border-color: color-mix(in srgb, var(--chat-bad) 36%, transparent);
+}
+.chat-notification.warn .chat-notification-mark {
+  color: var(--chat-warn);
+  background: color-mix(in srgb, var(--chat-warn) 12%, transparent);
+  border-color: color-mix(in srgb, var(--chat-warn) 36%, transparent);
 }
 .chat-notification-copy { display: grid; gap: 2px; min-width: 0; }
 .chat-notification-copy b { font-size: 13px; font-weight: 650; line-height: 1.35; }
+/* A housekeeping line has no headline, only the sentence. */
+.chat-notification-copy b[hidden] { display: none; }
 .chat-notification-copy small {
   overflow-wrap: anywhere;
   color: var(--chat-dim);
@@ -989,7 +978,8 @@
 /* -- one card per tool call, where the call happened
    A chip that said "ok" told the reader nothing they could check. The card
    carries the arguments the model chose and the envelope the console returned,
-   folded away until asked for, and opens itself when the call failed. */
+   folded away until the reader asks. Nothing opens on its own: a long run of
+   calls stays a short stack of one-line rows. */
 .chat-tool-card {
   position: relative;
   overflow: clip;
@@ -1003,7 +993,7 @@
 .chat-root[data-theme="light"] { color-scheme: light; }
 .chat-tool-card::before {
   position: absolute;
-  inset: 7px auto 7px 0;
+  inset: 5px auto 5px 0;
   width: 2px;
   background: var(--chat-line-strong);
   border-radius: 0 2px 2px 0;
@@ -1029,12 +1019,12 @@
 .chat-tool-card > summary {
   display: flex;
   align-items: center;
-  gap: 8px;
-  min-height: 38px;
-  padding: 6px 9px 6px 11px;
+  gap: 7px;
+  min-height: 26px;
+  padding: 2px 7px 2px 9px;
   cursor: pointer;
   font-family: var(--chat-mono);
-  font-size: 12px;
+  font-size: 11.5px;
   list-style: none;
   transition: background var(--chat-ease);
 }
@@ -1045,19 +1035,20 @@
   position: relative;
   display: grid;
   flex: none;
-  width: 14px;
-  height: 14px;
+  width: 11px;
+  height: 11px;
   place-items: center;
   color: var(--chat-quiet);
   border: 1px solid currentColor;
   border-radius: 50%;
 }
 .chat-tool-signal i {
-  width: 4px;
-  height: 4px;
+  width: 3px;
+  height: 3px;
   background: currentColor;
   border-radius: 50%;
 }
+.chat-tool-card:not([open]) .chat-tool-stage { display: none; }
 .chat-tool-stage {
   flex: none;
   padding: 0 5px;
@@ -1088,7 +1079,7 @@
 .chat-tool-time {
   flex: none;
   color: var(--chat-quiet);
-  font-size: 11px;
+  font-size: 10.5px;
 }
 .chat-tool-time:empty { display: none; }
 .chat-tool-progress {
@@ -1110,6 +1101,7 @@
   color: var(--chat-quiet);
   transition: transform var(--t-fast) var(--t-out);
 }
+.chat-tool-caret svg { width: 12px; height: 12px; }
 .chat-tool-card[open] .chat-tool-caret { transform: rotate(90deg); }
 .chat-tool-card.running::before { background: var(--chat-accent); }
 .chat-tool-card.running .chat-tool-signal { color: var(--chat-accent); }
@@ -1123,7 +1115,7 @@
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   gap: 8px;
-  padding: 9px;
+  padding: 8px 9px 9px;
   border-top: 1px solid var(--chat-line);
 }
 .chat-tool-body > :only-child { grid-column: 1 / -1; }
@@ -1235,7 +1227,7 @@
 .chat-approval {
   min-width: 0;
   max-width: 100%;
-  margin: 10px 0;
+  margin: 8px 0;
   background: var(--chat-raise);
   border: 1px solid var(--chat-line);
   border-left: 3px solid var(--chat-warn);
@@ -1252,9 +1244,9 @@
 .chat-approval-head {
   display: flex;
   align-items: center;
-  gap: 9px;
+  gap: 8px;
   min-width: 0;
-  padding: 9px 11px;
+  padding: 6px 9px;
   cursor: pointer;
   list-style: none;
 }
@@ -1272,16 +1264,16 @@
 .chat-approval[open] .chat-approval-toggle { transform: rotate(225deg); }
 .chat-approval-body {
   display: grid;
-  gap: 6px;
+  gap: 5px;
   min-width: 0;
-  padding: 8px 11px 10px;
+  padding: 7px 9px 8px;
   border-top: 1px solid color-mix(in srgb, var(--chat-line) 70%, transparent);
 }
 .chat-approval-mark { display: grid; flex: none; place-items: center; color: var(--chat-warn); }
 .chat-approval.approved .chat-approval-mark { color: var(--chat-ok); }
 .chat-approval.denied .chat-approval-mark { color: var(--chat-bad); }
 .chat-approval-copy { display: grid; flex: 1; min-width: 0; gap: 1px; }
-.chat-approval-copy b { color: var(--chat-text); font-size: 13px; }
+.chat-approval-copy b { color: var(--chat-text); font-size: 12.5px; }
 .chat-approval-copy code {
   overflow: hidden;
   color: var(--chat-dim);
@@ -1307,17 +1299,17 @@
 .chat-approval-headline {
   margin: 0;
   color: var(--chat-text);
-  font-size: 13.5px;
-  line-height: 1.45;
+  font-size: 12.5px;
+  line-height: 1.4;
 }
 .chat-approval-headline:empty { display: none; }
 .chat-approval-headline[hidden] { display: none; }
 .chat-approval-facts {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
-  gap: 2px 10px;
+  gap: 1px 10px;
   margin: 0;
-  font-size: 12px;
+  font-size: 11.5px;
 }
 .chat-approval-facts[hidden] { display: none; }
 .chat-approval-facts dt {
@@ -1354,8 +1346,8 @@
 .chat-approval-args pre {
   min-width: 0;
   max-width: 100%;
-  margin: 6px 0 0;
-  max-height: min(180px, 28vh);
+  margin: 5px 0 0;
+  max-height: min(130px, 22vh);
   overflow-x: auto;
   overflow-y: auto;
   overscroll-behavior: contain;
@@ -1370,7 +1362,7 @@
   width: max-content;
   min-width: 100%;
   color: var(--chat-dim);
-  font: 12px/1.5 var(--chat-mono);
+  font: 11.5px/1.5 var(--chat-mono);
   white-space: pre;
 }
 .chat-approval-actions {
@@ -1379,6 +1371,13 @@
   flex-wrap: wrap;
   justify-content: flex-end;
   gap: 6px;
+  margin-top: 1px;
+}
+/* Three choices on one short row: the card is a question, not a dialog. */
+.chat-root .chat-approval-actions .chat-btn {
+  min-height: 26px;
+  padding: 2px 9px;
+  font-size: 12.5px;
 }
 .chat-approval-actions[hidden] { display: none; }
 .chat-root .chat-approval-deny { color: var(--chat-bad); border-color: var(--chat-line); }
@@ -1559,7 +1558,7 @@
 .chat-composer > .chat-input-wrap,
 .chat-composer > .chat-attachments,
 .chat-composer > .chat-hint { max-width: 760px; margin-inline: auto; }
-.chat-attachments { display: flex; gap: 4px; margin-bottom: 6px; overflow-x: auto; }
+.chat-attachments { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 6px; }
 .chat-attachments[hidden] { display: none; }
 .chat-attachment-chip {
   display: inline-flex;
@@ -1955,13 +1954,13 @@
 .chat-attachment-chip.workflow[data-pinned="true"] > em::before { content: "pinned · "; }
 .chat-chip-preview {
   position: absolute;
-  bottom: calc(100% + 2px);
+  bottom: calc(100% + 6px);
   left: -4px;
   z-index: 30;
   display: none;
-  width: min(560px, 80vw);
-  max-height: min(70vh, 520px);
-  padding: 10px 12px 12px;
+  width: min(380px, calc(100vw - 28px));
+  max-height: min(60vh, 420px);
+  padding: 9px 11px 10px;
   overflow: auto;
   color: var(--chat-text);
   background: var(--chat-raise);
@@ -1977,7 +1976,7 @@
 }
 .chat-chip-preview::after {
   position: absolute;
-  inset: 100% 0 -6px;
+  inset: 100% 0 -8px;
   content: "";
 }
 .chat-attachment-chip.workflow:hover .chat-chip-preview,
@@ -1987,6 +1986,15 @@
 .chat-chip-preview header b { font-size: 13.5px; font-weight: 650; }
 .chat-chip-preview header small { color: var(--chat-quiet); font: 10.5px/1.3 var(--chat-mono); }
 .chat-chip-preview p { margin: 0 0 8px; color: var(--chat-dim); }
+/* The prompt is the long part, so it stays folded and the box stays a
+   tooltip: what the workflow does, in what order, and nothing else. */
+.chat-chip-preview-prompt { margin-top: 2px; }
+.chat-chip-preview-prompt > summary { cursor: pointer; list-style: none; }
+.chat-chip-preview-prompt > summary::-webkit-details-marker { display: none; }
+.chat-chip-preview-prompt > summary::after { content: " +"; }
+.chat-chip-preview-prompt[open] > summary::after { content: " -"; }
+.chat-chip-preview-prompt > summary:hover { color: var(--chat-accent-bright); }
+.chat-chip-preview-prompt[open] > summary { margin-bottom: 5px; }
 .chat-chip-preview ol {
   display: flex;
   flex-wrap: wrap;
@@ -2017,7 +2025,7 @@
   text-transform: uppercase;
 }
 .chat-chip-preview pre {
-  max-height: 300px;
+  max-height: 220px;
   margin: 0;
   padding: 9px 10px;
   overflow: auto;
@@ -2071,7 +2079,7 @@
 .chat-root .chat-empty-run .chat-btn.primary { display: inline-flex; align-items: center; gap: 6px; min-height: 40px; padding: 0 16px 0 12px; font-size: 14px; }
 .chat-empty-run small { color: var(--chat-quiet); font-size: 12px; line-height: 1.5; }
 .chat-root.chat-compact .chat-workflow-starters { grid-template-columns: 1fr; }
-.chat-root.chat-compact .chat-chip-preview { width: min(560px, calc(100vw - 24px)); }
+.chat-root.chat-compact .chat-chip-preview { width: min(380px, calc(100vw - 24px)); }
 
 /* ================================================================ inspector */
 .chat-ws-head {

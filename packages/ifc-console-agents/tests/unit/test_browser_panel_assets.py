@@ -761,23 +761,31 @@ def test_composer_shortcuts_live_behind_a_stable_keyboard_control(
     assert chain.index("closeShortcuts") < chain.index("aborter?.abort()")
 
 
-def test_errors_use_top_notifications_instead_of_transcript_notes(
+def test_every_notice_is_a_top_notification_that_takes_itself_away(
     chat_js: str, chat_css: str
 ) -> None:
+    """A line in the transcript outlived the control it answered, and pressing
+    that control twice left two copies of the same sentence for good."""
     assert 'data-role="notifications"' in chat_js
-    assert 'notification.setAttribute("role", "alert")' in chat_js
+    assert 'notification.setAttribute("role", kind === "bad" ? "alert" : "status")' in chat_js
     assert 'data-act="dismiss-notification"' in chat_js
     assert 'text.replace(/\\s+\\(at [\\s\\S]+\\)\\s*$/, "")' in chat_js
     assert "This IFC element has no geometry in the model" in chat_js
     note = chat_js.split("function note(text, tone = false)", 1)[1].split(
         "async function uploadFiles", 1
     )[0]
-    assert 'if (kind === "bad")' in note
-    assert "notifyFailure(text);" in note
-    assert note.index("notifyFailure(text);") < note.index('line.className = "chat-note"')
+    # Every tone lands in the tray, and nothing is appended to the transcript.
+    assert 'notify(text, tone === true ? "bad" : tone === false ? "" : String(tone));' in note
+    assert "chat-note" not in chat_js and "chat-note" not in chat_css
+    notify = chat_js.split('function notify(text, kind = "")', 1)[1].split(SPLIT_BLOCK_END, 1)[0]
+    # One notice per message, and every one of them is on a timer.
+    assert "if (current.dataset.message === copy.message) dismissNotification(current);" in notify
+    assert "NOTIFY_LIFETIME[kind]" in notify
+    assert "NOTIFY_LIFETIME = { bad: 12_000, warn: 9_000" in chat_js
     assert ".chat-notifications" in chat_css
     assert "position: absolute;" in chat_css.split(".chat-notifications", 1)[1].split("}", 1)[0]
     assert "pointer-events: auto;" in chat_css.split(".chat-notification {", 1)[1].split("}", 1)[0]
+    assert ".chat-notification.warn {" in chat_css
 
 
 def test_stopping_before_content_keeps_an_alternating_visible_transcript(
@@ -981,6 +989,12 @@ def test_a_tool_is_drawn_where_it_ran(chat_js: str, chat_css: str, chat_flow_js:
     assert '.chat-tool-card' in chat_css
     assert '.chat-tool-part pre' in chat_css
     assert ".chat-tools {" not in chat_css, "the chip strip is gone"
+    # A run of calls stays a stack of one-line rows: nothing opens itself, and
+    # the stage word is context for a card being read, not for a row going by.
+    paint = chat_js.split("function paintTool(", 1)[1].split(SPLIT_BLOCK_END, 1)[0]
+    assert "node.open = true" not in paint
+    assert "if (node.open) paintToolBody(node, block);" in paint
+    assert ".chat-tool-card:not([open]) .chat-tool-stage" in chat_css
 
 
 def test_chat_distinguishes_the_ai_model_from_the_open_ifc_model(chat_js: str):
@@ -1781,9 +1795,13 @@ def test_a_workflow_is_context_the_conversation_stands_on(
     # The preview is content, never markup.
     assert "innerHTML" not in preview
     assert "pre.textContent = context?.instructions" in preview
+    assert "fold.append(label, pre)" in preview, "the prompt stays folded"
     assert ".chat-chip-preview" in chat_css
+    assert ".chat-chip-preview-prompt" in chat_css
     assert ".chat-attachment-chip.workflow:hover .chat-chip-preview" in chat_css
     assert ".chat-attachment-chip.workflow.open .chat-chip-preview" in chat_css
+    # The tray must not scroll: a clipping tray cut the preview out of the page.
+    assert "overflow" not in _css_rule_with(chat_css, ".chat-attachments", "display: flex")
     for action in ("attach-workflow", "drop-workflow", "preview-workflow", "run-workflow"):
         assert f'action === "{action}"' in chat_js, action
     # Every turn of the conversation carries the workflow by name.

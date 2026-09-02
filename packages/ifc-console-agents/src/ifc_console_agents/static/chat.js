@@ -169,6 +169,7 @@ const I = {
     15,
   ),
   warning: svg('<path d="M8 2.2 14 13H2zM8 5.7v3.6M8 11.4h.01"/>', 15),
+  info: svg('<circle cx="8" cy="8" r="6"/><path d="M8 7.4v3.9M8 5.1h.01"/>', 15),
   play: svg('<path d="M4.6 3.2 12.4 8l-7.8 4.8z"/>', 15),
   gauge: svg('<path d="M2.6 11.4a5.6 5.6 0 1 1 10.8 0"/><path d="M8 11.4 10.6 6.6"/><circle cx="8" cy="11.4" r=".9"/>', 13),
 };
@@ -2006,15 +2007,20 @@ export function mountChat(root, options = {}) {
       }
       box.appendChild(stages);
     }
-    const label = document.createElement("span");
+    // The prompt is the long part and the rarely wanted one, so it opens on
+    // request and the box stays small enough to read at a glance.
+    const fold = document.createElement("details");
+    fold.className = "chat-chip-preview-prompt";
+    const label = document.createElement("summary");
     label.className = "chat-chip-preview-label";
     label.textContent = context ? "Instructions the model was given" : "System prompt";
     const pre = document.createElement("pre");
     pre.tabIndex = 0;
     pre.textContent = context?.instructions
       || flow.system_prompt
-      || "No system prompt. The procedure below is written from the workflow's steps.";
-    box.append(label, pre);
+      || "No system prompt. The procedure above is written from the workflow's steps.";
+    fold.append(label, pre);
+    box.appendChild(fold);
     return box;
   }
 
@@ -2797,43 +2803,48 @@ export function mountChat(root, options = {}) {
     notification.remove();
   }
 
-  function notifyFailure(text) {
+  // A failure is read at once and then in the way; a housekeeping line is
+  // read once and then noise forever. Both leave on their own.
+  const NOTIFY_LIFETIME = { bad: 12_000, warn: 9_000, "": 6_000 };
+
+  /* Everything the panel says about itself, at the top and on a timer.
+   *
+   * These lines are not turns: they answer a control the reader just pressed.
+   * In the transcript they outlived the moment they belonged to, and a second
+   * press appended a second copy of the same sentence for the rest of the
+   * conversation. Here one notice replaces its twin and takes itself away. */
+  function notify(text, kind = "") {
     const tray = el("notifications");
-    const copy = failureCopy(text);
-    // Repeated clicks on the same non-geometric element should refresh one
-    // notice, not build a wall of identical errors over the conversation.
+    const copy = kind === "bad"
+      ? failureCopy(text)
+      : { title: "", message: String(text).trim() };
+    // Repeated clicks on the same control should refresh one notice, not
+    // build a wall of identical ones over the conversation.
     for (const current of tray.querySelectorAll(".chat-notification")) {
       if (current.dataset.message === copy.message) dismissNotification(current);
     }
     while (tray.children.length >= 3) dismissNotification(tray.firstElementChild);
     const notification = document.createElement("section");
-    notification.className = "chat-notification bad t-reveal";
+    notification.className = `chat-notification t-reveal${kind ? ` ${kind}` : ""}`;
     notification.dataset.message = copy.message;
-    notification.setAttribute("role", "alert");
+    notification.setAttribute("role", kind === "bad" ? "alert" : "status");
     notification.innerHTML = `
-      <i class="chat-notification-mark">${I.warning}</i>
+      <i class="chat-notification-mark">${kind ? I.warning : I.info}</i>
       <span class="chat-notification-copy"><b></b><small></small></span>
       <button class="chat-icon t-press" data-act="dismiss-notification" type="button"
               aria-label="Dismiss notification">${I.close}</button>`;
-    notification.querySelector("b").textContent = copy.title;
+    const title = notification.querySelector("b");
+    title.textContent = copy.title;
+    title.hidden = !copy.title;
     notification.querySelector("small").textContent = copy.message;
     tray.appendChild(notification);
-    notification.dataset.timeout = String(setTimeout(() => dismissNotification(notification), 12_000));
+    notification.dataset.timeout = String(
+      setTimeout(() => dismissNotification(notification), NOTIFY_LIFETIME[kind] ?? 6_000),
+    );
   }
 
   function note(text, tone = false) {
-    const kind = tone === true ? "bad" : tone === false ? "" : String(tone);
-    if (kind === "bad") {
-      notifyFailure(text);
-      return;
-    }
-    if (!turns.length && log.querySelector(".chat-empty")) log.innerHTML = "";
-    const line = document.createElement("div");
-    line.className = "chat-note" + (kind ? ` ${kind}` : "");
-    line.setAttribute("role", "status");
-    line.textContent = text;
-    log.appendChild(line);
-    scroll();
+    notify(text, tone === true ? "bad" : tone === false ? "" : String(tone));
   }
 
   async function uploadFiles(files) {
@@ -5750,7 +5761,8 @@ export function mountChat(root, options = {}) {
       <div class="chat-tool-body"></div>`;
     // Large results cost no layout, GUID decoration, or syntax DOM until the
     // reader asks to inspect them. Native details preserves keyboard and
-    // screen-reader behaviour without another disclosure component.
+    // screen-reader behaviour without another disclosure component. The card
+    // is never opened by the code, only by the reader.
     details.addEventListener("toggle", () => {
       if (details.open && details._toolBlock) paintToolBody(details, details._toolBlock);
     });
@@ -5852,12 +5864,9 @@ export function mountChat(root, options = {}) {
     } else if (selectAll) {
       selectAll.hidden = true;
     }
-    // A failure is the one case worth opening on its own: the reader needs the
-    // message, not a chevron to find it behind.
-    if (block.state === "bad" && !node.dataset.opened) {
-      node.open = true;
-      node.dataset.opened = "1";
-    }
+    // Nothing opens itself, not even a failure: a run of calls stays a run of
+    // quiet rows. The message is on the row and in its tooltip; the card holds
+    // the rest for whoever asks.
     if (node.open) paintToolBody(node, block);
   }
 
