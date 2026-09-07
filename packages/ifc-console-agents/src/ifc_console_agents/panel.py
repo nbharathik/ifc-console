@@ -489,6 +489,25 @@ _SKILL_NOTE_CHARS = 12_000
 _KIND_ORDER = {"general": 0, "task": 1}
 
 
+def _skill_content_paths(core: AppCore, rows: list[dict[str, Any]]) -> list[str]:
+    """The indexed files behind the attached skills: their collections and packs."""
+    collections = {str(row.get("collection") or "").strip().lower() for row in rows}
+    packs = {str(row.get("pack") or "").strip().lower() for row in rows}
+    collections.discard("")
+    packs.discard("")
+    if not collections and not packs:
+        return []
+    paths: list[str] = []
+    for entry in _library_entries(core):
+        path = str(entry.get("path") or "")
+        if (
+            str(entry.get("collection") or "").lower() in collections
+            or str(entry.get("pack") or "").lower() in packs
+        ) and path not in paths:
+            paths.append(path)
+    return paths
+
+
 def _attached_skills_note(rows: list[dict[str, Any]]) -> str:
     """The attached skills as a block the agent reads before answering.
 
@@ -1505,6 +1524,12 @@ def build_agent_panel_routes(core: AppCore) -> list[Route]:
                         {"error": str(exc), "code": exc.code, "hint": exc.hint}, status_code=404
                     )
             skill_note = _attached_skills_note(skill_rows)
+            # A skill is useless without the files it names: its collection
+            # and its pack are readable for this run even when the agent's
+            # standing content access is a narrower selection.
+            skill_grants = await asyncio.to_thread(_skill_content_paths, core, skill_rows)
+        else:
+            skill_grants = []
         # A workflow attached to the conversation: its prompt, settings, scope,
         # and procedure become standing instructions on this thread, so the
         # same agent, tools, and approvals answer it turn after turn.
@@ -1766,7 +1791,7 @@ def build_agent_panel_routes(core: AppCore) -> list[Route]:
                 else PanelApprovalHandler(state, owner=stream_task)
             )
             access = (
-                thread.content_gate.temporary(attachment_paths)
+                thread.content_gate.temporary([*attachment_paths, *skill_grants])
                 if thread.content_gate is not None
                 else nullcontext()
             )

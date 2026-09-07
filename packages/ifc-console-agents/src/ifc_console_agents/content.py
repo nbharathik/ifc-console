@@ -198,15 +198,28 @@ class AgentContentGate:
         finally:
             self._temporary.reset(token)
 
-    def _filter_rows(self, rows: Any) -> list[Any]:
+    def _filter_rows(self, rows: Any) -> tuple[list[Any], int]:
+        """The rows this agent may see, and how many were hidden."""
         if not isinstance(rows, list):
-            return []
+            return [], 0
         kept = []
+        hidden = 0
         for row in rows:
             path = _path_from_row(row)
             if path is None or self.allows(path):
                 kept.append(row)
-        return kept
+            else:
+                hidden += 1
+        return kept, hidden
+
+    @staticmethod
+    def _note(hidden: int, what: str) -> str:
+        return (
+            f"{hidden} {what} hidden: this agent's content access does not include their "
+            "files. Do not guess the values; ask the user to enable the collection in Agent "
+            "workspace > Content (or attach the file / a skill of that collection to the "
+            "message)."
+        )
 
     async def __call__(self, call: ToolCall, call_next: ToolCallNext) -> dict[str, Any]:
         name = call.name
@@ -226,18 +239,28 @@ class AgentContentGate:
         if not isinstance(data, Mapping):
             return result
         filtered = dict(data)
+        # A silently emptied result reads as "nothing there" and sends the
+        # agent guessing; the note says what was hidden and who can open it.
+        hidden = 0
         if name == "list_project_documents":
-            filtered["files"] = self._filter_rows(data.get("files"))
+            filtered["files"], hidden = self._filter_rows(data.get("files"))
+            what = "document(s)"
         elif name == "lookup_table_rows":
-            filtered["rows"] = self._filter_rows(data.get("rows"))
+            filtered["rows"], hidden = self._filter_rows(data.get("rows"))
+            what = "matching row(s)"
         elif name == "search_ifc_knowledge":
             corpus = call.arguments.get("corpus", "all")
+            what = "hit(s)"
             if corpus == "project":
-                filtered["hits"] = self._filter_rows(data.get("hits"))
+                filtered["hits"], hidden = self._filter_rows(data.get("hits"))
             if "project_hits" in data:
-                filtered["project_hits"] = self._filter_rows(data.get("project_hits"))
+                filtered["project_hits"], more = self._filter_rows(data.get("project_hits"))
+                hidden += more
         else:
             return result
+        if hidden:
+            filtered["hidden"] = hidden
+            filtered["access_note"] = self._note(hidden, what)
         meta = dict(result.get("meta") or {})
         visible = filtered.get("files")
         if not isinstance(visible, list):

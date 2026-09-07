@@ -56,10 +56,21 @@ def _require_project(core: AppCore) -> None:
         )
 
 
+def _loose(text: Any) -> str:
+    # "GU6N", "gu 6n" and "GU 6N" name the same row; spaces and case are
+    # printing choices, not identity
+    return "".join(str(text).split()).lower()
+
+
 def _field_equals(value: Any, wanted: Any) -> bool:
     if isinstance(value, int | float) and isinstance(wanted, int | float):
         return float(value) == float(wanted)
-    return str(value).strip().lower() == str(wanted).strip().lower()
+    if isinstance(value, int | float) or isinstance(wanted, int | float):
+        try:
+            return float(value) == float(wanted)
+        except (TypeError, ValueError):
+            return False
+    return _loose(value) == _loose(wanted)
 
 
 def _document_stores(core: AppCore) -> tuple[Any, ...]:
@@ -192,10 +203,14 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
         annotations=KNOWLEDGE_ANN,
         description=(
             "[QUERY] Rows of one indexed table (a .jsonl or .csv in the project content or "
-            "the user library). where keeps rows whose fields equal the given values; "
-            "nearest ranks rows by the summed absolute residual against numeric targets, "
-            "smallest first, and reports each residual. Returns full rows with their "
-            "source path; use it instead of typing table values from memory."
+            "the user library), by its file stem, e.g. table='u-sections'. where keeps rows "
+            "whose columns equal the given values, spaces and case ignored, so "
+            "{'designation': 'GU6N'} finds 'GU 6N'; nearest ranks rows by the summed absolute "
+            "residual against numeric column targets, e.g. {'width_b_mm': 600, "
+            "'height_h_mm': 309}, smallest first, with each residual reported. Call it with "
+            "no filter to see the columns. Returns full rows with their source path; a "
+            "'hidden' count means rows exist that this agent may not read. Use it instead of "
+            "typing table values from memory."
         ),
     )
     @enveloped(core, "lookup_table_rows")
@@ -221,6 +236,7 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
                 stem = stem[: -len(suffix)]
         known: set[str] = set()
         matches: list[dict[str, Any]] = []
+        columns: list[str] = []
         for store in _document_stores(core):
             if not store.ready:
                 continue
@@ -232,6 +248,8 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
                 if name != stem and path != needle:
                     continue
                 row = meta.get("row") or {}
+                if not columns:
+                    columns = list(row.keys())
                 if where and not all(_field_equals(row.get(k), v) for k, v in where.items()):
                     continue
                 residuals: dict[str, float] = {}
@@ -266,13 +284,19 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
             )
         if nearest:
             matches.sort(key=lambda hit: hit["residual_sum"])
+        payload: dict[str, Any] = {
+            "table": table,
+            "rows": matches[:limit],
+            "matched": len(matches),
+            "columns": columns,
+            "known_tables": sorted(k for k in known if k),
+        }
+        if not matches and (where or nearest):
+            payload["hint"] = (
+                "no row matched the filter; the columns of this table are: " + ", ".join(columns)
+            )
         return ok(
-            {
-                "table": table,
-                "rows": matches[:limit],
-                "matched": len(matches),
-                "known_tables": sorted(k for k in known if k),
-            },
+            payload,
             core.session_meta(),
             char_limit=limit_,
             returned=min(len(matches), limit),

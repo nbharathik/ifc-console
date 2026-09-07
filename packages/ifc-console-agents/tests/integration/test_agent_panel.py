@@ -2198,3 +2198,23 @@ async def test_content_read_serves_markdown_tables_and_refuses_unknown_paths(pan
     assert by_path[doc]["collection"] == "demo" and by_path[doc]["scope"] == "library"
     missing = client.get("/api/agents/content/read?path=nope.md", headers=_auth(panel_core))
     assert missing.status_code == 404
+
+
+async def test_attached_skills_open_their_collection_and_pack_files(panel_core):
+    from ifc_console_agents.panel import _skill_content_paths
+
+    client = _client(panel_core)
+    table = client.post(
+        "/api/agents/content/upload?name=rows.jsonl&scope=library&collection=demo",
+        headers=_auth(panel_core),
+        content=b'{"id": "a:per_unit", "name": "A", "basis": "per_unit", "source_page": 1, "verified": true}\n',
+    ).json()["attachment"]["path"]
+    other = client.post(
+        "/api/agents/content/upload?name=other.md&scope=library&collection=elsewhere",
+        headers=_auth(panel_core),
+        content=b"# Other\n\n## Other: x\ntext\n",
+    ).json()["attachment"]["path"]
+    assert _skill_content_paths(panel_core, [{"collection": "demo"}]) == [table]
+    assert _skill_content_paths(panel_core, [{"collection": "Demo", "pack": ""}]) == [table]
+    assert other not in _skill_content_paths(panel_core, [{"collection": "demo"}])
+    assert _skill_content_paths(panel_core, [{"kind": "task"}]) == []

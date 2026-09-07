@@ -466,10 +466,14 @@ skills travel with the request as names (`skills` in `POST /api/agents/stream`);
 the server hands the agent their full text with that message, general skills
 first, and marks them as the procedure to follow above a workflow's generic
 steps. Without attached skills a workflow's own steps are the default and the
-listed skills are suggestions. The agent page folds each assistant's
-capability blocks and tools under its overview; the Content tab reads any
-file in place (markdown rendered, tables and text as they are, a PDF page at
-a time).
+listed skills are suggestions. An attached skill also opens the files of its
+`collection:` and its pack to the agent for that run, even when the agent's
+standing content access is a narrower selection. When content access does
+hide results, `list_project_documents`, `search_ifc_knowledge` and
+`lookup_table_rows` return a `hidden` count and an `access_note` instead of
+a silently empty answer. The agent page folds each assistant's capability
+blocks and tools under its overview; the Content tab reads any file in place
+(markdown rendered, tables and text as they are, a PDF page at a time).
 
 A version 2 parametric measurement skill adds these front-matter fields:
 
