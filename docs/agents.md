@@ -461,7 +461,15 @@ or by copying the file into a skills directory; `skills/read` and
 `skills/delete` complete the set. Existing names are never overwritten during
 import. In chat, type `#` to mention a skill, or pick several with the skills
 button beside the message box: they are followed by every message until
-dropped, so "general collection skill plus task skill" is two clicks.
+dropped, so "general collection skill plus task skill" is two clicks. Attached
+skills travel with the request as names (`skills` in `POST /api/agents/stream`);
+the server hands the agent their full text with that message, general skills
+first, and marks them as the procedure to follow above a workflow's generic
+steps. Without attached skills a workflow's own steps are the default and the
+listed skills are suggestions. The agent page folds each assistant's
+capability blocks and tools under its overview; the Content tab reads any
+file in place (markdown rendered, tables and text as they are, a PDF page at
+a time).
 
 A version 2 parametric measurement skill adds these front-matter fields:
 

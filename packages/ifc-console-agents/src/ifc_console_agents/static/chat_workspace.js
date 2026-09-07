@@ -9,14 +9,13 @@
 
 // Pipeline is not a tab: an agent's stages depend on the blocks it holds, so
 // the workflow is a property of the selected agent and lives in its overview.
+// Capabilities and tools are sections of the agent page, not tabs.
 const ALL_TABS = [
   { id: "agent", label: "Agents" },
   { id: "content", label: "Content" },
   { id: "skills", label: "Skills" },
   { id: "models", label: "Models" },
   { id: "app", label: "App" },
-  { id: "capabilities", label: "Capabilities" },
-  { id: "tools", label: "Tools" },
 ];
 
 // The workspace keeps one stable navigation. Content remains available when

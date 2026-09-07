@@ -3668,6 +3668,43 @@ body.viewer-closed #chat-dock-resize { display: none; }
 .chat-attachment-chip.skill { border-left-color: var(--chat-accent); }
 .chat-attachment-chip.skill i { display: grid; place-items: center; }
 .chat-skill-row .chat-pack-skill-text { max-height: 320px; }
+/* A #skill in a message is a reference, not prose: monospace, accent, pill. */
+.chat-root .chat-skill-mention {
+  display: inline-block;
+  padding: 0 6px;
+  margin: 0 1px;
+  color: var(--chat-accent-bright);
+  background: color-mix(in srgb, var(--chat-accent) 14%, transparent);
+  border: 1px solid color-mix(in srgb, var(--chat-accent) 45%, transparent);
+  border-radius: 999px;
+  font-family: ui-monospace, "Cascadia Mono", "SF Mono", Menlo, Consolas, monospace;
+  font-size: 0.88em;
+  line-height: 1.5;
+  white-space: nowrap;
+}
+.chat-user-skills { align-items: center; gap: 4px; color: var(--chat-quiet); font-size: 11.5px; }
+.chat-root .chat-content-view-toggle {
+  min-height: 20px;
+  padding: 0 6px;
+  color: var(--chat-quiet);
+  background: transparent;
+  border: 1px solid transparent;
+  font-size: 11px;
+}
+.chat-root .chat-content-view-toggle:hover { color: var(--chat-accent-bright); border-color: var(--chat-accent-line); }
+.chat-content-doc {
+  margin: 2px 0 8px 28px;
+  padding: 8px 10px;
+  background: var(--chat-raise);
+  border: 1px solid var(--chat-accent-line);
+  border-radius: 6px;
+}
+.chat-content-doc-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 6px; }
+.chat-content-doc-head b { color: var(--chat-text); font-size: 12px; }
+.chat-content-doc-head small { color: var(--chat-quiet); font-size: 11px; }
+.chat-content-doc-nav { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; font-size: 11.5px; color: var(--chat-quiet); }
+.chat-content-doc-md { max-height: 420px; overflow: auto; font-size: 12.5px; }
+.chat-content-doc .chat-pack-skill-text { max-height: 420px; }
 .chat-ws-skill-record { margin-bottom: 14px; }
 .chat-ws-skill-record-form {
   display: flex;

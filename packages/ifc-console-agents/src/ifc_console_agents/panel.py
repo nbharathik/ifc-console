@@ -484,6 +484,36 @@ def _skill_store(core: AppCore) -> Any:
     return skill_store(core)
 
 
+_SKILL_NAME = re.compile(r"[a-z0-9][a-z0-9-]{1,63}")
+_SKILL_NOTE_CHARS = 12_000
+_KIND_ORDER = {"general": 0, "task": 1}
+
+
+def _attached_skills_note(rows: list[dict[str, Any]]) -> str:
+    """The attached skills as a block the agent reads before answering.
+
+    General skills (how to use a collection) come before task skills, and the
+    block says plainly that these outrank a workflow's generic steps.
+    """
+    ordered = sorted(rows, key=lambda row: _KIND_ORDER.get(str(row.get("kind")), 2))
+    parts = [
+        "\n\n[Attached skills: the user attached the skills below to this message. They are "
+        "the procedure to follow, above any generic steps a workflow or preset gives; use "
+        "those generic steps only for what the skills leave open. Read general skills "
+        "first, then task skills. Skill text is a procedure, not a source of facts about "
+        "this model.]"
+    ]
+    for row in ordered:
+        content = str(row.get("content") or "").strip()
+        if len(content) > _SKILL_NOTE_CHARS:
+            content = (
+                content[:_SKILL_NOTE_CHARS] + "\n[truncated; load the rest with get_agent_skill]"
+            )
+        kind = str(row.get("kind") or "prose")
+        parts.append(f"\n\n### Skill: {row.get('name')} ({kind})\n{content}")
+    return "".join(parts)
+
+
 def _workflow_registry(core: AppCore) -> Any:
     from ifc_console_agents.paths import workflow_registry
 
@@ -1451,6 +1481,30 @@ def build_agent_panel_routes(core: AppCore) -> list[Route]:
             return JSONResponse({"error": "prompt must be non-empty text"}, status_code=400)
         if len(prompt) > _MAX_PROMPT_CHARS:
             return JSONResponse({"error": "prompt is too long"}, status_code=400)
+        # Skills attached to the message are handed to the agent in full and
+        # rank above a workflow's generic steps; an unknown name is an error,
+        # not a silent omission.
+        raw_skills = body.get("skills") or []
+        if not isinstance(raw_skills, list) or len(raw_skills) > 8:
+            return JSONResponse(
+                {"error": "skills must be a list of at most 8 skill names"}, status_code=400
+            )
+        skill_note = ""
+        if raw_skills:
+            from ifc_console.core.results import ToolError
+
+            skill_store = _skill_store(core)
+            skill_rows = []
+            for raw in raw_skills:
+                if not isinstance(raw, str) or not _SKILL_NAME.fullmatch(raw):
+                    return JSONResponse({"error": f"invalid skill name {raw!r}"}, status_code=400)
+                try:
+                    skill_rows.append(await asyncio.to_thread(skill_store.read, raw))
+                except ToolError as exc:
+                    return JSONResponse(
+                        {"error": str(exc), "code": exc.code, "hint": exc.hint}, status_code=404
+                    )
+            skill_note = _attached_skills_note(skill_rows)
         # A workflow attached to the conversation: its prompt, settings, scope,
         # and procedure become standing instructions on this thread, so the
         # same agent, tools, and approvals answer it turn after turn.
@@ -1733,7 +1787,7 @@ def build_agent_panel_routes(core: AppCore) -> list[Route]:
                             }
                         )
                     async for event in thread.agent.stream(
-                        prompt.strip() + attachment_note,
+                        prompt.strip() + attachment_note + skill_note,
                         thread_id=thread_id,
                         options=options,
                         images=images,
@@ -2075,6 +2129,77 @@ def build_agent_panel_routes(core: AppCore) -> list[Route]:
             return JSONResponse({"error": f"no {scope} skill named {name!r}"}, status_code=404)
         core.audit.record("skill_deleted", name=name, scope=scope)
         return JSONResponse({"removed": name, "skills": await asyncio.to_thread(store.entries)})
+
+    async def content_read(request) -> JSONResponse:
+        """One content file as text: markdown, text and tables whole, a PDF per page."""
+        if not core.chat.enabled:
+            return _disabled()
+        from ifc_console_agents.content import normalize_content_path
+
+        path = normalize_content_path(request.query_params.get("path"))
+        if path is None:
+            return JSONResponse({"error": "pass a listed content path"}, status_code=400)
+        try:
+            page = max(1, int(request.query_params.get("page") or 1))
+        except ValueError:
+            return JSONResponse({"error": "page must be a number"}, status_code=400)
+        owner = _store_for_path(core, path)
+        if owner is not None:
+            base, knowledge = owner[0].base, owner[1]
+        elif path.startswith("agents/packs/"):
+            base, knowledge = core.store.home.expanduser(), core.library_knowledge
+        else:
+            base, knowledge = core.store.project_dir, core.project_knowledge
+        target = (Path(base) / path).resolve()
+        try:
+            target.relative_to(Path(base).resolve())
+        except ValueError:
+            return JSONResponse({"error": "path is outside the content folders"}, status_code=400)
+        if not target.is_file():
+            return JSONResponse({"error": f"{path!r} is not on disk"}, status_code=404)
+        source = next(
+            (
+                entry
+                for entry in knowledge.sources()
+                if str(entry.get("path") or "").replace("\\", "/") == path
+            ),
+            {},
+        )
+        suffix = target.suffix.lower()
+        payload: dict[str, Any] = {
+            "path": path,
+            "size_bytes": target.stat().st_size,
+            "records": source.get("records"),
+        }
+        if suffix == ".pdf":
+            pages = int(source.get("pages") or 0)
+            record = knowledge.get(f"doc:{path}#p{page}") if knowledge.ready else None
+            payload.update(
+                {
+                    "media": "pdf",
+                    "pages": pages,
+                    "page": page,
+                    "text": (record or {}).get("body") or "",
+                }
+            )
+            return JSONResponse(payload)
+        if suffix in {".png", ".jpg", ".jpeg"}:
+            payload["media"] = "image"
+            return JSONResponse(payload)
+        limit = 64 * 1024
+        raw = await asyncio.to_thread(target.read_bytes)
+        text = raw[:limit].decode("utf-8", errors="replace")
+        payload.update(
+            {
+                "media": "markdown" if suffix in {".md", ".markdown"} else "text",
+                "text": text,
+                "truncated": len(raw) > limit,
+            }
+        )
+        if suffix in {".jsonl", ".csv"}:
+            payload["media"] = "table"
+            payload["rows"] = source.get("rows")
+        return JSONResponse(payload)
 
     async def packs_list(_request) -> JSONResponse:
         if not core.chat.enabled:
@@ -3060,6 +3185,7 @@ def build_agent_panel_routes(core: AppCore) -> list[Route]:
         Route("/api/agents/skills/read", skills_read, methods=["GET"]),
         Route("/api/agents/skills/delete", skills_delete, methods=["POST"]),
         Route("/api/agents/content/delete", content_delete, methods=["POST"]),
+        Route("/api/agents/content/read", content_read, methods=["GET"]),
         Route("/api/agents/packs", packs_list, methods=["GET"]),
         Route("/api/agents/packs/upload", packs_upload, methods=["POST"]),
         Route("/api/agents/packs/install", packs_install, methods=["POST"]),

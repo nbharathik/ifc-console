@@ -99,8 +99,6 @@ test("the workspace navigation has the seven sections in vertical order", () => 
     "skills",
     "models",
     "app",
-    "capabilities",
-    "tools",
   ]);
   assert.ok(!TABS.some((tab) => tab.id === "pipeline"));
 });
@@ -113,8 +111,6 @@ test("Content, Skills, Models, and App remain available for an empty assistant",
     "skills",
     "models",
     "app",
-    "capabilities",
-    "tools",
   ]);
   assert.deepEqual(empty.skills, []);
   assert.equal(empty.counts.skills, 0);

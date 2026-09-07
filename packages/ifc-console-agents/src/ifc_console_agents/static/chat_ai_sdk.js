@@ -231,6 +231,13 @@ export function agentChatRequest(messages = [], options = {}) {
       (item) => typeof item === "string" && item.trim(),
     );
   }
+  if (Array.isArray(options.skills)) {
+    // Skill names the server loads and hands the agent with this message.
+    const skills = [...new Set(options.skills.filter(
+      (item) => typeof item === "string" && /^[a-z0-9][a-z0-9-]{1,63}$/.test(item),
+    ))];
+    if (skills.length) body.skills = skills.slice(0, 8);
+  }
   return body;
 }
 

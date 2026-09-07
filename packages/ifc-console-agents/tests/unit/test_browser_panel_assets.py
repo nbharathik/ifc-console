@@ -383,8 +383,6 @@ def test_workspace_is_one_native_dialog_with_vertical_navigation(
     assert 'role="tablist" aria-orientation="vertical"' in template
     assert set(re.findall(r'data-workspace-view="([\w-]+)"', template)) == {
         "agent",
-        "capabilities",
-        "tools",
         "content",
         "skills",
         "models",
@@ -1895,7 +1893,7 @@ def test_the_pipeline_belongs_to_the_agent_that_has_it(chat_js: str) -> None:
         "function wsPipeline(", 1
     )[0]
     assert "wsPipeline(body)" in overview
-    assert 'const detailViews = ["agent", "capabilities", "tools", "skills"];' in chat_js
+    assert 'const detailViews = ["agent", "skills"];' in chat_js
 
 
 def test_no_css_escape_is_double_escaped(chat_css: str) -> None:

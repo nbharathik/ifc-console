@@ -2118,3 +2118,83 @@ async def test_skill_pack_documents_reach_the_knowledge_tools(panel_core):
     hits = await bench.search_knowledge("interlocks", corpus="project")
     assert hits and hits[0]["meta"]["path"] == pack_doc
     assert hits[0]["corpus"] == "library"
+
+
+async def test_attached_skills_are_loaded_and_unknown_ones_refused(panel_core):
+    client = _client(panel_core)
+    saved = client.post(
+        "/api/agents/skills/save",
+        headers=_auth(panel_core),
+        json={
+            "name": "demo-task",
+            "description": "A demo task skill.",
+            "kind": "task",
+            "content": "## Steps\n1. look at the wall\n",
+        },
+    )
+    assert saved.status_code == 200, saved.text
+    assert saved.json()["skill"]["kind"] == "task"
+
+    refused = client.post(
+        "/api/agents/stream",
+        headers=_auth(panel_core),
+        json=_stream_body(skills=["no-such-skill"]),
+    )
+    assert refused.status_code == 404
+    invalid = client.post(
+        "/api/agents/stream",
+        headers=_auth(panel_core),
+        json=_stream_body(skills=["Not Valid"]),
+    )
+    assert invalid.status_code == 400
+    accepted = client.post(
+        "/api/agents/stream",
+        headers=_auth(panel_core),
+        json=_stream_body(skills=["demo-task"]),
+    )
+    assert accepted.status_code == 200, accepted.text
+    assert any(event.get("type") == "done" for event in _events(accepted))
+
+
+def test_attached_skills_note_puts_general_first_and_truncates():
+    from ifc_console_agents.panel import _SKILL_NOTE_CHARS, _attached_skills_note
+
+    note = _attached_skills_note(
+        [
+            {"name": "task-one", "kind": "task", "content": "do the job"},
+            {"name": "general-one", "kind": "general", "content": "x" * (_SKILL_NOTE_CHARS + 50)},
+        ]
+    )
+    assert note.index("### Skill: general-one (general)") < note.index("### Skill: task-one (task)")
+    assert "[truncated; load the rest with get_agent_skill]" in note
+    assert "above any generic steps a workflow or preset gives" in note
+
+
+async def test_content_read_serves_markdown_tables_and_refuses_unknown_paths(panel_core):
+    client = _client(panel_core)
+    doc = client.post(
+        "/api/agents/content/upload?name=notes.md&scope=library&collection=demo",
+        headers=_auth(panel_core),
+        content=b"# Notes\n\n## Notes: one\nText here.\n",
+    ).json()["attachment"]["path"]
+    table = client.post(
+        "/api/agents/content/upload?name=rows.jsonl&scope=library&collection=demo",
+        headers=_auth(panel_core),
+        content=b'{"id": "a:per_unit", "name": "A", "basis": "per_unit", "source_page": 1, "verified": true}\n',
+    ).json()["attachment"]["path"]
+    assert doc.startswith("agents/references/demo/")
+
+    read = client.get(f"/api/agents/content/read?path={doc}", headers=_auth(panel_core)).json()
+    assert read["media"] == "markdown"
+    assert "Text here." in read["text"]
+    assert read["records"] >= 1
+    rows = client.get(f"/api/agents/content/read?path={table}", headers=_auth(panel_core)).json()
+    assert rows["media"] == "table"
+    assert rows["rows"] == 1
+    assert '"name": "A"' in rows["text"]
+    listing = client.get("/api/agents/content?agent=uploader", headers=_auth(panel_core)).json()
+    by_path = {row["path"]: row for row in listing["files"]}
+    assert by_path[table]["rows"] == 1 and by_path[doc]["records"] >= 1
+    assert by_path[doc]["collection"] == "demo" and by_path[doc]["scope"] == "library"
+    missing = client.get("/api/agents/content/read?path=nope.md", headers=_auth(panel_core))
+    assert missing.status_code == 404

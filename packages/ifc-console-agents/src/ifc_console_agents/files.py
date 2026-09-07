@@ -280,8 +280,7 @@ class AgentReferenceStore:
     def entries(self, indexed_sources: list[dict[str, Any]] = ()) -> list[dict[str, Any]]:
         """Describe every managed file and whether the knowledge index matches it."""
         indexed = {
-            str(entry.get("path", "")).replace("\\", "/"): str(entry.get("sha256", ""))
-            for entry in indexed_sources
+            str(entry.get("path", "")).replace("\\", "/"): entry for entry in indexed_sources
         }
         rows: list[dict[str, Any]] = []
         live: set[str] = set()
@@ -290,19 +289,24 @@ class AgentReferenceStore:
             live.add(str(path))
             relative = path.relative_to(self.base).as_posix()
             media = "image" if path.suffix.lower() in {".png", ".jpg", ".jpeg"} else "document"
-            rows.append(
-                {
-                    "name": path.name,
-                    "path": relative,
-                    "media": media,
-                    "size_bytes": size,
-                    "sha256": digest,
-                    "indexed": indexed.get(relative) == digest,
-                    "scope": self.scope,
-                    "collection": path.parent.name if path.parent != self.directory else "",
-                    "managed": True,
-                }
-            )
+            source = indexed.get(relative) or {}
+            row = {
+                "name": path.name,
+                "path": relative,
+                "media": media,
+                "kind": str(source.get("media") or media),
+                "size_bytes": size,
+                "sha256": digest,
+                "indexed": str(source.get("sha256", "")) == digest,
+                "scope": self.scope,
+                "collection": path.parent.name if path.parent != self.directory else "",
+                "managed": True,
+            }
+            # what the index made of it, for the row's caption
+            for key in ("records", "pages", "rows"):
+                if source.get(key) is not None:
+                    row[key] = source[key]
+            rows.append(row)
         for stale in self._digests.keys() - live:
             self._digests.pop(stale, None)
         return rows

@@ -399,13 +399,6 @@ const TEMPLATE = `
     <button id="chat-workspace-tab-app" data-workspace-view="app" type="button"
             role="tab" aria-selected="false" title="Configure appearance, history, and system health"
             aria-controls="chat-settings">${I.gear}<span>App</span></button>
-    <span class="chat-workspace-nav-label system">Details</span>
-    <button id="chat-workspace-tab-capabilities" data-workspace-view="capabilities" type="button"
-            role="tab" aria-selected="false" title="Inspect capability blocks"
-            aria-controls="chat-workspace-panel">${I.capability}<span>Capabilities</span></button>
-    <button id="chat-workspace-tab-tools" data-workspace-view="tools" type="button"
-            role="tab" aria-selected="false" title="Inspect tools and their arguments"
-            aria-controls="chat-workspace-panel">${I.tools}<span>Tools</span></button>
   </nav>
 
   <div class="chat-ws-content">
@@ -2540,7 +2533,7 @@ export function mountChat(root, options = {}) {
     { name: "new-workflow", hint: "Build a workflow from a prompt", run: () => { void openWorkflows(input, { create: true }); } },
     { name: "model", hint: "Choose the AI model", run: () => openSettings(input) },
     { name: "content", hint: "Manage project content", run: () => openWorkspace(input, "content") },
-    { name: "tools", hint: "Inspect the tool surface", run: () => openWorkspace(input, "tools") },
+    { name: "tools", hint: "This agent's capabilities and tools", run: () => openWorkspace(input, "agent") },
     { name: "pipeline", hint: "How this agent works", run: () => openWorkspace(input, "agent") },
     { name: "new", hint: "Start a new conversation", run: () => startConversation() },
     { name: "clear", hint: "Start a new conversation", run: () => startConversation() },
@@ -2631,12 +2624,6 @@ export function mountChat(root, options = {}) {
   // follow them, so "general sheet pile skill + extract parameters" is two
   // clicks, not two typed mentions.
   const pinnedSkills = new Set();
-
-  function withPinnedSkills(text) {
-    if (!pinnedSkills.size) return text;
-    const lead = [...pinnedSkills].map((name) => `Follow the ${name} skill.`).join(" ");
-    return text ? `${lead}\n\n${text}` : lead;
-  }
 
   function renderSkillPicker() {
     const menu = el("skills-picker-menu");
@@ -3492,7 +3479,10 @@ export function mountChat(root, options = {}) {
   }
 
   function setWorkspaceView(view, { focus = false } = {}) {
-    const detailViews = ["agent", "capabilities", "tools", "skills"];
+    // Capabilities and tools live on the agent's own page now; old links and
+    // commands that name them land there.
+    if (view === "capabilities" || view === "tools") view = "agent";
+    const detailViews = ["agent", "skills"];
     const next = [...detailViews, "content", "models", "app", "builder"].includes(view)
       ? view
       : "agent";
@@ -3938,16 +3928,35 @@ export function mountChat(root, options = {}) {
       step.append(stepSummary, detail);
       pipeline.appendChild(step);
     });
-  }
-
-  function wsCapabilities(body) {
-    const model = workspace;
-    wsPageHeading(
+    // What this assistant is made of, folded under its own page: the blocks
+    // it holds and the exact tools those blocks give it.
+    const blocks = model.blocks.filter((block) => block.available).length;
+    wsFold(
       body,
       "Capabilities",
-      `What ${model.title} knows how to do`,
-      "Open a capability to see its purpose, included tools, and anything unavailable in this viewer.",
+      `${blocks} of ${model.blocks.length} capability blocks available`,
+      "Show",
+      (inner) => wsCapabilities(inner, { heading: false }),
     );
+    wsFold(
+      body,
+      "Tools",
+      `${model.tools.length} tools this assistant can call`,
+      "Show",
+      (inner) => wsTools(inner, { heading: false }),
+    );
+  }
+
+  function wsCapabilities(body, { heading = true } = {}) {
+    const model = workspace;
+    if (heading) {
+      wsPageHeading(
+        body,
+        "Capabilities",
+        `What ${model.title} knows how to do`,
+        "Open a capability to see its purpose, included tools, and anything unavailable in this viewer.",
+      );
+    }
     if (!model.blocks.length) {
       body.appendChild(wsNode("p", "chat-ws-lead", "This assistant has no capability blocks."));
       return;
@@ -4882,10 +4891,12 @@ export function mountChat(root, options = {}) {
     if (skill.applies_to) chips.appendChild(wsNode("span", "chat-ws-tag", skill.applies_to));
     if (skill.pack) chips.appendChild(wsNode("span", "chat-ws-tag", `pack ${skill.pack}`));
     detail.appendChild(chips);
-    const text = document.createElement("pre");
-    text.className = "chat-pack-skill-text";
+    const text = wsNode("div", "chat-md chat-content-doc-md");
     text.textContent = "Loading...";
     detail.appendChild(text);
+    const where = wsNode("div", "chat-ws-code-list");
+    where.appendChild(wsNode("code", "", skill.path || ""));
+    detail.appendChild(where);
     const actions = wsNode("div", "chat-ws-review-actions");
     const use = wsNode("button", "chat-btn t-press", "Use in chat");
     use.type = "button";
@@ -4903,7 +4914,7 @@ export function mountChat(root, options = {}) {
       if (!details.open || details.dataset.loaded) return;
       details.dataset.loaded = "1";
       readSkill(skill.name)
-        .then((row) => { text.textContent = row.content || ""; })
+        .then((row) => { text.innerHTML = md(row.content || ""); })
         .catch((exc) => { text.textContent = `Could not load: ${exc.message || exc}`; });
     });
     details.append(summary, detail);
@@ -5244,14 +5255,16 @@ export function mountChat(root, options = {}) {
     return row;
   }
 
-  function wsTools(body) {
+  function wsTools(body, { heading = true } = {}) {
     const model = workspace;
-    wsPageHeading(
-      body,
-      "Tools",
-      `${model.tools.length} tools available now`,
-      "Rows stay compact until you open one. Expanded details come directly from the tool contract the assistant receives.",
-    );
+    if (heading) {
+      wsPageHeading(
+        body,
+        "Tools",
+        `${model.tools.length} tools available now`,
+        "Rows stay compact until you open one. Expanded details come directly from the tool contract the assistant receives.",
+      );
+    }
     const controls = wsNode("div", "chat-content-controls");
     const search = wsNode("label", "chat-content-search");
     search.innerHTML = I.search;
@@ -5636,6 +5649,63 @@ export function mountChat(root, options = {}) {
       && /\n(?:kind|description):/m.test(head);
   }
 
+  /* Read a content file in place: markdown rendered, tables and text as they
+   * are, a PDF one indexed page at a time. */
+  async function toggleContentView(row, file, page = 1) {
+    const existing = row.nextElementSibling;
+    if (existing?.classList.contains("chat-content-doc") && existing.dataset.path === file.path && page === 1) {
+      existing.remove();
+      return;
+    }
+    if (existing?.classList.contains("chat-content-doc")) existing.remove();
+    const panel = wsNode("div", "chat-content-doc");
+    panel.dataset.path = file.path;
+    panel.appendChild(wsNode("p", "chat-ws-muted", "Reading..."));
+    row.after(panel);
+    try {
+      const query = `path=${encodeURIComponent(file.path)}&page=${page}`;
+      const response = await api(`/api/agents/content/read?${query}`);
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
+      panel.innerHTML = "";
+      const head = wsNode("div", "chat-content-doc-head");
+      head.appendChild(wsNode("b", "", file.name || file.path));
+      const facts = [payload.media];
+      if (payload.pages) facts.push(`${payload.pages} pages`);
+      if (payload.rows) facts.push(`${payload.rows} rows`);
+      if (payload.records) facts.push(`${payload.records} indexed chunks`);
+      if (payload.truncated) facts.push("first 64 KB shown");
+      head.appendChild(wsNode("small", "", facts.join(" · ")));
+      panel.appendChild(head);
+      if (payload.media === "pdf") {
+        const nav = wsNode("div", "chat-content-doc-nav");
+        const prev = wsNode("button", "chat-btn t-press", "Previous page");
+        prev.type = "button";
+        prev.disabled = page <= 1;
+        prev.addEventListener("click", () => { void toggleContentView(row, file, page - 1); });
+        const next = wsNode("button", "chat-btn t-press", "Next page");
+        next.type = "button";
+        next.disabled = page >= (payload.pages || 1);
+        next.addEventListener("click", () => { void toggleContentView(row, file, page + 1); });
+        nav.append(prev, wsNode("span", "", `page ${page} of ${payload.pages || "?"}`), next);
+        panel.appendChild(nav);
+      }
+      if (payload.media === "markdown") {
+        const doc = wsNode("div", "chat-md chat-content-doc-md");
+        doc.innerHTML = md(payload.text || "");
+        panel.appendChild(doc);
+      } else {
+        const pre = document.createElement("pre");
+        pre.className = "chat-pack-skill-text";
+        pre.textContent = payload.text || "(no text; render the page as an image with the agent)";
+        panel.appendChild(pre);
+      }
+    } catch (exc) {
+      panel.innerHTML = "";
+      panel.appendChild(wsNode("p", "chat-ws-review-state bad", `Could not read: ${exc.message || exc}`));
+    }
+  }
+
   async function deleteContent(paths, question) {
     if (!paths.length) return;
     if (question && !window.confirm(question)) return;
@@ -5732,6 +5802,18 @@ export function mountChat(root, options = {}) {
       ),
     );
     row.append(box, icon, meta);
+    if (file.media !== "image") {
+      const view = document.createElement("button");
+      view.type = "button";
+      view.className = "chat-content-view-toggle t-press";
+      view.textContent = "view";
+      view.title = `Read ${file.name || path}`;
+      view.addEventListener("click", (event) => {
+        event.preventDefault();
+        void toggleContentView(row, file);
+      });
+      row.appendChild(view);
+    }
     if (file.managed) {
       const remove = document.createElement("button");
       remove.type = "button";
@@ -6119,8 +6201,6 @@ export function mountChat(root, options = {}) {
     act("studio-current").hidden = workspace.plain;
     const draw = {
       agent: wsOverview,
-      capabilities: wsCapabilities,
-      tools: wsTools,
       skills: wsSkills,
     }[workspaceView] || wsOverview;
     draw(body);
@@ -6261,10 +6341,35 @@ export function mountChat(root, options = {}) {
     input.setSelectionRange(input.value.length, input.value.length);
   }
 
+  /* A `#skill` mention in a user message, drawn as a tag rather than text. */
+  function skillMention(name) {
+    const tag = document.createElement("span");
+    tag.className = "chat-skill-mention";
+    tag.textContent = `#${name}`;
+    tag.title = `Skill ${name}`;
+    return tag;
+  }
+
+  /* User text with known `#skill` mentions highlighted; everything else stays
+   * plain text nodes, so nothing the user typed is interpreted as markup. */
+  function paintUserText(bubble, text) {
+    const known = new Set(skillRows().map((row) => row.name));
+    const pattern = /(^|[^\w#])#([a-z0-9][a-z0-9-]{1,63})(?![\w-])/g;
+    let last = 0;
+    for (const match of String(text ?? "").matchAll(pattern)) {
+      if (!known.has(match[2])) continue;
+      const start = match.index + match[1].length;
+      bubble.appendChild(document.createTextNode(text.slice(last, start)));
+      bubble.appendChild(skillMention(match[2]));
+      last = start + match[0].length - match[1].length;
+    }
+    bubble.appendChild(document.createTextNode(text.slice(last)));
+  }
+
   function addUser(
     text,
     attachments = [],
-    { animate = true, index = turns.length, workflow = null } = {},
+    { animate = true, index = turns.length, workflow = null, skills = [] } = {},
   ) {
     if (!turns.length) log.innerHTML = "";
     const div = document.createElement("div");
@@ -6277,8 +6382,16 @@ export function mountChat(root, options = {}) {
       `<span class="chat-turn-avatar" role="img" aria-label="You" title="You">${I.user}</span>`;
     const bubble = document.createElement("div");
     bubble.className = "chat-bubble";
-    bubble.textContent = text;
+    paintUserText(bubble, text);
     div.append(head, bubble);
+    // Attached skills: the procedure this message was sent under.
+    if (skills.length) {
+      const row = document.createElement("div");
+      row.className = "chat-user-attachments chat-user-skills";
+      row.appendChild(document.createTextNode("following "));
+      for (const name of skills) row.appendChild(skillMention(name));
+      div.appendChild(row);
+    }
     if (attachments.length) {
       const row = document.createElement("div");
       row.className = "chat-user-attachments";
@@ -6604,7 +6717,18 @@ export function mountChat(root, options = {}) {
     // elements should not cost forty clicks inside the fold.
     const guids = viewerAttached() ? globalIdsIn(block.preview) : [];
     let selectAll = node.querySelector(".chat-tool-select");
-    if (guids.length > 1) {
+    // A run often names the same elements call after call (query, then
+    // get_element, then measure). The button belongs to the first card that
+    // names them; later cards that add nothing new stay quiet.
+    const offered = new Set();
+    for (const earlier of node.parentElement?.querySelectorAll(".chat-tool-card") || []) {
+      if (earlier === node) break;
+      if (earlier._toolBlock && !earlier.querySelector(".chat-tool-select")?.hidden) {
+        for (const guid of globalIdsIn(earlier._toolBlock.preview)) offered.add(guid);
+      }
+    }
+    const fresh = guids.length > 1 && guids.some((guid) => !offered.has(guid));
+    if (fresh) {
       if (!selectAll) {
         selectAll = document.createElement("button");
         selectAll.type = "button";
@@ -6856,6 +6980,7 @@ export function mountChat(root, options = {}) {
           animate: false,
           index,
           workflow: turn.workflow || null,
+          skills: turn.skills || [],
         });
       } else paintTurn(turn, { animate: false });
     });
@@ -7283,6 +7408,7 @@ export function mountChat(root, options = {}) {
             attachments: retryInExistingAgentThread
               ? []
               : (lastUser?.attachments?.map((item) => item.path) || []),
+            skills: retryInExistingAgentThread ? [] : (lastUser?.skills || []),
           })
         : plainChatRequest(requestMessages, {
             ...shared,
@@ -7486,8 +7612,6 @@ export function mountChat(root, options = {}) {
 
   async function submit() {
     if (resetInProgress || uploadsInFlight()) return;
-    // Pinned skills ride in front of the message text, visibly.
-    if (pinnedSkills.size && input.value.trim()) input.value = withPinnedSkills(input.value.trim());
     const text = input.value.trim();
     if (text.length > PROMPT_LIMIT) {
       note("This message is too long. Shorten it to 100,000 characters before sending.", true);
@@ -7528,9 +7652,16 @@ export function mountChat(root, options = {}) {
     const attachments = pendingAttachments;
     pendingAttachments = [];
     const shown = text || runLabel;
+    // Pinned skills ride with the message as names; the server hands the
+    // agent their text with priority over generic workflow steps.
+    const skills = [...pinnedSkills];
     const workflowRef = flow ? { name: flow.name, title: flow.title, scope: flow.scope } : null;
-    addUser(shown, attachments, { workflow: workflowRef && !turns.length ? workflowRef : null });
+    addUser(shown, attachments, {
+      workflow: workflowRef && !turns.length ? workflowRef : null,
+      skills,
+    });
     const turn = { role: "user", text: shown, attachments };
+    if (skills.length) turn.skills = skills;
     if (workflowRef) {
       turn.workflow = workflowRef;
       turn.prompt = text;
