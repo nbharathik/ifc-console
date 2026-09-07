@@ -123,15 +123,18 @@ async def test_the_panel_can_change_the_human_owned_session_mode(chat_core):
         json={"mode": "edit", "confirmed": True},
     )
     assert editing.status_code == 200
-    assert editing.json() == {
-        "ok": True,
-        "mode": "edit",
-        "ai_autonomy": False,
-        # No stance grants an assistant the file. Saving is the user's alone.
-        "ai_save_allowed": False,
-        "dirty": False,
-    }
+    payload = editing.json()
+    assert payload["ok"] is True
+    assert payload["mode"] == "edit"
+    assert payload["ai_autonomy"] is False
+    assert payload["dirty"] is False
+    assert payload["changes"] == 0
+    # Edit mode put a copy of the open file in place; writing that copy is
+    # allowed, and the file the user opened is not the target.
+    assert payload["ai_save_allowed"] is True
+    assert payload["working_copy"]["origin_name"] == "work.ifc"
     assert chat_core.policy.mode.value == "edit"
+    assert chat_core.policy.allow_ai_save is False
 
     asking = client.post(
         "/api/session/mode", headers=headers, json={"mode": "ask"}
@@ -346,10 +349,13 @@ async def test_the_chat_page_and_assets_ship_with_the_agents_extension(chat_core
     assert client.get("/viewer/static/chat.js").status_code == 404
 
 
-async def test_autonomy_is_independent_of_mode_and_never_grants_the_file(chat_core):
-    """The four stances the panel offers, and the one thing none of them do."""
+async def test_autonomy_is_independent_of_mode_and_never_grants_the_users_file(
+    chat_core, work_model: Path
+):
+    """The four stances the panel offers, and the file none of them reach."""
     client = _client(chat_core)
     headers = _auth(chat_core)
+    original = work_model.read_bytes()
 
     for mode in ("ask", "edit"):
         for autonomy in ("approval", "auto"):
@@ -362,9 +368,14 @@ async def test_autonomy_is_independent_of_mode_and_never_grants_the_file(chat_co
             payload = response.json()
             assert payload["mode"] == mode
             assert payload["ai_autonomy"] is (autonomy == "auto")
-            # the whole point: no combination lets an assistant save
-            assert payload["ai_save_allowed"] is False
+            # Edit mode moves the session onto a copy, and writing a copy is
+            # allowed. The file the user opened is never the target.
+            editing_a_copy = mode == "edit"
+            assert payload["ai_save_allowed"] is editing_a_copy
+            assert bool(payload["working_copy"]) is editing_a_copy
             assert chat_core.policy.allow_ai_save is False
+            assert chat_core.session.origin_path == work_model
+            assert work_model.read_bytes() == original
 
     # turning autonomy on is a decision, so it is confirmed like edit mode
     client.post(
@@ -389,7 +400,7 @@ async def test_saving_is_a_user_route_and_is_a_no_op_when_clean(chat_core):
     headers = _auth(chat_core)
     response = client.post("/api/session/save", headers=headers, json={})
     assert response.status_code == 200
-    assert response.json() == {"ok": True, "saved": False, "dirty": False}
+    assert response.json() == {"ok": True, "saved": False, "dirty": False, "changes": 0}
 
 
 async def test_an_unanswered_approval_id_is_rejected(chat_core):

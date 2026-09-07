@@ -79,10 +79,26 @@ references. Access is either all project content or an explicit selected set.
 The server enforces it for retrieval, records, images, and rendered PDF pages.
 
 Composer attachments are different: the paperclip and camera add evidence only
-to the next message. Typing `@` attaches a permitted project file to that
-message. Selecting elements in the viewer adds model-scoped GlobalIds, so the
-assistant can resolve phrases such as "this wall" without another selection
-round.
+to the next message.
+
+Three keys open the same list, narrowing as you type:
+
+| key | offers |
+| --- | ------ |
+| `@` | workflows, the 3D selection, saved views, permitted project files |
+| `#` | saved skills |
+| `/` | panel commands, and everything above |
+
+Picking a workflow attaches it to the conversation, exactly as choosing it from
+the workflows panel does. Picking a file both names it in the message and grants
+it to that message. Selecting elements in the viewer adds model-scoped
+GlobalIds, so the assistant can resolve phrases such as "this wall" without
+another selection round; a GlobalId picked through several meshes is listed
+once.
+
+While the session is in edit mode a bar above the conversation states how many
+changes are waiting, which file a save would write, and offers **Save** and
+**Download**. Edit mode works in a copy, so neither touches the file you opened.
 
 Project references live under `.ifc-console/agents/references/`. Add them from
 the panel, with `ifc-console agents files <paths>`, or by copying supported
@@ -115,11 +131,16 @@ Tool access follows the current session policy. Two controls are independent:
 | Ask | read-only; pauses before protected calls | read-only; runs permitted calls without pausing |
 | Edit | may change memory; pauses before protected calls | may change memory without pausing |
 
-Entering Edit or Auto requires confirmation. Approval cards show the operation,
-capabilities, and arguments. Denial returns a tool result the model may handle.
+Entering Edit or Auto requires confirmation. A protected call waits as one
+short row with Deny, Approve, and an **always** toggle that keeps the answer
+for the rest of the conversation; open the row to see the operation,
+capabilities, and arguments. Once the call has run, the decision is a small
+mark on its tool card. Denial returns a tool result the model may handle.
 
-Neither control lets the assistant write the IFC file. Changes remain in
-memory until you press **Save** or run `/save`. AI-generated property proposals
+Neither control lets the assistant write the file you opened. Edit mode copies
+that file aside first, so the assistant can save its work into the copy and you
+still have the original; changes stay in memory until you press **Save**, run
+`/save`, or the assistant writes the copy. AI-generated property proposals
 remain revision-bound ChangeSet previews until host code approves and commits
 them. Values and per-property provenance use the reserved `IfcConsole_AI_`
 namespace.

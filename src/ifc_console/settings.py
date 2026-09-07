@@ -51,9 +51,20 @@ class ServerSettings(BaseModel):
 
 class ExecSettings(BaseModel):
     timeout_seconds: float = Field(default=30.0, gt=0)
+    # Mutating code gets its own, larger budget. A read that runs long is
+    # retried for free; an edit that times out leaves the worker running, the
+    # session paused, and the work done so far unreachable until /reload.
+    edit_timeout_seconds: float = Field(default=180.0, gt=0)
     output_char_limit: int = Field(default=40_000, ge=1_000, le=MAX_EXEC_OUTPUT_CHARS)
     allow_system_access: bool = False
     system_modules_extra: list[str] = Field(default_factory=list)
+    # open: any installed package imports except a denied set (the machine, the
+    # network, other processes, this console, deserializers that execute data).
+    # strict: only the curated list in policy/imports.py.
+    import_policy: str = Field(default="open", pattern="^(open|strict)$")
+    # Packages generated code may import whatever the policy says. Anything
+    # named here is installed and trusted by the user.
+    import_roots_extra: list[str] = Field(default_factory=list)
 
 
 class SandboxSettings(BaseModel):
@@ -79,6 +90,10 @@ class FilesSettings(BaseModel):
     # AI tools may edit the live model, but persistence stays a human decision
     # unless the user explicitly opts in. Project settings cannot change this.
     allow_ai_save: bool = False
+    # Entering edit mode copies the open file aside and works in the copy, so
+    # the file the user opened is never written. Off restores in-place editing.
+    working_copy: bool = True
+    working_copy_retention: int = Field(default=10, ge=1)
     backup_retention: int = Field(default=20, ge=1)
     follow_symlinks: bool = False
     # Refuse to open files above this budget instead of risking an OOM crash;
@@ -342,6 +357,11 @@ class SettingsStore:
         return self.home / "artifacts"
 
     @property
+    def working_dir(self) -> Path:
+        """Edit-mode copies of opened models; never inside the user's folders."""
+        return self.home / "working"
+
+    @property
     def jobs_dir(self) -> Path:
         return self.home / "jobs"
 
@@ -410,6 +430,7 @@ class SettingsStore:
             self.logs_dir,
             self.sessions_dir,
             self.backups_dir,
+            self.working_dir,
             self.artifacts_dir,
             self.jobs_dir,
             self.batches_dir,

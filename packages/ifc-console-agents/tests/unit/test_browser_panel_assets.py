@@ -1385,15 +1385,18 @@ def test_mode_and_autonomy_are_two_independent_controls(chat_js: str, chat_css: 
     assert ".chat-autonomy-select:has(select.auto)" in chat_css
 
 
-def test_only_a_person_can_write_the_ifc_file(chat_js: str) -> None:
-    """No stance grants an assistant the file: it works in memory and a human
-    decides that the work is finished."""
+def test_the_person_is_offered_the_file_the_moment_it_changes(chat_js: str) -> None:
+    """Unsaved work is stated above the conversation, with both ways out."""
     assert 'data-act="save-model"' in chat_js
+    assert 'data-act="download-model"' in chat_js
     assert "async function saveModelFile()" in chat_js
     save = chat_js.split("async function saveModelFile()", 1)[1].split(SPLIT_BLOCK_END, 1)[0]
     assert '"/api/session/save"' in save
-    # the control only exists when there is something to decide about
-    assert "save.hidden = !sessionStatus.dirty;" in chat_js
+    # the bar only exists when there is something to decide about
+    bar = chat_js.split("function renderChangeBar()", 1)[1].split(SPLIT_BLOCK_END, 1)[0]
+    assert "bar.hidden = !sessionStatus.dirty && !changes;" in bar
+    # and it says which file a save would actually write
+    assert "the file you opened is not written" in bar
 
 
 def test_an_approval_stops_the_run_and_offers_two_answers(
@@ -1413,23 +1416,30 @@ def test_an_approval_stops_the_run_and_offers_two_answers(
     assert ".chat-approval.waiting" in chat_css
 
 
-def test_approval_cards_are_compact_explicit_and_bound_long_code(
+def test_approval_rows_are_one_line_and_fold_into_the_call(
     chat_js: str, chat_css: str
 ) -> None:
-    """Completed decisions become one-row audit entries, while a waiting card
-    names the one-call and conversation-long choices. Long code owns both
-    scroll axes instead of widening or stretching the transcript."""
+    """A waiting call is one row plus its answer: deny, approve, and a toggle
+    that keeps the answer for the conversation. The arguments stay behind the
+    fold and own both scroll axes. Once the call has run, the decision is a
+    mark on the tool card and the row is hidden."""
     card = chat_js.split("function approvalNode()", 1)[1].split(SPLIT_BLOCK_END, 1)[0]
-    assert 'document.createElement("details")' in card
-    assert "Approve once" in card
-    assert "Always allow this tool" in card
+    assert '<details class="chat-approval-fold">' in card
+    assert ">Approve<" in card and ">Deny<" in card
+    assert 'class="chat-approval-always"><input type="checkbox">' in card
     assert 'pre tabindex="0"' in card
+    assert "Always allow this tool" not in card
     paint = chat_js.split("function paintApproval(", 1)[1].split(
         SPLIT_BLOCK_END, 1
     )[0]
-    assert 'node.open = block.state === "waiting"' in paint
+    assert "node.hidden = folded" in paint
     assert "approvalArgumentPreview(block)" in paint
     assert "approvalAllowlist.set(block.name" in paint
+    tool = chat_js.split("function toolNode()", 1)[1].split(SPLIT_BLOCK_END, 1)[0]
+    assert 'class="chat-tool-approved"' in tool
+    sync = chat_js.split("function syncStream(", 1)[1].split(SPLIT_BLOCK_END, 1)[0]
+    assert "approvalBefore(blocks, index)" in sync
+    assert "approvalBefore(blocks, index + 1) === block" in sync
     rule = _css_rule_with(chat_css, ".chat-approval-args pre", "overflow-y: auto")
     assert "max-height:" in rule
     assert "overflow-x: auto" in rule
@@ -1772,6 +1782,26 @@ def test_at_mentions_and_slash_commands_share_one_popup(chat_js: str) -> None:
     apply = chat_js.split("function applySuggestion(", 1)[1].split(SPLIT_BLOCK_END, 1)[0]
     assert "pendingAttachments.push" in apply
     assert "input.setRangeText" in apply
+
+
+def test_hash_lists_skills_and_at_lists_workflows(chat_js: str) -> None:
+    """Each kind of saved thing has its own key, and all three narrow as you type."""
+    suggestions = chat_js.split("function suggestionsFor(token)", 1)[1].split(
+        SPLIT_BLOCK_END, 1
+    )[0]
+    # `#` offers the saved procedures, spelled out so the run cannot misread it
+    assert 'token.kind === "skill"' in suggestions
+    assert "const rows = skillRows();" in suggestions
+    assert "insert: `Follow the ${row.title} skill:`" in suggestions
+    # `@` offers the workflows alongside the selection, views and files
+    mentions = chat_js.split("function mentionRows()", 1)[1].split(SPLIT_BLOCK_END, 1)[0]
+    assert 'group: "Workflows"' in mentions
+    assert "workflow: flow.name," in mentions
+    for group in ('group: "Context"', 'group: "Views"', 'group: "Files"'):
+        assert group in mentions, group
+    # picking one is the same act as picking it from the `/` list
+    apply = chat_js.split("function applySuggestion(", 1)[1].split(SPLIT_BLOCK_END, 1)[0]
+    assert "attachWorkflow(item.workflow);" in apply
 
 
 def test_a_workflow_is_context_the_conversation_stands_on(

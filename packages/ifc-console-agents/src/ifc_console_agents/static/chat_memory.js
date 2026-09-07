@@ -21,6 +21,9 @@ export const KEEP_FULL_TURNS = 2;
 export const TRANSCRIPT_HIGH = 12 * MIB;
 
 export const LEVELS = ["ok", "high", "critical"];
+// Relief runs quietly at "critical"; only past these is it worth a note.
+export const HEAP_SEVERE = 0.95;
+export const SYSTEM_SEVERE = 0.03;
 
 const number = (value) => (Number.isFinite(Number(value)) && Number(value) >= 0 ? Number(value) : null);
 
@@ -153,6 +156,18 @@ export function memoryReport({ heap = null, server = null, viewer = null, turns 
     viewer: viewerView,
     transcript,
   };
+}
+
+/** True only when the machine is close enough to the wall to interrupt the reader. */
+export function isSevere(report) {
+  if (!report || report.level !== "critical") return false;
+  const heap = report.heap;
+  if (heap?.limit && heap.used / heap.limit >= HEAP_SEVERE) return true;
+  const server = report.server;
+  if (server?.total && server.available !== null && server.available !== undefined) {
+    return server.available / server.total <= SYSTEM_SEVERE;
+  }
+  return false;
 }
 
 /**

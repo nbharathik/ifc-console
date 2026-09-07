@@ -50,7 +50,7 @@ class _Worker:
 
         self.policy = SandboxPolicy.from_dict(request.get("policy") or {})
         applied = limits.apply_self_limits(self.policy.memory_mb)
-        preloaded = _preload()
+        preloaded = _preload(request.get("preload") or ())
         controls = hooks.install(
             self.policy,
             is_user_code=lambda: bool(getattr(self._execution_state, "active", False)),
@@ -113,6 +113,8 @@ class _Worker:
             allow_system=False,
             allowed_dirs=allowed_dirs,
             extra_system_modules=tuple(request.get("extra_system_modules") or ()),
+            extra_import_roots=tuple(request.get("extra_import_roots") or ()),
+            import_policy=str(request.get("import_policy") or "open"),
         )
         before = self._max_id()
         try:
@@ -190,20 +192,27 @@ class _Worker:
             protocol.write_frame(self.tx, reply)
 
 
-def _preload() -> list[str]:
+def _preload(extra: Any = ()) -> list[str]:
     """Import everything the worker will need before the hook goes up.
 
     Extension modules sometimes reach for ctypes or the registry on first
-    import; doing that now keeps the policy free to deny both afterwards.
+    import; doing that now keeps the policy free to deny both afterwards. The
+    same applies to any library generated code may reach for: `extra` carries
+    the ones this installation offers.
     """
     loaded: list[str] = []
-    for name in (
+    names = list(extra) if isinstance(extra, (list, tuple)) else []
+    for name in names + [
         "ifcopenshell",
         "ifcopenshell.api",
         "ifcopenshell.util.element",
         "ifcopenshell.util.selector",
         "ifcopenshell.util.unit",
         "ifcopenshell.util.placement",
+        "ifcopenshell.util.shape",
+        "ifcopenshell.util.representation",
+        "ifcopenshell.util.schema",
+        "ifcopenshell.util.type",
         "ifc_console.policy.guards",
         "ifc_console.session.executor",
         "numpy",
@@ -215,7 +224,7 @@ def _preload() -> list[str]:
         "fractions",
         "unicodedata",
         "uuid",
-    ):
+    ]:
         try:
             __import__(name)
         except Exception:

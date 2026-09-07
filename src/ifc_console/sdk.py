@@ -259,6 +259,9 @@ def _refresh_live_settings(core: Any, keys: Iterable[str]) -> None:
         ),
         "files.allow_ai_save": lambda value: setattr(core.policy, "allow_ai_save", value),
         "files.backup_retention": lambda value: setattr(core.backups, "retention", value),
+        "files.working_copy_retention": lambda value: setattr(
+            core.working_copies, "retention", value
+        ),
         "recents.max": lambda value: setattr(core.recents, "max_entries", value),
         "sessions.retention": lambda value: setattr(core.audit, "retention", value),
         "automation.artifact_retention_days": lambda value: setattr(

@@ -11,36 +11,12 @@ from __future__ import annotations
 import ast
 from dataclasses import dataclass
 
+from ifc_console.policy.imports import DENIED_IMPORT_ROOTS
 from ifc_console.policy.modes import OpClass
 
-SYSTEM_MODULES = {
-    "os",
-    "sys",
-    "subprocess",
-    "shutil",
-    "pathlib",
-    "socket",
-    "http",
-    "urllib",
-    "requests",
-    "ftplib",
-    "ctypes",
-    "multiprocessing",
-    "threading",
-    "importlib",
-    "builtins",
-    "pickle",
-    "marshal",
-    "tempfile",
-    "webbrowser",
-    "asyncio",
-    "_thread",
-    "sqlite3",
-    "mmap",
-    "fcntl",
-    "gc",
-    "_xxsubinterpreters",
-}
+# One source of truth with the import guard: what the classifier explains up
+# front is exactly what the guard refuses at runtime.
+SYSTEM_MODULES = DENIED_IMPORT_ROOTS
 
 MUTATING_FILE_METHODS = {
     "create_entity",

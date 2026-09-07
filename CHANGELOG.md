@@ -2,6 +2,88 @@
 
 ## Unreleased
 
+### A real toolkit inside execute_ifc_code
+
+- Generated code imports what it needs. `exec.import_policy` defaults to `open`:
+  any installed package works, and only a denied set is refused, organised by
+  the capability it would hand over rather than by package name (the operating
+  system, the network, other processes and interpreters, credentials,
+  deserializers that execute what they read, and this console's own modules).
+  numpy, shapely and trimesh are here already; anything else is a pip install.
+  `exec.import_policy=strict` restores the previous curated allowlist.
+- Importing a denied root is SYSTEM-class code to the static classifier, so it
+  is refused with an explanation before the run rather than part-way through.
+- Injected under short names, imported on first use so a run that never touches
+  geometry pays nothing: `np`, `geom` (ifcopenshell.geom), `shape_util`,
+  `placement_util`, `representation_util`, `schema_util`, `type_util`.
+- The tool description and `describe_capabilities.code_environment` are built
+  from this installation: what is injected, which suggested libraries are
+  actually present, what is blocked and why. Knowing that costs nothing;
+  discovering it through a failed import costs the whole generated script.
+- `exec.import_roots_extra` adds one more package under either policy.
+- Mutating code gets its own budget, `exec.edit_timeout_seconds` (180s, against
+  30s for reads): generating geometry takes longer than answering a question,
+  and a mutating run that times out costs the user their changes.
+- The sandbox worker imports the offered geometry libraries before its audit
+  hook is armed. trimesh touches `object.__setattr__` while importing, which
+  the hook refuses once generated code is running, so without this the tool
+  would offer a library that only worked in edit mode.
+- Under `strict`, numpy's own file readers (`load`, `fromfile`, `savetxt`, ...)
+  are blocked the way `io.open` is, so they cannot walk around the read-only,
+  allowed-directory `open()`.
+
+### Edit mode works in a copy, and every surface offers the file
+
+- Entering edit mode copies the open file into `~/.ifc-console/working` and
+  points the session at that copy. Every later save, reload and download
+  touches the copy; the file the user opened is never written. `/mode edit`,
+  the panel's mode control, and `AppCore.enter_edit_mode` all take this path,
+  and `files.working_copy=false` restores in-place editing.
+- Because the save target is a snapshot, an assistant may write it:
+  `save_ifc_file` is available in edit mode and can only name the working
+  copy. `files.allow_ai_save` keeps its old meaning, which is now the narrow
+  one: writing the file the user opened. Generated code still cannot write an
+  IFC file without it.
+- Count the changes. `ModelSession` records each announced edit with the
+  intent line the tool supplied, and the count reaches `meta.changes`,
+  `/api/status`, `orient`, `get_session_status`, the terminal status bar, the
+  viewer, and the panel.
+- Say where the work is. The terminal reads "working in a copy", the viewer
+  shows a copy badge, and the panel names the origin file in a bar above the
+  conversation.
+- Offer the file from both browser surfaces: a Save IFC button with the change
+  count in the viewer topbar, the same pair in a change bar above the
+  conversation in the Agent panel, and Download on each, which hands over the
+  model as it stands without writing anything. New routes:
+  `GET /api/model/state`, `POST /api/model/save`, and
+  `GET /api/model.ifc?download=1`.
+- Tell the assistant the truth about the viewer: it renders the in-memory
+  model, so an edit is visible immediately and no save is needed to see it.
+  The server instructions and the `execute_ifc_code` note said otherwise.
+
+### Approvals take one row
+
+- A protected call waits as one row in the transcript, with Deny, Approve,
+  and an always toggle that keeps the answer for the rest of the conversation.
+  The operation, capabilities and arguments sit behind the row's fold.
+- Once the call has run, its approval is a small mark on the tool card, with
+  who allowed it in the tooltip, instead of a second card. A denied call keeps
+  its one quiet line. Restored conversations fold the same way.
+
+### One assistant, and three keys in the composer
+
+- Ship one agent. The measurement, parameters, docs and review presets are no
+  longer offered as separate assistants; they remain as the prompt and block
+  set a workflow step names in `preset:`. A narrower job is a skill or a
+  workflow, both of which the one assistant runs.
+- `#` lists the saved skills and `@` lists the workflows, alongside the 3D
+  selection, saved views and project files. Both narrow as you type, like `/`,
+  which still lists everything. Picking a workflow from `@` attaches it to the
+  conversation exactly as `/name` does.
+- A GlobalId picked through several meshes, or repeated in the file, is listed
+  once. The viewer reports unique ids to every tool and says how many picks
+  were duplicates.
+
 ### Workflows in the chat, a reworked workflow surface, and memory
 
 - Run a workflow from the Agent composer: `/` lists the library first, the

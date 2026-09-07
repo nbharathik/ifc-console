@@ -24,6 +24,7 @@ from ifc_console_agents.builtin.measure import (
     build_proposal_source,
     report_to_csv,
 )
+from ifc_console_agents.presets import PRESETS
 from ifc_console_agents.proposals import PROPOSAL_TOOLS
 from ifc_console_agents.runner import resolve_model_file
 from ifc_console_agents.testing import ScriptedAgentModel, text_round, tool_call_round
@@ -100,15 +101,18 @@ FINAL_ANSWER = json.dumps(
 )
 
 
-def test_the_general_agent_ships_first_and_holds_the_others_capabilities():
-    """One agent does everything; the focused presets are narrower views of it."""
+def test_one_agent_ships_and_holds_every_workflow_presets_capabilities():
+    """One agent does everything; a narrower job is a skill or a workflow.
+
+    The focused presets still exist for workflow steps, and every one of them
+    is a subset of the shipped agent, so nothing a workflow can do is missing
+    from the assistant a person talks to.
+    """
     packs = builtin_packs()
-    names = [pack.info.name for pack in packs]
-    assert names[0] == "general"
-    assert {"measurement", "docs", "review"} <= set(names)
+    assert [pack.info.name for pack in packs] == ["general"]
     general = packs[0].info
-    for pack in packs[1:]:
-        assert set(pack.info.blocks) <= set(general.blocks), pack.info.name
+    for preset in PRESETS:
+        assert set(preset.blocks) <= set(general.blocks), preset.name
     assert "files" in DOCS_PACK.info.features
 
 

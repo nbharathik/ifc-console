@@ -543,6 +543,48 @@ body {
 .meta.mode[data-mode="edit"] { color: var(--mode-edit); }
 .meta.warn { color: var(--warn); }
 
+/* The file being edited is a copy; the opened file is untouched. */
+.meta.copy {
+  padding: 1px 5px;
+  border: 1px solid color-mix(in srgb, var(--mode-edit) 45%, transparent);
+  border-radius: 2px;
+  color: var(--mode-edit);
+}
+
+.save-action {
+  display: inline-flex;
+  flex: none;
+  gap: 6px;
+  align-items: center;
+  padding: 0 9px;
+  border: 1px solid color-mix(in srgb, var(--accent) 55%, transparent);
+  border-radius: 2px;
+  color: var(--accent-bright);
+}
+
+.save-action:hover { border-color: var(--accent-bright); }
+.save-action[disabled] { opacity: 0.55; }
+
+#action-note {
+  overflow: hidden;
+  max-width: 42vw;
+  color: var(--accent-bright);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#action-note[data-error="1"] { color: var(--warn); }
+
+.save-count {
+  min-width: 16px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 30%, transparent);
+  font-size: 10px;
+  font-weight: 600;
+  text-align: center;
+}
+
 .connection {
   display: inline-flex;
   flex: none;
@@ -2225,6 +2267,8 @@ kbd {
   #brand { padding-inline: 10px; }
   #model-name { max-width: 28vw; }
   #dirty { display: none !important; }
+  #save-label { display: none; }
+  .save-action { padding: 0 7px; }
   .toolbar-sep { display: none; }
   #tree-panel,
   #props-panel {

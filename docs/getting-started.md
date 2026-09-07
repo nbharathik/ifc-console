@@ -98,14 +98,19 @@ for configuration locations and alternative transports.
 
 The default `ask` mode blocks model changes. To edit:
 
-1. Run `/mode edit` and confirm.
-2. Ask for the change and review the in-memory result.
-3. Run `/save` to keep it or `/reload` to discard it.
+1. Run `/mode edit` and confirm. Your file is copied aside, and the status bar
+   reads *working in a copy*.
+2. Ask for the change. The viewer shows it as soon as it lands, and the change
+   count says how much is waiting.
+3. Run `/save` to write the copy, `/save <path>` to write the result somewhere
+   else, or `/reload` to discard it. Save IFC and Download in the viewer and
+   the Agent panel do the same two things.
 4. Return to `/mode ask` when finished.
 
-AI tools cannot save by default. `files.allow_ai_save=true` enables automated
-saving, but each overwrite still creates a backup. Read [Safety](safety.md)
-before using edit mode with untrusted content.
+The file you opened is never written unless you name it yourself. Writing it
+without being asked needs `files.allow_ai_save=true`, and each overwrite still
+creates a backup. Read [Safety](safety.md) before using edit mode with
+untrusted content.
 
 ## Run without the terminal UI
 

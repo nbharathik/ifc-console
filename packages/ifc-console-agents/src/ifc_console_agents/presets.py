@@ -5,10 +5,10 @@ capability blocks, and some worked examples; :class:`PresetPack` turns any of
 them into a running agent through the same :func:`~ifc_console_agents.blocks.compose`
 call that builds a user's own blueprint.
 
-The general assistant holds every block and is the default. The focused
-presets exist because a narrower agent is easier to trust and easier to read,
-not because they are a different kind of thing: each one is the general agent
-with fewer blocks and a sharper prompt.
+One assistant ships: the general one, which holds every block. The narrower
+presets below are not offered as separate assistants any more - skills and
+workflows are how a job gets narrowed - but workflow steps still name them, so
+a step gets the sharper prompt and the smaller tool surface it asks for.
 """
 
 from __future__ import annotations
@@ -266,14 +266,14 @@ design. Say that plainly.
 
 GENERAL = AgentPreset(
     name="general",
-    title="General assistant",
+    title="Agent",
     description=(
         "One assistant for the whole model: queries, quantities, documents, "
-        "validation, and marked proposals. Start here."
+        "validation, and marked proposals."
     ),
     summary=(
-        "Holds every capability block. Narrow it for a repeatable job by "
-        "writing standing instructions, or build a preset of your own."
+        "Holds every capability block. Narrow it for a repeatable job with a "
+        "skill or a workflow rather than with a second assistant."
     ),
     role=GENERAL_ROLE,
     # Every block, code included. Without it the assistant has to give up on
@@ -611,8 +611,13 @@ class PresetPack:
         )
 
 
+# What the panel and /agent offer. One assistant: a narrower job is a skill or
+# a workflow, both of which this one runs.
+OFFERED_PRESETS: tuple[AgentPreset, ...] = (GENERAL,)
+
+
 def preset_packs() -> tuple[PresetPack, ...]:
-    return tuple(PresetPack(preset) for preset in PRESETS)
+    return tuple(PresetPack(preset) for preset in OFFERED_PRESETS)
 
 
 __all__ = [
@@ -620,6 +625,7 @@ __all__ = [
     "DOCS",
     "GENERAL",
     "MEASUREMENT",
+    "OFFERED_PRESETS",
     "PARAMETERS",
     "PRESETS",
     "PRESET_BY_NAME",

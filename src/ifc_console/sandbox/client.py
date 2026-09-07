@@ -151,9 +151,15 @@ class SandboxProcess:
     """One worker process and the pipe to it. Not thread-safe by itself; the
     runner serializes calls."""
 
-    def __init__(self, policy: SandboxPolicy, scratch: Path) -> None:
+    def __init__(
+        self, policy: SandboxPolicy, scratch: Path, preload: tuple[str, ...] = ()
+    ) -> None:
         self.policy = policy
         self.scratch = scratch
+        # Imported before the audit hook is armed. A library that touches
+        # object.__setattr__ while importing (trimesh does) cannot be imported
+        # by generated code afterwards, so the worker loads it up front.
+        self.preload = tuple(preload)
         self.proc: subprocess.Popen[bytes] | None = None
         self.jail = ProcessJail(policy.memory_mb)
         self.info: dict[str, Any] = {}
@@ -192,7 +198,14 @@ class SandboxProcess:
         self.jail.attach(self.proc.pid)
         threading.Thread(target=self._read_loop, daemon=True, name="ifc-sandbox-rx").start()
         threading.Thread(target=self._drain_stderr, daemon=True, name="ifc-sandbox-err").start()
-        reply = self.request({"op": "init", "policy": self.policy.to_dict()}, timeout=timeout)
+        reply = self.request(
+            {
+                "op": "init",
+                "policy": self.policy.to_dict(),
+                "preload": list(self.preload),
+            },
+            timeout=timeout,
+        )
         self.info = {
             "pid": reply.get("pid"),
             "limits": reply.get("limits") or [],

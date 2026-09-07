@@ -211,8 +211,7 @@ def run_checks(base_url: str, token: str, *, model_id: str = "rehearsal-tools") 
     names = [agent.get("name") for agent in agents]
     run.add(
         "agents listed",
-        agents_code == 200
-        and {"general", "docs", "measurement", "parameters", "review"} <= set(names),
+        agents_code == 200 and {"general"} <= set(names),
         ", ".join(str(name) for name in names) or f"HTTP {agents_code}",
     )
 
@@ -288,7 +287,7 @@ def run_checks(base_url: str, token: str, *, model_id: str = "rehearsal-tools") 
         f"{len(blocks)} blocks",
     )
 
-    for agent_name in ("general", "measurement", "parameters", "docs", "review"):
+    for agent_name in ("general",):
         ws_code, ws = client.request(f"/api/agents/workspace?agent={agent_name}")
         ok = (
             ws_code == 200
@@ -324,7 +323,7 @@ def run_checks(base_url: str, token: str, *, model_id: str = "rehearsal-tools") 
     ws_404, _ = client.request("/api/agents/workspace?agent=nope")
     run.add("workspace rejects an unknown agent", ws_404 == 404, f"HTTP {ws_404}")
 
-    skills_code, skills_ws = client.request("/api/agents/workspace?agent=measurement")
+    skills_code, skills_ws = client.request("/api/agents/workspace?agent=general")
     skills = skills_ws.get("skills", []) if isinstance(skills_ws, dict) else []
     run.add(
         "skills listed and indexed into the prompt",
@@ -333,7 +332,7 @@ def run_checks(base_url: str, token: str, *, model_id: str = "rehearsal-tools") 
         f"{len(skills)} skill(s): " + ", ".join(row.get("name", "?") for row in skills[:4]),
     )
 
-    files_code, files_payload = client.request("/api/agents/files?agent=measurement")
+    files_code, files_payload = client.request("/api/agents/files?agent=general")
     files = files_payload.get("files", []) if isinstance(files_payload, dict) else []
     indexed = [row for row in files if row.get("indexed")]
     run.add(
@@ -344,7 +343,7 @@ def run_checks(base_url: str, token: str, *, model_id: str = "rehearsal-tools") 
     )
 
     upload_code, upload = client.request(
-        "/api/agents/upload?agent=docs&name=rehearsal-note.md",
+        "/api/agents/upload?agent=general&name=rehearsal-note.md",
         method="POST",
         raw_body=b"# Rehearsal note\n\nWall thickness is measured across structural layers.\n",
         content_type="text/markdown",
@@ -360,7 +359,7 @@ def run_checks(base_url: str, token: str, *, model_id: str = "rehearsal-tools") 
     # The image a user drags into the chat must reach the model as pixels, not
     # as a filename. This uploads one and sends it as an attachment.
     image_code, image_upload = client.request(
-        "/api/agents/upload?agent=measurement&name=rehearsal-shot.png",
+        "/api/agents/upload?agent=general&name=rehearsal-shot.png",
         method="POST",
         raw_body=_png(),
         content_type="image/png",
@@ -417,7 +416,7 @@ def run_checks(base_url: str, token: str, *, model_id: str = "rehearsal-tools") 
                     "provider": "rehearsal",
                     "model": model_id,
                     "prompt": "Measure the interior wall thickness and propose writing it back.",
-                    "agent": "measurement",
+                    "agent": "general",
                 }
             ).encode("utf-8"),
             headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
@@ -540,8 +539,8 @@ def run_checks(base_url: str, token: str, *, model_id: str = "rehearsal-tools") 
         f"{in_chat['kinds'].get('workflow_context', 0)} workflow_context event(s)",
     )
     docs = stream_check(
-        "docs agent stream",
-        "docs",
+        "document reading stream",
+        "general",
         "What does the manual say about wall thickness?",
         expect_tools=("list_project_documents", "get_project_document_page"),
     )
@@ -558,8 +557,8 @@ def run_checks(base_url: str, token: str, *, model_id: str = "rehearsal-tools") 
         json_body={"mode": "ask", "autonomy": "auto", "confirmed": True},
     )
     measure = stream_check(
-        "measurement agent stream",
-        "measurement",
+        "measurement stream",
+        "general",
         "Measure the interior wall thickness and propose writing it back.",
         expect_tools=("measure_elements", "get_measurement_recipe"),
         expect_proposal=True,
@@ -653,7 +652,7 @@ def run_checks(base_url: str, token: str, *, model_id: str = "rehearsal-tools") 
     if attachment:
         attached = stream_check(
             "image attachment reaches the agent",
-            "measurement",
+            "general",
             "What does this photograph show about the wall?",
             attachments=(attachment,),
         )
@@ -670,7 +669,7 @@ def run_checks(base_url: str, token: str, *, model_id: str = "rehearsal-tools") 
 
     instructed = stream_check(
         "standing instructions accepted",
-        "measurement",
+        "general",
         "List the walls.",
         instructions="Always report values in millimetres and cite the manual page.",
     )
@@ -700,7 +699,7 @@ def run_checks(base_url: str, token: str, *, model_id: str = "rehearsal-tools") 
             f"HTTP {removed_code}",
         )
         builtin_code, _ = client.request(
-            "/api/agents/custom/delete", method="POST", json_body={"name": "measurement"}
+            "/api/agents/custom/delete", method="POST", json_body={"name": "general"}
         )
         run.add(
             "built-in agents cannot be deleted",

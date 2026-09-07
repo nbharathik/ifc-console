@@ -26,7 +26,15 @@ from ifc_console.session import executor
 
 
 def _run(
-    code: str, ifc, *, allow_mutation: bool, allow_system: bool = False, allowed=(), denied=()
+    code: str,
+    ifc,
+    *,
+    allow_mutation: bool,
+    allow_system: bool = False,
+    allowed=(),
+    denied=(),
+    import_roots=(),
+    import_policy: str = "open",
 ):
     ns = build_namespace(
         ifc,
@@ -34,6 +42,8 @@ def _run(
         allow_system=allow_system,
         allowed_dirs=[Path(p) for p in allowed],
         deny_dirs=[Path(p) for p in denied],
+        extra_import_roots=tuple(import_roots),
+        import_policy=import_policy,
     )
     return executor.run(executor.prepare(code), ns, output_limit=40_000)
 
@@ -225,6 +235,88 @@ def test_io_data_classes_still_available(ifc4) -> None:
 def test_import_allowlist_permits_data_modules(ifc4) -> None:
     result = _run("import json, math, re, collections\nmath.floor(1.5)", ifc4, allow_mutation=False)
     assert result.result_repr == "1"
+
+
+def test_the_geometry_toolkit_is_injected_and_importable(ifc4) -> None:
+    """Building a real object needs vectors and matrices, not just entities."""
+    result = _run("float(np.linalg.norm([3.0, 4.0]))", ifc4, allow_mutation=False)
+    assert result.result_repr == "5.0"
+
+    result = _run(
+        "from shapely.geometry import Polygon\n"
+        "float(Polygon([(0, 0), (2, 0), (2, 2), (0, 2)]).area)",
+        ifc4,
+        allow_mutation=False,
+    )
+    assert result.result_repr == "4.0"
+
+    # the lazy handles resolve to the real modules, in a locked run too
+    result = _run_locked("[shape_util.__name__, placement_util.__name__, geom.__name__]", ifc4)
+    assert "ifcopenshell.util.shape" in result.result_repr
+    assert "ifcopenshell.geom" in result.result_repr
+
+
+def test_the_open_policy_takes_any_installed_library(ifc4) -> None:
+    """The model picks the library that fits, not one from a list we guessed."""
+    result = _run(
+        "import trimesh\nbox = trimesh.creation.box((1, 2, 3))\n"
+        "[int(box.volume), len(box.faces)]",
+        ifc4,
+        allow_mutation=False,
+    )
+    assert result.result_repr == "[6, 12]"
+
+    # a library nobody listed either way, and one that is simply not here
+    assert _run("import sysconfig\nbool(sysconfig.get_paths())", ifc4, allow_mutation=False)
+    with pytest.raises(ModuleNotFoundError):
+        _run("import definitely_not_installed", ifc4, allow_mutation=False)
+
+
+@pytest.mark.parametrize(
+    "root", ["os", "subprocess", "httpx", "requests", "pickle", "yaml", "ifc_console"]
+)
+def test_the_open_policy_still_refuses_a_capability(root: str, ifc4) -> None:
+    """Open means any library, not any capability."""
+    with pytest.raises(ImportError, match="blocked"):
+        _run(f"import {root}", ifc4, allow_mutation=False)
+
+
+def test_the_strict_policy_restores_the_curated_list(ifc4) -> None:
+    with pytest.raises(ImportError, match="strict import policy"):
+        _run("import sysconfig", ifc4, allow_mutation=False, import_policy="strict")
+
+    result = _run(
+        "import numpy as np\nfloat(np.linalg.norm([3, 4]))",
+        ifc4,
+        allow_mutation=False,
+        import_policy="strict",
+    )
+    assert result.result_repr == "5.0"
+
+    # under strict, numpy's own file readers would be the way around open()
+    for attribute in ("load", "fromfile", "savetxt", "memmap"):
+        with pytest.raises(GuardError, match="sidestep"):
+            _run(
+                f"import numpy\nnumpy.{attribute}",
+                ifc4,
+                allow_mutation=False,
+                import_policy="strict",
+            )
+
+
+def test_the_user_can_name_one_more_package(ifc4) -> None:
+    """exec.import_roots_extra widens either policy by exactly one name."""
+    with pytest.raises(ImportError):
+        _run("import sysconfig", ifc4, allow_mutation=False, import_policy="strict")
+
+    result = _run(
+        "import sysconfig\nbool(sysconfig.get_paths())",
+        ifc4,
+        allow_mutation=False,
+        import_policy="strict",
+        import_roots=("sysconfig",),
+    )
+    assert result.result_repr == "True"
 
 
 @pytest.mark.parametrize(
@@ -477,3 +569,41 @@ class TestKnownBypasses:
         )
         with pytest.raises((GuardError, ImportError)):
             _run(code, ifc4, allow_mutation=False)
+
+
+def test_the_code_environment_reports_what_is_actually_installed() -> None:
+    """Published before code is written, so an import never costs a script."""
+    from ifc_console.policy.guards import exec_environment
+
+    environment = exec_environment(
+        extra_import_roots=("definitely-not-installed", "sysconfig")
+    )
+
+    assert environment["policy"] == "open"
+    assert environment["injected"]["np"] == "numpy"
+    assert {"numpy", "shapely", "trimesh"} <= set(
+        environment["installed"]["geometry and numerics"]
+    )
+    assert "ifcopenshell" in environment["installed"]["ifc"]
+    # a package the user named but never installed is not promised
+    assert environment["installed"]["added by the user"] == ["sysconfig"]
+    assert "os" in environment["blocked"]
+
+
+def test_the_published_environment_matches_the_guard() -> None:
+    """What the model is told and what the guard does must not drift apart."""
+    from ifc_console.policy.guards import exec_environment
+    from ifc_console.policy.imports import DENIED_IMPORT_ROOTS, import_allowed
+
+    environment = exec_environment()
+    for names in environment["installed"].values():
+        for name in names:
+            assert import_allowed(name), name
+    for name in environment["blocked"]:
+        assert not import_allowed(name), name
+        assert name in DENIED_IMPORT_ROOTS
+
+    strict = exec_environment(policy="strict")
+    for names in strict["installed"].values():
+        for name in names:
+            assert import_allowed(name, policy="strict"), name

@@ -39,16 +39,13 @@ class TestRegistry:
             registry.register(Broken())
 
     def test_builtins_ship_active_with_no_allow_step(self):
-        """The basic agents come with ifc-console itself and just appear."""
+        """The one shipped agent comes with ifc-console itself and just appears."""
         registry = AgentPackRegistry()
         names = [info.name for info in registry.active()]
-        assert "measurement" in names
-        assert "docs" in names
-        assert registry.is_builtin("measurement")
-        docs = next(info for info in registry.active() if info.name == "docs")
-        assert "files" in docs.features
-        measure = next(info for info in registry.active() if info.name == "measurement")
-        assert "files" in measure.features
+        assert names == ["general"]
+        assert registry.is_builtin("general")
+        general = next(info for info in registry.active() if info.name == "general")
+        assert "files" in general.features
         assert registry.problems == []
 
 
@@ -60,7 +57,7 @@ class TestPanelRuntime:
 
         build_operations(core)
         await core.open_model(work_model)
-        pack = core.agent_packs.get("measurement")
+        pack = core.agent_packs.get("general")
         assert pack is not None
         agent = await pack.build(panel_runtime(core), model=ScriptedAgentModel([]))
         assert "measure_elements" in agent.tools.names
@@ -79,7 +76,7 @@ class TestPanelRuntime:
 
         build_operations(core)
         await core.open_model(work_model)
-        pack = core.agent_packs.get("measurement")
+        pack = core.agent_packs.get("general")
         scripted = ScriptedAgentModel(
             [
                 tool_call_round({"name": "query_elements", "arguments": '{"query": "IfcWall"}'}),

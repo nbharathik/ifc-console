@@ -814,8 +814,28 @@ let themeTitle = "";
 let viewerContextQueued = false;
 let viewerContextReason = "state";
 
+/* Unique ids, in pick order.
+ *
+ * One element can be picked through several meshes, and some files repeat a
+ * GlobalId outright, so a raw map turns "3 selected" into a list with one
+ * usable entry. Every tool takes the element once, so the list carries it once.
+ */
 function selectedGuids() {
-  return [...selection].map((id) => guidOf.get(id)).filter(Boolean);
+  const guids = [...selection].map((id) => guidOf.get(id)).filter(Boolean);
+  return [...new Set(guids)];
+}
+
+/* Express ids whose GlobalId is already covered by an earlier pick. */
+function duplicateSelectionCount() {
+  const seen = new Set();
+  let duplicates = 0;
+  for (const id of selection) {
+    const guid = guidOf.get(id);
+    if (!guid) continue;
+    if (seen.has(guid)) duplicates += 1;
+    else seen.add(guid);
+  }
+  return duplicates;
 }
 
 function rememberCurrentSelection() {
@@ -867,7 +887,10 @@ function viewerContext(reason = viewerContextReason) {
       schema: item.schema || "",
       active: item.active === true,
     })),
-    selection: { count: selection.size, guids: selectedGuids() },
+    selection: (() => {
+      const guids = selectedGuids();
+      return { count: guids.length, picks: selection.size, guids };
+    })(),
     selections: modelSelectionRows(),
     mode: $("mode")?.dataset.mode || null,
     theme: { preference: themePreference, resolved: uiTheme },
@@ -3030,9 +3053,19 @@ function updateSelectionInfo() {
     renderViewerFilters();
     return;
   }
-  const shown = [...selection].slice(0, 3)
-    .map((id) => guidOf.get(id) || `#${id}`).join(", ");
-  status.textContent = `${n} selected · ${shown}${n > 3 ? ", …" : ""}`;
+  const guids = selectedGuids();
+  const unique = guids.length;
+  const duplicates = duplicateSelectionCount();
+  const shown = guids.slice(0, 3).join(", ")
+    || [...selection].slice(0, 3).map((id) => `#${id}`).join(", ");
+  const count = duplicates
+    ? `${unique} unique of ${n} selected`
+    : `${n} selected`;
+  status.textContent = `${count} · ${shown}${unique > 3 ? ", …" : ""}`;
+  status.title = duplicates
+    ? `${duplicates} pick(s) repeat a GlobalId already in the list; tools receive `
+      + `the ${unique} unique element(s).`
+    : "";
   scheduleViewerContext("selection");
   renderViewerFilters();
 }
@@ -5840,6 +5873,8 @@ function handleFrame(frame) {
     }
     case "model_updated":
       if (frame.dirty !== undefined) $("dirty").hidden = !frame.dirty;
+      if (frame.changes !== undefined) setModelChanges(frame.changes);
+      if (frame.reason === "saved") setModelChanges(0);
       if (frame.reason === "loaded") applyColorThemeFrame({ clear: true });
       // These describe the active model; a pinned one is read-only and only
       // changes through a status frame (attach, detach, active switch).
@@ -6267,6 +6302,114 @@ function currentModelRow() {
   return modelRows.find((m) => m.id === id) || null;
 }
 
+// ------------------------------------------------------------- saving
+let noteTimer = 0;
+
+/* One line in the status bar; it clears itself so nothing goes stale. */
+function toast(text, isError = false) {
+  const note = $("action-note");
+  if (!note) return;
+  note.textContent = text;
+  note.dataset.error = isError ? "1" : "0";
+  clearTimeout(noteTimer);
+  noteTimer = setTimeout(() => {
+    note.textContent = "";
+    note.dataset.error = "0";
+  }, isError ? 12000 : 6000);
+}
+
+// Edit mode works in a copy of the opened file, so writing it costs the user
+// nothing: the topbar offers the save and says how much is waiting for it.
+let modelChanges = 0;
+let workingCopy = null;
+
+function setWorkingCopy(copy, origin) {
+  workingCopy = copy;
+  const badge = $("copy-badge");
+  badge.hidden = !copy;
+  if (copy) {
+    badge.title = `Editing a copy: ${copy.name}. `
+      + `${copy.origin_name || origin || "the file you opened"} is not written.`;
+  }
+  updateSaveControls();
+}
+
+function setModelChanges(count) {
+  modelChanges = Number(count) || 0;
+  updateSaveControls();
+}
+
+function updateSaveControls() {
+  const save = $("btn-save-model");
+  const download = $("btn-download-model");
+  const badge = $("save-count");
+  if (!save) return;
+  const dirty = !$("dirty").hidden;
+  save.hidden = !dirty;
+  download.hidden = !viewerDocumentOpen;
+  badge.hidden = modelChanges === 0;
+  badge.textContent = String(modelChanges);
+  const target = workingCopy ? workingCopy.name : ($("model-name").textContent || "the IFC file");
+  const scope = modelChanges
+    ? `${modelChanges} change${modelChanges === 1 ? "" : "s"}`
+    : "the in-memory changes";
+  save.title = workingCopy
+    ? `Write ${scope} to the working copy ${target}. `
+      + `${workingCopy.origin_name || "the file you opened"} stays untouched.`
+    : `Write ${scope} to ${target}.`;
+}
+
+async function saveModelFile() {
+  const save = $("btn-save-model");
+  const label = $("save-label");
+  const previous = label.textContent;
+  save.disabled = true;
+  label.textContent = "Saving...";
+  try {
+    const response = await api("/api/model/save", { method: "POST" });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload.message || payload.error || `HTTP ${response.status}`);
+    setModelChanges(0);
+    $("dirty").hidden = true;
+    toast(payload.saved
+      ? `Saved ${payload.working_copy ? "the working copy" : ""} ${payload.path}`.trim()
+      : "Nothing to save");
+  } catch (exc) {
+    toast(`Could not save: ${exc.message || exc}`, true);
+  } finally {
+    save.disabled = false;
+    label.textContent = previous;
+    updateSaveControls();
+  }
+}
+
+/* Stream what is in memory now, without writing anything. */
+async function downloadModelFile() {
+  const button = $("btn-download-model");
+  button.disabled = true;
+  try {
+    const params = new URLSearchParams({ download: "1" });
+    if (viewModelId) params.set("model", viewModelId);
+    const response = await api(`/api/model.ifc?${params}`);
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const disposition = response.headers.get("content-disposition") || "";
+    const named = /filename="([^"]+)"/.exec(disposition);
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = named ? named[1] : "model.ifc";
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
+  } catch (exc) {
+    toast(`Could not download: ${exc.message || exc}`, true);
+  } finally {
+    button.disabled = false;
+  }
+}
+
 function setModelInfo(status) {
   const label = $("model-name");
   if (status) {
@@ -6285,6 +6428,8 @@ function setModelInfo(status) {
     // one, so a pinned second model labels its own numbers.
     setFileUnits((row && row.units) || status.units || null);
     $("dirty").hidden = !status.dirty;
+    setWorkingCopy(status.working_copy || null, status.origin || null);
+    setModelChanges(status.changes || 0);
     if (status.highlight && frameTargetsCurrentModel(status.highlight)) {
       applyHighlightFrame(status.highlight);
     }
@@ -6300,6 +6445,8 @@ function setModelInfo(status) {
     label.title = "";
     $("schema").hidden = true;
     $("dirty").hidden = true;
+    setWorkingCopy(null, null);
+    setModelChanges(0);
   }
   document.title = status && status.model
     ? `${status.model} · ifc-console viewer` : "ifc-console viewer";
@@ -6361,6 +6508,8 @@ $("model-select").addEventListener("change", (e) => {
 $("btn-clear-hl").addEventListener("click", () => {
   applyHighlightFrame({ clear: true });
 });
+$("btn-save-model").addEventListener("click", () => { void saveModelFile(); });
+$("btn-download-model").addEventListener("click", () => { void downloadModelFile(); });
 $("legend-clear").addEventListener("click", () => {
   applyColorThemeFrame({ clear: true });
 });

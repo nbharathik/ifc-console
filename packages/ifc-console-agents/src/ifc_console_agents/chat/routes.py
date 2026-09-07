@@ -334,7 +334,11 @@ def build_chat_routes(core: AppCore) -> list[Route]:
                 status_code=409,
             )
         if mode is not None:
-            core.set_mode(Mode(mode), by="chat-panel")
+            if Mode(mode) is Mode.EDIT:
+                # Copy the open file aside before anything may write it.
+                await core.enter_edit_mode(by="chat-panel")
+            else:
+                core.set_mode(Mode(mode), by="chat-panel")
         if autonomy is not None:
             core.set_ai_autonomy(autonomy == "auto", by="chat-panel")
         return JSONResponse(
@@ -343,8 +347,14 @@ def build_chat_routes(core: AppCore) -> list[Route]:
                 "mode": core.policy.mode.value,
                 "ai_autonomy": core.ai_autonomy,
                 # Never true for an assistant: saving is the user's alone.
-                "ai_save_allowed": core.policy.allow_ai_save,
+                "ai_save_allowed": core.policy.may_persist,
                 "dirty": core.session.dirty,
+                "changes": core.session.change_count,
+                "working_copy": (
+                    core.session.working_copy.to_dict()
+                    if core.session.working_copy is not None
+                    else None
+                ),
             }
         )
 
@@ -360,13 +370,24 @@ def build_chat_routes(core: AppCore) -> list[Route]:
         if not session.loaded or session.path is None:
             return JSONResponse({"error": "no model is open"}, status_code=409)
         if not session.dirty:
-            return JSONResponse({"ok": True, "saved": False, "dirty": False})
+            return JSONResponse(
+                {"ok": True, "saved": False, "dirty": False, "changes": 0}
+            )
+        target = session.path
         try:
-            await core.save_model(by="chat-panel")
+            result = await core.save_model(by="chat-panel")
         except Exception as exc:  # surfaced to the person who pressed save
             return JSONResponse({"error": str(exc)}, status_code=500)
         return JSONResponse(
-            {"ok": True, "saved": True, "dirty": core.session.dirty, "path": str(session.path)}
+            {
+                "ok": True,
+                "saved": True,
+                "dirty": core.session.dirty,
+                "changes": core.session.change_count,
+                "path": str(target),
+                "working_copy": bool(result.get("working_copy")),
+                "origin": session.origin_name,
+            }
         )
 
     async def stream(request) -> Response:

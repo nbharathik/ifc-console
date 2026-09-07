@@ -75,9 +75,10 @@ A project may contain `.ifc-console/settings.json` and a git-ignored
 | allow larger viewer downloads | `viewer.max_model_mb` | `500` |
 | enable IDS tooling | install the validation extra | `pip install "ifc-console[validation]"` |
 
-Keep `files.allow_ai_save=false` unless automated persistence is a deliberate
-requirement. The terminal `/save` command works regardless of that AI-only
-setting.
+Keep `files.allow_ai_save=false` unless writing the file you opened is a
+deliberate requirement. It is not needed for ordinary editing: edit mode works
+in a copy, and saving that copy is allowed. The terminal `/save` command works
+regardless of the AI-only setting.
 
 ## Session and server
 
@@ -93,10 +94,13 @@ setting.
 
 | key | default | meaning |
 | --- | ------- | ------- |
-| `exec.timeout_seconds` | `30` | maximum time for one code run |
+| `exec.timeout_seconds` | `30` | maximum time for one read-only code run |
+| `exec.edit_timeout_seconds` | `180` | maximum time for one model-changing run |
 | `exec.output_char_limit` | `40000` | output limit per field before truncation |
 | `exec.allow_system_access` | `false` | allow system-class code in `edit` mode |
 | `exec.system_modules_extra` | `[]` | additional imports classified as system access |
+| `exec.import_policy` | `open` | `open` allows any installed package but a denied set; `strict` uses a curated list (see [Code sandbox](sandbox.md)) |
+| `exec.import_roots_extra` | `[]` | extra packages generated code may import, whatever the policy |
 | `sandbox.mode` | `auto` | `auto`, `strict`, or `off` |
 | `sandbox.memory_mb` | `2048` | sandbox worker memory cap |
 | `sandbox.max_model_mb` | `512` | largest model copied into the sandbox; `0` disables the limit |
@@ -109,7 +113,9 @@ setting.
 | key | default | meaning |
 | --- | ------- | ------- |
 | `files.allowed_dirs` | `[]` | additional readable roots |
-| `files.allow_ai_save` | `false` | let AI operations persist IFC changes |
+| `files.allow_ai_save` | `false` | let AI operations write the file you opened |
+| `files.working_copy` | `true` | edit mode copies the open file aside and edits the copy |
+| `files.working_copy_retention` | `10` | working copies kept in `~/.ifc-console/working` |
 | `files.backup_retention` | `20` | backups retained per model |
 | `files.follow_symlinks` | `false` | resolve symlinks while listing files |
 | `files.max_open_mb` | `4096` | reject larger models; `0` disables the limit |

@@ -61,6 +61,15 @@ _CSP = (
 )
 
 
+def _download_name(session: Any) -> str:
+    """A filename the user recognizes: their file, marked as edited."""
+    origin = session.origin_path or session.path
+    stem = origin.stem if origin else "model"
+    suffix = origin.suffix if origin and origin.suffix else ".ifc"
+    stem = "".join(ch for ch in stem if ch.isalnum() or ch in "-_. ").strip() or "model"
+    return f"{stem}-edited{suffix}" if session.change_count else f"{stem}{suffix}"
+
+
 def _disabled_response() -> JSONResponse:
     return JSONResponse(
         {
@@ -124,7 +133,11 @@ def build_viewer_routes(core: AppCore) -> list[Any]:
         return session, core.viewer_hub.model_etag(session) or "", None
 
     async def model_ifc(request) -> Response:
-        if not core.viewer.enabled:
+        download = request.query_params.get("download") in ("1", "true", "yes")
+        # A download is the user asking for their own file, so the Agent panel
+        # can offer it without the viewer being on. Streaming for a tab still
+        # belongs to the viewer.
+        if not core.viewer.enabled and not (download and core.chat.enabled):
             return _disabled_response()
         session, etag, problem = await _pinned_model(request)
         if problem == "MODEL_NOT_FOUND":
@@ -143,9 +156,16 @@ def build_viewer_routes(core: AppCore) -> list[Any]:
         max_mb = core.settings.viewer.max_model_mb
         if session.size_bytes > max_mb * 1_048_576:
             return _model_too_large(session.size_bytes, max_mb)
-        if request.headers.get("if-none-match") == etag:
+        if not download and request.headers.get("if-none-match") == etag:
             return Response(status_code=304, headers={"ETag": etag})
         headers = {"ETag": etag, "Cache-Control": "no-cache"}
+        if download:
+            # A download is a one-off copy of what is in memory right now, so
+            # it never validates against the tab's cached geometry.
+            headers = {"Cache-Control": "no-store"}
+            headers["Content-Disposition"] = (
+                f'attachment; filename="{_download_name(session)}"'
+            )
         # Fast path: an unmodified .ifc on disk already holds exactly the bytes
         # the viewer wants, and sendfile beats re-serializing by ~100x on a
         # large model. Anything else (dirty, saved elsewhere, .ifczip/.ifcxml)
@@ -265,6 +285,59 @@ def build_viewer_routes(core: AppCore) -> list[Any]:
             return _tool_error_response(exc, status=503)
         return JSONResponse(payload)
 
+    async def model_state(request) -> Response:
+        """What a save would write, for the toolbar that offers to write it."""
+        if not core.viewer.enabled:
+            return _disabled_response()
+        session = core.session
+        return JSONResponse(
+            {
+                "loaded": session.loaded,
+                "model": session.name,
+                "origin": session.origin_name,
+                "dirty": session.dirty,
+                "mode": core.policy.mode.value,
+                "changes": session.change_count,
+                "recent_changes": session.changes_summary()["recent"],
+                "save_target": str(session.path) if session.path else None,
+                "working_copy": (
+                    session.working_copy.to_dict()
+                    if session.working_copy is not None
+                    else None
+                ),
+            }
+        )
+
+    async def model_save(request) -> Response:
+        """Write the in-memory model. Reached only from a control a person clicks."""
+        if not core.viewer.enabled:
+            return _disabled_response()
+        session = core.session
+        if not session.loaded or session.path is None:
+            return JSONResponse({"error": "NO_MODEL_LOADED"}, status_code=409)
+        changes = session.change_count
+        if not session.dirty:
+            return JSONResponse({"ok": True, "saved": False, "dirty": False, "changes": 0})
+        try:
+            result = await core.save_model(by="viewer")
+        except ToolError as exc:
+            return _tool_error_response(exc, status=409)
+        except Exception as exc:
+            log.exception("viewer save failed")
+            return JSONResponse({"error": str(exc)}, status_code=500)
+        return JSONResponse(
+            {
+                "ok": True,
+                "saved": True,
+                "dirty": session.dirty,
+                "changes": 0,
+                "saved_changes": changes,
+                "path": result["path"],
+                "working_copy": bool(result.get("working_copy")),
+                "origin": session.origin_name,
+            }
+        )
+
     async def _status_with_units(client: Any) -> None:
         """Resend status once the file's length unit is known.
 
@@ -336,6 +409,8 @@ def build_viewer_routes(core: AppCore) -> list[Any]:
     return [
         Route("/viewer", viewer_shell, methods=["GET"]),
         Route("/api/model.ifc", model_ifc, methods=["GET"]),
+        Route("/api/model/state", model_state, methods=["GET"]),
+        Route("/api/model/save", model_save, methods=["POST"]),
         Route("/api/elements/{guid}", element, methods=["GET"]),
         Route("/api/search", search, methods=["GET"]),
         WebSocketRoute("/ws", ws_endpoint),

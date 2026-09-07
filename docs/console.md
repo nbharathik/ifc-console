@@ -47,7 +47,7 @@ Type `/` to browse commands. Values for `/mode`, `/viewer`, `/connect`, and
 | `/use <id>` | make a resident model active |
 | `/recent` | show recent models |
 | `/info` | show entity counts |
-| `/save [path]` / `/reload` | keep or discard changes |
+| `/save [path]` / `/reload` | keep (path = save-as) or discard changes |
 
 ### Session and browser
 
@@ -110,9 +110,12 @@ authority.
 
 ## Edit, save, and exit
 
-`ask` is read-only. `/mode edit` allows in-memory changes after confirmation.
-Use `/save` to keep them, `/reload` to discard them, and `/mode ask` to lock the
-model again. AI saving remains disabled unless separately enabled.
+`ask` is read-only. `/mode edit` copies the open file into
+`~/.ifc-console/working` and allows in-memory changes after confirmation; the
+status bar then reads *working in a copy*. `/save` writes that copy, `/save
+<path>` writes the result anywhere else, `/reload` discards unsaved changes, and
+`/mode ask` locks the model again. The file you opened is never written unless
+you name it yourself.
 
 Select feed text and press ++ctrl+c++ to copy it. With no selection, ++ctrl+c++
 exits. `/quit` and ++ctrl+q++ also exit and warn about unsaved changes.

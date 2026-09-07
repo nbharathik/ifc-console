@@ -305,6 +305,10 @@ model edit -> console memory -> WebSocket -> viewer refresh
 selection  <- shared session state <- browser tab
 ```
 
+The topbar carries the model's state and the two actions on it: a change count,
+**Save IFC**, which writes the working copy edit mode put in place, and
+**Download**, which hands you the model as it stands without writing anything.
+
 Edits, saves, reloads, modes, selections, and highlights update live. Multiple
 browser tabs are supported. Selections remain distinct per IFC model; the most
 recently active compatible tab answers screenshots and direct viewport commands.

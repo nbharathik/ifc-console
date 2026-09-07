@@ -4,8 +4,8 @@ ifc-console treats AI output and IFC text as untrusted. The central rule is:
 **the terminal user controls whether the active model may change.**
 
 ```text
-ask mode -> inspect and analyze only
-edit mode -> change memory -> user reviews -> /save or /reload
+ask mode  -> inspect and analyze only
+edit mode -> copy the open file aside -> change memory -> /save writes the copy
 ```
 
 ## Ask and edit
@@ -16,14 +16,27 @@ edit mode -> change memory -> user reviews -> /save or /reload
 | preview a structured change | allowed | allowed |
 | run model-changing Python | blocked | allowed |
 | commit an approved ChangeSet | blocked | allowed |
-| AI tool saves an IFC file | blocked | blocked by default |
+| AI tool writes the working copy | blocked | allowed |
+| AI tool writes the file you opened | blocked | blocked by default |
 | user runs `/save` | allowed | allowed |
 
 Switch with `/mode`. Moving to `edit` requires confirmation, and no AI tool can
 change the mode. Blocked operations return `ASK_MODE_BLOCKED` with a hint.
 
-AI saving is a separate user opt-in: `files.allow_ai_save=true`. Client-level
-permission prompts still apply on top of ifc-console policy.
+## Working copies
+
+Entering edit mode copies the open file into `~/.ifc-console/working` and points
+the session at that copy. From then on every save, reload and download touches
+the copy, and the file you opened is never written. That is why an assistant may
+call `save_ifc_file` in edit mode: the only file it can reach is the snapshot.
+`meta.working_copy` names the copy in every tool response, and the terminal
+status bar says *working in a copy*.
+
+`/save <path>` still writes anywhere you allow, including back over the original.
+`files.working_copy=false` restores in-place editing, in which case saving is
+the user's alone again unless `files.allow_ai_save=true`. Generated code can
+never write an IFC file itself without `files.allow_ai_save`, working copy or
+not. Client-level permission prompts still apply on top of ifc-console policy.
 
 ## Generated code
 
@@ -53,7 +66,9 @@ model. See [Code sandbox](sandbox.md).
 - **Allowed roots:** AI tools can access only the launch folder, model folder,
   and directories explicitly added by the user. Other paths return
   `PATH_NOT_ALLOWED`.
-- **Memory first:** edits stay in memory until `/save`; `/reload` discards them.
+- **Memory first:** edits stay in memory until a save; `/reload` discards them.
+  The viewer reads the in-memory model, so it shows an edit without any save.
+- **Copy first:** edit mode saves to a working copy, not to the file you opened.
 - **Safe replacement:** every overwrite creates a timestamped backup, writes a
   temporary file, then replaces the target atomically. A failed backup stops
   the save.

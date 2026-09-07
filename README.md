@@ -71,9 +71,11 @@ application are part of `ifc-console`.
 
 ## Safety
 
-`ask` mode is read-only. Use `/mode edit` to allow in-memory changes, review
-them, then `/save` to keep them or `/reload` to discard them. The AI cannot
-change the mode and cannot save unless you enable `files.allow_ai_save`.
+`ask` mode is read-only. `/mode edit` copies the open file aside and allows
+in-memory changes; `/save` writes that copy, `/save <path>` writes the result
+somewhere else, and `/reload` discards it. The AI cannot change the mode, and
+the file you opened is never written unless you name it yourself or enable
+`files.allow_ai_save`.
 
 Eligible read-only generated code runs in a restricted process on CPython
 3.12+. Python 3.10 and 3.11 use the documented `auto` fallback, while `strict`

@@ -435,15 +435,15 @@ async def test_legacy_thread_migration_refuses_a_symlinked_directory(panel_core,
     assert not _thread_dir(panel_core).exists()
 
 
-async def test_builtin_agents_appear_without_any_setup(core, work_model: Path):
+async def test_the_builtin_agent_appears_without_any_setup(core, work_model: Path):
     core.start_audit()
     await core.open_model(work_model)
     core.enable_chat()
     client = _client(core)
     payload = client.get("/api/agents", headers=_auth(core)).json()
     names = [agent["name"] for agent in payload["agents"]]
-    assert "measurement" in names
-    assert "docs" in names
+    # One assistant ships; skills and workflows are how a job gets narrowed.
+    assert names == ["general"]
 
 
 async def test_routes_are_404_until_chat_is_on(core):
@@ -455,7 +455,7 @@ async def test_listing_shows_active_packs(panel_core):
     client = _client(panel_core)
     payload = client.get("/api/agents", headers=_auth(panel_core)).json()
     names = [agent["name"] for agent in payload["agents"]]
-    assert {"docs", "measurement", "scripted", "uploader"}.issubset(names)
+    assert {"general", "scripted", "uploader"}.issubset(names)
     scripted = next(agent for agent in payload["agents"] if agent["name"] == "scripted")
     assert scripted["starters"] == ["say hello"]
 
@@ -717,11 +717,11 @@ async def test_workspace_reports_host_pack_declared_limits(panel_core):
 async def test_a_preset_keeps_the_rounds_it_declares(panel_core):
     from ifc_console_agents.presets import PRESET_BY_NAME
 
-    preset = PRESET_BY_NAME["measurement"]
+    preset = PRESET_BY_NAME["general"]
     assert preset.max_tool_rounds > panel_core.settings.chat.max_tool_rounds
     client = _client(panel_core)
     workspace = client.get(
-        "/api/agents/workspace?agent=measurement", headers=_auth(panel_core)
+        "/api/agents/workspace?agent=general", headers=_auth(panel_core)
     ).json()
     assert workspace["limits"]["max_tool_rounds"] == preset.max_tool_rounds
 
@@ -1501,7 +1501,7 @@ async def test_reference_ledger_tracks_images_and_manual_folder_drops(panel_core
     image.write_bytes(b"\x89PNG\r\n\x1a\nreference")
     client = _client(panel_core)
     response = client.get(
-        "/api/agents/files?agent=measurement",
+        "/api/agents/files?agent=general",
         headers=_auth(panel_core),
     )
     assert response.status_code == 200

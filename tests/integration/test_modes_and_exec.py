@@ -266,3 +266,111 @@ async def test_save_as_cannot_overwrite_another_resident_model(
     assert out["ok"] is False
     assert out["error"]["code"] == "FILE_EXISTS"
     assert "resident model" in out["error"]["message"]
+
+
+# -- edit mode in a working copy -------------------------------------------------
+async def test_edits_and_saves_land_in_the_working_copy(harness_factory, work_model) -> None:
+    """The whole point: the assistant can finish the job, the original survives."""
+    before = _digest(work_model)
+    h = await harness_factory(model=work_model, mode=Mode.ASK)
+    copy = await h.core.enter_edit_mode(by="test")
+    assert copy is not None
+
+    changed = await h.call(
+        "execute_ifc_code",
+        code="ifc_api.run('root.create_entity', ifc, ifc_class='IfcWall')",
+        description="add a wall",
+    )
+
+    assert changed["ok"] is True
+    assert changed["meta"]["dirty"] is True
+    assert changed["meta"]["changes"] == 1
+    assert changed["meta"]["working_copy"]["origin_name"] == work_model.name
+    # the note must not send the user off to save before they can see anything
+    assert "the viewer already shows this change" in changed["data"]["note"]
+
+    saved = await h.call("save_ifc_file")
+
+    assert saved["ok"] is True
+    assert saved["data"]["path"] == str(copy.path)
+    assert saved["data"]["working_copy"] is True
+    assert saved["data"]["backup_path"] is None  # the origin is the snapshot
+    assert saved["meta"]["dirty"] is False
+    assert saved["meta"]["changes"] == 0
+    assert _digest(work_model) == before
+
+
+async def test_a_working_copy_session_cannot_save_anywhere_else(
+    harness_factory, work_model, tmp_path
+) -> None:
+    h = await harness_factory(model=work_model, mode=Mode.ASK)
+    await h.core.enter_edit_mode(by="test")
+    await h.call(
+        "execute_ifc_code",
+        code="ifc_api.run('root.create_entity', ifc, ifc_class='IfcWall')",
+        description="add a wall",
+    )
+
+    out = await h.call("save_ifc_file", output_path=str(tmp_path / "elsewhere.ifc"))
+
+    assert out["ok"] is False
+    assert out["error"]["code"] == "AI_SAVE_DISABLED"
+    assert not (tmp_path / "elsewhere.ifc").exists()
+
+
+async def test_the_geometry_toolkit_reaches_generated_code(ask_harness) -> None:
+    """Complex objects need vectors, matrices and a tessellator, not entities alone."""
+    out = await ask_harness.call(
+        "execute_ifc_code",
+        code=(
+            "import numpy as np\n"
+            "from shapely.geometry import Polygon\n"
+            "wall = ifc.by_type('IfcWall')[0]\n"
+            "m = placement_util.get_local_placement(wall.ObjectPlacement)\n"
+            "profile = Polygon([(0, 0), (3, 0), (3, 0.2), (0, 0.2)])\n"
+            "[m.shape, round(profile.area, 3), float(np.linalg.norm(m[:3, 3]))]"
+        ),
+    )
+    assert out["ok"] is True
+    assert out["data"]["classification"] == "QUERY"
+    assert "(4, 4)" in out["data"]["result"]
+
+
+async def test_an_unlisted_library_is_not_refused(ask_harness) -> None:
+    """The import policy is open: the model is not held to a curated list."""
+    out = await ask_harness.call(
+        "execute_ifc_code",
+        code="import xml.etree.ElementTree as ET\nET.Element('ok').tag",
+    )
+
+    assert out["ok"] is True
+    assert out["data"]["result"] == "'ok'"
+
+
+async def test_a_blocked_capability_says_why_before_the_code_matters(
+    ask_harness,
+) -> None:
+    """Blocked is about the capability, not about the package being unpopular."""
+    out = await ask_harness.call("execute_ifc_code", code="import httpx")
+
+    assert out["ok"] is False
+    # importing the network is SYSTEM-class code, refused in ask mode outright
+    assert out["error"]["code"] == "ASK_MODE_BLOCKED"
+
+
+async def test_the_tool_description_names_the_libraries_before_any_code(
+    ask_harness,
+) -> None:
+    """The point: knowing this costs no tokens, finding out the hard way does."""
+    listing = await ask_harness.session.list_tools()
+    exec_tool = next(t for t in listing.tools if t.name == "execute_ifc_code")
+
+    for name in ("numpy", "shapely", "trimesh", "`np`", "save_ifc_file"):
+        assert name in exec_tool.description, name
+    assert "Blocked" in exec_tool.description
+
+    capabilities = await ask_harness.call("describe_capabilities")
+    environment = capabilities["data"]["code_environment"]
+    assert environment["policy"] == "open"
+    assert "trimesh" in environment["installed"]["geometry and numerics"]
+    assert environment["injected"]["geom"].startswith("ifcopenshell.geom")

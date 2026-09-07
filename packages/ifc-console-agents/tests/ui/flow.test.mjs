@@ -4,6 +4,7 @@ import { test } from "node:test";
 import {
   STAGES,
   applyEvent,
+  approvalBefore,
   composerIntent,
   emptyRun,
   duration,
@@ -255,6 +256,30 @@ test("an answered approval is left exactly as the user answered it", () => {
   settleRun(run, { stopped: true });
   assert.equal(run.approvals[0].state, "approved");
   assert.equal(run.approvals[0].decidedBy, "user");
+});
+
+test("an allowed call folds its approval into the tool card, by id or by position", () => {
+  const run = emptyRun();
+  applyEvent(run, { type: "approval", id: "t1", request_id: "r1", name: "execute_ifc_code" });
+  applyEvent(run, {
+    type: "approval_decided",
+    id: "t1",
+    approved: true,
+    decided_by: "session-autonomy",
+  });
+  applyEvent(run, { type: "tool_call", id: "t1", name: "execute_ifc_code", arguments: "{}" });
+  assert.equal(approvalBefore(run.blocks, 1), run.blocks[0]);
+  assert.equal(approvalBefore(run.blocks, 0), null);
+  // a restored turn has no ids and pairs by position and name
+  const restored = [
+    { kind: "approval", name: "save_ifc_file", state: "approved" },
+    { kind: "tool", name: "save_ifc_file", state: "ok" },
+  ];
+  assert.equal(approvalBefore(restored, 1), restored[0]);
+  // a denied question never ran, so nothing folds it away
+  assert.equal(approvalBefore([{ ...restored[0], state: "denied" }, restored[1]], 1), null);
+  // and another call with the same name is not the one that was allowed
+  assert.equal(approvalBefore([run.blocks[0], { ...run.blocks[2], id: "t2" }], 1), null);
 });
 
 test("GlobalIds are found in tool output and lookalikes are not", () => {

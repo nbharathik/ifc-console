@@ -4,6 +4,7 @@ import { test } from "node:test";
 import {
   KEEP_FULL_TURNS,
   formatBytes,
+  isSevere,
   memoryReport,
   reliefPlan,
   sampleHeap,
@@ -83,4 +84,18 @@ test("the relief plan releases the viewer first and trims only old turns", () =>
 test("sampling is frequent during a run and rare when idle", () => {
   assert.ok(sampleInterval({ busy: true }) < sampleInterval({ busy: false }));
   assert.ok(sampleInterval({ busy: true, level: "high" }) < sampleInterval({ busy: true }));
+});
+
+test("only a reading at the wall counts as severe", () => {
+  assert.equal(isSevere(memoryReport({ heap: { used: 90, limit: 100 } })), false);
+  assert.equal(isSevere(memoryReport({ heap: { used: 96, limit: 100 } })), true);
+  assert.equal(
+    isSevere(memoryReport({ server: { total_bytes: 16 * 1024 * MIB, available_bytes: 500 * MIB } })),
+    false,
+  );
+  assert.equal(
+    isSevere(memoryReport({ server: { total_bytes: 16 * 1024 * MIB, available_bytes: 200 * MIB } })),
+    true,
+  );
+  assert.equal(isSevere(null), false);
 });

@@ -531,11 +531,25 @@ async def _mode(console: ConsoleScreen, args: str) -> None:
     core = console.core
     if not args:
         mode = core.policy.mode.value
-        saving = "AI saves enabled" if core.policy.allow_ai_save else "only you can save"
+        copy = core.session.working_copy
+        if copy is not None:
+            saving = f"saves go to the copy {copy.path.name}"
+        elif core.policy.allow_ai_save:
+            saving = "AI saves enabled"
+        else:
+            saving = "only you can save"
         console.print(
             f"mode: [{_mode_color(mode)}]{mode}[/{_mode_color(mode)}] "
             f"(ask = AI queries only; edit = AI may change the model; {saving})"
         )
+        if copy is not None:
+            console.print(
+                f"[dim]working in a copy: {escape(str(copy.path))}[/dim]"
+            )
+            console.print(
+                f"[dim]  the file you opened, {escape(copy.origin.name)}, "
+                "is not written[/dim]"
+            )
         return
     try:
         new_mode = Mode(args.strip().lower())
@@ -546,15 +560,28 @@ async def _mode(console: ConsoleScreen, args: str) -> None:
         console.print(f"already in {new_mode.value} mode")
         return
     if core.policy.is_escalation(new_mode):
+        copies = core.settings.files.working_copy and core.session.loaded
         detail = (
-            "This lets the AI change the in-memory model. Only you can save it."
+            f"{core.session.name} is copied aside first; edits and saves go to "
+            "the copy, and the file you opened is never written."
+            if copies
+            else "This lets the AI change the in-memory model. Only you can save it."
             if not core.policy.allow_ai_save
             else "This lets the AI change and save the model through MCP tools."
         )
         if not await console.confirm(f"Switch to {new_mode.value.upper()} mode?", detail):
             console.print("[dim]mode unchanged[/dim]")
             return
-    core.set_mode(new_mode, by="tui")
+    if new_mode is Mode.EDIT:
+        session = core.session
+        if session.loaded and session.working_copy is None and core.settings.files.working_copy:
+            console.print(
+                f"[dim]copying {escape(session.name or 'the model')} "
+                f"({session.size_bytes / 1_048_576:.1f} MB) aside...[/dim]"
+            )
+        await core.enter_edit_mode(by="tui")
+    else:
+        core.set_mode(new_mode, by="tui")
 
 
 @command(
@@ -866,7 +893,7 @@ async def _model(console: ConsoleScreen, _args: str) -> None:
 @command(
     "save",
     "/save [path]",
-    "save the model (path = save-as)",
+    "save the model (path = save-as); in edit mode this writes the working copy",
     "files",
     examples=("/save", "/save reviewed.ifc"),
 )
@@ -903,6 +930,12 @@ async def _save(console: ConsoleScreen, args: str) -> None:
     core.events.emit("model_saved", **result)
     backup = f" (backup: {escape(str(result['backup_path']))})" if result.get("backup_path") else ""
     console.print(f"[green]saved[/green] {escape(str(result['path']))}{backup}")
+    copy = core.session.working_copy
+    if result.get("working_copy") and copy is not None:
+        console.print(
+            f"[dim]this is the working copy; {escape(copy.origin.name)} is unchanged. "
+            f"/save <path> writes the result somewhere else[/dim]"
+        )
 
 
 @command(
@@ -916,7 +949,12 @@ async def _reload(console: ConsoleScreen, _args: str) -> None:
     if not core.session.loaded and not core.session.poisoned:
         console.print("no model loaded")
         return
-    if core.session.dirty and not await console.confirm("Reload and discard unsaved changes?"):
+    if core.session.dirty and not await console.confirm(
+        "Reload and discard unsaved changes?",
+        f"{core.session.change_count} change(s) since the last save."
+        if core.session.change_count
+        else "",
+    ):
         return
     console.print(f"[dim]reloading {escape(core.session.name or 'model')} from disk...[/dim]")
     try:
@@ -1047,6 +1085,7 @@ _LIVE_SETTINGS: dict[str, Callable[[Any, Any], None]] = {
     "workspace.scan_depth": lambda core, v: setattr(core.workspace, "depth", v),
     "exec.allow_system_access": lambda core, v: setattr(core.policy, "allow_system_access", v),
     "files.allow_ai_save": lambda core, v: setattr(core.policy, "allow_ai_save", v),
+    "files.working_copy_retention": lambda core, v: setattr(core.working_copies, "retention", v),
 }
 
 

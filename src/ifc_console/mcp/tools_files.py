@@ -202,7 +202,9 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
             "place). output_path = save-as (refuses to overwrite unless "
             "overwrite=true). A timestamped backup of any file being replaced is "
             "stored automatically. Clears the dirty flag. Unavailable in ask "
-            "mode and while files.allow_ai_save is false (the default)."
+            "mode. In edit mode the model is normally a working copy, and this "
+            "writes that copy; the file the user opened is never the target "
+            "unless files.allow_ai_save is on."
         ),
     )
     @enveloped(core, "save_ifc_file")
@@ -220,12 +222,23 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
                 "save_ifc_file is disabled in ask mode: the AI may query, never change, the model.",
                 "Ask the user to run /mode edit in the ifc-console terminal.",
             )
-        if not core.policy.allow_ai_save:
+        if not core.policy.may_persist:
             raise ToolError(
                 "AI_SAVE_DISABLED",
                 "AI saving is disabled; the dirty model remains in memory for review.",
                 "Tell the user to run /save to keep the changes or /reload to discard them.",
             )
+        copy_only = not core.policy.allow_ai_save
+        if copy_only and output_path is not None and session.path is not None:
+            requested = Path(output_path).expanduser()
+            if requested.resolve() != session.path:
+                raise ToolError(
+                    "AI_SAVE_DISABLED",
+                    "saving to another path is the user's decision; this session "
+                    f"may only write its working copy ({session.name}).",
+                    "Omit output_path to write the working copy, or ask the user "
+                    "to run /save <path> in the ifc-console terminal.",
+                )
         if output_path is not None:
             target = core.require_path_allowed(Path(output_path))
             in_place = session.path is not None and target == session.path

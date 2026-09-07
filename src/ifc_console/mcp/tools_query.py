@@ -31,6 +31,7 @@ from ifc_console.ifc.query import (
 )
 from ifc_console.ifc.schema_docs import build_pset_docs, build_schema_docs, find_property
 from ifc_console.ifc.spatial import build_spatial_tree
+from ifc_console.policy.guards import exec_environment
 
 if TYPE_CHECKING:
     from ifc_console.app import AppCore
@@ -103,11 +104,16 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
                 size_bytes=s.size_bytes,
                 loaded_at=s.loaded_at,
             )
+            if s.working_copy is not None:
+                # What a save writes, and the file it deliberately does not.
+                model["working_copy"] = s.working_copy.to_dict()
+                model["origin"] = str(s.working_copy.origin)
         data = {
             "server": {"name": "ifc-console", "version": __version__},
             "model": model,
             "mode": core.policy.mode.value,
             "dirty": s.dirty,
+            "changes": s.change_count,
             "viewer": {
                 "enabled": core.viewer.enabled,
                 "connected": core.viewer.connected,
@@ -132,6 +138,7 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
             "model": {"loaded": s.loaded, "name": s.name, "schema": s.schema},
             "mode": core.policy.mode.value,
             "dirty": s.dirty,
+            "changes": s.change_count,
             "viewer": {"enabled": core.viewer.enabled, "connected": core.viewer.connected},
         }
         # Attached models and companion files are session state the LLM cannot
@@ -215,7 +222,7 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
                 }
             )
         mode = core.policy.mode.value
-        ai_save = core.policy.allow_ai_save
+        ai_save = core.policy.may_persist
         data = {
             "server": {"name": "ifc-console", "version": __version__},
             "mode": {
@@ -224,7 +231,9 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
                     "queries only; mutations and saves are blocked"
                     if mode == "ask"
                     else (
-                        "mutations run; AI saves are enabled and make automatic backups"
+                        "mutations run and may be written back to the file the "
+                        "session is editing (a working copy, unless the user "
+                        "turned that off)"
                         if ai_save
                         else "mutations stay in memory; only the user can save or discard them"
                     )
@@ -237,6 +246,17 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
                 "granted_capabilities": [
                     item.value for item in core.policy.granted_capabilities()
                 ],
+            },
+            # What execute_ifc_code will accept, resolved against this
+            # installation. Reading it costs one call; discovering it by
+            # writing a script that fails on an import costs the script.
+            "code_environment": {
+                **exec_environment(
+                    policy=core.settings.exec.import_policy,
+                    extra_import_roots=tuple(core.settings.exec.import_roots_extra),
+                ),
+                "timeout_seconds": core.settings.exec.timeout_seconds,
+                "edit_timeout_seconds": core.settings.exec.edit_timeout_seconds,
             },
             "viewer": {
                 "installed": viewer_installed,

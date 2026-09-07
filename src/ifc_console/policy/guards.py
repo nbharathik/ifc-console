@@ -29,40 +29,13 @@ import ifcopenshell.util.element
 import ifcopenshell.util.selector
 import ifcopenshell.util.unit
 
+from ifc_console.policy.imports import code_environment, import_allowed, refusal
 from ifc_console.sandbox.policy import is_sensitive_generated_path
 
 
 class GuardError(RuntimeError):
     """A runtime guard blocked the operation."""
 
-
-SAFE_IMPORT_ROOTS = {
-    "math",
-    "json",
-    "re",
-    "csv",
-    "itertools",
-    "functools",
-    "collections",
-    "statistics",
-    "datetime",
-    "textwrap",
-    "uuid",
-    "string",
-    "fractions",
-    "decimal",
-    "heapq",
-    "bisect",
-    "enum",
-    "dataclasses",
-    "typing",
-    "pprint",
-    "unicodedata",
-    "operator",
-    "copy",
-    "io",
-    "ifcopenshell",
-}
 
 _REMOVED_BUILTINS = {
     "exec",
@@ -103,6 +76,33 @@ _IO_BLOCKS = {
     "FileIO": "io.FileIO is disabled in execute_ifc_code; use the built-in open().",
 }
 
+# Only under the strict import policy. There, the small allowlist is the
+# point, and numpy's file readers would be the one way around the guarded
+# open(); under the open policy any installed library reads files, so singling
+# numpy out would be inconsistent guidance rather than a boundary.
+_NUMPY_FILE_BLOCK = (
+    "numpy.{name} reads or writes files directly, which would sidestep the "
+    "read-only, allowed-directory open() under the strict import policy. Use "
+    "the built-in open() for data files and save_ifc_file for model output."
+)
+
+_NUMPY_BLOCKS = {
+    name: _NUMPY_FILE_BLOCK.format(name=name)
+    for name in (
+        "load",
+        "loadtxt",
+        "save",
+        "savetxt",
+        "savez",
+        "savez_compressed",
+        "fromfile",
+        "genfromtxt",
+        "fromregex",
+        "memmap",
+        "DataSource",
+    )
+}
+
 # Attributes of the top-level ifcopenshell module blocked while mutation is
 # locked (each maps to the message shown to the LLM).
 _LOCKED_MODULE_BLOCKS = {
@@ -131,6 +131,45 @@ class RaisingProxy:
 
     def __repr__(self) -> str:
         return f"<blocked: {object.__getattribute__(self, '_label')}>"
+
+
+class LazyModule:
+    """A module imported on first use.
+
+    A namespace is built for every run, and importing the geometry engine or a
+    numpy-backed helper on each of them would be paid by code that never
+    touches it.
+    """
+
+    def __init__(self, name: str, blocked: dict[str, str] | None = None) -> None:
+        object.__setattr__(self, "_name", name)
+        object.__setattr__(self, "_blocked", blocked or {})
+        object.__setattr__(self, "_module", None)
+
+    def _resolve(self) -> Any:
+        module = object.__getattribute__(self, "_module")
+        if module is None:
+            import importlib
+
+            module = importlib.import_module(object.__getattribute__(self, "_name"))
+            object.__setattr__(self, "_module", module)
+        return module
+
+    def __getattr__(self, name: str) -> Any:
+        blocked = object.__getattribute__(self, "_blocked")
+        if name in blocked:
+            raise GuardError(blocked[name])
+        return getattr(LazyModule._resolve(self), name)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        raise GuardError("modifying modules is blocked in execute_ifc_code")
+
+    def __dir__(self) -> list[str]:
+        blocked = object.__getattribute__(self, "_blocked")
+        return [name for name in dir(LazyModule._resolve(self)) if name not in blocked]
+
+    def __repr__(self) -> str:
+        return f"<module {object.__getattribute__(self, '_name')}>"
 
 
 class ApiModule:
@@ -431,6 +470,8 @@ def make_import_guard(
     allow_system: bool,
     allow_mutation: bool,
     extra_deny: set[str] | None = None,
+    extra_allow: set[str] | None = None,
+    policy: str = "open",
 ) -> Callable:
     """Allowlisting __import__ replacement.
 
@@ -439,7 +480,8 @@ def make_import_guard(
     sidestep the injected shim.
     """
     real_import = _builtins.__import__
-    extra_deny = extra_deny or set()
+    denied = extra_deny or set()
+    allowed = extra_allow or set()
 
     def guarded_import(
         name: str,
@@ -451,14 +493,12 @@ def make_import_guard(
         top = name.split(".")[0]
         if allow_system:
             return real_import(name, globals, locals, fromlist, level)
-        if top in extra_deny or top not in SAFE_IMPORT_ROOTS:
-            raise ImportError(
-                f"import of {name!r} is not available in execute_ifc_code. Available: "
-                "ifcopenshell (+submodules) and stdlib data modules (math, json, re, "
-                "csv, statistics, datetime, collections, itertools, functools, ...)."
-            )
+        if not import_allowed(top, policy=policy, extra_allow=allowed, extra_deny=denied):
+            raise ImportError(refusal(name, policy=policy))
         if top == "io":
             return ModuleShim(real_import(name, globals, locals, fromlist, level), _IO_BLOCKS)
+        if top == "numpy" and name == "numpy" and policy == "strict":
+            return ModuleShim(real_import(name, globals, locals, fromlist, level), _NUMPY_BLOCKS)
         if top == "ifcopenshell" and not allow_mutation:
             if name == "ifcopenshell.api" or name.startswith("ifcopenshell.api."):
                 raise ImportError(_LOCKED_MODULE_BLOCKS["api"])
@@ -475,6 +515,54 @@ def make_import_guard(
     return guarded_import
 
 
+# Injected under a short name so ordinary work needs no import at all. Lazy:
+# the geometry engine and the numpy-backed helpers cost real time to import.
+_TOOLKIT = {
+    "np": ("numpy", None),
+    "shape_util": ("ifcopenshell.util.shape", None),
+    "placement_util": ("ifcopenshell.util.placement", None),
+    "representation_util": ("ifcopenshell.util.representation", None),
+    "schema_util": ("ifcopenshell.util.schema", None),
+    "type_util": ("ifcopenshell.util.type", None),
+    "geom": ("ifcopenshell.geom", None),
+}
+
+# Everything the namespace hands over without an import, in the order a reader
+# meets it. The values are what each name is, not how it is built.
+INJECTED_NAMES: dict[str, str] = {
+    "ifc": "the loaded IFC file",
+    "ifcopenshell": "the library",
+    "ifc_api": "ifcopenshell.api",
+    "element_util": "ifcopenshell.util.element",
+    "selector_util": "ifcopenshell.util.selector",
+    "unit_util": "ifcopenshell.util.unit",
+    "np": "numpy",
+    "geom": "ifcopenshell.geom, the tessellator",
+    "shape_util": "ifcopenshell.util.shape",
+    "placement_util": "ifcopenshell.util.placement",
+    "representation_util": "ifcopenshell.util.representation",
+    "schema_util": "ifcopenshell.util.schema",
+    "type_util": "ifcopenshell.util.type",
+    "query": "query(selector) -> elements",
+    "by_class": "by_class(name) -> elements",
+    "psets": "psets(element) -> property sets",
+    "qtos": "qtos(element) -> quantity sets",
+    "container": "container(element) -> spatial parent",
+    "get_ifc_file": "get_ifc_file() -> the file object",
+}
+
+
+def exec_environment(
+    *, policy: str = "open", extra_import_roots: tuple[str, ...] = ()
+) -> dict[str, Any]:
+    """The published answer to "what may I use", including what is injected."""
+    return code_environment(
+        policy=policy,
+        extra_import_roots=extra_import_roots,
+        injected=INJECTED_NAMES,
+    )
+
+
 def build_namespace(
     ifc_file: Any,
     *,
@@ -482,6 +570,8 @@ def build_namespace(
     allow_system: bool,
     allowed_dirs: list[Path],
     extra_system_modules: tuple[str, ...] = (),
+    extra_import_roots: tuple[str, ...] = (),
+    import_policy: str = "open",
     deny_dirs: list[Path] | None = None,
 ) -> dict[str, Any]:
     """Fresh globals dict for one execute_ifc_code run."""
@@ -491,6 +581,8 @@ def build_namespace(
         allow_system=allow_system,
         allow_mutation=allow_mutation,
         extra_deny=set(extra_system_modules),
+        extra_allow=set(extra_import_roots),
+        policy=import_policy,
     )
 
     if allow_mutation:
@@ -527,7 +619,7 @@ def build_namespace(
     def container(element: Any) -> Any:
         return ifcopenshell.util.element.get_container(element)
 
-    return {
+    namespace = {
         "__builtins__": ns_builtins,
         "__name__": "__ifc_code_exec__",
         "ifc": ifc_obj,
@@ -543,3 +635,8 @@ def build_namespace(
         "qtos": qtos,
         "container": container,
     }
+    for alias, (module, blocked) in _TOOLKIT.items():
+        if alias == "np" and import_policy == "strict":
+            blocked = _NUMPY_BLOCKS
+        namespace[alias] = LazyModule(module, blocked)
+    return namespace

@@ -52,7 +52,7 @@ def sandbox(tmp_path_factory, model_path: Path):
         deny_dirs=[denied],
         memory_mb=1024,
     )
-    process = SandboxProcess(policy, scratch)
+    process = SandboxProcess(policy, scratch, preload=("numpy", "shapely", "trimesh"))
     process.start(timeout=300)
     process.request({"op": "load", "path": str(model_path), "key": "k"}, timeout=300)
     process.model_dir = model_path.parent  # type: ignore[attr-defined]
@@ -486,3 +486,37 @@ def test_a_runaway_run_is_killed_and_the_console_survives(tmp_path, model_path) 
         assert not process.alive
     finally:
         process.terminate()
+
+
+# -- the geometry libraries the model is told it may use --------------------------
+def test_the_offered_libraries_work_inside_the_worker(sandbox) -> None:
+    """What the tool description promises must hold where read-only code runs.
+
+    trimesh touches object.__setattr__ while importing, which the audit hook
+    refuses once user code is running, so the worker imports the offered
+    libraries before the hook goes up. Without that this reads as "trimesh is
+    available" and then fails on the import.
+    """
+    for code, expected in (
+        ("import numpy as np\nfloat(np.linalg.norm([3, 4]))", "5.0"),
+        (
+            "from shapely.geometry import Polygon\n"
+            "float(Polygon([(0, 0), (2, 0), (2, 2), (0, 2)]).area)",
+            "4.0",
+        ),
+        ("import trimesh\nint(trimesh.creation.box((1, 2, 3)).volume)", "6"),
+    ):
+        reply = run(sandbox, code)
+        assert reply["ok"] is True, reply
+        assert reply["result"] == expected
+
+
+def test_an_unlisted_library_imports_and_a_capability_does_not(sandbox) -> None:
+    reply = run(sandbox, "import sysconfig\nbool(sysconfig.get_paths())")
+    assert reply["ok"] is True
+    assert reply["result"] == "True"
+
+    for root in ("subprocess", "httpx", "ifc_console"):
+        refused = run(sandbox, f"import {root}")
+        assert refused["ok"] is False, root
+        assert "blocked" in refused["message"], root

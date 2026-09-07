@@ -70,11 +70,18 @@ def _triple(value: Any) -> list[float] | None:
 
 
 def _guid_list(value: Any) -> list[str]:
+    """Clean, de-duplicated, first occurrence wins.
+
+    A pick in the tab is a mesh, and one element can own several; models with
+    repeated GlobalIds exist too. Either way the same id twice is one element
+    to every tool downstream, so it is listed once.
+    """
     if not isinstance(value, list):
         return []
-    return [
+    cleaned = [
         guid for guid in value if isinstance(guid, str) and 0 < len(guid) <= _MAX_GUID_LENGTH
-    ][:500]
+    ]
+    return list(dict.fromkeys(cleaned))[:500]
 
 
 def _number(value: Any) -> float | None:
@@ -826,6 +833,12 @@ class ViewerHub:
             "mode": self.core.policy.mode.value,
             "theme": resolve_theme(self.core.ui_theme),
             "dirty": s.dirty,
+            # What a save would write, and how much is waiting for one.
+            "changes": s.change_count,
+            "origin": s.origin_name,
+            "working_copy": (
+                s.working_copy.to_dict() if s.working_copy is not None else None
+            ),
             "fingerprint": s.fingerprint,
             # The file's own length unit: the viewer measures in SI metres and
             # cannot label a number without it.
@@ -897,16 +910,7 @@ class ViewerHub:
         ftype = frame.get("type")
         client.touch()
         if ftype == "selection":
-            supplied_guids = frame.get("guids")
-            guids = (
-                [
-                    guid
-                    for guid in supplied_guids
-                    if isinstance(guid, str) and 0 < len(guid) <= _MAX_GUID_LENGTH
-                ][:500]
-                if isinstance(supplied_guids, list)
-                else []
-            )
+            guids = _guid_list(frame.get("guids"))
             requested_model = frame.get("model_id")
             if "model_id" not in frame:
                 model_id = self.core.models.active_id
@@ -942,18 +946,14 @@ class ViewerHub:
                         or not isinstance(supplied, list)
                     ):
                         continue
-                    cleaned = [
-                        guid
-                        for guid in supplied
-                        if isinstance(guid, str) and 0 < len(guid) <= _MAX_GUID_LENGTH
-                    ][:500]
+                    cleaned = _guid_list(supplied)
                     if cleaned:
-                        selections[selected_model] = list(dict.fromkeys(cleaned))
+                        selections[selected_model] = cleaned
             elif model_id is not None and guids:
                 # Older viewers publish only the current model.
-                selections[model_id] = list(dict.fromkeys(guids))
+                selections[model_id] = list(guids)
             if model_id is not None and guids and model_id not in selections:
-                selections[model_id] = list(dict.fromkeys(guids))
+                selections[model_id] = list(guids)
             for selected_model in previous_selection_models | set(selections):
                 client.selection_versions[selected_model] = client.selection_order
             client.selections = selections
@@ -1313,8 +1313,11 @@ class ViewerHub:
                 "etag": self.model_etag(),
                 "reason": reasons[etype],
                 "dirty": self.core.session.dirty,
+                "changes": self.core.session.change_count,
                 "geometry": self._geometry_changed(etype, event),
             }
+            if etype == "model_mutated" and event.get("description"):
+                frame["description"] = str(event["description"])[:200]
             touched = _guid_list(event.get("guids"))
             if touched:
                 frame["elements"] = touched
@@ -1330,6 +1333,8 @@ class ViewerHub:
             frame = self.status_payload()
         elif etype == "mode_changed":
             frame = {"type": "mode_changed", "mode": event.get("mode")}
+        elif etype == "working_copy_created":
+            frame = self.status_payload()
         elif etype == "theme_changed":
             frame = {"type": "theme", "theme": event.get("theme")}
         if frame is None or not self.clients:

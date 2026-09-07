@@ -548,6 +548,61 @@
   font-size: 12.5px;
 }
 .chat-alert[hidden] { display: none; }
+
+/* Unsaved edits, above the conversation: what changed and what to do with it. */
+.chat-changes {
+  flex: none;
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  margin: 8px 10px 0;
+  padding: 7px 10px;
+  background: var(--chat-raise);
+  border: 1px solid var(--chat-line);
+  border-left: 3px solid var(--chat-accent);
+  border-radius: var(--chat-radius);
+  font-size: 12.5px;
+}
+
+.chat-changes[hidden] { display: none; }
+
+.chat-changes-text {
+  display: grid;
+  gap: 1px;
+  min-width: 0;
+  flex: 1;
+}
+
+.chat-changes-text b { color: var(--chat-text); font-size: 12.5px; }
+
+.chat-changes-text small {
+  overflow: hidden;
+  color: var(--chat-dim);
+  font-size: 11.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-changes-act {
+  flex: none;
+  padding: 4px 10px;
+  color: var(--chat-deep);
+  background: var(--chat-accent);
+  border: 1px solid var(--chat-accent);
+  border-radius: 3px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.chat-changes-act.ghost {
+  color: var(--chat-dim);
+  background: transparent;
+  border-color: var(--chat-line);
+  font-weight: 500;
+}
+
+.chat-changes-act.ghost:hover { color: var(--chat-text); border-color: var(--chat-accent); }
+.chat-changes-act[disabled] { opacity: 0.6; }
 .chat-alert b { color: var(--chat-warn); font-size: 12.5px; }
 .chat-alert span { color: var(--chat-dim); }
 .chat-alert code {
@@ -776,7 +831,8 @@
 .chat-body { min-width: 0; max-width: 100%; }
 .chat-stream { display: flex; flex-direction: column; }
 .chat-stream > * + * { margin-top: 10px; }
-.chat-stream > .chat-tool-card + .chat-tool-card { margin-top: 3px; }
+.chat-stream > :is(.chat-tool-card, .chat-approval) + :is(.chat-tool-card, .chat-approval),
+.chat-stream > .chat-tool-card + .chat-approval[hidden] + .chat-tool-card { margin-top: 3px; }
 
 .chat-answer { word-break: break-word; }
 .chat-answer.stopped { color: var(--chat-dim); font-style: italic; }
@@ -1076,6 +1132,9 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.chat-tool-approved { display: grid; flex: none; place-items: center; color: var(--chat-ok); }
+.chat-tool-approved svg { width: 12px; height: 12px; }
+.chat-tool-approved[hidden] { display: none; }
 .chat-tool-time {
   flex: none;
   color: var(--chat-quiet);
@@ -1222,87 +1281,93 @@
 }
 
 /* -- proposals */
-/* An approval stops the run, so it is the loudest thing in the transcript
-   while it waits and the quietest once it is answered. */
+/* -- one row per gated call
+   While it waits the row is the loudest thing in the transcript and holds the
+   answer. Once the call has run, the decision is a mark on the tool card and
+   this row is gone; only a denial stays, as one quiet line. */
 .chat-approval {
+  position: relative;
   min-width: 0;
   max-width: 100%;
-  margin: 8px 0;
-  background: var(--chat-raise);
-  border: 1px solid var(--chat-line);
-  border-left: 3px solid var(--chat-warn);
-  border-radius: var(--chat-radius);
-  overflow: hidden;
+  overflow: clip;
+  border: 1px solid color-mix(in srgb, var(--chat-line) 86%, transparent);
+  border-radius: 7px;
+}
+.chat-approval[hidden] { display: none; }
+.chat-approval::before {
+  position: absolute;
+  inset: 5px auto 5px 0;
+  width: 2px;
+  background: var(--chat-warn);
+  border-radius: 0 2px 2px 0;
+  content: "";
 }
 .chat-approval.waiting {
-  background: color-mix(in srgb, var(--chat-warn) 8%, var(--chat-raise));
-  border-color: color-mix(in srgb, var(--chat-warn) 45%, transparent);
-  border-left-color: var(--chat-warn);
+  background: color-mix(in srgb, var(--chat-warn) 7%, transparent);
+  border-color: color-mix(in srgb, var(--chat-warn) 40%, transparent);
 }
-.chat-approval.approved { border-left-color: var(--chat-ok); }
-.chat-approval.denied { border-left-color: var(--chat-bad); }
+.chat-approval.approved::before { background: var(--chat-ok); }
+.chat-approval.denied::before { background: var(--chat-bad); }
 .chat-approval-head {
   display: flex;
   align-items: center;
-  gap: 8px;
-  min-width: 0;
-  padding: 6px 9px;
+  gap: 7px;
+  min-height: 26px;
+  padding: 2px 7px 2px 9px;
   cursor: pointer;
+  font-family: var(--chat-mono);
+  font-size: 11.5px;
   list-style: none;
 }
 .chat-approval-head::-webkit-details-marker { display: none; }
-.chat-approval-toggle {
-  flex: none;
-  width: 6px;
-  height: 6px;
-  border-right: 1px solid currentColor;
-  border-bottom: 1px solid currentColor;
-  color: var(--chat-quiet);
-  transform: rotate(45deg);
-  transition: transform var(--chat-ease);
-}
-.chat-approval[open] .chat-approval-toggle { transform: rotate(225deg); }
-.chat-approval-body {
-  display: grid;
-  gap: 5px;
-  min-width: 0;
-  padding: 7px 9px 8px;
-  border-top: 1px solid color-mix(in srgb, var(--chat-line) 70%, transparent);
-}
+.chat-approval-head:hover { background: color-mix(in srgb, var(--chat-hover) 72%, transparent); }
+.chat-approval-head:focus-visible { outline-offset: -3px; }
 .chat-approval-mark { display: grid; flex: none; place-items: center; color: var(--chat-warn); }
+.chat-approval-mark svg { width: 12px; height: 12px; }
 .chat-approval.approved .chat-approval-mark { color: var(--chat-ok); }
 .chat-approval.denied .chat-approval-mark { color: var(--chat-bad); }
-.chat-approval-copy { display: grid; flex: 1; min-width: 0; gap: 1px; }
-.chat-approval-copy b { color: var(--chat-text); font-size: 12.5px; }
-.chat-approval-copy code {
+.chat-approval-name {
+  flex: 0 1 auto;
+  min-width: 0;
   overflow: hidden;
-  color: var(--chat-dim);
-  font-family: var(--chat-mono);
-  font-size: 11.5px;
+  color: var(--chat-text);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .chat-approval-state {
-  flex: none;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
   color: var(--chat-quiet);
-  font-family: var(--chat-mono);
-  font-size: 10.5px;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .chat-approval.waiting .chat-approval-state { color: var(--chat-warn); }
 .chat-approval.approved .chat-approval-state { color: var(--chat-ok); }
 .chat-approval.denied .chat-approval-state { color: var(--chat-bad); }
-/* The change in the reader's words, above the tool's arguments. Approving a
-   write to a building model is the highest-stakes click in the panel and it
-   used to be made against pretty-printed JSON. */
+.chat-approval-caret {
+  display: grid;
+  flex: none;
+  place-items: center;
+  color: var(--chat-quiet);
+  transition: transform var(--t-fast) var(--t-out);
+}
+.chat-approval-caret svg { width: 12px; height: 12px; }
+.chat-approval-fold[open] .chat-approval-caret { transform: rotate(90deg); }
+.chat-approval-body {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  padding: 7px 9px 8px;
+  border-top: 1px solid var(--chat-line);
+}
 .chat-approval-headline {
   margin: 0;
   color: var(--chat-text);
-  font-size: 12.5px;
+  font-size: 12px;
   line-height: 1.4;
 }
-.chat-approval-headline:empty { display: none; }
 .chat-approval-headline[hidden] { display: none; }
 .chat-approval-facts {
   display: grid;
@@ -1325,8 +1390,9 @@
   overflow-wrap: anywhere;
 }
 .chat-approval-caps { display: flex; flex-wrap: wrap; gap: 4px; }
+.chat-approval-caps[hidden] { display: none; }
 .chat-approval-caps code {
-  padding: 2px 6px;
+  padding: 1px 6px;
   color: var(--chat-accent-bright);
   background: var(--chat-deep);
   border: 1px solid var(--chat-line);
@@ -1335,18 +1401,24 @@
   font-size: 10.5px;
 }
 .chat-approval-args {
+  display: grid;
+  gap: 4px;
   min-width: 0;
   max-width: 100%;
 }
-.chat-approval-args summary {
+.chat-approval-args[hidden] { display: none; }
+.chat-approval-args-label {
   color: var(--chat-quiet);
-  cursor: pointer;
-  font-size: 11.5px;
+  font-family: var(--chat-mono);
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
 }
 .chat-approval-args pre {
   min-width: 0;
   max-width: 100%;
-  margin: 5px 0 0;
+  margin: 0;
   max-height: min(130px, 22vh);
   overflow-x: auto;
   overflow-y: auto;
@@ -1365,24 +1437,51 @@
   font: 11.5px/1.5 var(--chat-mono);
   white-space: pre;
 }
+/* The answer on one short row: a question, not a dialog. */
 .chat-approval-actions {
   display: flex;
   align-items: center;
-  flex-wrap: wrap;
-  justify-content: flex-end;
   gap: 6px;
-  margin-top: 1px;
-}
-/* Three choices on one short row: the card is a question, not a dialog. */
-.chat-root .chat-approval-actions .chat-btn {
-  min-height: 26px;
-  padding: 2px 9px;
-  font-size: 12.5px;
+  min-width: 0;
+  padding: 0 7px 6px 9px;
 }
 .chat-approval-actions[hidden] { display: none; }
+.chat-approval-ask {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--chat-dim);
+  font-size: 11.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chat-approval-always {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+  color: var(--chat-quiet);
+  cursor: pointer;
+  font-family: var(--chat-mono);
+  font-size: 10.5px;
+  white-space: nowrap;
+}
+.chat-approval-always:hover { color: var(--chat-text); }
+.chat-approval-always input {
+  width: 12px;
+  height: 12px;
+  margin: 0;
+  accent-color: var(--chat-accent);
+}
+.chat-root .chat-approval-actions .chat-btn {
+  flex: none;
+  min-height: 22px;
+  padding: 1px 8px;
+  font-size: 11.5px;
+}
 .chat-root .chat-approval-deny { color: var(--chat-bad); border-color: var(--chat-line); }
 .chat-root .chat-approval-deny:hover:not(:disabled) { border-color: var(--chat-bad); }
-.chat-root .chat-approval-always { white-space: nowrap; }
 
 /* Autonomy sits beside mode and reads the same way: quiet when it is the
    careful setting, warm when the assistant has been let off the leash. */
@@ -1707,7 +1806,10 @@
   text-align: left;
 }
 .chat-root .chat-plus-item { grid-template-columns: 20px minmax(0, 1fr); }
-.chat-root .chat-suggest-item { grid-template-columns: minmax(0, 1fr) auto; }
+/* The name owns the row and the hint takes what is left: a long description
+   used to size its own track and ellipsize the command it belongs to. */
+.chat-root .chat-suggest-item { grid-template-columns: minmax(0, auto) minmax(0, 1fr); }
+.chat-suggest-item small { text-align: right; }
 .chat-plus-item i { display: grid; place-items: center; color: var(--chat-quiet); }
 .chat-plus-item span { display: grid; min-width: 0; line-height: 1.25; }
 .chat-plus-item b,
@@ -3127,7 +3229,8 @@
 @media (forced-colors: active) {
   .chat-route,
   .chat-mode,
-  .chat-tool-card { forced-color-adjust: none; }
+  .chat-tool-card,
+  .chat-approval { forced-color-adjust: none; }
   .chat-root button:focus-visible,
   .chat-root input:focus-visible,
   .chat-root select:focus-visible,

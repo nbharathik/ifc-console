@@ -494,7 +494,7 @@ async def test_bare_agent_opens_general_directly(
     assert console.core.viewer.enabled is True
     assert console.core.chat.enabled is True
     assert "/viewer?panel=agents" in no_browser[0]
-    assert "General" in console.text
+    assert "Agent" in console.text
     assert "available agents" not in console.text
     assert "prompts and model context may go to the provider" in console.text
 

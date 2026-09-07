@@ -61,14 +61,24 @@ class PolicyEngine:
         *,
         allow_system_access: bool,
         allow_ai_save: bool = False,
+        allow_copy_save: bool = False,
         events: EventBus | None = None,
         audit: AuditLog | None = None,
     ) -> None:
         self.mode = mode
         self.allow_system_access = allow_system_access
         self.allow_ai_save = allow_ai_save
+        # Set while the session edits a working copy. It grants persistence
+        # only: the file the user opened is not the save target, so writing
+        # the model back destroys nothing. It never grants system access.
+        self.allow_copy_save = allow_copy_save
         self._events = events
         self._audit = audit
+
+    @property
+    def may_persist(self) -> bool:
+        """Whether an AI tool may write the model to its own file."""
+        return self.allow_ai_save or self.allow_copy_save
 
     # -- gate matrix --------------------------------------------------------
     def decide(self, op_class: OpClass) -> Verdict:
@@ -87,7 +97,7 @@ class PolicyEngine:
 
     def granted_capabilities(self, *, authority: Authority = "tool") -> tuple[Capability, ...]:
         granted = set(ASK_CAPABILITIES if self.mode is Mode.ASK else EDIT_CAPABILITIES)
-        if authority == "tool" and not self.allow_ai_save:
+        if authority == "tool" and not self.may_persist:
             granted.difference_update({Capability.MODEL_COMMIT, Capability.MODEL_RESTORE})
         if authority in ("caller", "worker"):
             granted.update(CALLER_ONLY_CAPABILITIES)
@@ -113,7 +123,7 @@ class PolicyEngine:
             rule = "compatibility profile grants every requested capability"
         elif (
             authority == "tool"
-            and not self.allow_ai_save
+            and not self.may_persist
             and any(item in (Capability.MODEL_COMMIT, Capability.MODEL_RESTORE) for item in missing)
         ):
             rule = "AI persistence is disabled by files.allow_ai_save"
@@ -160,7 +170,7 @@ class PolicyEngine:
             )
         if (
             authority == "tool"
-            and not self.allow_ai_save
+            and not self.may_persist
             and any(
                 item in (Capability.MODEL_COMMIT, Capability.MODEL_RESTORE)
                 for item in decision.missing

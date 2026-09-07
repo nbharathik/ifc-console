@@ -1034,3 +1034,88 @@ async def test_model_bytes_cache_survives_switching(viewer_core, tmp_path: Path)
     hub.cache_model_bytes(annex_etag, b"annex")
     assert hub.cached_model_bytes(active_etag) == b"active"
     assert hub.cached_model_bytes(annex_etag) == b"annex"
+
+
+# --------------------------------------------------- saving and downloading
+async def test_the_viewer_reports_what_a_save_would_write(viewer_core, work_model: Path):
+    await viewer_core.enter_edit_mode(by="test")
+    client = _http_client(viewer_core)
+
+    state = client.get("/api/model/state", headers=_auth(viewer_core)).json()
+
+    assert state["loaded"] is True
+    assert state["mode"] == "edit"
+    assert state["changes"] == 0
+    assert state["origin"] == work_model.name
+    assert state["working_copy"]["origin_name"] == work_model.name
+    assert state["save_target"] == state["working_copy"]["path"]
+
+
+async def test_saving_from_the_viewer_writes_the_copy_only(viewer_core, work_model: Path):
+    copy = await viewer_core.enter_edit_mode(by="test")
+    assert copy is not None
+    before = work_model.read_bytes()
+    session = viewer_core.session
+    await session.run(lambda: session.ifc.create_entity("IfcSite", GlobalId="1" * 22))
+    session.mark_dirty()
+    session.record_change("added a site", tool="test")
+    client = _http_client(viewer_core)
+
+    payload = client.post("/api/model/save", headers=_auth(viewer_core)).json()
+
+    assert payload == {
+        "ok": True,
+        "saved": True,
+        "dirty": False,
+        "changes": 0,
+        "saved_changes": 1,
+        "path": str(copy.path),
+        "working_copy": True,
+        "origin": work_model.name,
+    }
+    assert work_model.read_bytes() == before
+
+
+async def test_saving_a_clean_model_is_a_no_op(viewer_core):
+    client = _http_client(viewer_core)
+
+    payload = client.post("/api/model/save", headers=_auth(viewer_core)).json()
+
+    assert payload == {"ok": True, "saved": False, "dirty": False, "changes": 0}
+
+
+async def test_the_model_can_be_downloaded_as_a_named_file(viewer_core, work_model: Path):
+    client = _http_client(viewer_core)
+
+    response = client.get("/api/model.ifc?download=1", headers=_auth(viewer_core))
+
+    assert response.status_code == 200
+    assert response.headers["content-disposition"] == 'attachment; filename="work.ifc"'
+    assert response.content.startswith(b"ISO-10303-21")
+
+
+async def test_a_downloaded_edit_is_named_edited(viewer_core, work_model: Path):
+    session = viewer_core.session
+    session.mark_dirty()
+    session.record_change("added a site", tool="test")
+    client = _http_client(viewer_core)
+
+    response = client.get("/api/model.ifc?download=1", headers=_auth(viewer_core))
+
+    assert response.headers["content-disposition"] == 'attachment; filename="work-edited.ifc"'
+
+
+async def test_the_agent_panel_can_download_without_the_viewer(core, work_model: Path):
+    """The file is the user's; asking for it is not a viewer surface."""
+    await core.open_model(work_model)
+    client = _http_client(core)
+
+    assert client.get("/api/model.ifc?download=1", headers=_auth(core)).status_code == 404
+
+    core.enable_chat()
+    response = client.get("/api/model.ifc?download=1", headers=_auth(core))
+
+    assert response.status_code == 200
+    assert response.headers["content-disposition"] == 'attachment; filename="work.ifc"'
+    # streaming for a tab still belongs to the viewer
+    assert client.get("/api/model.ifc", headers=_auth(core)).status_code == 404

@@ -224,7 +224,14 @@ with its per-property provenance record in one ChangeSet. See
 
 `execute_ifc_code` accepts `code` and an audited `description`. The environment
 provides `ifc`, `ifcopenshell`, `ifc_api`, common utilities,
-`query(selector)`, and `get_ifc_file()`.
+`query(selector)`, and `get_ifc_file()`, plus the geometry set `np` (numpy),
+`geom` (`ifcopenshell.geom`), `shape_util`, `placement_util`,
+`representation_util`, `schema_util`, and `type_util`. Any installed package is
+importable except a denied set covering the operating system, the network,
+other processes, credentials, deserializers that execute what they read, and
+this console; numpy, shapely and trimesh ship already. The tool description
+names what this installation actually has, so a model does not spend a script
+finding out. See [Code sandbox](sandbox.md#what-generated-code-can-reach).
 
 Read-only code is allowed in `ask` or `edit`; mutations require `edit`.
 Eligible reads use the generated-code sandbox. Results include stdout, final
@@ -237,7 +244,7 @@ expression, classification, mutation state, sandbox state, and duration. See
 | ---- | ------- |
 | `list_ifc_files` | allowed IFC files and recents |
 | `open_ifc_file` | replace the active model, refusing unsaved changes |
-| `save_ifc_file` | atomic save with backup and AI-save policy |
+| `save_ifc_file` | atomic save; in edit mode it writes the working copy |
 | `find_files` | find supported files without opening them |
 | `list_models` | resident models, companions, and memory budget |
 | `attach` / `detach` | add or release IFC, IDS, BCF, or CSV attachments |

@@ -21,6 +21,7 @@ from typing import Any, TypeVar
 
 from ifc_console.core.results import ToolError
 from ifc_console.session.backups import BackupStore
+from ifc_console.session.working_copy import WorkingCopy
 
 T = TypeVar("T")
 
@@ -49,6 +50,14 @@ class ModelSession:
         self.disk_key: tuple[int, int] | None = None
         self.dirty: bool = False
         self.tainted: bool = False
+        # Set while this session edits a snapshot instead of the opened file.
+        # `path` is the copy from then on; `working_copy.origin` names what the
+        # user actually opened, which nothing in the session writes.
+        self.working_copy: WorkingCopy | None = None
+        # What has changed since the last load or save, for the surfaces that
+        # offer to save it. The list is capped; the counter is not.
+        self.change_count: int = 0
+        self.change_log: list[dict[str, Any]] = []
         self.poisoned: bool = False
         self._timeout_poisoned = False
         self._cancelled_jobs = 0
@@ -69,6 +78,16 @@ class ModelSession:
     @property
     def name(self) -> str | None:
         return self.path.name if self.path else None
+
+    @property
+    def origin_path(self) -> Path | None:
+        """The file the user opened: the working copy's origin, or `path`."""
+        return self.working_copy.origin if self.working_copy else self.path
+
+    @property
+    def origin_name(self) -> str | None:
+        origin = self.origin_path
+        return origin.name if origin else None
 
     def matches_disk(self) -> bool:
         """True when the file on disk is byte-identical to the loaded model.
@@ -181,6 +200,10 @@ class ModelSession:
             )
         if generation != self._generation:
             return  # a recover() superseded this job; its result is stale
+        # Reloading the same file keeps the working copy; opening another one
+        # is a different model and starts from its own file again.
+        if self.path is None or path != self.path:
+            self.working_copy = None
         self.ifc = ifc
         self.path = path
         self.schema = getattr(ifc, "schema", None)
@@ -191,6 +214,8 @@ class ModelSession:
         self.disk_key = (stat.st_size, stat.st_mtime_ns)
         self.dirty = False
         self.tainted = False
+        self.change_count = 0
+        self.change_log.clear()
         self.revision += 1
 
     async def open(self, path: Path, *, max_mb: int | None = None) -> None:
@@ -254,6 +279,37 @@ class ModelSession:
         self.dirty = True
         self.revision += 1
 
+    def record_change(self, description: str, *, tool: str = "") -> int:
+        """Log one announced edit and return the running change count."""
+        self.change_count += 1
+        self.change_log.append(
+            {
+                "at": datetime.now(timezone.utc).isoformat(),
+                "tool": tool,
+                "description": (description or "model edit").strip()[:200],
+            }
+        )
+        del self.change_log[:-100]
+        return self.change_count
+
+    def changes_summary(self, limit: int = 5) -> dict[str, Any]:
+        return {
+            "count": self.change_count,
+            "recent": [entry["description"] for entry in self.change_log[-limit:]],
+        }
+
+    def adopt_working_copy(self, copy: WorkingCopy) -> None:
+        """Point the session at a byte-identical copy of the loaded file.
+
+        The bytes are the same, so the digest still describes them; only the
+        path and the (size, mtime) pair the fast reader compares move over.
+        """
+        stat = copy.path.stat()
+        self.working_copy = copy
+        self.path = copy.path
+        self.disk_key = (stat.st_size, stat.st_mtime_ns) if not self.dirty else None
+        self.revision += 1
+
     def max_id(self) -> int | None:
         """Cheap mutation canary; call only from inside the worker."""
         try:
@@ -279,6 +335,9 @@ class ModelSession:
                 f"{target.name} changed on disk after it was opened.",
                 "Reload the model and review the external change before saving.",
             )
+
+    def _is_working_copy(self, target: Path) -> bool:
+        return self.working_copy is not None and target == self.working_copy.path
 
     def _save_sync(self, target: Path, backups: BackupStore, generation: int) -> dict[str, Any]:
         self._verify_expected_target(target)
@@ -307,7 +366,9 @@ class ModelSession:
             del verified
 
             self._verify_expected_target(target)
-            backup_path = backups.backup(target)  # a failed backup aborts the save
+            # A working copy needs no backup: the file the user opened has not
+            # been written, so it is the snapshot a backup would be.
+            backup_path = None if self._is_working_copy(target) else backups.backup(target)
             self._verify_expected_target(target)
             os.replace(tmp, target)
             self._fsync_directory(target.parent)
@@ -335,12 +396,15 @@ class ModelSession:
         self.size_bytes = saved_stat.st_size
         self.disk_key = (saved_stat.st_size, saved_stat.st_mtime_ns)
         self.dirty = False
+        self.change_count = 0
+        self.change_log.clear()
         self.revision += 1
         return {
             "path": str(target),
             "size_bytes": self.size_bytes,
             "backup_path": str(backup_path) if backup_path else None,
             "fingerprint": self.fingerprint,
+            "working_copy": self._is_working_copy(target),
         }
 
     async def save(self, target: Path, backups: BackupStore) -> dict[str, Any]:
@@ -363,6 +427,14 @@ class ModelSession:
                 fingerprint=self.fingerprint,
                 source_sha256=self.source_sha256,
             )
+            meta["changes"] = self.change_count
+            if self.working_copy is not None:
+                # The same key names the fuller payloads use, so `origin` is
+                # never a path in one place and a filename in another.
+                meta["working_copy"] = {
+                    "name": self.working_copy.path.name,
+                    "origin_name": self.working_copy.origin.name,
+                }
             if self.tainted:
                 meta["warning"] = (
                     "session tainted: guarded code may have mutated the in-memory "

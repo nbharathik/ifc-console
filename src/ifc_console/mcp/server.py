@@ -44,9 +44,13 @@ Session modes (the USER controls them in their terminal; you cannot):
   write a file fails with ASK_MODE_BLOCKED. Writing and showing code is
   always fine; to actually make changes, ask the user to switch to edit
   mode (/mode edit in the ifc-console terminal), then retry.
-- edit: in-memory mutations run and refresh the viewer. AI saving is separately
-  controlled by files.allow_ai_save and is off by default. When it is off,
-  only the user can persist changes with /save; /reload discards them.
+- edit: in-memory mutations run and the viewer refreshes itself from memory,
+  so the user sees an edit as soon as it lands. No save is needed for that.
+  Entering edit mode copies the open file aside, and meta.working_copy names
+  the copy: from then on every save writes the copy and the file the user
+  opened is never written. That is why save_ifc_file is available in edit mode
+  (meta.ai_save_allowed=true) even though files.allow_ai_save is off; without
+  a working copy it stays the user's decision (/save keeps, /reload discards).
 
 Workflow:
 1. orient to get status, project summary, and the spatial tree in one call
@@ -61,15 +65,23 @@ Workflow:
    These are offline and cheap; guessing a property or API name is not.
 4. execute_ifc_code for anything the tools don't cover. Namespace: ifc,
    ifcopenshell, ifc_api, element_util, selector_util, unit_util, query(sel),
-   by_class(name), psets(e), qtos(e), container(e), get_ifc_file(). stdout is
+   by_class(name), psets(e), qtos(e), container(e), get_ifc_file(), and for
+   geometry np (numpy), geom (ifcopenshell.geom), shape_util, placement_util,
+   representation_util, schema_util, type_util. Any installed package is
+   importable (numpy, shapely and trimesh are present); the machine, the
+   network, other processes, credentials and this console are not. The tool
+   description lists what this installation has, so read it rather than
+   guessing. stdout is
    captured; a final bare expression is returned. In edit mode reach the API
    as ifc_api.<module>.<function>(ifc, ...), e.g. ifc_api.pset.add_pset.
    For mutating runs, fill `description` with one line of intent; the user
    sees it in their terminal and audit log.
-5. After mutations the model is dirty (meta.dirty=true). Check
-   meta.ai_save_allowed: when false, tell the user to review and run /save or
-   /reload; when true, finish the batch with save_ifc_file. Don't save after
-   every micro-edit.
+5. After mutations the model is dirty (meta.dirty=true) and meta.changes
+   counts them. The viewer is already showing them; never tell the user to
+   save so they can see a change. Check meta.ai_save_allowed: when true,
+   finish the batch with save_ifc_file (with a working copy that writes the
+   copy, not their file); when false, tell the user to review and run /save
+   or /reload. Don't save after every micro-edit.
 6. Errors come back as {ok:false, error:{code, message, hint}}; follow the
    hint instead of retrying blindly.
 
@@ -586,7 +598,14 @@ def build_http_app(
                 # Two independent controls: what the assistant may touch,
                 # and whether it stops to ask before touching it.
                 "ai_autonomy": core.ai_autonomy,
-                "ai_save_allowed": core.policy.allow_ai_save,
+                "ai_save_allowed": core.policy.may_persist,
+                # What a save would write, and how much is waiting for it.
+                "working_copy": (
+                    s.working_copy.to_dict() if s.working_copy is not None else None
+                ),
+                "changes": s.change_count,
+                "recent_changes": s.changes_summary()["recent"],
+                "save_target": str(s.path) if s.path else None,
                 "theme": resolve_theme(core.ui_theme),
                 "dirty": s.dirty,
                 "fingerprint": s.fingerprint,

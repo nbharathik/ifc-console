@@ -104,6 +104,19 @@ class SandboxRunner:
             memory_mb=self.settings.memory_mb,
         )
 
+    def _preload_names(self) -> tuple[str, ...]:
+        """Libraries the worker must import before the audit hook is armed.
+
+        A library that touches object.__setattr__ while importing cannot be
+        imported by generated code afterwards, and trimesh does. Only what is
+        installed is named, so the worker never pays for an absent package.
+        """
+        from ifc_console.policy.imports import IMPORT_GROUPS, is_installed
+
+        wanted = list(IMPORT_GROUPS["geometry and numerics"])
+        wanted += list(self.core.settings.exec.import_roots_extra)
+        return tuple(name for name in dict.fromkeys(wanted) if is_installed(name))
+
     def _scratch_dir(self) -> Path:
         if self._scratch is None:
             import os
@@ -145,6 +158,8 @@ class SandboxRunner:
         output_limit: int,
         timeout: float,
         extra_system_modules: tuple[str, ...] = (),
+        extra_import_roots: tuple[str, ...] = (),
+        import_policy: str = "open",
     ) -> SandboxResult:
         """Execute in the worker. Raises SandboxError if the worker cannot serve."""
         async with self._lock:
@@ -155,6 +170,8 @@ class SandboxRunner:
                 "output_limit": output_limit,
                 "allowed_dirs": [str(d) for d in self.core.allowed_dirs],
                 "extra_system_modules": list(extra_system_modules),
+                "extra_import_roots": list(extra_import_roots),
+                "import_policy": import_policy,
             }
             start = time.perf_counter()
             try:
@@ -196,7 +213,9 @@ class SandboxRunner:
 
         if self._process is None:
             scratch = self._scratch_dir()
-            process = SandboxProcess(self._policy(scratch), scratch)
+            process = SandboxProcess(
+                self._policy(scratch), scratch, preload=self._preload_names()
+            )
             try:
                 await asyncio.to_thread(process.start, self.settings.startup_timeout)
             except SandboxTimeout as exc:

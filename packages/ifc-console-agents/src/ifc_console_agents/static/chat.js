@@ -17,6 +17,7 @@ import {
 import {
   STAGES,
   applyEvent,
+  approvalBefore,
   composerIntent,
   duration,
   emptyRun,
@@ -30,6 +31,7 @@ import {
 } from "./chat_flow.js";
 import {
   formatBytes as formatMemoryBytes,
+  isSevere as memoryIsSevere,
   memoryReport,
   reliefPlan,
   sampleHeap,
@@ -248,6 +250,20 @@ const TEMPLATE = `
 
   <div class="chat-alert t-reveal" data-role="alert" hidden role="status"></div>
 
+  <!-- What the edits are sitting in, and the two things a person can do with
+       them. It appears with the first change and leaves when nothing is
+       waiting, so the row costs nothing while reading. -->
+  <div class="chat-changes t-reveal" data-role="changes" hidden>
+    <span class="chat-changes-text">
+      <b data-role="changes-count">0 changes</b>
+      <small data-role="changes-note"></small>
+    </span>
+    <button class="chat-changes-act t-press" data-act="save-model" type="button"
+            data-role="changes-save">Save IFC</button>
+    <button class="chat-changes-act ghost t-press" data-act="download-model" type="button"
+            title="Download the model as it is now, without saving">Download</button>
+  </div>
+
   <div class="chat-notifications" data-role="notifications" aria-label="Notifications"></div>
 
   <div class="chat-log" data-role="log" role="log" aria-label="Conversation" aria-live="off"></div>
@@ -256,7 +272,8 @@ const TEMPLATE = `
     <div class="chat-attachments" data-role="attachments" hidden></div>
     <div class="chat-input-wrap">
       <textarea data-role="input" rows="1" maxlength="100000"
-                placeholder="Ask about the model..." aria-label="Message"></textarea>
+                placeholder="Ask about the model... @ workflow, # skill, / command"
+                aria-label="Message"></textarea>
       <div class="chat-input-toolbar">
         <div class="chat-context-rail" aria-label="AI and IFC context">
           <button class="chat-attach chat-plus t-press" data-act="plus" type="button"
@@ -305,15 +322,11 @@ const TEMPLATE = `
             <div><dt><kbd>Shift</kbd> + <kbd>Enter</kbd></dt><dd>Start a new line</dd></div>
             <div><dt><kbd>Enter</kbd></dt><dd>Queue a message while a response is running</dd></div>
             <div><dt><kbd>Esc</kbd></dt><dd>Stop the active response</dd></div>
+            <div><dt><kbd>@</kbd></dt><dd>Workflows, the 3D selection, saved views, files</dd></div>
+            <div><dt><kbd>#</kbd></dt><dd>Saved skills</dd></div>
+            <div><dt><kbd>/</kbd></dt><dd>Panel commands</dd></div>
           </dl>
         </div>
-        <!-- Save is the one action no assistant can take, so it never scrolls
-             off the end of the context rail: it sits beside Send. -->
-        <button class="chat-composer-pill chat-save-pill t-press" data-act="save-model"
-                type="button" hidden
-                title="Write the in-memory changes to the IFC file">
-          <span data-role="save-label">Save</span>
-        </button>
         <button class="chat-send t-press" data-act="send" title="Send" aria-label="Send message">${I.send}</button>
       </div>
       <!-- Scrolling back through a long run used to be one-way. This rides on
@@ -856,6 +869,11 @@ export function mountChat(root, options = {}) {
   let memoryTimer = 0;
   let memoryState = null;
   let memoryRelievedAt = 0;
+  // The automatic relief runs quietly. A note is one per episode at most, and
+  // never twice inside this gap, so a long run does not repeat the warning.
+  const MEMORY_NOTE_GAP = 15 * 60_000;
+  let memoryNotedAt = 0;
+  let memoryNoteArmed = true;
   // Thread ids belong to conversations, not assistants. Keying this map by an
   // assistant made a visually blank New Chat silently resume its last context.
   let conversationThreads = {};
@@ -1275,11 +1293,7 @@ export function mountChat(root, options = {}) {
     el("session-autonomy").value = autonomy;
     el("session-autonomy").className = autonomy;
     el("session-autonomy").title = AUTONOMY_NOTE[autonomy] || "";
-    // Save is the one thing on this row an assistant can never do, so it only
-    // appears when there is something for a person to decide about.
-    const save = act("save-model");
-    save.hidden = !sessionStatus.dirty;
-    save.title = "Write the in-memory changes to the IFC file. Assistants cannot do this.";
+    renderChangeBar();
 
     const scope = el("side-scope");
     if (scope) {
@@ -1338,14 +1352,15 @@ export function mountChat(root, options = {}) {
 
   // Two independent questions, so two controls. Mode is what the assistant
   // may touch; autonomy is whether it stops and asks before touching it.
-  // Neither of them can put the file on disk: that is the Save control, and
-  // only a person reaches it.
+  // Edit mode moves the session onto a copy of the open file, so writing it
+  // is safe; the Save control above the conversation is where that happens.
   const sessionMode = () => (sessionStatus.mode === "edit" ? "edit" : "ask");
   const sessionAutonomy = () => (sessionStatus.ai_autonomy ? "auto" : "approval");
 
   const MODE_NOTE = {
     ask: "Ask mode. The assistant can inspect the model and run read-only code, but cannot change anything.",
-    edit: "Edit mode. Changes stay in memory; only you can write them to the IFC file.",
+    edit: "Edit mode. The open file is copied aside first: edits land in the copy, "
+      + "the viewer shows them at once, and the file you opened is never written.",
   };
   const AUTONOMY_NOTE = {
     approval: "Approval. The assistant stops and asks before every protected tool call.",
@@ -1390,23 +1405,76 @@ export function mountChat(root, options = {}) {
     );
   }
 
+  /* The bar above the conversation: what is unsaved, and what to do with it.
+   *
+   * Edit mode works in a copy of the opened file, so saving costs the user
+   * nothing; the row says which file is actually being written.
+   */
+  function renderChangeBar() {
+    const bar = el("changes");
+    if (!bar) return;
+    const changes = Number(sessionStatus.changes) || 0;
+    const copy = sessionStatus.working_copy || null;
+    bar.hidden = !sessionStatus.dirty && !changes;
+    if (bar.hidden) return;
+    el("changes-count").textContent = changes
+      ? `${changes} change${changes === 1 ? "" : "s"}`
+      : "Unsaved changes";
+    el("changes-note").textContent = copy
+      ? `in a copy of ${copy.origin_name}; the file you opened is not written`
+      : `in memory; saving writes ${sessionStatus.model || "the IFC file"}`;
+    const save = el("changes-save");
+    save.textContent = copy ? "Save copy" : "Save IFC";
+    save.title = copy
+      ? `Write the changes to ${copy.name}. ${copy.origin_name} stays untouched.`
+      : `Write the changes to ${sessionStatus.model || "the IFC file"}.`;
+  }
+
   async function saveModelFile() {
-    const button = act("save-model");
+    const button = el("changes-save");
+    const previous = button.textContent;
     button.disabled = true;
-    el("save-label").textContent = "Saving...";
+    button.textContent = "Saving...";
     try {
       const response = await postJSON("/api/session/save", {});
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
       sessionStatus.dirty = Boolean(payload.dirty);
-      note(payload.saved ? "Saved to the IFC file." : "Nothing to save.");
+      sessionStatus.changes = Number(payload.changes) || 0;
+      note(payload.saved
+        ? `Saved ${payload.working_copy ? "the working copy" : ""} ${payload.path || ""}`.trim()
+        : "Nothing to save.");
       refreshContext();
     } catch (exc) {
       note(`Could not save: ${exc.message || exc}`, true);
     } finally {
       button.disabled = false;
-      el("save-label").textContent = "Save";
+      button.textContent = previous;
       renderContext();
+    }
+  }
+
+  /* Hand the person the model as it stands, without writing any file. */
+  async function downloadModelFile() {
+    const button = act("download-model");
+    button.disabled = true;
+    try {
+      const response = await api("/api/model.ifc?download=1");
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const disposition = response.headers.get("content-disposition") || "";
+      const named = /filename="([^"]+)"/.exec(disposition);
+      const url = URL.createObjectURL(await response.blob());
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = named ? named[1] : "model.ifc";
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 10000);
+    } catch (exc) {
+      note(`Could not download: ${exc.message || exc}`, true);
+    } finally {
+      button.disabled = false;
     }
   }
 
@@ -2104,6 +2172,8 @@ export function mountChat(root, options = {}) {
   function memoryTick() {
     memoryState = memorySnapshot();
     renderMemory();
+    // A note is armed again only once the pressure has actually passed.
+    if (memoryState.level === "ok") memoryNoteArmed = true;
     // One automatic pass per minute at most: releasing twice frees nothing
     // and would only churn the parsed-model cache during a long run.
     if (memoryState.level !== "ok" && Date.now() - memoryRelievedAt > 60_000) {
@@ -2158,8 +2228,14 @@ export function mountChat(root, options = {}) {
         ? `Released ${formatMemoryBytes(report.viewer.parsedCacheBytes)} of parsed models.`
         : "No parsed models were cached.";
       note(`${freed}${trimmed ? ` Kept full tool output for the last ${plan.keepTurns} turns.` : ""}`);
-    } else if (report.level === "critical") {
-      note(`Memory is ${report.level}: ${report.summary}. Parsed models and old tool output were released.`, "warn");
+    } else if (
+      memoryIsSevere(report)
+      && memoryNoteArmed
+      && Date.now() - memoryNotedAt > MEMORY_NOTE_GAP
+    ) {
+      memoryNotedAt = Date.now();
+      memoryNoteArmed = false;
+      note(`Memory is nearly full: ${report.summary}. Parsed models and old tool output were released.`, "warn");
     }
     memoryState = memorySnapshot();
     renderMemory();
@@ -2423,16 +2499,16 @@ export function mountChat(root, options = {}) {
     input.dispatchEvent(new Event("input", { bubbles: true }));
   }
 
-  // Two composer affordances share one popup: `@` names something the run
-  // should look at, `/` runs a panel setting. Both resolve against what the
-  // panel already holds, so neither needs a round trip to offer a list.
+  // Three composer affordances share one popup: `@` names something the run
+  // should work on (a workflow, the 3D selection, a saved view, a file), `#`
+  // names a saved skill, and `/` runs a panel setting. All of them resolve
+  // against what the panel already holds, so none needs a round trip.
   const STATIC_SLASH_COMMANDS = [
     {
       name: "agent",
       hint: "Switch assistant",
       run: () => openWorkspace(input, "agent"),
     },
-    { name: "workflow", hint: "Open reusable workflows", run: () => { void openWorkflows(input); } },
     { name: "workflows", hint: "Open reusable workflows", run: () => { void openWorkflows(input); } },
     { name: "new-workflow", hint: "Build a workflow from a prompt", run: () => { void openWorkflows(input, { create: true }); } },
     { name: "model", hint: "Choose the AI model", run: () => openSettings(input) },
@@ -2481,6 +2557,19 @@ export function mountChat(root, options = {}) {
 
   let suggestState = null;
 
+  /* One line of hint per row.
+   *
+   * A workflow describes itself in a paragraph, and pasted whole it took the
+   * row over and pushed the name it belongs to out of sight. The first
+   * sentence says what the workflow is for; the chip preview holds the rest.
+   */
+  function slashHint(text, limit = 72) {
+    const line = String(text || "").replace(/\s+/g, " ").trim();
+    const [first] = line.split(". ");
+    const lead = first.length < line.length ? `${first}.` : line;
+    return lead.length > limit ? `${lead.slice(0, limit - 1).trimEnd()}...` : lead;
+  }
+
   // A workflow is the first thing `/` offers: choosing one attaches it to the
   // conversation, and Run starts it. A skill is a saved measurement procedure
   // the agent can follow, so it reads as a command too rather than as
@@ -2491,25 +2580,36 @@ export function mountChat(root, options = {}) {
       .filter((flow) => !taken.has(flow.name))
       .map((flow) => ({
         name: flow.name,
-        hint: flow.description || flow.title,
+        hint: slashHint(flow.description || flow.title),
         group: "Workflows",
         run: () => attachWorkflow(flow.name),
       }));
     for (const flow of workflows) taken.add(flow.name);
-    const loaded = workspace && workspace.name === currentAgent ? workspace.skills : [];
-    const skills = (Array.isArray(loaded) ? loaded : [])
-      .map((skill) => ({
-        name: String(skill.name || "").trim().replace(/\s+/g, "-").toLowerCase(),
-        hint: skill.description || "saved procedure",
+    const skills = skillRows()
+      .filter((row) => !taken.has(row.name))
+      .map((row) => ({
+        name: row.name,
+        hint: row.hint,
         group: "Skills",
-        run: () => insertAtCaret(`Follow the ${skill.name} skill: `),
-      }))
-      .filter((row) => row.name && !taken.has(row.name));
+        run: () => insertAtCaret(`Follow the ${row.title} skill: `),
+      }));
     return [
       ...workflows,
       ...STATIC_SLASH_COMMANDS.map((item) => ({ ...item, group: "Commands" })),
       ...skills,
     ];
+  }
+
+  /* Saved procedures this agent can follow, named the way `#` writes them. */
+  function skillRows() {
+    const loaded = workspace && workspace.name === currentAgent ? workspace.skills : [];
+    return (Array.isArray(loaded) ? loaded : [])
+      .map((skill) => ({
+        title: String(skill.name || "").trim(),
+        name: String(skill.name || "").trim().replace(/\s+/g, "-").toLowerCase(),
+        hint: slashHint(skill.description || "saved procedure"),
+      }))
+      .filter((row) => row.name);
   }
 
   function mentionableFiles() {
@@ -2530,6 +2630,14 @@ export function mountChat(root, options = {}) {
    */
   function mentionRows() {
     const rows = [];
+    for (const flow of workflowCatalog) {
+      rows.push({
+        label: flow.name,
+        note: slashHint(flow.description || flow.title),
+        group: "Workflows",
+        workflow: flow.name,
+      });
+    }
     const selections = viewerSelections();
     const selectionCount = viewerSelectionCount();
     if (selectionCount) {
@@ -2541,29 +2649,40 @@ export function mountChat(root, options = {}) {
       rows.push({
         label: "selection",
         note: `${selectionCount} element${selectionCount === 1 ? "" : "s"} across ${selections.length} IFC file${selections.length === 1 ? "" : "s"}`,
+        group: "Context",
         insert: `@selection [${named.join("; ")}]`,
       });
     }
     for (const name of savedViewNames()) {
-      rows.push({ label: `view:${name}`, note: "saved 3D view", insert: `@view:${name}` });
+      rows.push({
+        label: `view:${name}`,
+        note: "saved 3D view",
+        group: "Views",
+        insert: `@view:${name}`,
+      });
     }
     for (const file of mentionableFiles()) {
       rows.push({
         label: String(file.name || file.path || ""),
         note: file.media === "image" ? "image" : "document",
+        group: "Files",
         file,
       });
     }
     return rows;
   }
 
-  /** The `@name` or `/word` the caret currently sits in, if any. */
+  /** The `@name`, `#name` or `/word` the caret currently sits in, if any. */
   function activeToken() {
     const at = input.selectionStart ?? input.value.length;
     const before = input.value.slice(0, at);
     const mention = /(^|\s)@([^\s@]*)$/.exec(before);
     if (mention) {
       return { kind: "mention", query: mention[2], start: at - mention[2].length - 1, end: at };
+    }
+    const skill = /(^|\s)#([^\s#]*)$/.exec(before);
+    if (skill) {
+      return { kind: "skill", query: skill[2], start: at - skill[2].length - 1, end: at };
     }
     // A command is only a command at the very start of the message; `/` in
     // the middle of a sentence is a slash.
@@ -2586,9 +2705,25 @@ export function mountChat(root, options = {}) {
         .slice(0, 14)
         .map((item) => ({ label: `/${item.name}`, note: item.hint, group: item.group, command: item }));
     }
+    if (token.kind === "skill") {
+      const rows = skillRows();
+      return [
+        ...rows.filter((row) => row.name.startsWith(needle)),
+        ...rows.filter((row) => !row.name.startsWith(needle) && row.name.includes(needle)),
+      ]
+        .slice(0, 10)
+        .map((row) => ({
+          label: `#${row.name}`,
+          note: row.hint,
+          group: "Skills",
+          // The name goes into the message as the user typed it, with the
+          // instruction spelled out so the run does not have to guess.
+          insert: `Follow the ${row.title} skill:`,
+        }));
+    }
     return mentionRows()
       .filter((row) => !needle || row.label.toLowerCase().includes(needle))
-      .slice(0, 8);
+      .slice(0, 12);
   }
 
   function closeSuggest() {
@@ -2650,6 +2785,15 @@ export function mountChat(root, options = {}) {
       input.value = input.value.slice(end).trimStart();
       grow();
       item.command.run();
+      return;
+    }
+    // `@workflow` is the same act as picking it from the list: it rides with
+    // the conversation, and Run starts it. The token leaves the text.
+    if (item.workflow) {
+      input.setRangeText("", start, end, "end");
+      grow();
+      attachWorkflow(item.workflow);
+      input.focus();
       return;
     }
     // The 3D selection and the saved views name themselves in the prompt;
@@ -5414,7 +5558,7 @@ export function mountChat(root, options = {}) {
            ).join("")}
          </div>
          ${workflowRows.length ? `<div class="chat-empty-workflows" aria-label="Workflows">
-           <span class="chat-empty-label">Or run a workflow <small>type / in the composer for the whole list</small></span>
+           <span class="chat-empty-label">Or run a workflow <small>type @ for workflows, # for skills, / for everything</small></span>
            <div class="chat-workflow-starters">
              ${workflowRows.map((row) =>
                `<button class="chat-workflow-starter t-press" type="button" data-act="attach-workflow" data-workflow="${esc(row.name)}" title="${esc(row.description)}"><i>${I.pipeline}</i><span><b>${esc(row.title)}</b><small>${esc(scopeWords(row))}</small></span></button>`
@@ -5603,37 +5747,36 @@ export function mountChat(root, options = {}) {
     return document.createElement("div");
   }
 
-  // The run is stopped while this is on screen, so it says what is being
-  // asked for and offers one refusal plus two clear approval scopes. Deny is
-  // not an error path: a denied call comes back as a refusal the model can use.
-  // The readable summary is here, at the moment of the decision, and not on
-  // the card the console emits once the call has already run.
+  // The run is stopped while this waits, so the row asks in place: deny,
+  // approve once, or approve for the rest of the conversation. Once the call
+  // has run, the decision is a mark on its tool card and this row folds away;
+  // only a denial stays, as one quiet line.
   function approvalNode() {
-    const card = document.createElement("details");
+    const card = document.createElement("div");
     card.className = "chat-approval";
     card.innerHTML = `
-      <summary class="chat-approval-head">
-        <span class="chat-approval-mark">${I.capability}</span>
-        <div class="chat-approval-copy">
-          <b>Approval needed</b>
-          <code></code>
+      <details class="chat-approval-fold">
+        <summary class="chat-approval-head">
+          <span class="chat-approval-mark">${I.capability}</span>
+          <code class="chat-approval-name"></code>
+          <span class="chat-approval-state"></span>
+          <i class="chat-approval-caret" aria-hidden="true">${I.chevron}</i>
+        </summary>
+        <div class="chat-approval-body">
+          <p class="chat-approval-headline"></p>
+          <dl class="chat-approval-facts"></dl>
+          <div class="chat-approval-caps"></div>
+          <div class="chat-approval-args">
+            <b class="chat-approval-args-label">Arguments</b>
+            <pre tabindex="0"><code></code></pre>
+          </div>
         </div>
-        <span class="chat-approval-state"></span>
-        <span class="chat-approval-toggle" aria-hidden="true"></span>
-      </summary>
-      <div class="chat-approval-body">
-        <p class="chat-approval-headline"></p>
-        <dl class="chat-approval-facts"></dl>
-        <div class="chat-approval-caps"></div>
-        <details class="chat-approval-args">
-          <summary><span class="chat-approval-args-label">Arguments</span></summary>
-          <pre tabindex="0"><code></code></pre>
-        </details>
-        <div class="chat-approval-actions">
-          <button type="button" class="chat-btn chat-approval-deny">Deny</button>
-          <button type="button" class="chat-btn chat-approval-allow">Approve once</button>
-          <button type="button" class="chat-btn primary chat-approval-always">Always allow this tool</button>
-        </div>
+      </details>
+      <div class="chat-approval-actions">
+        <span class="chat-approval-ask"></span>
+        <label class="chat-approval-always"><input type="checkbox"><span>always</span></label>
+        <button type="button" class="chat-btn chat-approval-deny">Deny</button>
+        <button type="button" class="chat-btn primary chat-approval-allow">Approve</button>
       </div>`;
     return card;
   }
@@ -5659,29 +5802,33 @@ export function mountChat(root, options = {}) {
     }
   }
 
-  function paintApproval(node, block) {
+  // The console names its deciders for the audit trail; the row says who
+  // that was in plain words.
+  const DECIDERS = { "chat-panel": "by you", "session-autonomy": "auto mode" };
+  const decider = (block) => DECIDERS[block.decidedBy] || block.decidedBy || "";
+
+  function paintApproval(node, block, { folded = false } = {}) {
+    // Allowed and run: the tool card that follows carries the decision.
+    node.hidden = folded;
+    if (folded) return;
     node.className = `chat-approval ${block.state}`;
-    if (node.dataset.approvalState !== block.state) {
-      node.open = block.state === "waiting";
-      node.dataset.approvalState = block.state;
-    }
-    node.querySelector(".chat-approval-copy b").textContent =
-      block.state === "waiting" ? "Approval needed" : "Approval";
-    node.querySelector(".chat-approval-copy code").textContent = block.name;
+    node.querySelector(".chat-approval-name").textContent = block.name;
     const state = node.querySelector(".chat-approval-state");
     const word = block.state === "waiting"
-      ? "waiting for you"
+      ? "needs approval"
       : block.state === "approved" ? "approved" : "denied";
     // Who decided matters most when nobody did: "denied · run stopped" is the
     // difference between a refusal and a card that outlived its run.
-    state.textContent = block.decidedBy ? `${word} · ${block.decidedBy}` : word;
+    const who = decider(block);
+    state.textContent = who ? `${word} · ${who}` : word;
     state.title = block.reason || "";
-    // What the reviewer is actually allowing, in the words of the change
-    // rather than the tool's JSON. The fold below still holds every argument.
+    // What the reviewer is allowing, in the words of the change rather than
+    // the tool's JSON. The fold still holds every argument.
     const digest = approvalDigest(block);
+    const generic = digest.headline === `Run ${digest.name}`;
     const headline = node.querySelector(".chat-approval-headline");
     headline.textContent = digest.headline;
-    headline.hidden = digest.headline === `Run ${digest.name}`;
+    headline.hidden = generic;
     const facts = node.querySelector(".chat-approval-facts");
     facts.innerHTML = "";
     for (const fact of digest.facts) {
@@ -5711,15 +5858,15 @@ export function mountChat(root, options = {}) {
     // resolved long ago, so it carries no live control.
     const live = block.state === "waiting" && Boolean(block.requestId);
     actions.hidden = !live;
+    node.querySelector(".chat-approval-ask").textContent = generic ? "" : digest.headline;
     const always = node.querySelector(".chat-approval-always");
-    always.title = `Always allow ${block.name} in this conversation for these capabilities.`;
+    always.title = `Also allow ${block.name} for the rest of this conversation, for these capabilities.`;
     if (live && !node.dataset.wired) {
       node.dataset.wired = "1";
       node.querySelector(".chat-approval-allow").addEventListener("click", () => {
-        decideApproval(block, true, node);
-      });
-      always.addEventListener("click", () => {
-        approvalAllowlist.set(block.name, capabilitySignature(block));
+        if (always.querySelector("input").checked) {
+          approvalAllowlist.set(block.name, capabilitySignature(block));
+        }
         decideApproval(block, true, node);
       });
       node.querySelector(".chat-approval-deny")
@@ -5753,6 +5900,7 @@ export function mountChat(root, options = {}) {
         <span class="chat-tool-signal" aria-hidden="true"><i></i></span>
         <span class="chat-tool-stage"></span>
         <code class="chat-tool-name"></code>
+        <span class="chat-tool-approved" role="img" hidden>${I.capability}</span>
         <span class="chat-tool-state"></span>
         <progress class="chat-tool-progress" max="1" value="0" hidden></progress>
         <time class="chat-tool-time"></time>
@@ -5819,12 +5967,20 @@ export function mountChat(root, options = {}) {
     addCodeCopies(body);
   }
 
-  function paintTool(node, block) {
+  function paintTool(node, block, approval = null) {
     const stage = block.stage >= 0 ? stageLabel(block.stage) : "Tool";
     node._toolBlock = block;
     node.className = `chat-tool-card ${block.state}`;
     node.querySelector(".chat-tool-stage").textContent = stage;
     node.querySelector(".chat-tool-name").textContent = block.name;
+    // The decision that let this call run, on the row it allowed.
+    const allowed = node.querySelector(".chat-tool-approved");
+    allowed.hidden = !approval;
+    if (approval) {
+      const who = decider(approval);
+      allowed.title = `Approved${who ? ` · ${who}` : ""}${approval.reason ? `: ${approval.reason}` : ""}`;
+      allowed.setAttribute("aria-label", allowed.title);
+    }
     const state = node.querySelector(".chat-tool-state");
     state.textContent = toolHeadline(block);
     state.title = block.detail || block.summary || "";
@@ -5870,9 +6026,9 @@ export function mountChat(root, options = {}) {
     if (node.open) paintToolBody(node, block);
   }
 
-  function paintBlock(node, block, live) {
+  function paintBlock(node, block, live, { approval = null, folded = false } = {}) {
     if (block.kind === "tool") {
-      paintTool(node, block);
+      paintTool(node, block, approval);
       return;
     }
     if (block.kind === "reasoning") {
@@ -5883,7 +6039,7 @@ export function mountChat(root, options = {}) {
       return;
     }
     if (block.kind === "approval") {
-      paintApproval(node, block);
+      paintApproval(node, block, { folded });
       return;
     }
     if (block.kind === "proposal") return;
@@ -5902,11 +6058,15 @@ export function mountChat(root, options = {}) {
         node.dataset.v = "";
       }
       const isLive = live && index === blocks.length - 1;
+      // An allowed call is one row: the decision folds into the tool card.
+      const approval = block.kind === "tool" ? approvalBefore(blocks, index) : null;
+      const folded = block.kind === "approval" && approvalBefore(blocks, index + 1) === block;
       const version = `${block.v ?? 0}:${isLive ? "live" : "done"}`
-        + (block.kind === "approval" ? `:${block.state}` : "");
+        + (block.kind === "approval" ? `:${block.state}:${folded ? "folded" : "row"}` : "")
+        + (approval ? ":allowed" : "");
       if (node.dataset.v === version) return;
       node.dataset.v = version;
-      paintBlock(node, block, isLive);
+      paintBlock(node, block, isLive, { approval, folded });
     });
   }
 
@@ -6975,6 +7135,7 @@ export function mountChat(root, options = {}) {
       }
     }
     else if (action === "save-model") void saveModelFile();
+    else if (action === "download-model") void downloadModelFile();
     else if (action === "plus") {
       if (el("plus-menu").hidden) openPlusMenu();
       else closePlusMenu({ restoreFocus: true });

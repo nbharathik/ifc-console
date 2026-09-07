@@ -41,6 +41,7 @@ from ifc_console.sandbox.policy import COMMON_CREDENTIAL_PATHS
 from ifc_console.sandbox.runner import SandboxRunner
 from ifc_console.session.backups import BackupStore
 from ifc_console.session.model import ModelSession
+from ifc_console.session.working_copy import WorkingCopy, WorkingCopyStore
 from ifc_console.settings import SettingsStore
 from ifc_console.viewer.hub import ViewerHub
 from ifc_console.workspace.index import WorkspaceIndex, guess_discipline, slug
@@ -78,6 +79,11 @@ class AppCore:
         self.audit = AuditLog(store.sessions_dir, s.sessions.retention)
         self.recents = RecentsStore(store.recents_file, s.recents.max)
         self.backups = BackupStore(store.backups_dir, s.files.backup_retention)
+        # Edit mode works in a copy of the open file, so the original the user
+        # opened is never written. See session/working_copy.py.
+        self.working_copies = WorkingCopyStore(
+            store.working_dir, s.files.working_copy_retention
+        )
         # Whether the assistant may act on a protected call without
         # stopping to ask. Saving the file is never on this axis.
         self.ai_autonomy = False
@@ -349,7 +355,7 @@ class AppCore:
         """The active model's meta, plus workspace keys only once more than one
         file is in play (model_id, models, attachments)."""
         meta = self.session.meta(self.policy.mode.value)
-        meta["ai_save_allowed"] = self.policy.allow_ai_save
+        meta["ai_save_allowed"] = self.policy.may_persist
         meta.update(self.models.meta_extras())
         return meta
 
@@ -703,6 +709,7 @@ class AppCore:
                 size_bytes=session.size_bytes,
                 duration_ms=int((time.perf_counter() - t0) * 1000),
             )
+            self.sync_copy_save()
             return model_id
 
     def _guard_replacement(
@@ -723,6 +730,7 @@ class AppCore:
         if self.models.active_id == model_id:
             return session
         self.models.set_active(model_id)
+        self.sync_copy_save()
         self.audit.record("model_active", model_id=model_id, path=str(session.path))
         self.events.emit(
             "active_model_changed",
@@ -743,6 +751,7 @@ class AppCore:
         async with self._model_lifecycle:
             previous_active = self.models.active_id
             session = self.models.drop(model_id)
+            self.sync_copy_save()
             self.audit.record("model_detach", model_id=model_id, path=str(session.path))
             self.events.emit("model_detached", model_id=model_id, name=session.name)
             promoted_id = self.models.active_id
@@ -874,10 +883,64 @@ class AppCore:
         self.events.emit("file_detached", alias=alias, kind=attachment.kind)
         return attachment
 
+    def sync_copy_save(self) -> None:
+        """Persistence follows the active model: a working copy grants it.
+
+        Editing a snapshot makes saving harmless, so an assistant may write it.
+        Switching to a model without a copy takes that grant away again.
+        """
+        self.policy.allow_copy_save = self.session.working_copy is not None
+
     def set_mode(self, new_mode: Mode, *, by: str) -> None:
         if new_mode is self.policy.mode:
             return
         self.policy.set_mode(new_mode, by=by)
+
+    async def enter_edit_mode(self, *, by: str) -> WorkingCopy | None:
+        """Switch to edit mode after putting a working copy in place.
+
+        Copying first means the assistant can never reach the file the user
+        opened: by the time editing is allowed, the session already points at
+        the snapshot, and saving it is no longer a decision anyone has to make.
+        """
+        copy = await self.ensure_working_copy(by=by)
+        self.set_mode(Mode.EDIT, by=by)
+        return copy
+
+    async def ensure_working_copy(self, *, by: str) -> WorkingCopy | None:
+        """Snapshot the open file and edit the copy from here on.
+
+        A no-op when one is already in place, when files.working_copy is off,
+        or when there is nothing loaded to copy. Held under the lifecycle lock:
+        the model must not be swapped between the copy and the retarget.
+        """
+        async with self._model_lifecycle:
+            session = self.session
+            if session.working_copy is not None:
+                return session.working_copy
+            if not self.settings.files.working_copy or not session.loaded:
+                return None
+            if session.path is None or session.read_only:
+                return None
+            origin = session.path
+            try:
+                copy = await asyncio.to_thread(self.working_copies.create, origin)
+            except OSError as exc:
+                self.audit.record("working_copy_failed", path=str(origin), error=str(exc))
+                self.events.emit("working_copy_failed", path=str(origin), reason=str(exc))
+                return None
+            await session.run(lambda: session.adopt_working_copy(copy))
+            self.sync_copy_save()
+        self.audit.record("working_copy", by=by, origin=str(copy.origin), path=str(copy.path))
+        self.events.emit(
+            "working_copy_created",
+            origin=str(copy.origin),
+            origin_name=copy.origin.name,
+            path=str(copy.path),
+            name=copy.path.name,
+            by=by,
+        )
+        return copy
 
     def set_ai_autonomy(self, allowed: bool, *, by: str) -> bool:
         """Whether the assistant proceeds, or stops and asks, on a protected call.
@@ -894,12 +957,19 @@ class AppCore:
         self.events.emit("ai_autonomy_changed", allowed=allowed)
         return allowed
 
-    async def save_model(self, *, by: str) -> dict[str, Any]:
-        """Persist the in-memory model. Only a human ever reaches this."""
+    async def save_model(self, *, by: str, target: Path | None = None) -> dict[str, Any]:
+        """Persist the in-memory model, by default to whatever `path` names.
+
+        In edit mode that is the working copy, so this writes the snapshot and
+        leaves the file the user opened alone.
+        """
         session = self.session
-        result = await session.save(session.path, self.backups)
-        self.audit.record("model_saved", by=by, path=str(session.path))
-        self.events.emit("model_saved", path=str(session.path))
+        destination = target or session.path
+        result = await session.save(destination, self.backups)
+        self.audit.record("model_saved", by=by, path=str(destination))
+        self.events.emit("model_saved", path=str(destination), **{
+            "working_copy": bool(result.get("working_copy")),
+        })
         return result
 
     def set_ui_theme(self, name: str, *, persist: bool = False) -> str:

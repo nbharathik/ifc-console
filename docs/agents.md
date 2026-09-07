@@ -240,17 +240,22 @@ database. `JsonThreadStore(path)` suits small local applications. The LangGraph
 adapter ships with `ifc-console-agents` and is described in the
 [SDK guide](sdk.md#langchain-and-langgraph).
 
-## Built-in agents
+## The built-in agent
 
-Five presets ship in `ifc_console_agents.presets`:
+One assistant ships, and it holds every capability block: query, document,
+measurement, review, proposal, and code. A narrower job is a skill or a
+workflow, not a second assistant.
 
-| preset | purpose |
-| ------ | ------- |
-| `general` | full query, document, measurement, review, proposal, and code surface |
-| `measurement` | skill-first parametric measurement with cited, conflict-aware evidence |
-| `parameters` | gap list for a selected element, values derived from geometry, context, and documents, AI-marked proposals |
-| `docs` | answers from project references with page citations |
-| `review` | quality scorecard, schema, IDS, health, clash, and quantity review |
+`ifc_console_agents.presets` still defines the focused presets below, but only
+as the prompt and block set a workflow step names in its `preset:` field:
+
+| preset | used by workflow steps that |
+| ------ | --------------------------- |
+| `general` | the shipped assistant: the full surface |
+| `measurement` | measure skill-first, with cited, conflict-aware evidence |
+| `parameters` | list an element's gaps and derive values for them |
+| `docs` | answer from project references with page citations |
+| `review` | score quality, schema, IDS, health, clash, and quantities |
 
 They use the same public `Agent`, `Toolset`, and provider contracts as custom
 applications. `examples/sdk/quickstart_agent.py` is the smallest runnable
@@ -348,7 +353,7 @@ ChangeSet, or change runtime policy.
 
 ## Selected-object geometry behavior
 
-The built-in `general` and `measurement` agents use the same deterministic
+The assistant and the `measurement` workflow steps use the same deterministic
 path for geometry questions:
 
 1. For "this" or "selected", read `get_viewer_selection` and pass its
@@ -373,8 +378,8 @@ material interval pairing or volume cannot be established.
 ## Element parameter inference
 
 Most delivered files carry elements whose property sets are absent or half
-empty. The `parameters` preset, and the `general` agent when asked what an
-element is missing, follow one procedure:
+empty. The assistant, and the `parameters` workflow steps, follow one
+procedure when asked what an element is missing:
 
 1. Pin the viewer selection and its `model_id`.
 2. Call `audit_element_properties`. It reads the schema's property set

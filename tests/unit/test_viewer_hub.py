@@ -83,6 +83,25 @@ async def test_selection_frame_updates_hub_and_emits(core, hub):
     assert any(e["type"] == "viewer_selection" and e["count"] == 2 for e in seen)
 
 
+async def test_a_repeated_globalid_is_listed_once(core, hub, work_model: Path):
+    """One element picked through several meshes is still one element."""
+    await core.open_model(work_model)
+    model_id = core.models.active_id
+    ws = _attach(hub)
+
+    await hub.handle_frame(
+        ws.client,
+        {
+            "type": "selection",
+            "guids": ["wall", "wall", "door", "wall"],
+            "model_id": model_id,
+        },
+    )
+
+    assert hub.selection == ["wall", "door"]
+    assert hub.selection_rows()[0]["count"] == 2
+
+
 async def test_selection_rejects_non_lists_and_oversized_identifiers(hub):
     ws = _attach(hub)
     await hub.handle_frame(ws.client, {"type": "selection", "guids": "not-a-list"})

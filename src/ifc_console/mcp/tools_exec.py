@@ -24,6 +24,7 @@ from ifc_console.policy.guards import (
     GuardError,
     build_namespace,
     entity_mutation_lock,
+    exec_environment,
     model_write_lock,
 )
 from ifc_console.policy.modes import OpClass, Verdict
@@ -40,12 +41,16 @@ if TYPE_CHECKING:
 
 EXEC_ANN = ToolAnnotations(readOnlyHint=False, destructiveHint=True)
 
-_DESCRIPTION = (
+# The static half of the description. The environment half is resolved at
+# registration, so a model reads what this installation actually has instead
+# of writing a script against a library that is not here.
+_DESCRIPTION_HEAD = (
     "[EDIT-capable] Run Python against the loaded IFC with IfcOpenShell "
-    "pre-imported. Pre-injected: `ifc` (the loaded file), `ifcopenshell`, "
-    "`ifc_api` (ifcopenshell.api), `element_util` (ifcopenshell.util.element), "
-    "`selector_util` (ifcopenshell.util.selector), `unit_util`, `query(sel)` "
-    "(selector shortcut), `get_ifc_file()`. stdout is captured; the value of a "
+    "pre-imported. "
+)
+
+_DESCRIPTION_TAIL = (
+    "stdout is captured; the value of a "
     "final bare expression is returned like a REPL. The session mode gates "
     "mutation: in ask mode (the default), code that would mutate the model is "
     "rejected with an error; generate and show code to the user instead, or "
@@ -56,10 +61,44 @@ _DESCRIPTION = (
     "enabled, finish batches with save_ifc_file. Eligible read-only runs use "
     "an isolated sandbox with no "
     "network and no file access outside the model directories. Auto mode can "
-    "report and use guarded in-process fallback; strict mode refuses it. Do not "
-    "import os/subprocess/network modules; that class of code is blocked. This "
-    "is not Blender; there is no bpy."
+    "report and use guarded in-process fallback; strict mode refuses it."
 )
+
+
+def build_description(core: AppCore) -> str:
+    """The tool description, with this installation's libraries spelled out.
+
+    An import that is going to be refused should cost nothing: the model is
+    told what it may use before it writes the first line, not after a whole
+    script comes back as an ImportError.
+    """
+    settings = core.settings.exec
+    environment = exec_environment(
+        policy=settings.import_policy,
+        extra_import_roots=tuple(settings.import_roots_extra),
+    )
+    injected = ", ".join(
+        f"`{name}` ({what})" for name, what in environment["injected"].items()
+    )
+    installed = "; ".join(
+        f"{label}: {', '.join(names)}" for label, names in environment["installed"].items()
+    )
+    blocked = ", ".join(environment["blocked"])
+    reach = (
+        "Any other installed package imports too, so use the library that fits; one "
+        "that is not installed fails with ModuleNotFoundError."
+        if environment["policy"] == "open"
+        else "Nothing outside that list may be imported."
+    )
+    return (
+        f"{_DESCRIPTION_HEAD}Pre-injected, no import needed: {injected}. "
+        f"Installed and known to work: {installed}. {reach} Blocked, so do not "
+        f"write against them: {blocked} and anything else that reaches "
+        f"{environment['blocked_reason']}. This is not Blender; there is no bpy. "
+        "open() is read-only and limited to the allowed directories; write IFC "
+        f"with save_ifc_file. {_DESCRIPTION_TAIL}"
+    )
+
 
 # Sandbox failures that mean "the worker could not serve this run" rather
 # than "the code was wrong": auto falls back, strict refuses.
@@ -70,7 +109,7 @@ _MAX_CODE_CHARS = 1_000_000
 def register(mcp: OperationRegistry, core: AppCore) -> None:
     settings = core.settings
 
-    @mcp.tool(annotations=EXEC_ANN, description=_DESCRIPTION)
+    @mcp.tool(annotations=EXEC_ANN, description=build_description(core))
     @enveloped(core, "execute_ifc_code")
     @core.active_model_operation
     async def execute_ifc_code(
@@ -116,7 +155,10 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
             raise ToolError(
                 "AI_SAVE_DISABLED",
                 "generated code cannot write an IFC file while files.allow_ai_save is false.",
-                "Keep the changes in memory, then tell the user to run /save or "
+                "Mutate the model and call save_ifc_file, which writes the working "
+                "copy for you."
+                if core.policy.allow_copy_save
+                else "Keep the changes in memory, then tell the user to run /save or "
                 "/reload after reviewing them.",
             )
         if verdict is Verdict.DENY_AI_SAVE:
@@ -186,6 +228,8 @@ async def _run_sandboxed(
             output_limit=settings.exec.output_char_limit,
             timeout=settings.exec.timeout_seconds,
             extra_system_modules=tuple(settings.exec.system_modules_extra),
+            extra_import_roots=tuple(settings.exec.import_roots_extra),
+            import_policy=settings.exec.import_policy,
         )
     except SandboxNotReady as exc:
         # The worker never got as far as running the code, so exec.timeout_seconds
@@ -336,6 +380,8 @@ async def _run_in_process(
         allow_system=allow_system,
         allowed_dirs=list(core.allowed_dirs),
         extra_system_modules=tuple(settings.exec.system_modules_extra),
+        extra_import_roots=tuple(settings.exec.import_roots_extra),
+        import_policy=settings.exec.import_policy,
         deny_dirs=core.generated_code_deny_paths(),
     )
 
@@ -354,15 +400,32 @@ async def _run_in_process(
         post = session.max_id()
         return result, pre, post
 
+    announced = False
+
     def announce_mutation() -> None:
         """Publish what job() already flagged, so live consumers refresh."""
-        if allow_mutation and session.dirty:
-            core.events.emit("model_mutated", tool="execute_ifc_code")
+        nonlocal announced
+        if not (allow_mutation and session.dirty) or announced:
+            return
+        announced = True
+        changes = session.record_change(description, tool="execute_ifc_code")
+        core.events.emit(
+            "model_mutated",
+            tool="execute_ifc_code",
+            description=description,
+            changes=changes,
+        )
 
+    # Generating geometry takes longer than answering a question, and a
+    # mutating run that times out costs the user their changes, so an edit is
+    # given the larger budget.
+    budget = (
+        settings.exec.edit_timeout_seconds if allow_mutation else settings.exec.timeout_seconds
+    )
     start = time.perf_counter()
     try:
         result, pre, post = await session.run(
-            job, timeout=settings.exec.timeout_seconds, timeout_code="EXEC_TIMEOUT"
+            job, timeout=budget, timeout_code="EXEC_TIMEOUT"
         )
     except ToolError:
         # includes EXEC_TIMEOUT, where the worker is still mutating
@@ -431,11 +494,20 @@ async def _run_in_process(
         "duration_ms": duration_ms,
     }
     if mutated:
-        data["note"] = (
-            "model is dirty; call save_ifc_file when the batch is done"
-            if core.policy.allow_ai_save
-            else "model is dirty; only the user can persist it with /save or discard it with /reload"
-        )
+        copy = session.working_copy
+        if copy is not None:
+            data["note"] = (
+                f"the viewer already shows this change; {session.change_count} change(s) "
+                f"are in memory. call save_ifc_file to write the working copy "
+                f"({copy.path.name}); {copy.origin.name} is never touched"
+            )
+        elif core.policy.allow_ai_save:
+            data["note"] = "model is dirty; call save_ifc_file when the batch is done"
+        else:
+            data["note"] = (
+                "model is dirty and the viewer already shows it; only the user can "
+                "persist it with /save or discard it with /reload"
+            )
     elif fallback_reason:
         data["note"] = f"ran with in-process guards instead of the sandbox: {fallback_reason}"
     return ok(data, core.session_meta(), char_limit=settings.exec.output_char_limit)

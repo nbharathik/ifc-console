@@ -44,6 +44,97 @@ eligibility.
 `strict` does not block edits. Mutating code is never sandbox-eligible because
 its changes must reach the model held by the console.
 
+## What generated code can reach
+
+Injected into every run, so ordinary work needs no import:
+
+| name | is |
+| ---- | -- |
+| `ifc` | the loaded file (read-only outside edit mode) |
+| `ifcopenshell`, `ifc_api` | the library and `ifcopenshell.api` |
+| `element_util`, `selector_util`, `unit_util` | `ifcopenshell.util.element` / `.selector` / `.unit` |
+| `shape_util`, `placement_util`, `representation_util` | `ifcopenshell.util.shape` / `.placement` / `.representation` |
+| `schema_util`, `type_util` | `ifcopenshell.util.schema` / `.type` |
+| `np` | numpy |
+| `geom` | `ifcopenshell.geom`, the tessellator |
+| `query(sel)`, `by_class(name)`, `psets(e)`, `qtos(e)`, `container(e)` | selector and lookup shortcuts |
+| `get_ifc_file()` | the file object, for code that prefers a call |
+
+The last five injected modules are imported on first use, so a run that never
+touches geometry does not pay for the geometry engine.
+
+### The import policy
+
+`exec.import_policy` decides what code may import on top of that.
+
+| policy | rule |
+| ------ | ---- |
+| `open` (default) | any installed package, except a denied set |
+| `strict` | only the curated list below |
+
+Under `open`, install the library that suits the job and the model can use it:
+`numpy`, `shapely` and `trimesh` are here already, and `scipy`, `networkx`,
+`manifold3d` or anything else works the moment you `pip install` it. A package
+that is not installed fails with an ordinary `ModuleNotFoundError`, which costs
+one call rather than a whole generated script.
+
+Denied under both policies, because of the capability rather than the package:
+
+| category | examples |
+| -------- | -------- |
+| the operating system | `os`, `sys`, `pathlib`, `shutil`, `tempfile`, `ctypes` |
+| the network | `socket`, `urllib`, `http`, `requests`, `httpx`, `urllib3`, `aiohttp`, `paramiko`, `boto3` |
+| other processes and interpreters | `subprocess`, `multiprocessing`, `threading`, `joblib`, `runpy`, `pdb`, `IPython`, `pip` |
+| credentials | `keyring`, `openai`, `anthropic`, `mcp`, `dotenv` |
+| deserializers that execute what they read | `pickle`, `marshal`, `dill`, `yaml`, `jinja2` |
+| this console | `ifc_console`, `ifc_console_agents` |
+
+Importing one of those is also SYSTEM-class code to the static classifier, so
+it is refused with an explanation before the code runs, not part-way through.
+There is no `bpy`: this is not Blender. `open()` is read-only and restricted to
+the allowed directories, `io.open` is blocked so it cannot walk around that,
+and writing an IFC file goes through `save_ifc_file`.
+
+The curated `strict` list, for installations that want a fixed surface:
+
+| group | modules |
+| ----- | ------- |
+| geometry and numerics | `numpy`, `shapely`, `trimesh` |
+| IFC ecosystem | any `ifcopenshell` submodule, `ifctester`, `bcf` |
+| numbers and text | `math`, `cmath`, `statistics`, `random`, `secrets`, `fractions`, `decimal`, `numbers`, `json`, `re`, `csv`, `textwrap`, `string`, `unicodedata`, `difflib`, `colorsys` |
+| structure and iteration | `itertools`, `functools`, `operator`, `collections`, `heapq`, `bisect`, `graphlib`, `array`, `struct`, `enum`, `dataclasses`, `typing`, `abc`, `contextlib`, `copy`, `pprint`, `warnings`, `datetime`, `calendar`, `time`, `uuid`, `hashlib`, `base64`, `binascii`, `zlib`, `io` |
+
+Under `strict`, numpy's own file readers (`np.load`, `np.fromfile`,
+`np.savetxt`, ...) are blocked too, since a small allowlist is the point there
+and they would be the one way around the guarded `open()`.
+
+Either policy takes one more package by name:
+
+```text
+/settings exec.import_roots_extra ["scipy", "networkx"]
+```
+
+It wins over the denied set, so a user who really wants `numba` can have it,
+and it is trusted input for that reason. Project settings cannot set it: like
+the policy itself, it is a user decision. Naming a system module there still
+leaves the static classifier's gate in place, so such code remains SYSTEM-class
+and needs `exec.allow_system_access` in edit mode.
+
+The worker imports the offered geometry libraries and anything on that list
+before its audit hook is armed, because a library that touches
+`object.__setattr__` while importing (trimesh does) cannot be imported once
+generated code is running. A package installed after the worker started
+therefore needs `/sandbox restart`.
+
+### What the policy is, and is not
+
+An import rule is guidance, not the boundary. Any library rich enough to be
+worth having exposes a module attribute that reaches further than its own API,
+so the controls that actually hold are elsewhere: the audit hook for read-only
+code in the restricted process, and the mode gate for anything that changes the
+model. `open` therefore buys real flexibility at little real cost, and `strict`
+is there for installations that would rather present a small surface anyway.
+
 ## What the restricted process enforces
 
 | control | effect |
@@ -67,7 +158,7 @@ even if they are inside an allowed model root.
 
 ## Why a separate process matters
 
-In-process guards provide a curated namespace, an import allowlist, a
+In-process guards provide a curated namespace, an import policy, a
 write-blocking `open`, and a model object that rejects mutation methods. These
 controls are useful against mistakes, but a determined Python payload can
 eventually recover real builtins through the object graph.

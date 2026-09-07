@@ -188,12 +188,19 @@ class ConsoleScreen(Screen):
         s = core.session
         mode = core.policy.mode.value
         color = _MODE_COLORS.get(mode, "white")
-        dirty = " [red]* unsaved[/red]" if s.dirty else ""
+        changes = f" ({s.change_count})" if s.change_count else ""
+        dirty = f" [red]* unsaved{changes}[/red]" if s.dirty else ""
         taint = " [red]! tainted[/red]" if s.tainted else ""
         if self._loading:
             model = f"[yellow]loading {escape(self._loading)}…[/yellow]"
         elif s.loaded:
             model = f"{escape(s.name or '')} · {s.schema} · {s.size_bytes / 1_048_576:.1f} MB"
+            if s.working_copy is not None:
+                model = (
+                    f"{escape(s.working_copy.origin.name)} "
+                    "[yellow](working in a copy)[/yellow] "
+                    f"· {s.schema} · {s.size_bytes / 1_048_576:.1f} MB"
+                )
         else:
             model = "no model (/file)"
         extra = ""
@@ -259,6 +266,8 @@ class ConsoleScreen(Screen):
             "model_saved",
             "model_loaded",
             "model_mutated",
+            "working_copy_created",
+            "working_copy_failed",
             "session_tainted",
             "sandbox_contained",
             "viewer_enabled",
@@ -281,6 +290,23 @@ class ConsoleScreen(Screen):
                     detail += f", {event['duration_ms'] / 1000:.1f}s"
                 self.print(
                     f"[green]loaded[/green] [b]{escape(str(event.get('name')))}[/b] ({detail})"
+                )
+            elif etype == "working_copy_created":
+                self.print(
+                    "[yellow]working in a copy[/yellow]: edits and /save go to "
+                    f"[b]{escape(str(event.get('path')))}[/b]"
+                )
+                self.print(
+                    f"  [dim]{escape(str(event.get('origin_name')))} is not "
+                    "written; /save <path> writes the result somewhere else[/dim]"
+                )
+            elif etype == "working_copy_failed":
+                self.print(
+                    "[red]could not create the working copy[/red]: "
+                    f"{escape(str(event.get('reason')))}"
+                )
+                self.print(
+                    "  [dim]edits target the opened file; /save writes it[/dim]"
                 )
             elif etype == "session_tainted":
                 self.print(

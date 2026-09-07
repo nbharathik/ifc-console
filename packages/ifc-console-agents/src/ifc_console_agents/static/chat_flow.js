@@ -302,6 +302,22 @@ export function applyEvent(run, event, { now = 0 } = {}) {
 }
 
 /**
+ * The approval a tool call ran under, when the stream shows both.
+ *
+ * The console asks before the call and emits the call once it is allowed, so
+ * the decision sits right before the card. Restored turns carry no ids, so
+ * the pair is read by position and name; ids only rule a match out.
+ */
+export function approvalBefore(blocks, index) {
+  const tool = blocks[index];
+  const prior = blocks[index - 1];
+  if (tool?.kind !== "tool" || prior?.kind !== "approval") return null;
+  if (prior.state !== "approved" || prior.name !== tool.name) return null;
+  if (prior.id && tool.id && prior.id !== tool.id) return null;
+  return prior;
+}
+
+/**
  * Close out whatever the stream left open, once the run is over.
  *
  * A run ends whenever the user stops it, the connection drops, or the server
