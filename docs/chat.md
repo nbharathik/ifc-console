@@ -100,9 +100,16 @@ While the session is in edit mode a bar above the conversation states how many
 changes are waiting, which file a save would write, and offers **Save** and
 **Download**. Edit mode works in a copy, so neither touches the file you opened.
 
-Project references live under `.ifc-console/agents/references/`. Add them from
-the panel, with `ifc-console agents files <paths>`, or by copying supported
-files there. See [Agent applications](agents.md#project-workspace).
+Reference content lives under the console home, never in the project folder:
+the library `~/.ifc-console/agents/references/` serves every project and is
+the default for **Add files**, and `~/.ifc-console/agents/projects/<hash>/references/`
+holds files added for one project. A subfolder is a collection, shown as a
+group in the Content tab. Supported files are markdown, text, PDF, images,
+and `.jsonl` or `.csv` tables, which are indexed row by row for search and
+for `lookup_table_rows`. Add them from the panel, with
+`ifc-console agents files <paths> [--collection name]`, or by copying files
+into those folders and pressing **Refresh**. See
+[Agent applications](agents.md#project-workspace).
 
 ## Credentials and privacy
 

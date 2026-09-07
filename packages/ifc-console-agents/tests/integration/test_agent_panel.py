@@ -16,6 +16,7 @@ from starlette.testclient import TestClient
 
 from ifc_console_agents.models import AgentLimits
 from ifc_console_agents.packs import AgentPackInfo
+from ifc_console_agents.paths import project_state_dir
 from ifc_console_agents.testing import ScriptedAgentModel, text_round, tool_call_round
 
 pytestmark = pytest.mark.asyncio
@@ -265,7 +266,7 @@ async def test_compact_builder_saves_a_project_workflow(panel_core):
     assert "Review the selected doors" in row["system_prompt"]
     assert row["additional_instructions"] == "Never invent a property value."
     assert row["settings"] == {"audience": "coordinator"}
-    saved = panel_core.store.project_dir / ".ifc-console" / "agents" / "workflows"
+    saved = Path(panel_core.store.home) / "agents" / "workflows"
     assert (saved / "selected-door-review.yaml").is_file()
 
     catalog = client.get("/api/agents/workflows", headers=_auth(panel_core)).json()
@@ -295,7 +296,7 @@ async def test_workflow_editor_saves_a_project_override(panel_core):
     assert row["title"] == "Project measurement review"
     assert row["additional_instructions"] == "Use the project's unit conventions."
     assert row["agents"] == ["scripted"]
-    saved = panel_core.store.project_dir / ".ifc-console" / "agents" / "workflows"
+    saved = Path(panel_core.store.home) / "agents" / "workflows"
     assert (saved / "measurement-audit.yaml").is_file()
 
 
@@ -481,7 +482,7 @@ async def test_custom_agent_builder_lists_blocks_and_persists_a_pack(panel_core)
     assert created["kind"] == "custom"
     listing = client.get("/api/agents", headers=_auth(panel_core)).json()["agents"]
     assert created["name"] in {agent["name"] for agent in listing}
-    saved = panel_core.store.project_dir / ".ifc-console" / "agents" / "custom"
+    saved = Path(panel_core.store.home) / "agents" / "custom"
     assert list(saved.glob("custom-envelope-review*.json"))
 
 
@@ -558,13 +559,7 @@ async def test_custom_agent_content_access_updates_its_blueprint(panel_core):
     )
     assert saved.status_code == 200
 
-    record = (
-        panel_core.store.project_dir
-        / ".ifc-console"
-        / "agents"
-        / "custom"
-        / f"{created['name']}.json"
-    )
+    record = Path(panel_core.store.home) / "agents" / "custom" / f"{created['name']}.json"
     assert json.loads(record.read_text(encoding="utf-8"))["content_paths"] == [path]
     workspace = client.get(
         f"/api/agents/workspace?agent={created['name']}", headers=_auth(panel_core)
@@ -720,9 +715,7 @@ async def test_a_preset_keeps_the_rounds_it_declares(panel_core):
     preset = PRESET_BY_NAME["general"]
     assert preset.max_tool_rounds > panel_core.settings.chat.max_tool_rounds
     client = _client(panel_core)
-    workspace = client.get(
-        "/api/agents/workspace?agent=general", headers=_auth(panel_core)
-    ).json()
+    workspace = client.get("/api/agents/workspace?agent=general", headers=_auth(panel_core)).json()
     assert workspace["limits"]["max_tool_rounds"] == preset.max_tool_rounds
 
 
@@ -1350,7 +1343,7 @@ async def test_turn_upload_is_indexed_but_hidden_and_denied_on_a_later_run(panel
     assert payload["attachment"]["path"].endswith("manual.md")
     assert "/.turns/" in payload["attachment"]["path"]
     assert payload["files"] == []
-    hits = panel_core.project_knowledge.search("wall thickness layers")
+    hits = panel_core.library_knowledge.search("wall thickness layers")
     assert hits and hits[0]["meta"]["path"].endswith("manual.md")
     path = payload["attachment"]["path"]
     key = hits[0]["key"]
@@ -1432,7 +1425,7 @@ async def test_agent_workspace_content_library_persists_selected_access(panel_co
     assert workspace["content"]["access"]["mode"] == "selected"
     assert [row["path"] for row in workspace["files"]] == [first]
 
-    access_file = panel_core.store.project_dir / ".ifc-console" / "agents" / "content-access.json"
+    access_file = Path(panel_core.store.home) / "agents" / "content-access.json"
     assert json.loads(access_file.read_text(encoding="utf-8"))["agents"]["uploader"] == [first]
 
 
@@ -1450,7 +1443,7 @@ async def test_panel_enforces_content_selection_and_turn_attachments(panel_core)
     ).json()["attachment"]["path"]
     key = next(
         hit["key"]
-        for hit in panel_core.project_knowledge.search("private wall guidance")
+        for hit in panel_core.library_knowledge.search("private wall guidance")
         if hit["meta"]["path"] == denied
     )
     pack = DocumentPack(
@@ -1537,9 +1530,7 @@ async def test_skills_import_accepts_external_markdown(panel_core):
     assert payload["imported"]["name"] == "sheet-pile-profile"
     assert [row["name"] for row in payload["skills"]] == ["sheet-pile-profile"]
     saved = (
-        panel_core.store.project_dir
-        / ".ifc-console"
-        / "agents"
+        project_state_dir(panel_core.store.home, panel_core.store.project_dir)
         / "skills"
         / "sheet-pile-profile.md"
     )
@@ -2009,3 +2000,121 @@ async def test_a_follow_up_needs_a_question_and_a_known_workflow(panel_core):
         json={"workflow": "not-a-workflow", "message": "why?"},
     )
     assert unknown.status_code == 404
+
+
+def _pack_zip(name: str = "sheet-piles-test", skill: str = "sheet-pile-parameters") -> bytes:
+    import io
+    import zipfile
+
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr(
+            f"{name}/pack.json",
+            json.dumps({"name": name, "version": "1", "title": "Sheet piles", "task": "Identify."}),
+        )
+        archive.writestr(
+            f"{name}/SKILL.md",
+            f"---\nname: {skill}\ndescription: Identify a sheet pile profile.\n"
+            "applies_to: IfcPile\nkind: prose\n---\n\n## Steps\n1. get_viewer_selection\n",
+        )
+        archive.writestr(
+            f"{name}/knowledge/z-sections.md",
+            "# Z sections\n\n## Z-section: width b\nWidth between interlocks.\n\nSource: page 6\n",
+        )
+        archive.writestr(
+            f"{name}/data/profiles.jsonl",
+            '{"id": "az-26-700:per_m_wall", "designation": "AZ 26-700", "basis": "per_m_wall", '
+            '"source_page": 9, "verified": true}\n',
+        )
+    return buffer.getvalue()
+
+
+async def test_skill_pack_upload_install_and_uninstall(panel_core):
+    client = _client(panel_core)
+    staged = client.post(
+        "/api/agents/packs/upload?name=sheet-piles-test.zip",
+        headers=_auth(panel_core),
+        content=_pack_zip(),
+    )
+    assert staged.status_code == 200, staged.text
+    preview = staged.json()["preview"]
+    assert preview["name"] == "sheet-piles-test"
+    assert preview["skills"][0]["name"] == "sheet-pile-parameters"
+    assert "## Steps" in preview["skills"][0]["text"]
+    assert preview["tables"][0]["rows"] == 1
+
+    # nothing is active until the user confirms the preview
+    workspace = client.get("/api/agents/workspace?agent=uploader", headers=_auth(panel_core))
+    assert all(skill["name"] != "sheet-pile-parameters" for skill in workspace.json()["skills"])
+
+    installed = client.post(
+        "/api/agents/packs/install",
+        headers=_auth(panel_core),
+        json={"staging_id": preview["staging_id"], "agent": "uploader"},
+    )
+    assert installed.status_code == 200, installed.text
+    record = installed.json()["installed"]
+    assert record["skills"] == ["sheet-pile-parameters"]
+    assert record["documents"] == [
+        "agents/packs/sheet-piles-test/knowledge/z-sections.md",
+        "agents/packs/sheet-piles-test/data/profiles.jsonl",
+    ]
+    home = Path(panel_core.store.home)
+    assert (home / "agents" / "packs" / "sheet-piles-test" / "installed.json").is_file()
+    assert (home / "agents" / "skills" / "sheet-pile-parameters.md").is_file()
+    project_skill = (
+        panel_core.store.project_dir
+        / ".ifc-console"
+        / "agents"
+        / "skills"
+        / "sheet-pile-parameters.md"
+    )
+    assert not project_skill.exists()
+
+    workspace = client.get("/api/agents/workspace?agent=uploader", headers=_auth(panel_core))
+    row = next(s for s in workspace.json()["skills"] if s["name"] == "sheet-pile-parameters")
+    assert (row["scope"], row["pack"]) == ("user", "sheet-piles-test")
+
+    listed = client.get("/api/agents/packs", headers=_auth(panel_core)).json()["packs"]
+    assert [pack["name"] for pack in listed] == ["sheet-piles-test"]
+    library = client.get("/api/agents/content?agent=uploader", headers=_auth(panel_core)).json()
+    assert [pack["name"] for pack in library["packs"]] == ["sheet-piles-test"]
+    pack_doc = "agents/packs/sheet-piles-test/knowledge/z-sections.md"
+    assert any(
+        row["path"] == pack_doc and row["pack"] == "sheet-piles-test" for row in library["files"]
+    )
+
+    removed = client.post(
+        "/api/agents/packs/uninstall", headers=_auth(panel_core), json={"name": "sheet-piles-test"}
+    )
+    assert removed.status_code == 200, removed.text
+    assert removed.json()["removed"]["skills"] == ["sheet-pile-parameters"]
+    assert client.get("/api/agents/packs", headers=_auth(panel_core)).json()["packs"] == []
+    assert not (home / "agents" / "skills" / "sheet-pile-parameters.md").exists()
+    missing = client.post(
+        "/api/agents/packs/uninstall", headers=_auth(panel_core), json={"name": "sheet-piles-test"}
+    )
+    assert missing.status_code == 404
+
+
+async def test_skill_pack_documents_reach_the_knowledge_tools(panel_core):
+    client = _client(panel_core)
+    preview = client.post(
+        "/api/agents/packs/upload?name=p.zip", headers=_auth(panel_core), content=_pack_zip()
+    ).json()["preview"]
+    client.post(
+        "/api/agents/packs/install",
+        headers=_auth(panel_core),
+        json={"staging_id": preview["staging_id"]},
+    )
+    from ifc_console.sdk import AsyncWorkbench
+
+    bench = AsyncWorkbench(panel_core)
+    documents = await bench.project_documents()
+    pack_doc = "agents/packs/sheet-piles-test/knowledge/z-sections.md"
+    listed = [(row["path"], row["scope"]) for row in documents]
+    assert (pack_doc, "library") in listed
+    assert ("agents/packs/sheet-piles-test/data/profiles.jsonl", "library") in listed
+    hits = await bench.search_knowledge("interlocks", corpus="project")
+    assert hits and hits[0]["meta"]["path"] == pack_doc
+    assert hits[0]["corpus"] == "library"

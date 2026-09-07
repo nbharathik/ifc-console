@@ -154,11 +154,13 @@ class TestComposition:
         from ifc_console_agents.skills import AgentSkillStore
 
         monkeypatch.setenv("IFC_CONSOLE_HOME", str(tmp_path / "home"))
-        AgentSkillStore(tmp_path).save(
+        # panel skills live under the console home, never in the project folder
+        AgentSkillStore(tmp_path, user_dir=tmp_path / "home").save(
             "sheet-pile-profile",
             "Steps here.",
             description="Measure a sheet pile profile",
             applies_to="IfcMember",
+            scope="user",
         )
         async with await self._runtime(tmp_path) as runtime:
             composition = await compose(

@@ -87,9 +87,7 @@ class AgentBlueprint(BaseModel):
 
     @field_validator("content_paths")
     @classmethod
-    def _clean_content_paths(
-        cls, value: tuple[str, ...] | None
-    ) -> tuple[str, ...] | None:
+    def _clean_content_paths(cls, value: tuple[str, ...] | None) -> tuple[str, ...] | None:
         if value is None:
             return None
         from ifc_console_agents.content import normalize_content_path
@@ -112,9 +110,12 @@ def blueprint_name(title: str) -> str:
 class AgentBlueprintStore:
     """Atomic project-local storage for custom agent definitions."""
 
-    def __init__(self, project_dir: str | Path) -> None:
+    def __init__(self, project_dir: str | Path, *, directory: str | Path | None = None) -> None:
         self.project_dir = Path(project_dir).expanduser().resolve()
-        self.directory = self.project_dir / BLUEPRINTS_DIR
+        # the panel keeps custom agents under the console home
+        self.directory = (
+            Path(directory).expanduser() if directory else self.project_dir / BLUEPRINTS_DIR
+        )
         self.problems: list[str] = []
 
     def load(self) -> list[AgentBlueprint]:
@@ -191,9 +192,7 @@ class BlueprintPack:
         extra = "\n\n".join(
             part for part in (self.blueprint.instructions.strip(), instructions.strip()) if part
         )
-        role = "\n\n".join(
-            (DEFAULT_ROLE, STRATEGY_GUIDANCE[self.blueprint.workflow.strategy])
-        )
+        role = "\n\n".join((DEFAULT_ROLE, STRATEGY_GUIDANCE[self.blueprint.workflow.strategy]))
         return await compose(
             runtime,
             self.blueprint.blocks,

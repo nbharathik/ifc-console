@@ -50,9 +50,11 @@ def _clean_paths(values: Iterable[Any]) -> tuple[str, ...]:
 class AgentContentAccessStore:
     """Atomic project-local access settings for built-in and host agents."""
 
-    def __init__(self, project_dir: str | Path) -> None:
+    def __init__(self, project_dir: str | Path, *, path: str | Path | None = None) -> None:
         self.project_dir = Path(project_dir).expanduser().resolve()
-        self.path = self.project_dir / CONTENT_ACCESS_FILE
+        # the panel keeps this under the console home; the project-local
+        # default remains for hosts that embed the store directly
+        self.path = Path(path).expanduser() if path else self.project_dir / CONTENT_ACCESS_FILE
         self._lock = threading.Lock()
 
     def _read(self) -> dict[str, tuple[str, ...]] | None:
@@ -67,9 +69,7 @@ class AgentContentAccessStore:
             return None
         parsed: dict[str, tuple[str, ...]] = {}
         for name, paths in agents.items():
-            if not isinstance(name, str) or not re.fullmatch(
-                r"[a-z][a-z0-9_-]{0,63}", name
-            ):
+            if not isinstance(name, str) or not re.fullmatch(r"[a-z][a-z0-9_-]{0,63}", name):
                 continue
             parsed[name] = _clean_paths(paths) if isinstance(paths, list) else ()
         return parsed
@@ -188,11 +188,7 @@ class AgentContentGate:
         temporary = self._temporary.get()
         if is_turn_reference_path(normalized):
             return normalized in temporary
-        return (
-            self.configured is None
-            or normalized in self.configured
-            or normalized in temporary
-        )
+        return self.configured is None or normalized in self.configured or normalized in temporary
 
     @contextmanager
     def temporary(self, paths: Iterable[str]):
@@ -232,6 +228,8 @@ class AgentContentGate:
         filtered = dict(data)
         if name == "list_project_documents":
             filtered["files"] = self._filter_rows(data.get("files"))
+        elif name == "lookup_table_rows":
+            filtered["rows"] = self._filter_rows(data.get("rows"))
         elif name == "search_ifc_knowledge":
             corpus = call.arguments.get("corpus", "all")
             if corpus == "project":
@@ -250,8 +248,13 @@ class AgentContentGate:
 
 
 def managed_content_path(path: str) -> bool:
+    """A path inside a references store: the legacy project folder or the home."""
     normalized = normalize_content_path(path)
-    return normalized is not None and normalized.startswith(_MANAGED_PREFIX)
+    if normalized is None:
+        return False
+    return normalized.startswith(_MANAGED_PREFIX) or (
+        normalized.startswith("agents/") and "/references/" in normalized
+    )
 
 
 __all__ = [

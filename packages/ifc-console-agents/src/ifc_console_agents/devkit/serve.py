@@ -91,7 +91,21 @@ def build_dev_core(
     core.start_knowledge()
     asyncio.run(core.open_model(scenario.model))
     try:
-        core.agent_files.sync(core.project_knowledge)
+        # the panel keeps uploads under the home, so the demo references and
+        # skill are copied in from the scenario folder on first boot
+        from ifc_console_agents.paths import skill_store
+        from ifc_console_agents.skills import skills_dir
+
+        present = {path.name for path in core.agent_files.paths()}
+        missing = [str(path) for path in scenario.references if path.name not in present]
+        if missing:
+            core.agent_files.add_paths(missing)
+        core.agent_files.sync(core.library_knowledge)
+        skills = skill_store(core)
+        known = {row["name"] for row in skills.entries()}
+        for path in sorted(skills_dir(root).glob("*.md")):
+            if path.stem not in known:
+                skills.import_file(path.name, path.read_bytes(), scope="project")
     except Exception as exc:  # a missing PDF dependency must not stop the boot
         scenario = scenario.__class__(
             project_dir=scenario.project_dir,
@@ -126,7 +140,9 @@ def start(core: Any) -> DevServer:
         if getattr(server, "started", False):
             break
         if failure or not thread.is_alive():
-            raise RuntimeError(f"the dev server did not start: {failure[0] if failure else 'exited'}")
+            raise RuntimeError(
+                f"the dev server did not start: {failure[0] if failure else 'exited'}"
+            )
         time.sleep(0.05)
     else:
         raise RuntimeError("the dev server did not start within 30 seconds")

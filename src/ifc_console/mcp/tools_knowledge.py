@@ -47,12 +47,53 @@ def _require(core: AppCore) -> None:
 
 def _require_project(core: AppCore) -> None:
     _require_enabled(core)
-    if not core.project_knowledge.ready:
+    if not (core.project_knowledge.ready or core.library_knowledge.ready):
         raise ToolError(
             "KNOWLEDGE_NOT_READY",
             "no project documents have been ingested.",
-            "The user ingests them with: ifc-console knowledge ingest <paths>",
+            "The user ingests them with: ifc-console knowledge ingest <paths>, "
+            "or installs a skill pack in the agent panel.",
         )
+
+
+def _field_equals(value: Any, wanted: Any) -> bool:
+    if isinstance(value, int | float) and isinstance(wanted, int | float):
+        return float(value) == float(wanted)
+    return str(value).strip().lower() == str(wanted).strip().lower()
+
+
+def _document_stores(core: AppCore) -> tuple[Any, ...]:
+    """The project corpus first, then the user's installed skill packs."""
+    return (core.project_knowledge, core.library_knowledge)
+
+
+def _project_hits(core: AppCore, query: str, kinds: Any, limit: int) -> list[dict[str, Any]]:
+    hits: list[dict[str, Any]] = []
+    for store in _document_stores(core):
+        if store.ready:
+            hits.extend(store.search(query, kind=kinds, limit=limit))
+    hits.sort(key=lambda row: -float(row.get("score") or 0))
+    return hits[:limit]
+
+
+def _locate_document(core: AppCore, path: str, *, media: str, hint: str) -> tuple[Any, Path]:
+    normalized = path.replace("\\", "/")
+    for store in _document_stores(core):
+        found = store.resolve(normalized)
+        if found is None:
+            continue
+        source, target = found
+        if source.get("media") != media:
+            break
+        if not target.is_file():
+            raise ToolError(
+                "FILE_NOT_FOUND",
+                f"the indexed {media} {normalized!r} is no longer on disk.",
+                "Upload or copy it again, then refresh the agent references.",
+            )
+        return source, target
+    what = "project image" if media == "image" else "PDF"
+    raise ToolError("NOT_FOUND", f"{path!r} is not an indexed {what}.", hint)
 
 
 def register(mcp: OperationRegistry, core: AppCore) -> None:
@@ -76,7 +117,8 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
     async def search_ifc_knowledge(
         query: Annotated[str, Field(description="What you want to know, in plain words.")],
         kind: Annotated[
-            list[Literal["entity", "pset", "property", "type", "api", "recipe", "doc"]] | None,
+            list[Literal["entity", "pset", "property", "type", "api", "recipe", "doc", "row"]]
+            | None,
             Field(description="Restrict to these record kinds."),
         ] = None,
         schema: Annotated[
@@ -92,7 +134,7 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
         kinds = tuple(kind) if kind else None
         if corpus == "project":
             _require_project(core)
-            hits = core.project_knowledge.search(query, kind=kinds, limit=limit)
+            hits = _project_hits(core, query, kinds, limit)
             return ok(
                 {"query": query, "corpus": corpus, "hits": hits},
                 core.session_meta(),
@@ -106,8 +148,8 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
         )
         data = {"query": query, "corpus": corpus, "hits": hits}
         returned = len(hits)
-        if corpus == "all" and core.project_knowledge.ready:
-            project_hits = core.project_knowledge.search(query, kind=kinds, limit=limit)
+        if corpus == "all" and (core.project_knowledge.ready or core.library_knowledge.ready):
+            project_hits = _project_hits(core, query, kinds, limit)
             if project_hits:
                 data["project_hits"] = project_hits
                 returned += len(project_hits)
@@ -130,8 +172,9 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
         record = None
         if core.knowledge.ready:
             record = core.knowledge.get(key)
-        if record is None and core.project_knowledge.ready:
-            record = core.project_knowledge.get(key)
+        for store in _document_stores(core):
+            if record is None and store.ready:
+                record = store.get(key)
         if record is None:
             if not core.knowledge.ready and not key.startswith("doc:"):
                 core.start_knowledge()
@@ -144,6 +187,96 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
                 "Keys come from search_ifc_knowledge hits; run a search first.",
             )
         return ok(record, core.session_meta(), char_limit=limit_)
+
+    @mcp.tool(
+        annotations=KNOWLEDGE_ANN,
+        description=(
+            "[QUERY] Rows of one indexed table (a .jsonl or .csv in the project content or "
+            "the user library). where keeps rows whose fields equal the given values; "
+            "nearest ranks rows by the summed absolute residual against numeric targets, "
+            "smallest first, and reports each residual. Returns full rows with their "
+            "source path; use it instead of typing table values from memory."
+        ),
+    )
+    @enveloped(core, "lookup_table_rows")
+    async def lookup_table_rows(
+        table: Annotated[
+            str,
+            Field(min_length=1, max_length=300, description="Table name (file stem) or path."),
+        ],
+        where: Annotated[
+            dict[str, Any] | None, Field(description="Field values a row must match exactly.")
+        ] = None,
+        nearest: Annotated[
+            dict[str, float] | None,
+            Field(description="Numeric field targets to rank by, e.g. {'width_b_mm': 700}."),
+        ] = None,
+        limit: Annotated[int, Field(ge=1, le=100, description="Maximum rows.")] = 10,
+    ) -> Envelope:
+        _require_project(core)
+        needle = table.replace("\\", "/").strip().lower()
+        stem = needle.rsplit("/", 1)[-1]
+        for suffix in (".jsonl", ".csv"):
+            if stem.endswith(suffix):
+                stem = stem[: -len(suffix)]
+        known: set[str] = set()
+        matches: list[dict[str, Any]] = []
+        for store in _document_stores(core):
+            if not store.ready:
+                continue
+            for record in store.rows("row"):
+                meta = record.get("meta") or {}
+                name = str(meta.get("table") or "").lower()
+                path = str(meta.get("path") or "").replace("\\", "/").lower()
+                known.add(str(meta.get("table") or ""))
+                if name != stem and path != needle:
+                    continue
+                row = meta.get("row") or {}
+                if where and not all(_field_equals(row.get(k), v) for k, v in where.items()):
+                    continue
+                residuals: dict[str, float] = {}
+                if nearest:
+                    skip = False
+                    for key, target in nearest.items():
+                        value = row.get(key)
+                        if isinstance(value, bool) or not isinstance(value, int | float):
+                            skip = True
+                            break
+                        residuals[key] = round(float(value) - float(target), 6)
+                    if skip:
+                        continue
+                hit: dict[str, Any] = {
+                    "key": record.get("key"),
+                    "path": meta.get("path"),
+                    "line": meta.get("line"),
+                    "corpus": record.get("corpus"),
+                    "row": row,
+                }
+                if nearest:
+                    hit["residuals"] = residuals
+                    hit["residual_sum"] = round(sum(abs(v) for v in residuals.values()), 6)
+                matches.append(hit)
+        if not matches and stem not in {k.lower() for k in known} and needle not in known:
+            raise ToolError(
+                "NOT_FOUND",
+                f"no indexed table matches {table!r}.",
+                "Known tables: "
+                + (", ".join(sorted(k for k in known if k)) or "none")
+                + ". Upload a .jsonl or .csv in the agent panel to index one.",
+            )
+        if nearest:
+            matches.sort(key=lambda hit: hit["residual_sum"])
+        return ok(
+            {
+                "table": table,
+                "rows": matches[:limit],
+                "matched": len(matches),
+                "known_tables": sorted(k for k in known if k),
+            },
+            core.session_meta(),
+            char_limit=limit_,
+            returned=min(len(matches), limit),
+        )
 
     @mcp.tool(
         annotations=KNOWLEDGE_ANN,
@@ -162,17 +295,22 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
     ) -> Envelope:
         _require_enabled(core)
         rows = []
-        for source in core.project_knowledge.sources():
-            row = dict(source)
-            source_media = str(row.get("media") or "")
-            category = "image" if source_media == "image" else "document"
-            if media is not None and media not in {source_media, category}:
-                continue
-            row["category"] = category
-            rows.append(row)
+        for scope, store in (
+            ("project", core.project_knowledge),
+            ("library", core.library_knowledge),
+        ):
+            for source in store.sources():
+                row = dict(source)
+                source_media = str(row.get("media") or "")
+                category = "image" if source_media == "image" else "document"
+                if media is not None and media not in {source_media, category}:
+                    continue
+                row["category"] = category
+                row["scope"] = scope
+                rows.append(row)
         return ok(
             {
-                "ready": core.project_knowledge.ready,
+                "ready": core.project_knowledge.ready or core.library_knowledge.ready,
                 "files": rows,
                 "managed_directory": (
                     str(core.agent_files.directory) if core.agent_files is not None else None
@@ -198,30 +336,12 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
     ) -> Any:
         _require_project(core)
         normalized = path.replace("\\", "/")
-        source = next(
-            (
-                entry
-                for entry in core.project_knowledge.sources()
-                if str(entry.get("path", "")).replace("\\", "/") == normalized
-            ),
-            None,
+        source, target = _locate_document(
+            core,
+            path,
+            media="image",
+            hint="Call list_project_documents(media='image') and pass one returned path.",
         )
-        if source is None or source.get("media") != "image":
-            raise ToolError(
-                "NOT_FOUND",
-                f"{path!r} is not an indexed project image.",
-                "Call list_project_documents(media='image') and pass one returned path.",
-            )
-        target = Path(normalized)
-        if not target.is_absolute():
-            target = core.store.project_dir / target
-        target = target.expanduser().resolve()
-        if not target.is_file():
-            raise ToolError(
-                "FILE_NOT_FOUND",
-                f"the indexed image {normalized!r} is no longer on disk.",
-                "Upload or copy it again, then refresh the agent references.",
-            )
         size = target.stat().st_size
         if size > MAX_PROJECT_REFERENCE_BYTES:
             raise ToolError(
@@ -264,30 +384,12 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
     ) -> Any:
         _require_project(core)
         normalized = path.replace("\\", "/")
-        source = next(
-            (
-                entry
-                for entry in core.project_knowledge.sources()
-                if str(entry.get("path", "")).replace("\\", "/") == normalized
-            ),
-            None,
+        source, target = _locate_document(
+            core,
+            path,
+            media="pdf",
+            hint="Call list_project_documents(media='pdf') and pass one returned path.",
         )
-        if source is None or source.get("media") != "pdf":
-            raise ToolError(
-                "NOT_FOUND",
-                f"{path!r} is not an indexed PDF.",
-                "Call list_project_documents(media='pdf') and pass one returned path.",
-            )
-        target = Path(normalized)
-        if not target.is_absolute():
-            target = core.store.project_dir / target
-        target = target.expanduser().resolve()
-        if not target.is_file():
-            raise ToolError(
-                "FILE_NOT_FOUND",
-                f"the indexed PDF {normalized!r} is no longer on disk.",
-                "Upload or copy it again, then refresh the agent references.",
-            )
         from ifc_console.automation.files import sha256_file
 
         if sha256_file(target) != source.get("sha256"):

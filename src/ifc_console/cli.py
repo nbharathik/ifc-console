@@ -535,11 +535,10 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         help="Documents, images, or directories to copy into the managed folder.",
     )
+    ag_files.add_argument("--collection", default=None, help="Library folder to file them under.")
     ag_files.add_argument("--json", action="store_true")
     ag_files.set_defaults(func=_cmd_agents_files)
-    ag_run = ag_sub.add_parser(
-        "run", help="Run one agent in the terminal, standalone or attached."
-    )
+    ag_run = ag_sub.add_parser("run", help="Run one agent in the terminal, standalone or attached.")
     ag_run.add_argument("name", help="Agent name, e.g. measurement or docs.")
     ag_run.add_argument("path", type=Path, nargs="?", help="Project folder or .ifc file.")
     ag_run.add_argument("--model", required=True, help="Model id at the chosen provider.")
@@ -550,6 +549,29 @@ def build_parser() -> argparse.ArgumentParser:
     ag_run.add_argument("--prompt", default=None, help="Run once instead of a chat loop.")
     ag_run.add_argument("--home", type=Path, default=None, help="ifc-console home directory.")
     ag_run.set_defaults(func=_cmd_agents_run)
+    ag_pack = ag_sub.add_parser(
+        "pack",
+        help="Install skill packs (a zip or folder made from a document) for this user.",
+    )
+    ag_pack_sub = ag_pack.add_subparsers(dest="pack_cmd", required=True)
+    ag_pack_check = ag_pack_sub.add_parser("check", help="Validate a pack and show what it holds.")
+    ag_pack_check.add_argument("path", type=Path, help="A pack .zip or its folder.")
+    ag_pack_check.add_argument("--json", action="store_true")
+    ag_pack_check.set_defaults(func=_cmd_agents_pack, pack_action="check")
+    ag_pack_install = ag_pack_sub.add_parser("install", help="Install a pack into ~/.ifc-console.")
+    ag_pack_install.add_argument("path", type=Path, help="A pack .zip or its folder.")
+    ag_pack_install.add_argument(
+        "--agent", default=None, help="Agent name to record with the pack."
+    )
+    ag_pack_install.add_argument("--json", action="store_true")
+    ag_pack_install.set_defaults(func=_cmd_agents_pack, pack_action="install")
+    ag_pack_list = ag_pack_sub.add_parser("list", help="List installed packs.")
+    ag_pack_list.add_argument("--json", action="store_true")
+    ag_pack_list.set_defaults(func=_cmd_agents_pack, pack_action="list")
+    ag_pack_remove = ag_pack_sub.add_parser("uninstall", help="Remove an installed pack.")
+    ag_pack_remove.add_argument("name", help="Pack name as listed.")
+    ag_pack_remove.add_argument("--json", action="store_true")
+    ag_pack_remove.set_defaults(func=_cmd_agents_pack, pack_action="uninstall")
 
     keys = sub.add_parser(
         "keys",
@@ -599,9 +621,7 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _add_run_flags(
-    parser: argparse.ArgumentParser, *, suppress_defaults: bool = False
-) -> None:
+def _add_run_flags(parser: argparse.ArgumentParser, *, suppress_defaults: bool = False) -> None:
     default = argparse.SUPPRESS if suppress_defaults else None
     flag_default = argparse.SUPPRESS if suppress_defaults else False
     parser.add_argument("--file", default=default, help="IFC file to load at startup.")
@@ -2789,7 +2809,10 @@ def _agents_registry():
     packs = _agent_module("packs")
     if packs is None:
         return None
-    return packs.AgentPackRegistry(_new_store().project_dir)
+    store = _new_store()
+    from ifc_console_agents.paths import blueprints_dir
+
+    return packs.AgentPackRegistry(store.project_dir, blueprints_dir=blueprints_dir(store.home))
 
 
 def _cmd_agents_list(args: argparse.Namespace) -> int:
@@ -2860,10 +2883,12 @@ def _cmd_agents_files(args: argparse.Namespace) -> int:
     from ifc_console.mcp.envelope import ToolError
 
     store = _new_store()
-    references = agent_files.AgentReferenceStore(store.project_dir)
-    knowledge = ProjectKnowledge(store.project_dir)
+    # the library under the console home serves every project
+    references = agent_files.AgentReferenceStore.for_library(store.home)
+    knowledge = ProjectKnowledge.for_library(store.home)
     try:
-        added = references.add_paths(args.paths) if args.paths else []
+        collection = getattr(args, "collection", None)
+        added = references.add_paths(args.paths, collection=collection) if args.paths else []
         summary = references.sync(knowledge)
     except ToolError as exc:
         print(f"{exc.code}: {exc}")
@@ -2882,6 +2907,108 @@ def _cmd_agents_files(args: argparse.Namespace) -> int:
         print(f"{row['name']:28} [{row['media']}, {state}]")
     if not summary["files"]:
         print("no references; copy files into the folder above or pass paths to this command")
+    return 0
+
+
+def _pack_bytes(path: Path) -> tuple[bytes, str]:
+    """A pack zip as bytes: read a .zip, or zip a pack folder in memory."""
+    import io
+    import zipfile
+
+    path = path.expanduser()
+    if path.is_file():
+        return path.read_bytes(), path.name
+    if not path.is_dir():
+        raise FileNotFoundError(path)
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+        for file in sorted(p for p in path.rglob("*") if p.is_file()):
+            archive.write(file, f"{path.name}/{file.relative_to(path).as_posix()}")
+    return buffer.getvalue(), f"{path.name}.zip"
+
+
+def _print_pack_preview(preview: dict) -> None:
+    print(f"pack     {preview['name']} v{preview['version']}: {preview['title']}")
+    for skill in preview["skills"]:
+        print(f"skill    #{skill['name']}: {skill['description']}")
+    print(
+        f"files    {len(preview['knowledge'])} knowledge, {len(preview['documents'])} documents, "
+        f"{len(preview['tables'])} tables ({sum(t['rows'] for t in preview['tables'])} rows)"
+    )
+    for warning in preview["warnings"]:
+        print(f"note     {warning}")
+
+
+def _cmd_agents_pack(args: argparse.Namespace) -> int:
+    packs_module = _agent_module("skill_packs")
+    skills_module = _agent_module("skills")
+    if packs_module is None or skills_module is None:
+        return _agents_missing()
+    from ifc_console.knowledge.project import ProjectKnowledge
+    from ifc_console.mcp.envelope import ToolError
+
+    store = _new_store()
+    packs = packs_module.SkillPackStore(store.home)
+    action = args.pack_action
+    if action == "list":
+        rows = packs.installed()
+        if args.json:
+            print(json.dumps(rows, indent=2))
+            return 0
+        for row in rows:
+            skills = ", ".join(f"#{name}" for name in row.get("skills") or []) or "no skills"
+            print(f"{row['name']:40} v{row.get('version')}  {skills}")
+        if not rows:
+            print(f"no packs installed under {packs.directory}")
+        return 0
+    from ifc_console_agents.paths import project_state_dir
+
+    skills = skills_module.AgentSkillStore(
+        store.project_dir,
+        user_dir=store.home,
+        project_skills_dir=project_state_dir(store.home, store.project_dir) / "skills",
+    )
+    knowledge = ProjectKnowledge.for_library(store.home)
+    try:
+        if action == "uninstall":
+            removed = packs.uninstall(args.name, skills=skills, knowledge=knowledge)
+            if args.json:
+                print(json.dumps(removed, indent=2))
+            else:
+                print(
+                    f"removed {args.name}: {len(removed['skills'])} skills, {len(removed['documents'])} documents"
+                )
+            return 0
+        try:
+            data, filename = _pack_bytes(args.path)
+        except FileNotFoundError:
+            print(f"no such pack: {args.path}")
+            return 1
+        preview = packs.stage(data, filename)
+        if action == "check":
+            packs.discard(preview["staging_id"])
+            if args.json:
+                print(json.dumps(preview, indent=2, default=str))
+            else:
+                _print_pack_preview(preview)
+            return 0
+        record = packs.commit(
+            preview["staging_id"], skills=skills, knowledge=knowledge, agent=args.agent
+        )
+    except ToolError as exc:
+        print(f"{exc.code}: {exc}")
+        if exc.hint:
+            print(exc.hint)
+        return 1
+    finally:
+        knowledge.close()
+    if args.json:
+        print(json.dumps(record, indent=2))
+        return 0
+    _print_pack_preview(preview)
+    print(f"installed into {record['directory']}")
+    for name in record["skills"]:
+        print(f"type #{name} in the agent panel to use it")
     return 0
 
 
@@ -2917,6 +3044,8 @@ def _cmd_agents_run(args: argparse.Namespace) -> int:
         )
     )
     return 0
+
+
 # --------------------------------------------------------------------------- keys
 def _cmd_keys_set(args: argparse.Namespace) -> int:
     credentials = _agent_module("credentials")
@@ -2978,11 +3107,7 @@ def _cmd_keys_delete(args: argparse.Namespace) -> int:
         if exc.hint:
             print(exc.hint)
         return 1
-    print(
-        f"key for {args.provider} removed"
-        if existed
-        else f"no stored key for {args.provider}"
-    )
+    print(f"key for {args.provider} removed" if existed else f"no stored key for {args.provider}")
     return 0
 
 

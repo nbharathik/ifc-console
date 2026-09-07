@@ -109,6 +109,7 @@ BLOCKS: tuple[AgentBlock, ...] = (
         tools=(
             "search_ifc_knowledge",
             "get_knowledge_record",
+            "lookup_table_rows",
             "list_project_documents",
             "get_project_reference_image",
             "get_project_document_page",
@@ -252,6 +253,10 @@ BLOCKS: tuple[AgentBlock, ...] = (
             "save_agent_skill",
         ),
         instructions=(
+            "Skills of kind general explain how to use one knowledge collection (its files "
+            "and tables); skills of kind task give the procedure for one job and name the "
+            "general skill to read first. When the user names both, read the general one "
+            "first. "
             "Your session context lists this project's saved skills. When one matches the "
             "element class, profile family, geometry family, or task, load it with "
             "get_agent_skill before inventing a method; list_agent_skills refreshes the "
@@ -373,7 +378,8 @@ async def _session_context(tools: Any, selected: list[str]) -> str:
         lines.append("- Saved skills (load one with get_agent_skill when it applies):")
         for skill in skills[:_SKILL_INDEX_LIMIT]:
             applies = f" [{skill['applies_to']}]" if skill.get("applies_to") else ""
-            lines.append(f"  - {skill['name']}: {skill.get('description', '')}{applies}")
+            kind = f" ({skill['kind']})" if skill.get("kind") in ("general", "task") else ""
+            lines.append(f"  - {skill['name']}{kind}: {skill.get('description', '')}{applies}")
         if len(skills) > _SKILL_INDEX_LIMIT:
             lines.append(
                 f"  - and {len(skills) - _SKILL_INDEX_LIMIT} more; list_agent_skills shows all."

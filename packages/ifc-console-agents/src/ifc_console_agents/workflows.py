@@ -102,9 +102,7 @@ class AgentStep(BaseModel):
     @model_validator(mode="after")
     def needs_a_source(self) -> AgentStep:
         if not self.agent and not self.preset and not self.blocks:
-            raise ValueError(
-                f"agent step {self.id!r} names no agent, preset, or capability blocks"
-            )
+            raise ValueError(f"agent step {self.id!r} names no agent, preset, or capability blocks")
         return self
 
 
@@ -174,8 +172,7 @@ class WorkflowSpec(BaseModel):
             unknown = set(step.needs).difference(seen)
             if unknown:
                 raise ValueError(
-                    f"step {step.id!r} depends on {sorted(unknown)}, which do not "
-                    "run before it"
+                    f"step {step.id!r} depends on {sorted(unknown)}, which do not run before it"
                 )
             seen.add(step.id)
         return self
@@ -262,9 +259,10 @@ class WorkflowRegistry:
     adapt a shipped workflow without forking the package.
     """
 
-    def __init__(self, project_dir: Path) -> None:
+    def __init__(self, project_dir: Path, *, directory: Path | None = None) -> None:
         self.project_dir = project_dir
-        self.directory = workflows_dir(project_dir)
+        # the panel keeps saved workflows under the console home
+        self.directory = Path(directory).expanduser() if directory else workflows_dir(project_dir)
 
     @staticmethod
     def builtin_dir() -> Path:
@@ -467,9 +465,7 @@ def validate_inputs(spec: WorkflowSpec, values: Mapping[str, Any]) -> dict[str, 
     return resolved
 
 
-def validate_settings(
-    spec: WorkflowSpec, values: Mapping[str, Any] | None
-) -> dict[str, str]:
+def validate_settings(spec: WorkflowSpec, values: Mapping[str, Any] | None) -> dict[str, str]:
     """Merge free-form run settings over a workflow's reusable defaults."""
     if values is not None and not isinstance(values, Mapping):
         raise ToolError(

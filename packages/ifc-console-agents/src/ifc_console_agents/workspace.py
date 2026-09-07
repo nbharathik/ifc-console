@@ -15,7 +15,7 @@ from ifc_console.ifc.ai_provenance import ALLOWED_PSETS, PROVENANCE_PSET
 
 from ifc_console_agents.blocks import BLOCK_BY_NAME
 from ifc_console_agents.models import AgentLimits
-from ifc_console_agents.skills import AgentSkillStore
+from ifc_console_agents.paths import skill_store
 
 if TYPE_CHECKING:
     from ifc_console.app import AppCore
@@ -49,6 +49,7 @@ STAGES: tuple[tuple[str, str, str, tuple[str, ...]], ...] = (
             "list_project_documents",
             "search_ifc_knowledge",
             "get_knowledge_record",
+            "lookup_table_rows",
             "get_project_reference_image",
             "get_project_document_page",
             "find_files",
@@ -281,7 +282,7 @@ async def describe(
         "tool_count": len(rows),
         "writes": _writes(rows),
         "artifact_writes": [row["name"] for row in rows if row["writes_artifact"]],
-        "skills": AgentSkillStore(core.store.project_dir).entries(),
+        "skills": skill_store(core).entries(),
         "unavailable_tools": list(composition.unavailable),
         "viewer": core.viewer.enabled,
         "viewer_available": viewer_available,

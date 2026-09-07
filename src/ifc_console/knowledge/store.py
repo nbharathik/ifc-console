@@ -279,6 +279,15 @@ class Store:
         row = self._conn.execute("SELECT * FROM record WHERE key = ?", (key,)).fetchone()
         return self._row(row, body=True) if row else None
 
+    def records(self, kind: str, *, limit: int | None = None) -> list[dict[str, Any]]:
+        """Every record of one kind, in insertion order, without bodies."""
+        sql = "SELECT * FROM record WHERE kind = ? ORDER BY rowid"
+        args: list[Any] = [kind]
+        if limit is not None:
+            sql += " LIMIT ?"
+            args.append(limit)
+        return [self._row(row) for row in self._conn.execute(sql, args)]
+
     def by_name(self, name: str, *, kind: str | None = None, schema: str | None = None):
         sql = "SELECT * FROM record WHERE name = ? COLLATE NOCASE"
         args: list[Any] = [name]

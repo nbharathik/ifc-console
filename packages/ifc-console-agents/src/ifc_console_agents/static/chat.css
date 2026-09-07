@@ -3598,6 +3598,76 @@ body.viewer-closed #chat-dock-resize { display: none; }
   margin-bottom: 10px;
 }
 .chat-ws-skill-import small { color: var(--chat-text-muted); }
+.chat-pack-preview { display: block; }
+.chat-pack-preview-body { display: grid; gap: 8px; }
+.chat-pack-preview-body > p { margin: 0; color: var(--chat-dim); font-size: 12px; }
+.chat-pack-skill-text {
+  max-height: 260px;
+  margin: 6px 0 0;
+  padding: 8px;
+  overflow: auto;
+  color: var(--chat-dim);
+  background: var(--chat-raise);
+  font-size: 11px;
+  white-space: pre-wrap;
+}
+.chat-pack-heading {
+  margin: 16px 0 8px;
+  color: var(--chat-quiet);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.chat-content-options {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+  font-size: 11.5px;
+  color: var(--chat-quiet);
+}
+.chat-content-options select { flex: none; }
+.chat-content-options input { flex: 1; min-width: 120px; }
+.chat-content-group-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 10px 0 4px;
+  padding: 0 4px;
+}
+.chat-content-group-head b { color: var(--chat-text); font-size: 12px; }
+.chat-content-group-head small { flex: 1; color: var(--chat-quiet); font-size: 11px; }
+.chat-root .chat-content-remove {
+  width: 20px;
+  height: 20px;
+  min-height: 20px;
+  margin-left: auto;
+  padding: 0;
+  color: var(--chat-quiet);
+  background: transparent;
+  border: 0;
+}
+.chat-root .chat-content-remove:hover { color: var(--chat-bad); }
+.chat-skill-picker {
+  display: grid;
+  gap: 4px;
+  max-height: 260px;
+  margin-bottom: 6px;
+  padding: 8px 10px;
+  overflow: auto;
+  background: var(--chat-raise);
+  border: 1px solid var(--chat-accent-line);
+  border-radius: 6px;
+  font-size: 12px;
+}
+.chat-skill-picker[hidden] { display: none; }
+.chat-skill-picker > b { color: var(--chat-quiet); font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; }
+.chat-skill-pick { display: flex; align-items: flex-start; gap: 8px; cursor: pointer; }
+.chat-skill-pick span { display: grid; }
+.chat-skill-pick small { color: var(--chat-quiet); }
+.chat-attachment-chip.skill { border-left-color: var(--chat-accent); }
+.chat-attachment-chip.skill i { display: grid; place-items: center; }
+.chat-skill-row .chat-pack-skill-text { max-height: 320px; }
 .chat-ws-skill-record { margin-bottom: 14px; }
 .chat-ws-skill-record-form {
   display: flex;

@@ -1,4 +1,4 @@
-﻿"""Slash-command registry for the console TUI.
+"""Slash-command registry for the console TUI.
 
 Each command is a small async handler that receives the console screen and
 the raw argument string. Keeping them in a registry (instead of an if-chain)
@@ -543,12 +543,9 @@ async def _mode(console: ConsoleScreen, args: str) -> None:
             f"(ask = AI queries only; edit = AI may change the model; {saving})"
         )
         if copy is not None:
+            console.print(f"[dim]working in a copy: {escape(str(copy.path))}[/dim]")
             console.print(
-                f"[dim]working in a copy: {escape(str(copy.path))}[/dim]"
-            )
-            console.print(
-                f"[dim]  the file you opened, {escape(copy.origin.name)}, "
-                "is not written[/dim]"
+                f"[dim]  the file you opened, {escape(copy.origin.name)}, is not written[/dim]"
             )
         return
     try:
@@ -603,8 +600,7 @@ async def _theme(console: ConsoleScreen, args: str) -> None:
     value = args.strip().lower()
     if value not in THEME_IDS:
         console.print(
-            f"[red]unknown theme {escape(args)!r}[/red]; "
-            "use light, dark, modern, or blue"
+            f"[red]unknown theme {escape(args)!r}[/red]; use light, dark, modern, or blue"
         )
         return
     apply = getattr(console.app, "apply_theme", None)
@@ -612,9 +608,7 @@ async def _theme(console: ConsoleScreen, args: str) -> None:
         apply(value, persist=True)
     else:
         core.set_ui_theme(value, persist=True)
-    console.print(
-        f"theme set to {value} ({theme_label(value)}; saved; open viewer tabs follow)"
-    )
+    console.print(f"theme set to {value} ({theme_label(value)}; saved; open viewer tabs follow)")
 
 
 @command(
@@ -1205,10 +1199,7 @@ async def _agent_pick(console: ConsoleScreen) -> None:
         return
     from ifc_console.tui.modals import AgentPickerModal
 
-    rows = [
-        (info.name, info.title, info.description)
-        for info in infos
-    ]
+    rows = [(info.name, info.title, info.description) for info in infos]
     choice = await console.app.push_screen_wait(AgentPickerModal(rows))
     if choice:
         await _agent_open(console, choice)
@@ -1264,7 +1255,9 @@ async def _agent(console: ConsoleScreen, args: str) -> None:
                 f"  [cyan]{escape(row['name']):24}[/cyan] {state} [dim]{row['media']}[/dim]"
             )
         if not summary["files"]:
-            lines.append("  [dim]drop documents or images into this folder, then run /agent files[/dim]")
+            lines.append(
+                "  [dim]drop documents or images into this folder, then run /agent files[/dim]"
+            )
         console.print("\n".join(lines))
         return
 
@@ -1314,9 +1307,9 @@ async def _workflows(console: ConsoleScreen, args: str) -> None:
     core = console.core
     parts = args.strip().split()
 
-    from ifc_console_agents.workflows import WorkflowRegistry
+    from ifc_console_agents.paths import workflow_registry
 
-    registry = WorkflowRegistry(core.store.project_dir)
+    registry = workflow_registry(core)
     if parts and parts[0].casefold() == "list":
         rows = await asyncio.to_thread(registry.entries)
         lines = ["[b]available workflows[/b]"]

@@ -21,7 +21,19 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_valida
 SKILLS_DIRNAME = Path(".ifc-console") / "agents" / "skills"
 MAX_SKILL_BYTES = 64 * 1024
 _NAME = re.compile(r"^[a-z0-9][a-z0-9-]{1,63}$")
-_HEADER_KEYS = ("name", "description", "applies_to", "kind", "schema_version")
+_HEADER_KEYS = (
+    "name",
+    "description",
+    "applies_to",
+    "kind",
+    "schema_version",
+    "pack",
+    "collection",
+)
+# general: how to use one knowledge collection; task: the procedure for one job;
+# prose: any other written skill; parametric_measurement: machine replayable.
+SKILL_KINDS = ("general", "task", "prose", "parametric_measurement")
+SKILL_SCOPES = ("project", "user")
 _MEASUREMENT_ID = r"^[a-z][a-z0-9_]*(?:\.[a-z0-9_]+)+$"
 MEASUREMENT_SPEC_FENCE = "measurement-spec"
 _EXPLICIT_MEASUREMENT_ID = re.compile(
@@ -401,13 +413,55 @@ def _first_line(body: str) -> str:
 
 
 class AgentSkillStore:
-    """Markdown skill files under `.ifc-console/agents/skills/`."""
+    """Markdown skill files under `.ifc-console/agents/skills/`.
 
-    def __init__(self, project_dir: Path) -> None:
-        self.directory = skills_dir(project_dir)
+    Two scopes: the project folder holds skills recorded for its models, the
+    user home (`~/.ifc-console/agents/skills/`) holds installed skill packs
+    that follow the user to every project. A project skill hides a user skill
+    of the same name.
+    """
 
-    def path_for(self, name: str) -> Path:
-        return self.directory / f"{_valid_name(name)}.md"
+    def __init__(
+        self,
+        project_dir: Path,
+        *,
+        user_dir: Path | None = None,
+        project_skills_dir: Path | None = None,
+    ) -> None:
+        # the panel passes a folder under the home for the project scope, so a
+        # repository never gains a .ifc-console folder; the default stays for
+        # hosts that embed the store directly
+        self.directory = (
+            Path(project_skills_dir).expanduser()
+            if project_skills_dir is not None
+            else skills_dir(project_dir)
+        )
+        self.user_directory = (
+            Path(user_dir).expanduser() / "agents" / "skills" if user_dir is not None else None
+        )
+
+    def _directory_for(self, scope: str) -> Path:
+        if scope == "project":
+            return self.directory
+        if scope == "user" and self.user_directory is not None:
+            return self.user_directory
+        raise ToolError(
+            "INVALID_INPUT",
+            f"unknown skill scope {scope!r}",
+            "Use 'project' or 'user' (user needs a home directory).",
+        )
+
+    def path_for(self, name: str, *, scope: str = "project") -> Path:
+        return self._directory_for(scope) / f"{_valid_name(name)}.md"
+
+    def _existing_path(self, name: str) -> Path | None:
+        for directory in (self.directory, self.user_directory):
+            if directory is None:
+                continue
+            candidate = directory / f"{_valid_name(name)}.md"
+            if candidate.is_file():
+                return candidate
+        return None
 
     def _parse(self, path: Path) -> dict[str, Any]:
         raw = path.read_text(encoding="utf-8", errors="replace")
@@ -443,16 +497,24 @@ class AgentSkillStore:
             or header.get("kind") == "parametric_measurement"
             or f"```{MEASUREMENT_SPEC_FENCE}" in body
         )
+        scope = (
+            "user"
+            if self.user_directory is not None and path.parent == self.user_directory
+            else "project"
+        )
         row: dict[str, Any] = {
             "name": header.get("name") or path.stem,
             "description": header.get("description") or _first_line(body),
             "applies_to": header.get("applies_to") or None,
             "kind": header.get("kind") or (spec.kind if spec else "prose"),
+            "scope": scope,
+            "pack": header.get("pack") or None,
+            "collection": header.get("collection") or None,
             "schema_version": spec.schema_version if spec else declared_version,
             "structured": structured,
             "executable": bool(spec and spec.executable),
             "spec_status": spec_status,
-            "path": str(SKILLS_DIRNAME / path.name),
+            "path": str(path),
             "size_bytes": stat.st_size,
             "updated_at": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat(
                 timespec="seconds"
@@ -465,24 +527,30 @@ class AgentSkillStore:
             row["spec_error"] = spec_error
         return row
 
-    def entries(self) -> list[dict[str, Any]]:
-        """All skills, newest first, without their bodies."""
-        if not self.directory.is_dir():
+    def _scan(self, directory: Path | None) -> list[dict[str, Any]]:
+        if directory is None or not directory.is_dir():
             return []
         rows = []
-        for path in sorted(self.directory.glob("*.md")):
+        for path in sorted(directory.glob("*.md")):
             if path.stat().st_size > MAX_SKILL_BYTES:
                 continue
             row = self._parse(path)
             row.pop("content")
             row.pop("measurement_spec", None)
             rows.append(row)
+        return rows
+
+    def entries(self) -> list[dict[str, Any]]:
+        """All skills from both scopes, newest first, without their bodies."""
+        rows = self._scan(self.directory)
+        taken = {row["name"] for row in rows}
+        rows.extend(row for row in self._scan(self.user_directory) if row["name"] not in taken)
         rows.sort(key=lambda row: row["updated_at"], reverse=True)
         return rows
 
     def read(self, name: str) -> dict[str, Any]:
-        path = self.path_for(name)
-        if not path.is_file():
+        path = self._existing_path(name)
+        if path is None:
             known = ", ".join(row["name"] for row in self.entries()[:10]) or "none saved yet"
             raise ToolError(
                 "NOT_FOUND",
@@ -579,11 +647,19 @@ class AgentSkillStore:
             "side_effects": {"file_writes": 0, "property_writes": 0, "proposals": 0},
         }
 
-    def import_file(self, filename: str, data: bytes) -> dict[str, Any]:
+    def import_file(
+        self,
+        filename: str,
+        data: bytes,
+        *,
+        scope: str = "project",
+        pack: str | None = None,
+    ) -> dict[str, Any]:
         """One markdown file becomes one skill, written elsewhere and dropped in.
 
         Front matter wins over the filename for the name and description; a
-        taken name gets a numeric suffix rather than clobbering the original.
+        taken name gets a numeric suffix rather than clobbering the original,
+        except that a pack reinstalling its own skill replaces it.
         """
         if len(data) > MAX_SKILL_BYTES:
             raise ToolError(
@@ -601,9 +677,14 @@ class AgentSkillStore:
                 f"cannot derive a skill name from {filename!r}",
                 "Name the file or the front-matter `name:` with letters and dashes.",
             )
+        directory = self._directory_for(scope)
         name = base
         counter = 2
-        while self.path_for(name).exists():
+        replace = False
+        while (directory / f"{name}.md").exists():
+            if pack and self._parse(directory / f"{name}.md").get("pack") == pack:
+                replace = True
+                break
             suffix = f"-{counter}"
             name = base[: 64 - len(suffix)] + suffix
             counter += 1
@@ -615,7 +696,21 @@ class AgentSkillStore:
             applies_to=header.get("applies_to") or None,
             kind=header.get("kind") or None,
             schema_version=header.get("schema_version") or None,
+            pack=pack,
+            scope=scope,
+            overwrite=replace,
+            collection=header.get("collection") or None,
         )
+
+    def delete(self, name: str, *, scope: str = "project", pack: str | None = None) -> bool:
+        """Remove one skill; with `pack`, only when that pack installed it."""
+        path = self.path_for(name, scope=scope)
+        if not path.is_file():
+            return False
+        if pack is not None and self._parse(path).get("pack") != pack:
+            return False
+        path.unlink()
+        return True
 
     def save(
         self,
@@ -627,8 +722,11 @@ class AgentSkillStore:
         kind: str | None = None,
         schema_version: int | str | None = None,
         overwrite: bool = False,
+        pack: str | None = None,
+        scope: str = "project",
+        collection: str | None = None,
     ) -> dict[str, Any]:
-        path = self.path_for(name)
+        path = self.path_for(name, scope=scope)
         if path.exists() and not overwrite:
             raise ToolError(
                 "FILE_EXISTS",
@@ -668,6 +766,12 @@ class AgentSkillStore:
             header.append(f"kind: {declared_kind}")
         if declared_version is not None:
             header.append(f"schema_version: {declared_version}")
+        pack_name = pack or content_header.get("pack") or None
+        if pack_name:
+            header.append(f"pack: {' '.join(pack_name.split())}")
+        collection_name = collection or content_header.get("collection") or None
+        if collection_name:
+            header.append(f"collection: {' '.join(collection_name.split())}")
         header.append("---")
         text = "\n".join(header) + "\n\n" + body.strip() + "\n"
         if len(text.encode("utf-8")) > MAX_SKILL_BYTES:
@@ -676,7 +780,7 @@ class AgentSkillStore:
                 f"skill is larger than {MAX_SKILL_BYTES // 1024} KB",
                 "Keep skills short: the goal, the tool calls in order, the checks.",
             )
-        self.directory.mkdir(parents=True, exist_ok=True)
+        path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text, encoding="utf-8")
         row = self._parse(path)
         row.pop("content")
@@ -687,6 +791,8 @@ __all__ = [
     "AgentSkillStore",
     "MAX_SKILL_BYTES",
     "MEASUREMENT_SPEC_FENCE",
+    "SKILL_KINDS",
+    "SKILL_SCOPES",
     "MeasurementApplicability",
     "MeasurementExemplar",
     "MeasurementExemplarObject",

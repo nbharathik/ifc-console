@@ -11,12 +11,12 @@
 // the workflow is a property of the selected agent and lives in its overview.
 const ALL_TABS = [
   { id: "agent", label: "Agents" },
-  { id: "capabilities", label: "Capabilities" },
-  { id: "tools", label: "Tools" },
   { id: "content", label: "Content" },
   { id: "skills", label: "Skills" },
   { id: "models", label: "Models" },
   { id: "app", label: "App" },
+  { id: "capabilities", label: "Capabilities" },
+  { id: "tools", label: "Tools" },
 ];
 
 // The workspace keeps one stable navigation. Content remains available when

@@ -85,13 +85,14 @@ async def run_pack(
     # constructing the agent. Indexing failures are non-fatal: model-only work
     # can continue and the relevant knowledge tool will return a precise error.
     from ifc_console.knowledge.project import ProjectKnowledge
+    from ifc_console.settings import user_dir
 
     from ifc_console_agents.files import AgentReferenceStore
 
-    knowledge = ProjectKnowledge(project_dir)
+    knowledge = ProjectKnowledge.for_library(home or user_dir())
     try:
         try:
-            AgentReferenceStore(project_dir).sync(knowledge)
+            AgentReferenceStore.for_library(home or user_dir()).sync(knowledge)
         except Exception as exc:
             print(f"[references] could not refresh: {exc}")
     finally:

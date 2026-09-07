@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 from ifc_console.core.results import ToolError
 
+from ifc_console_agents.paths import skill_store
 from ifc_console_agents.skills import (
     AgentSkillStore,
     MeasurementApplicability,
@@ -358,7 +359,7 @@ class TestSkillTools:
 
     async def test_migration_preview_tool_never_writes_the_prose_skill(self, core):
         ops = await self._ops(core)
-        store = AgentSkillStore(core.store.project_dir)
+        store = skill_store(core)
         store.save(
             "legacy-profile",
             "## Steps\nFor IfcMember, measure web thickness.\n",
@@ -382,7 +383,7 @@ class TestSkillTools:
 
     async def test_legacy_and_malformed_skills_refuse_deterministic_apply(self, core):
         ops = await self._ops(core)
-        store = AgentSkillStore(core.store.project_dir)
+        store = skill_store(core)
         store.save("old-method", BODY, description="old")
         legacy = await ops.call(
             "apply_measurement_skill", {"name": "old-method", "global_ids": [GUID]}
@@ -406,7 +407,7 @@ class TestSkillTools:
 
     async def test_unresolved_recorded_intent_requires_review_before_replay(self, core):
         ops = await self._ops(core)
-        AgentSkillStore(core.store.project_dir).save(
+        skill_store(core).save(
             "needs-review", _structured_body(unresolved=True), description="review"
         )
         result = await ops.call(
@@ -418,9 +419,7 @@ class TestSkillTools:
 
     async def test_apply_is_dry_run_read_only_and_extracts_the_exemplar(self, core, monkeypatch):
         ops = await self._ops(core)
-        AgentSkillStore(core.store.project_dir).save(
-            "web-thickness", _structured_body(), description="web"
-        )
+        skill_store(core).save("web-thickness", _structured_body(), description="web")
         calls = []
 
         async def fake_call(_self, operation, **arguments):
@@ -508,7 +507,7 @@ class TestSkillTools:
     async def test_same_class_without_geometry_evidence_is_skipped(self, core, monkeypatch):
         ops = await self._ops(core)
         class_only = {"version": "1.0", "class_family": "linear_member"}
-        AgentSkillStore(core.store.project_dir).save(
+        skill_store(core).save(
             "class-only",
             _structured_body(signature=class_only),
             description="unsafe broad match",
@@ -562,9 +561,7 @@ class TestSkillTools:
 
     async def test_selector_application_is_paged_and_capped(self, core, monkeypatch):
         ops = await self._ops(core)
-        AgentSkillStore(core.store.project_dir).save(
-            "paged-web", _structured_body(), description="paged"
-        )
+        skill_store(core).save("paged-web", _structured_body(), description="paged")
         calls = []
 
         async def fake_call(_self, operation, **arguments):
@@ -603,9 +600,7 @@ class TestSkillTools:
         self, core, monkeypatch
     ):
         ops = await self._ops(core)
-        AgentSkillStore(core.store.project_dir).save(
-            "bounded-web", _structured_body(), description="bounded"
-        )
+        skill_store(core).save("bounded-web", _structured_body(), description="bounded")
         target_ids = ["target-a", "target-b", "target-c"]
         calls = []
 
@@ -676,9 +671,7 @@ class TestSkillTools:
         self, core, monkeypatch
     ):
         ops = await self._ops(core)
-        AgentSkillStore(core.store.project_dir).save(
-            "changed-exemplar", _structured_body(), description="changed"
-        )
+        skill_store(core).save("changed-exemplar", _structured_body(), description="changed")
         changed_signature = {
             **SIGNATURE,
             "type_key": "ifcmembertype:other",
@@ -757,9 +750,7 @@ class TestSkillTools:
             intent=MeasurementIntent(viewer_kind="distance", viewer_index=0),
         )
         spec = _rule_spec(rule, verification=MeasurementVerification(cross_check="none"))
-        AgentSkillStore(core.store.project_dir).save(
-            "semantic-source", _body_for(spec), description="semantic source"
-        )
+        skill_store(core).save("semantic-source", _body_for(spec), description="semantic source")
         calls = []
 
         async def fake_call(_self, operation, **arguments):
@@ -860,7 +851,7 @@ class TestSkillTools:
             direction="transverse",
             intent=MeasurementIntent(viewer_kind="distance", viewer_index=0),
         )
-        store = AgentSkillStore(core.store.project_dir)
+        store = skill_store(core)
         store.save(
             "supported-fallback",
             _body_for(
@@ -943,7 +934,7 @@ class TestSkillTools:
             tolerance=MeasurementTolerance(absolute_si=0.0001, relative=0.0),
             intent=MeasurementIntent(viewer_kind="distance", viewer_index=0),
         )
-        store = AgentSkillStore(core.store.project_dir)
+        store = skill_store(core)
         store.save("refuse-conflict", _body_for(_rule_spec(rule)), description="refuse")
         report_spec = _rule_spec(
             rule,

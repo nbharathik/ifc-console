@@ -767,7 +767,9 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
     limit_ = core.settings.exec.output_char_limit
 
     def store() -> AgentSkillStore:
-        return AgentSkillStore(core.store.project_dir)
+        from ifc_console_agents.paths import skill_store
+
+        return skill_store(core)
 
     @mcp.tool(
         annotations=SKILL_ANN,

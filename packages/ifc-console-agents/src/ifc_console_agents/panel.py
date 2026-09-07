@@ -26,7 +26,7 @@ from starlette.responses import JSONResponse, Response, StreamingResponse
 from starlette.routing import Route
 
 from ifc_console_agents.agent import Agent
-from ifc_console_agents.files import MAX_REFERENCE_BYTES
+from ifc_console_agents.files import MAX_REFERENCE_BYTES, is_turn_reference_path
 from ifc_console_agents.models import AgentLimits
 
 if TYPE_CHECKING:
@@ -387,9 +387,9 @@ def _panel_state(core: AppCore) -> AgentPanelState:
 def _content_store(core: AppCore) -> Any:
     state = _panel_state(core)
     if state.content_store is None:
-        from ifc_console_agents.content import AgentContentAccessStore
+        from ifc_console_agents.paths import content_access_store
 
-        state.content_store = AgentContentAccessStore(core.store.project_dir)
+        state.content_store = content_access_store(core)
     return state.content_store
 
 
@@ -399,8 +399,138 @@ def _content_configuration(core: AppCore, pack: Any) -> tuple[str, ...] | None:
     return configured_paths(pack, _content_store(core))
 
 
+def _library_store(core: AppCore) -> Any:
+    library = getattr(core, "agent_library", None)
+    if library is None:
+        from ifc_console_agents.files import AgentReferenceStore
+
+        library = AgentReferenceStore.for_library(core.store.home)
+        core.agent_library = library
+    return library
+
+
 def _library_entries(core: AppCore) -> list[dict[str, Any]]:
-    return core.agent_files.library_entries(core.project_knowledge.sources())
+    """This project's uploads, the user library, installed packs, and CLI-ingested documents."""
+    library_sources = core.library_knowledge.sources()
+    rows = core.agent_files.entries(library_sources)
+    rows.extend(_library_store(core).entries(library_sources))
+    # documents the user indexed with `ifc-console knowledge ingest` stay
+    # where they are; they are listed read-only under the project
+    project_dir = core.store.project_dir.expanduser().resolve()
+    for source in core.project_knowledge.sources():
+        raw = str(source.get("path") or "").replace("\\", "/")
+        if not raw or Path(raw).is_absolute():
+            continue
+        target = project_dir / raw
+        media = str(source.get("media") or "document")
+        rows.append(
+            {
+                "name": Path(raw).name,
+                "path": raw,
+                "media": "image" if media == "image" else "document",
+                "size_bytes": target.stat().st_size if target.is_file() else 0,
+                "sha256": str(source.get("sha256") or ""),
+                "indexed": True,
+                "managed": False,
+                "scope": "project",
+                "collection": "",
+            }
+        )
+    home = core.store.home.expanduser()
+    for source in library_sources:
+        path = str(source.get("path") or "").replace("\\", "/")
+        if not path.startswith("agents/packs/"):
+            continue
+        target = home / path
+        media = str(source.get("media") or "")
+        rows.append(
+            {
+                "name": Path(path).name,
+                "path": path,
+                "media": "image" if media == "image" else "document",
+                "size_bytes": target.stat().st_size if target.is_file() else 0,
+                "sha256": str(source.get("sha256") or ""),
+                "indexed": True,
+                "managed": False,
+                "scope": "library",
+                "collection": path.split("/")[2],
+                "pack": path.split("/")[2],
+            }
+        )
+    return sorted(rows, key=lambda row: str(row["name"]).casefold())
+
+
+def _store_for_path(core: AppCore, path: str) -> tuple[Any, Any] | None:
+    """The reference store and knowledge index that own one listed path."""
+    normalized = str(path or "").replace("\\", "/")
+    library = _library_store(core)
+    if normalized.startswith(library.managed_prefix):
+        return library, core.library_knowledge
+    if normalized.startswith(core.agent_files.managed_prefix):
+        return core.agent_files, core.library_knowledge
+    return None
+
+
+def _prompt_images(core: AppCore, paths: list[str]) -> tuple[Any, ...]:
+    sources = core.library_knowledge.sources()
+    images = list(core.agent_files.prompt_images(paths, sources))
+    images.extend(_library_store(core).prompt_images(paths, sources))
+    return tuple(images)
+
+
+def _skill_store(core: AppCore) -> Any:
+    from ifc_console_agents.paths import skill_store
+
+    return skill_store(core)
+
+
+def _workflow_registry(core: AppCore) -> Any:
+    from ifc_console_agents.paths import workflow_registry
+
+    return workflow_registry(core)
+
+
+def _pack_store(core: AppCore) -> Any:
+    from ifc_console_agents.skill_packs import SkillPackStore
+
+    return SkillPackStore(core.store.home)
+
+
+async def _grant_pack_paths(core: AppCore, pack: Any, paths: list[str]) -> bool:
+    """Add a pack's documents to an agent that works from a selected list."""
+    configured = _content_configuration(core, pack)
+    if configured is None:
+        return False
+    merged = tuple(dict.fromkeys([*configured, *paths]))
+    if merged == configured:
+        return False
+    await _set_agent_paths(core, pack, merged)
+    return True
+
+
+async def _forget_pack_paths(core: AppCore, prefix: str) -> int:
+    changed = 0
+    for info in core.agent_packs.active():
+        pack = core.agent_packs.get(info.name)
+        if pack is None:
+            continue
+        configured = _content_configuration(core, pack)
+        if not configured:
+            continue
+        kept = tuple(path for path in configured if not path.startswith(prefix))
+        if kept != configured:
+            await _set_agent_paths(core, pack, kept)
+            changed += 1
+    return changed
+
+
+async def _set_agent_paths(core: AppCore, pack: Any, paths: tuple[str, ...]) -> None:
+    blueprint = getattr(pack, "blueprint", None)
+    if pack.info.kind == "custom" and blueprint is not None:
+        core.agent_packs.save_blueprint(blueprint.model_copy(update={"content_paths": paths}))
+    else:
+        await asyncio.to_thread(_content_store(core).set, pack.info.name, paths)
+    await _invalidate_agent_threads(core, pack.info.name)
 
 
 async def _invalidate_agent_threads(core: AppCore, name: str) -> int:
@@ -904,15 +1034,22 @@ def build_agent_panel_routes(core: AppCore) -> list[Route]:
         if name and pack is None:
             return JSONResponse({"error": f"no agent named {name!r}"}, status_code=404)
         problem = None
-        try:
-            await asyncio.to_thread(core.agent_files.sync, core.project_knowledge)
-        except Exception as exc:
-            problem = str(exc)
-            log.warning("agent content sync failed", exc_info=True)
+        for store in (core.agent_files, _library_store(core)):
+            try:
+                await asyncio.to_thread(store.sync, core.library_knowledge)
+            except Exception as exc:
+                problem = str(exc)
+                log.warning("agent content sync failed", exc_info=True)
         library = await asyncio.to_thread(_library_entries, core)
         payload: dict[str, Any] = {
             "directory": str(core.agent_files.directory),
+            "library_directory": str(_library_store(core).directory),
             "files": library,
+            "collections": {
+                "project": core.agent_files.collections(),
+                "library": _library_store(core).collections(),
+            },
+            "packs": await asyncio.to_thread(_pack_store(core).installed),
         }
         if pack is not None:
             from ifc_console_agents.content import content_access_payload
@@ -1262,14 +1399,15 @@ def build_agent_panel_routes(core: AppCore) -> list[Route]:
             )
         problem = None
         try:
-            summary = await asyncio.to_thread(core.agent_files.sync, core.project_knowledge)
+            summary = await asyncio.to_thread(core.agent_files.sync, core.library_knowledge)
+            await asyncio.to_thread(_library_store(core).sync, core.library_knowledge)
         except Exception as exc:
             log.warning("agent reference sync failed", exc_info=True)
             summary = {
                 "changed": False,
                 "directory": str(core.agent_files.directory),
                 "files": await asyncio.to_thread(
-                    core.agent_files.entries, core.project_knowledge.sources()
+                    core.agent_files.entries, core.library_knowledge.sources()
                 ),
             }
             problem = str(exc)
@@ -1324,12 +1462,11 @@ def build_agent_panel_routes(core: AppCore) -> list[Route]:
 
             from ifc_console_agents.workflow_runner import WorkflowRunError, viewer_scope
             from ifc_console_agents.workflows import (
-                WorkflowRegistry,
                 chat_instructions,
                 chat_task_prompt,
             )
 
-            registry = WorkflowRegistry(core.store.project_dir)
+            registry = _workflow_registry(core)
             try:
                 workflow_spec = await asyncio.to_thread(registry.get, workflow_name)
             except ToolError as exc:
@@ -1487,16 +1624,17 @@ def build_agent_panel_routes(core: AppCore) -> list[Route]:
 
         attachments = body.get("attachments")
         requested_attachments = attachments if isinstance(attachments, list) else []
-        from ifc_console_agents.content import managed_content_path, normalize_content_path
+        from ifc_console_agents.content import normalize_content_path
 
         available_content = {
             str(row.get("path") or "") for row in await asyncio.to_thread(_library_entries, core)
         }
+        # a per-message attachment is indexed but never listed as standing content
         available_content.update(
             path
-            for source in core.project_knowledge.sources()
+            for source in core.library_knowledge.sources()
             if (path := normalize_content_path(source.get("path"))) is not None
-            and managed_content_path(path)
+            and is_turn_reference_path(path)
         )
         attachment_paths: list[str] = []
         for item in requested_attachments:
@@ -1505,11 +1643,7 @@ def build_agent_panel_routes(core: AppCore) -> list[Route]:
                 attachment_paths.append(path)
             if len(attachment_paths) == 8:
                 break
-        images = await asyncio.to_thread(
-            core.agent_files.prompt_images,
-            attachment_paths,
-            core.project_knowledge.sources(),
-        )
+        images = await asyncio.to_thread(_prompt_images, core, attachment_paths)
         attachment_note = ""
         if attachment_paths:
             attachment_note = (
@@ -1706,20 +1840,31 @@ def build_agent_panel_routes(core: AppCore) -> list[Route]:
 
         from ifc_console.core.results import ToolError
 
+        # Standing uploads land in the user library unless the project scope is
+        # asked for; turn attachments always stay with the project.
+        scope = request.query_params.get("scope") or ("library" if library_upload else "project")
+        if scope not in {"project", "library"}:
+            return JSONResponse({"error": "scope must be project or library"}, status_code=400)
+        collection = request.query_params.get("collection") or None
+        # both stores sit under the console home, so one index (the library
+        # index, based at the home) covers them
+        store = _library_store(core) if scope == "library" else core.agent_files
+        knowledge = core.library_knowledge
         try:
-            save = (
-                core.agent_files.save_upload
-                if library_upload
-                else core.agent_files.save_turn_upload
-            )
-            target = await asyncio.to_thread(save, raw_name, data)
+            if library_upload:
+                target = await asyncio.to_thread(
+                    store.save_upload, raw_name, data, collection=collection
+                )
+            else:
+                store = core.agent_files
+                target = await asyncio.to_thread(store.save_turn_upload, raw_name, data)
         except ToolError as exc:
             return JSONResponse(
                 {"error": str(exc), "code": exc.code, "hint": exc.hint}, status_code=400
             )
-        relative_target = target.relative_to(core.store.project_dir).as_posix()
+        relative_target = store.relative(target)
         try:
-            report = await asyncio.to_thread(core.project_knowledge.ingest, [target])
+            report = await asyncio.to_thread(knowledge.ingest, [target])
         except ToolError as exc:
             core.audit.record(
                 "agent_content_upload" if library_upload else "agent_panel_upload",
@@ -1777,7 +1922,7 @@ def build_agent_panel_routes(core: AppCore) -> list[Route]:
 
         from ifc_console.core.results import ToolError
 
-        from ifc_console_agents.skills import MAX_SKILL_BYTES, AgentSkillStore
+        from ifc_console_agents.skills import MAX_SKILL_BYTES
 
         raw_name = Path(request.query_params.get("name") or "").name
         if not raw_name or Path(raw_name).suffix.lower() not in (".md", ".markdown"):
@@ -1790,7 +1935,7 @@ def build_agent_panel_routes(core: AppCore) -> list[Route]:
             return JSONResponse({"error": "skill is larger than 64 KB"}, status_code=413)
         if not data:
             return JSONResponse({"error": "the file is empty"}, status_code=400)
-        store = AgentSkillStore(core.store.project_dir)
+        store = _skill_store(core)
         try:
             row = await asyncio.to_thread(store.import_file, raw_name, data)
         except ToolError as exc:
@@ -1799,6 +1944,280 @@ def build_agent_panel_routes(core: AppCore) -> list[Route]:
             )
         core.audit.record("skill_import", file=raw_name, name=row["name"], path=row["path"])
         return JSONResponse({"imported": row, "skills": await asyncio.to_thread(store.entries)})
+
+    async def content_delete(request) -> JSONResponse:
+        """Remove managed reference files (project or library) and re-index."""
+        if not core.chat.enabled:
+            return _disabled()
+        try:
+            body = await request.json()
+        except (ValueError, UnicodeDecodeError):
+            return JSONResponse({"error": "request body is not valid JSON"}, status_code=400)
+        raw_paths = body.get("paths") if isinstance(body, dict) else None
+        if not isinstance(raw_paths, list) or not raw_paths or len(raw_paths) > 500:
+            return JSONResponse({"error": "pass paths: a list of listed paths"}, status_code=400)
+        from ifc_console.core.results import ToolError
+
+        from ifc_console_agents.content import normalize_content_path
+
+        removed: list[str] = []
+        touched: list[tuple[Any, Any]] = []
+        for raw in raw_paths:
+            path = normalize_content_path(raw)
+            owner = _store_for_path(core, path) if path else None
+            if owner is None:
+                return JSONResponse({"error": f"{raw!r} is not a managed file"}, status_code=400)
+            store, knowledge = owner
+            try:
+                await asyncio.to_thread(store.delete, path)
+            except ToolError as exc:
+                return JSONResponse(
+                    {"error": str(exc), "code": exc.code, "hint": exc.hint}, status_code=400
+                )
+            removed.append(path)
+            if owner not in touched:
+                touched.append(owner)
+        for store, knowledge in touched:
+            try:
+                await asyncio.to_thread(store.sync, knowledge)
+            except Exception:
+                log.warning("content re-index after delete failed", exc_info=True)
+        core.audit.record("agent_content_deleted", files=len(removed))
+        return JSONResponse(
+            {"removed": removed, "files": await asyncio.to_thread(_library_entries, core)}
+        )
+
+    async def skills_save(request) -> JSONResponse:
+        """Create or update one written skill from the panel form."""
+        if not core.chat.enabled:
+            return _disabled()
+        try:
+            body = await request.json()
+        except (ValueError, UnicodeDecodeError):
+            return JSONResponse({"error": "request body is not valid JSON"}, status_code=400)
+        if not isinstance(body, dict):
+            return JSONResponse({"error": "request body must be a JSON object"}, status_code=400)
+        from ifc_console.core.results import ToolError
+
+        from ifc_console_agents.skills import SKILL_KINDS
+
+        name = str(body.get("name") or "").strip().lower()
+        name = re.sub(r"[^a-z0-9]+", "-", name).strip("-")[:64]
+        content = body.get("content")
+        description = str(body.get("description") or "").strip()
+        if not name or not isinstance(content, str) or not content.strip():
+            return JSONResponse({"error": "pass a name and markdown content"}, status_code=400)
+        if not description:
+            return JSONResponse({"error": "pass a one-line description"}, status_code=400)
+        kind = str(body.get("kind") or "prose")
+        if kind not in SKILL_KINDS or kind == "parametric_measurement":
+            return JSONResponse({"error": "kind must be general, task or prose"}, status_code=400)
+        scope = str(body.get("scope") or "user")
+        if scope not in {"user", "project"}:
+            return JSONResponse({"error": "scope must be user or project"}, status_code=400)
+        store = _skill_store(core)
+        try:
+            row = await asyncio.to_thread(
+                store.save,
+                name,
+                content,
+                description=description[:200],
+                applies_to=str(body.get("applies_to") or "").strip() or None,
+                kind=kind,
+                collection=str(body.get("collection") or "").strip() or None,
+                scope=scope,
+                overwrite=bool(body.get("overwrite")),
+            )
+        except ToolError as exc:
+            status = 409 if exc.code == "FILE_EXISTS" else 400
+            return JSONResponse(
+                {"error": str(exc), "code": exc.code, "hint": exc.hint}, status_code=status
+            )
+        core.audit.record("skill_saved", name=row["name"], kind=kind, scope=scope)
+        return JSONResponse({"skill": row, "skills": await asyncio.to_thread(store.entries)})
+
+    async def skills_read(request) -> JSONResponse:
+        if not core.chat.enabled:
+            return _disabled()
+        from ifc_console.core.results import ToolError
+
+        name = request.query_params.get("name") or ""
+        try:
+            row = await asyncio.to_thread(_skill_store(core).read, name)
+        except ToolError as exc:
+            return JSONResponse(
+                {"error": str(exc), "code": exc.code, "hint": exc.hint}, status_code=404
+            )
+        row.pop("measurement_spec", None)
+        return JSONResponse({"skill": row})
+
+    async def skills_delete(request) -> JSONResponse:
+        if not core.chat.enabled:
+            return _disabled()
+        try:
+            body = await request.json()
+        except (ValueError, UnicodeDecodeError):
+            return JSONResponse({"error": "request body is not valid JSON"}, status_code=400)
+        name = body.get("name") if isinstance(body, dict) else None
+        scope = (body.get("scope") if isinstance(body, dict) else None) or "user"
+        if not isinstance(name, str) or not name or scope not in {"user", "project"}:
+            return JSONResponse({"error": "pass name and scope"}, status_code=400)
+        from ifc_console.core.results import ToolError
+
+        store = _skill_store(core)
+        try:
+            removed = await asyncio.to_thread(store.delete, name, scope=scope)
+        except ToolError as exc:
+            return JSONResponse(
+                {"error": str(exc), "code": exc.code, "hint": exc.hint}, status_code=400
+            )
+        if not removed:
+            return JSONResponse({"error": f"no {scope} skill named {name!r}"}, status_code=404)
+        core.audit.record("skill_deleted", name=name, scope=scope)
+        return JSONResponse({"removed": name, "skills": await asyncio.to_thread(store.entries)})
+
+    async def packs_list(_request) -> JSONResponse:
+        if not core.chat.enabled:
+            return _disabled()
+        return JSONResponse({"packs": await asyncio.to_thread(_pack_store(core).installed)})
+
+    async def packs_upload(request) -> JSONResponse:
+        """Stage one uploaded pack zip and describe what installing it would do."""
+        if not core.chat.enabled:
+            return _disabled()
+        from ifc_console.core.results import ToolError
+
+        from ifc_console_agents.skill_packs import MAX_PACK_BYTES
+
+        raw_name = Path(request.query_params.get("name") or "pack.zip").name
+        if Path(raw_name).suffix.lower() != ".zip":
+            return JSONResponse({"error": "pass name=<file> ending in .zip"}, status_code=400)
+        limit_mb = MAX_PACK_BYTES // (1024 * 1024)
+        declared = request.headers.get("content-length")
+        if declared and declared.isdigit() and int(declared) > MAX_PACK_BYTES:
+            return JSONResponse({"error": f"pack is larger than {limit_mb} MB"}, status_code=413)
+        data = await _read_limited_body(request, MAX_PACK_BYTES)
+        if data is None:
+            return JSONResponse({"error": f"pack is larger than {limit_mb} MB"}, status_code=413)
+        if not data:
+            return JSONResponse({"error": "the file is empty"}, status_code=400)
+        try:
+            preview = await asyncio.to_thread(_pack_store(core).stage, data, raw_name)
+        except ToolError as exc:
+            return JSONResponse(
+                {"error": str(exc), "code": exc.code, "hint": exc.hint}, status_code=400
+            )
+        core.audit.record(
+            "skill_pack_staged",
+            file=raw_name,
+            name=preview["name"],
+            staging_id=preview["staging_id"],
+        )
+        return JSONResponse({"preview": preview})
+
+    async def packs_install(request) -> JSONResponse:
+        """Commit a staged pack after the user has seen its preview."""
+        if not core.chat.enabled:
+            return _disabled()
+        try:
+            body = await request.json()
+        except (ValueError, UnicodeDecodeError):
+            return JSONResponse({"error": "request body is not valid JSON"}, status_code=400)
+        if not isinstance(body, dict) or not isinstance(body.get("staging_id"), str):
+            return JSONResponse({"error": "pass the staging_id from the upload"}, status_code=400)
+        agent = body.get("agent")
+        pack = None
+        if agent:
+            pack = core.agent_packs.get(agent) if isinstance(agent, str) else None
+            if pack is None:
+                return JSONResponse({"error": f"no agent named {agent!r}"}, status_code=404)
+        from ifc_console.core.results import ToolError
+
+        store = _pack_store(core)
+        try:
+            record = await asyncio.to_thread(
+                store.commit,
+                body["staging_id"],
+                skills=_skill_store(core),
+                knowledge=core.library_knowledge,
+                agent=pack.info.name if pack is not None else None,
+            )
+        except ToolError as exc:
+            return JSONResponse(
+                {"error": str(exc), "code": exc.code, "hint": exc.hint}, status_code=400
+            )
+        granted = False
+        if pack is not None and record["documents"]:
+            granted = await _grant_pack_paths(core, pack, record["documents"])
+        core.audit.record(
+            "skill_pack_installed",
+            name=record["name"],
+            version=record["version"],
+            skills=len(record["skills"]),
+            documents=len(record["documents"]),
+            agent=record["agent"],
+            granted=granted,
+        )
+        return JSONResponse(
+            {
+                "installed": record,
+                "granted": granted,
+                "packs": await asyncio.to_thread(store.installed),
+                "skills": await asyncio.to_thread(_skill_store(core).entries),
+            }
+        )
+
+    async def packs_discard(request) -> JSONResponse:
+        if not core.chat.enabled:
+            return _disabled()
+        try:
+            body = await request.json()
+        except (ValueError, UnicodeDecodeError):
+            return JSONResponse({"error": "request body is not valid JSON"}, status_code=400)
+        staging_id = body.get("staging_id") if isinstance(body, dict) else None
+        if not isinstance(staging_id, str):
+            return JSONResponse({"error": "pass the staging_id from the upload"}, status_code=400)
+        discarded = await asyncio.to_thread(_pack_store(core).discard, staging_id)
+        return JSONResponse({"discarded": discarded})
+
+    async def packs_uninstall(request) -> JSONResponse:
+        """Remove an installed pack: its folder, skills, documents, and grants."""
+        if not core.chat.enabled:
+            return _disabled()
+        try:
+            body = await request.json()
+        except (ValueError, UnicodeDecodeError):
+            return JSONResponse({"error": "request body is not valid JSON"}, status_code=400)
+        name = body.get("name") if isinstance(body, dict) else None
+        if not isinstance(name, str) or not name:
+            return JSONResponse({"error": "pass the pack name"}, status_code=400)
+        from ifc_console.core.results import ToolError
+
+        store = _pack_store(core)
+        try:
+            removed = await asyncio.to_thread(
+                store.uninstall, name, skills=_skill_store(core), knowledge=core.library_knowledge
+            )
+        except ToolError as exc:
+            status = 404 if exc.code == "NOT_FOUND" else 400
+            return JSONResponse(
+                {"error": str(exc), "code": exc.code, "hint": exc.hint}, status_code=status
+            )
+        agents_changed = await _forget_pack_paths(core, f"packs/{name}/")
+        core.audit.record(
+            "skill_pack_uninstalled",
+            name=name,
+            skills=len(removed["skills"]),
+            documents=len(removed["documents"]),
+            agents_changed=agents_changed,
+        )
+        return JSONResponse(
+            {
+                "removed": removed,
+                "packs": await asyncio.to_thread(store.installed),
+                "skills": await asyncio.to_thread(_skill_store(core).entries),
+            }
+        )
 
     async def geometry_review(request) -> JSONResponse:
         """Run the bounded, read-only v2 geometry view for explicit targets."""
@@ -2104,9 +2523,7 @@ def build_agent_panel_routes(core: AppCore) -> list[Route]:
             else skill.applies_to
         )
 
-        from ifc_console_agents.skills import AgentSkillStore
-
-        store = AgentSkillStore(core.store.project_dir)
+        store = _skill_store(core)
         try:
             row = await asyncio.to_thread(
                 store.save,
@@ -2158,13 +2575,11 @@ def build_agent_panel_routes(core: AppCore) -> list[Route]:
         """Every workflow this project can run, built-in and its own."""
         if not core.chat.enabled:
             return _disabled()
-        from ifc_console_agents.skills import AgentSkillStore
-        from ifc_console_agents.workflows import WorkflowRegistry
 
-        registry = WorkflowRegistry(core.store.project_dir)
+        registry = _workflow_registry(core)
         rows, skills = await asyncio.gather(
             asyncio.to_thread(registry.entries),
-            asyncio.to_thread(AgentSkillStore(core.store.project_dir).entries),
+            asyncio.to_thread(_skill_store(core).entries),
         )
         return JSONResponse(
             {
@@ -2222,10 +2637,8 @@ def build_agent_panel_routes(core: AppCore) -> list[Route]:
         if not isinstance(default_settings, dict):
             return JSONResponse({"error": "settings must be key/value pairs"}, status_code=400)
         if skill_name:
-            from ifc_console_agents.skills import AgentSkillStore
-
             try:
-                await asyncio.to_thread(AgentSkillStore(core.store.project_dir).read, skill_name)
+                await asyncio.to_thread(_skill_store(core).read, skill_name)
             except ToolError as exc:
                 return JSONResponse(
                     {"error": str(exc), "code": exc.code, "hint": exc.hint}, status_code=400
@@ -2239,11 +2652,10 @@ def build_agent_panel_routes(core: AppCore) -> list[Route]:
         from ifc_console_agents.workflows import (
             AgentStep,
             ExportStep,
-            WorkflowRegistry,
             WorkflowSpec,
         )
 
-        registry = WorkflowRegistry(core.store.project_dir)
+        registry = _workflow_registry(core)
         base = re.sub(r"[^a-z0-9]+", "-", title.casefold()).strip("-") or "workflow"
         base = base[:63].rstrip("-")
         name = base
@@ -2319,12 +2731,11 @@ def build_agent_panel_routes(core: AppCore) -> list[Route]:
 
         from ifc_console_agents.workflows import (
             AgentStep,
-            WorkflowRegistry,
             WorkflowSpec,
         )
 
         name = str(body.get("workflow") or "").strip()
-        registry = WorkflowRegistry(core.store.project_dir)
+        registry = _workflow_registry(core)
         try:
             spec = await asyncio.to_thread(registry.get, name)
         except ToolError as exc:
@@ -2417,12 +2828,11 @@ def build_agent_panel_routes(core: AppCore) -> list[Route]:
         from ifc_console_agents.workflow_runner import WorkflowRunner
         from ifc_console_agents.workflows import (
             AgentStep,
-            WorkflowRegistry,
             validate_inputs,
             validate_settings,
         )
 
-        registry = WorkflowRegistry(core.store.project_dir)
+        registry = _workflow_registry(core)
         try:
             spec = await asyncio.to_thread(registry.get, name.strip())
             validate_inputs(spec, inputs)
@@ -2542,9 +2952,9 @@ def build_agent_panel_routes(core: AppCore) -> list[Route]:
         from ifc_console.core.results import ToolError
 
         from ifc_console_agents.workflow_runner import WorkflowRunner
-        from ifc_console_agents.workflows import WorkflowRegistry, validate_settings
+        from ifc_console_agents.workflows import validate_settings
 
-        registry = WorkflowRegistry(core.store.project_dir)
+        registry = _workflow_registry(core)
         try:
             spec = await asyncio.to_thread(registry.get, name.strip())
             validate_settings(spec, settings)
@@ -2646,6 +3056,15 @@ def build_agent_panel_routes(core: AppCore) -> list[Route]:
         Route("/api/agents/approve", approve, methods=["POST"]),
         Route("/api/agents/upload", upload, methods=["POST"]),
         Route("/api/agents/skills/import", skills_import, methods=["POST"]),
+        Route("/api/agents/skills/save", skills_save, methods=["POST"]),
+        Route("/api/agents/skills/read", skills_read, methods=["GET"]),
+        Route("/api/agents/skills/delete", skills_delete, methods=["POST"]),
+        Route("/api/agents/content/delete", content_delete, methods=["POST"]),
+        Route("/api/agents/packs", packs_list, methods=["GET"]),
+        Route("/api/agents/packs/upload", packs_upload, methods=["POST"]),
+        Route("/api/agents/packs/install", packs_install, methods=["POST"]),
+        Route("/api/agents/packs/discard", packs_discard, methods=["POST"]),
+        Route("/api/agents/packs/uninstall", packs_uninstall, methods=["POST"]),
         Route("/api/agents/geometry/review", geometry_review, methods=["POST"]),
         Route("/api/agents/skills/dry-run", skill_dry_run, methods=["POST"]),
         Route("/api/agents/skills/record", skills_record, methods=["POST"]),

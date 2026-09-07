@@ -2586,6 +2586,61 @@
       "destructive": false,
       "input_schema": {
         "properties": {
+          "limit": {
+            "default": 10,
+            "description": "Maximum rows.",
+            "maximum": 100,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "nearest": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "number"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Numeric field targets to rank by, e.g. {'width_b_mm': 700}."
+          },
+          "table": {
+            "description": "Table name (file stem) or path.",
+            "maxLength": 300,
+            "minLength": 1,
+            "type": "string"
+          },
+          "where": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Field values a row must match exactly."
+          }
+        },
+        "required": [
+          "table"
+        ],
+        "type": "object"
+      },
+      "name": "lookup_table_rows",
+      "output_schema": null,
+      "read_only": true
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
           "direction": {
             "description": "Three-component direction vector.",
             "items": {
@@ -3605,7 +3660,8 @@
                     "type",
                     "api",
                     "recipe",
-                    "doc"
+                    "doc",
+                    "row"
                   ],
                   "type": "string"
                 },

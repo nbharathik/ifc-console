@@ -131,8 +131,10 @@ a new capability mix.
 
 The file format remains available for procedures that need deterministic tool
 steps or review gates. Workflow files are YAML in
-`.ifc-console/agents/workflows/`. A project file overrides a built-in of the
-same name, so you can adapt a shipped workflow without forking the package.
+`~/.ifc-console/agents/workflows/` (the panel writes there; a host embedding
+the registry may point it at a project folder). A saved file overrides a
+built-in of the same name, so you can adapt a shipped workflow without forking
+the package.
 
 ```yaml
 version: "1"

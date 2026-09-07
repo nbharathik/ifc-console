@@ -81,9 +81,7 @@ class AppCore:
         self.backups = BackupStore(store.backups_dir, s.files.backup_retention)
         # Edit mode works in a copy of the open file, so the original the user
         # opened is never written. See session/working_copy.py.
-        self.working_copies = WorkingCopyStore(
-            store.working_dir, s.files.working_copy_retention
-        )
+        self.working_copies = WorkingCopyStore(store.working_dir, s.files.working_copy_retention)
         # Whether the assistant may act on a protected call without
         # stopping to ask. Saving the file is never on this axis.
         self.ai_autonomy = False
@@ -123,10 +121,12 @@ class AppCore:
         self.knowledge = KnowledgeBase(store.home, schemas=tuple(s.knowledge.schemas))
         self._knowledge_thread: threading.Thread | None = None
         self._project_knowledge = None
+        self._pack_knowledge = None
         # Optional product extensions own their state. These compatibility
         # attributes are populated by ifc-console-agents when it is installed.
         self.agent_packs = None
         self.agent_files = None
+        self.agent_library = None
         self.agent_panel = None  # created by the panel routes on first use
         self.server_running = False
         # Why the last start attempt failed, so /viewer and /agent can say more
@@ -967,9 +967,13 @@ class AppCore:
         destination = target or session.path
         result = await session.save(destination, self.backups)
         self.audit.record("model_saved", by=by, path=str(destination))
-        self.events.emit("model_saved", path=str(destination), **{
-            "working_copy": bool(result.get("working_copy")),
-        })
+        self.events.emit(
+            "model_saved",
+            path=str(destination),
+            **{
+                "working_copy": bool(result.get("working_copy")),
+            },
+        )
         return result
 
     def set_ui_theme(self, name: str, *, persist: bool = False) -> str:
@@ -996,6 +1000,15 @@ class AppCore:
 
             self._project_knowledge = ProjectKnowledge(self.store.project_dir)
         return self._project_knowledge
+
+    @property
+    def library_knowledge(self):
+        """The user's reference library and installed skill packs, indexed once per home."""
+        if self._pack_knowledge is None:
+            from ifc_console.knowledge.project import ProjectKnowledge
+
+            self._pack_knowledge = ProjectKnowledge.for_library(self.store.home)
+        return self._pack_knowledge
 
     def start_knowledge(self) -> None:
         """Build the reference index in the background if it is missing.
@@ -1036,6 +1049,8 @@ class AppCore:
         self.knowledge.close()
         if self._project_knowledge is not None:
             self._project_knowledge.close()
+        if self._pack_knowledge is not None:
+            self._pack_knowledge.close()
         self.audit.end()
 
     async def ashutdown(self) -> None:
@@ -1052,6 +1067,8 @@ class AppCore:
         self.knowledge.close()
         if self._project_knowledge is not None:
             self._project_knowledge.close()
+        if self._pack_knowledge is not None:
+            self._pack_knowledge.close()
         self.audit.end()
 
     # -- logging helper used by the tool wrapper ------------------------------------

@@ -133,6 +133,11 @@ const svg = (body, size = 16) =>
 
 const I = {
   send: svg('<path d="M8 13.2V3.4M8 3.4 4.2 7.2M8 3.4l3.8 3.8"/>', 15),
+  gear: svg(
+    '<circle cx="8" cy="8" r="2.2"/>'
+    + '<path d="M8 1.8v1.7M8 12.5v1.7M1.8 8h1.7M12.5 8h1.7M3.6 3.6l1.2 1.2M11.2 11.2l1.2 1.2M3.6 12.4l1.2-1.2M11.2 4.8l1.2-1.2"/>',
+    15,
+  ),
   clip: svg(
     '<path d="M10.8 6.2 6.9 10a1.6 1.6 0 0 1-2.3-2.3l4.6-4.6a2.6 2.6 0 0 1 3.7 3.7l-4.9 4.9a3.7 3.7 0 0 1-5.2-5.2l4-4"/>',
     15,
@@ -211,8 +216,8 @@ const TEMPLATE = `
   <div class="chat-side-foot">
     <button class="chat-side-item chat-side-build t-press" data-act="workspace" type="button"
             aria-controls="chat-workspace" aria-expanded="false"
-            title="Agents, content, models, and appearance">
-      <i>${I.workspace}</i><span>Agent workspace</span>
+            title="Agents, content, skills, models, and appearance">
+      <i>${I.gear}</i><span>Agent workspace</span>
     </button>
   </div>
 </aside>
@@ -234,12 +239,15 @@ const TEMPLATE = `
       <button class="chat-icon chat-workflows-toggle t-press" data-act="workflows" type="button"
               title="Workflows" aria-label="Open workflows"
               aria-expanded="false" aria-controls="chat-workflows">${I.pipeline}</button>
+      <button class="chat-icon t-press" data-role="skills-picker" type="button"
+              title="Skills to follow with the next message" aria-label="Pick skills"
+              aria-expanded="false" aria-haspopup="true">${I.skill}</button>
       <button class="chat-icon chat-model-setup-toggle t-press" data-act="settings" type="button"
               title="Model setup" aria-label="Open model setup in Agent workspace"
               aria-expanded="false" aria-controls="chat-workspace">${I.model}</button>
       <button class="chat-icon chat-workspace-toggle t-press" data-act="workspace" type="button"
               title="Agent settings" aria-label="Open agent settings"
-              aria-expanded="false" aria-controls="chat-workspace">${I.workspace}</button>
+              aria-expanded="false" aria-controls="chat-workspace">${I.gear}</button>
       <button class="chat-icon" data-role="export" data-act="export"
               title="Export this conversation as Markdown"
               aria-label="Export this conversation as Markdown">${I.export}</button>
@@ -269,6 +277,8 @@ const TEMPLATE = `
   <div class="chat-log" data-role="log" role="log" aria-label="Conversation" aria-live="off"></div>
 
   <footer class="chat-composer">
+    <div class="chat-skill-picker" data-role="skills-picker-menu" role="dialog"
+         aria-label="Skills to follow" hidden></div>
     <div class="chat-attachments" data-role="attachments" hidden></div>
     <div class="chat-input-wrap">
       <textarea data-role="input" rows="1" maxlength="100000"
@@ -335,7 +345,7 @@ const TEMPLATE = `
               title="Jump to the latest message" aria-label="Jump to the latest message">${I.down}</button>
     </div>
     <input type="file" data-role="file" hidden multiple
-           accept=".md,.markdown,.txt,.pdf,.png,.jpg,.jpeg" aria-hidden="true">
+           accept=".md,.markdown,.txt,.pdf,.png,.jpg,.jpeg,.jsonl,.csv" aria-hidden="true">
     <textarea data-role="system" hidden aria-hidden="true" tabindex="-1"></textarea>
     <div class="chat-foot-row">
       <div class="chat-hint" data-role="hint" role="status" aria-live="polite"></div>
@@ -376,17 +386,11 @@ const TEMPLATE = `
             role="tab" aria-selected="true" title="Choose and inspect assistants"
             aria-controls="chat-workspace-panel">${I.agent}<span>Agents</span></button>
     <div class="chat-workspace-agents" data-role="workspace-agents" aria-label="Available assistants"></div>
-    <button id="chat-workspace-tab-capabilities" data-workspace-view="capabilities" type="button"
-            role="tab" aria-selected="false" title="Inspect capability blocks"
-            aria-controls="chat-workspace-panel">${I.capability}<span>Capabilities</span></button>
-    <button id="chat-workspace-tab-tools" data-workspace-view="tools" type="button"
-            role="tab" aria-selected="false" title="Inspect tools and their arguments"
-            aria-controls="chat-workspace-panel">${I.tools}<span>Tools</span></button>
     <button id="chat-workspace-tab-content" data-workspace-view="content" type="button"
-            role="tab" aria-selected="false" title="Manage shared project content"
+            role="tab" aria-selected="false" title="Knowledge the assistants can search: your library and this project"
             aria-controls="chat-content-panel">${I.file}<span>Content</span></button>
     <button id="chat-workspace-tab-skills" data-workspace-view="skills" type="button"
-            role="tab" aria-selected="false" title="Saved measurement procedures agents can reuse"
+            role="tab" aria-selected="false" title="Written procedures assistants follow"
             aria-controls="chat-workspace-panel">${I.skill}<span>Skills</span></button>
     <span class="chat-workspace-nav-label system">Workspace</span>
     <button id="chat-workspace-tab-models" data-workspace-view="models" type="button"
@@ -394,7 +398,14 @@ const TEMPLATE = `
             aria-controls="chat-settings">${I.model}<span>Models</span></button>
     <button id="chat-workspace-tab-app" data-workspace-view="app" type="button"
             role="tab" aria-selected="false" title="Configure appearance, history, and system health"
-            aria-controls="chat-settings">${I.app}<span>App</span></button>
+            aria-controls="chat-settings">${I.gear}<span>App</span></button>
+    <span class="chat-workspace-nav-label system">Details</span>
+    <button id="chat-workspace-tab-capabilities" data-workspace-view="capabilities" type="button"
+            role="tab" aria-selected="false" title="Inspect capability blocks"
+            aria-controls="chat-workspace-panel">${I.capability}<span>Capabilities</span></button>
+    <button id="chat-workspace-tab-tools" data-workspace-view="tools" type="button"
+            role="tab" aria-selected="false" title="Inspect tools and their arguments"
+            aria-controls="chat-workspace-panel">${I.tools}<span>Tools</span></button>
   </nav>
 
   <div class="chat-ws-content">
@@ -411,7 +422,7 @@ const TEMPLATE = `
              role="tabpanel" hidden>
       <div class="chat-ws-body" data-role="content-body" tabindex="0"></div>
       <input type="file" data-role="content-file" hidden multiple
-             accept=".md,.markdown,.txt,.pdf,.png,.jpg,.jpeg" aria-hidden="true">
+             accept=".md,.markdown,.txt,.pdf,.png,.jpg,.jpeg,.jsonl,.csv" aria-hidden="true">
     </section>
 
 <section class="chat-workspace-pane chat-settings-pane" id="chat-settings" data-role="modal"
@@ -534,6 +545,15 @@ const TEMPLATE = `
           </div>
         </div>
       </div>
+
+      <div class="chat-section">Surfaces</div>
+      <label class="chat-toggle">
+        <input type="checkbox" data-role="plainchat">
+        <span>
+          <b>Show plain chat</b>
+          <small>Lists a bare chat over the open model beside the assistants. Off by default: the assistants are the chat.</small>
+        </span>
+      </label>
 
       <div class="chat-section">Appearance</div>
       <div class="chat-field">
@@ -1152,6 +1172,7 @@ export function mountChat(root, options = {}) {
     settings.maxtok = el("maxtok").value;
     settings.agent = currentAgent;
     settings.history = el("savehistory").checked;
+    settings.plainChat = el("plainchat").checked;
     settings.credentialStore = el("savekey").checked;
     settings.theme = el("theme").value;
     try {
@@ -1627,6 +1648,7 @@ export function mountChat(root, options = {}) {
     el("system").value = settings.prompts[promptSlot()] || "";
     el("tools").checked = settings.tools && payload.defaults.tools;
     el("savehistory").checked = settings.history;
+    el("plainchat").checked = Boolean(settings.plainChat);
     el("savekey").checked = settings.credentialStore;
     el("temp").value = settings.temp;
     el("maxtok").value = settings.maxtok;
@@ -1659,11 +1681,16 @@ export function mountChat(root, options = {}) {
     return open;
   }
 
+  /* The surfaces a person can pick: every agent, plus plain chat when enabled. */
+  function agentSurfaces() {
+    return settings.plainChat || !currentAgent ? [...agents, PLAIN_CHAT] : [...agents];
+  }
+
   function sidebarState() {
     return sidebarModel({
-      // Plain chat is listed like any other surface. Without a row for it the
-      // panel had no way back once an assistant had been chosen.
-      agents: [...agents, PLAIN_CHAT],
+      // Plain chat is an opt-in surface (App settings): the agents are the
+      // chat, so it stays out of the list unless asked for.
+      agents: agentSurfaces(),
       records: settings.history ? historyStore.list() : [],
       currentAgent,
       currentConversationId,
@@ -2600,6 +2627,45 @@ export function mountChat(root, options = {}) {
     ];
   }
 
+  // Skills chosen for the conversation: each message asks the assistant to
+  // follow them, so "general sheet pile skill + extract parameters" is two
+  // clicks, not two typed mentions.
+  const pinnedSkills = new Set();
+
+  function withPinnedSkills(text) {
+    if (!pinnedSkills.size) return text;
+    const lead = [...pinnedSkills].map((name) => `Follow the ${name} skill.`).join(" ");
+    return text ? `${lead}\n\n${text}` : lead;
+  }
+
+  function renderSkillPicker() {
+    const menu = el("skills-picker-menu");
+    if (!menu || menu.hidden) return;
+    menu.innerHTML = "";
+    const rows = skillRows();
+    if (!rows.length) {
+      menu.appendChild(wsNode("p", "chat-ws-muted", "No skills yet. Add them under Agent workspace > Skills."));
+      return;
+    }
+    menu.appendChild(wsNode("b", "", "Follow with the next messages"));
+    for (const row of rows) {
+      const label = document.createElement("label");
+      label.className = "chat-skill-pick";
+      const box = document.createElement("input");
+      box.type = "checkbox";
+      box.checked = pinnedSkills.has(row.name);
+      box.addEventListener("change", () => {
+        if (box.checked) pinnedSkills.add(row.name);
+        else pinnedSkills.delete(row.name);
+        renderAttachments();
+      });
+      const copy = document.createElement("span");
+      copy.append(wsNode("b", "", `#${row.name}`), wsNode("small", "", row.hint || ""));
+      label.append(box, copy);
+      menu.appendChild(label);
+    }
+  }
+
   /* Saved procedures this agent can follow, named the way `#` writes them. */
   function skillRows() {
     const loaded = workspace && workspace.name === currentAgent ? workspace.skills : [];
@@ -2608,6 +2674,7 @@ export function mountChat(root, options = {}) {
         title: String(skill.name || "").trim(),
         name: String(skill.name || "").trim().replace(/\s+/g, "-").toLowerCase(),
         hint: slashHint(skill.description || "saved procedure"),
+        pack: String(skill.pack || "").trim(),
       }))
       .filter((row) => row.name);
   }
@@ -2715,7 +2782,7 @@ export function mountChat(root, options = {}) {
         .map((row) => ({
           label: `#${row.name}`,
           note: row.hint,
-          group: "Skills",
+          group: row.pack ? `Pack: ${row.pack}` : "Skills",
           // The name goes into the message as the user typed it, with the
           // instruction spelled out so the run does not have to guess.
           insert: `Follow the ${row.title} skill:`,
@@ -2845,15 +2912,32 @@ export function mountChat(root, options = {}) {
       queuedPrompt,
       selections.map((row) => `${row.model_id}:${row.guids.length}`),
       pendingAttachments.map((item) => `${item.path || ""}:${item.name}:${Boolean(item.pending)}`),
+      [...pinnedSkills],
     ]);
     if (tray.dataset.signature === signature) return;
     tray.dataset.signature = signature;
-    tray.hidden = !pendingAttachments.length && !selected && !queuedPrompt && !conversationWorkflow;
+    tray.hidden = !pendingAttachments.length && !selected && !queuedPrompt
+      && !conversationWorkflow && !pinnedSkills.size;
     tray.innerHTML = "";
     // The workflow leads the tray: it is the context every other chip is
     // read under, and the hover preview is where its text is checked.
     if (conversationWorkflow) {
       tray.appendChild(workflowChip(conversationWorkflow, { context: workflowContext }));
+    }
+    // Pinned skills ride along with every message until they are dropped.
+    for (const name of pinnedSkills) {
+      const chip = document.createElement("span");
+      chip.className = "chat-attachment-chip skill";
+      chip.innerHTML = `<i>${I.skill}</i><span></span>`
+        + `<button type="button" class="chat-attachment-remove" aria-label="Stop following ${name}">${I.close}</button>`;
+      chip.querySelector("span").textContent = `#${name}`;
+      chip.title = `The next messages ask the assistant to follow the ${name} skill.`;
+      chip.querySelector("button").addEventListener("click", () => {
+        pinnedSkills.delete(name);
+        renderAttachments();
+        renderSkillPicker();
+      });
+      tray.appendChild(chip);
     }
     // A message typed mid-answer is waiting, not lost, and it can be taken
     // back before the run it is queued behind finishes.
@@ -3625,7 +3709,7 @@ export function mountChat(root, options = {}) {
     const list = el("workspace-agents");
     if (!list) return;
     list.innerHTML = "";
-    for (const agent of [...agents, PLAIN_CHAT]) {
+    for (const agent of agentSurfaces()) {
       const button = wsNode(
         "button",
         "chat-workspace-agent" + (agent.name === currentAgent ? " active" : ""),
@@ -3678,7 +3762,7 @@ export function mountChat(root, options = {}) {
     compactSwitcher.appendChild(wsNode("span", "", "Assistant"));
     const compactSelect = document.createElement("select");
     compactSelect.setAttribute("aria-label", "Active assistant");
-    for (const agent of [...agents, PLAIN_CHAT]) {
+    for (const agent of agentSurfaces()) {
       const option = document.createElement("option");
       option.value = agent.name;
       option.textContent = agent.title;
@@ -4756,18 +4840,203 @@ export function mountChat(root, options = {}) {
     renderWorkspace();
   }
 
+  const SKILL_KIND_LABELS = {
+    general: "General: how to use a knowledge collection",
+    task: "Task: what to do for one job",
+    prose: "Other written skills",
+    parametric_measurement: "Recorded measurements",
+  };
+
+  async function readSkill(name) {
+    const response = await api(`/api/agents/skills/read?name=${encodeURIComponent(name)}`);
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
+    return payload.skill;
+  }
+
+  async function deleteSkill(row) {
+    if (!window.confirm(`Delete the skill ${row.name}?`)) return;
+    try {
+      const response = await postJSON("/api/agents/skills/delete", { name: row.name, scope: row.scope || "user" });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
+    } catch (exc) {
+      note(`Could not delete ${row.name}: ${exc.message || exc}`, true);
+    }
+    await loadWorkspace({ force: true });
+  }
+
+  /* A skill row: name, one line, tags; open it to read the text or delete it. */
+  function skillRow(skill) {
+    const details = wsNode("details", "chat-ws-disclosure chat-skill-row");
+    const summary = wsNode("summary", "");
+    const copy = wsNode("span", "");
+    copy.append(wsNode("b", "", `#${skill.name}`), wsNode("small", "", skill.description || ""));
+    const tags = wsNode("span", "chat-ws-disclosure-state");
+    tags.textContent = [skill.collection, skill.scope === "project" ? "this project" : ""]
+      .filter(Boolean).join(" · ");
+    summary.append(copy, tags);
+    const detail = wsNode("div", "chat-ws-disclosure-body");
+    const chips = wsNode("div", "chat-ws-tags");
+    chips.appendChild(wsNode("span", "chat-ws-tag", skill.kind || "prose"));
+    if (skill.applies_to) chips.appendChild(wsNode("span", "chat-ws-tag", skill.applies_to));
+    if (skill.pack) chips.appendChild(wsNode("span", "chat-ws-tag", `pack ${skill.pack}`));
+    detail.appendChild(chips);
+    const text = document.createElement("pre");
+    text.className = "chat-pack-skill-text";
+    text.textContent = "Loading...";
+    detail.appendChild(text);
+    const actions = wsNode("div", "chat-ws-review-actions");
+    const use = wsNode("button", "chat-btn t-press", "Use in chat");
+    use.type = "button";
+    use.addEventListener("click", () => {
+      pinnedSkills.add(skill.name);
+      renderAttachments();
+      note(`${skill.name} will be followed by the next message.`);
+    });
+    const remove = wsNode("button", "chat-btn t-press", "Delete");
+    remove.type = "button";
+    remove.addEventListener("click", () => { void deleteSkill(skill); });
+    actions.append(use, remove);
+    detail.appendChild(actions);
+    details.addEventListener("toggle", () => {
+      if (!details.open || details.dataset.loaded) return;
+      details.dataset.loaded = "1";
+      readSkill(skill.name)
+        .then((row) => { text.textContent = row.content || ""; })
+        .catch((exc) => { text.textContent = `Could not load: ${exc.message || exc}`; });
+    });
+    details.append(summary, detail);
+    return details;
+  }
+
+  /* The Add skill form: a title, one line, the kind, and the markdown body. */
+  function skillForm(body) {
+    wsFold(body, "Add a skill", "Title, one line, kind, and the steps as markdown.", "", (inner) => {
+      const field = (label, element) => {
+        const wrap = wsNode("div", "chat-field");
+        const tag = wsNode("label", "", label);
+        wrap.append(tag, element);
+        inner.appendChild(wrap);
+        return element;
+      };
+      const title = field("Name", document.createElement("input"));
+      title.type = "text";
+      title.className = "chat-custom";
+      title.placeholder = "e.g. extract-sheet-pile-parameters";
+      const description = field("One line", document.createElement("input"));
+      description.type = "text";
+      description.className = "chat-custom";
+      description.placeholder = "when an agent should use it";
+      const kind = field("Kind", document.createElement("select"));
+      for (const [value, label] of [["task", "Task"], ["general", "General"], ["prose", "Other"]]) {
+        const option = document.createElement("option");
+        option.value = value;
+        option.textContent = label;
+        kind.appendChild(option);
+      }
+      const collection = field("Collection (optional)", document.createElement("input"));
+      collection.type = "text";
+      collection.className = "chat-custom";
+      collection.placeholder = "the knowledge collection it belongs to";
+      const content = field("Steps (markdown)", document.createElement("textarea"));
+      content.rows = 10;
+      content.placeholder = "## When to use\n\n## Steps\n1. ...\n\n## Output\n";
+      const scope = field("Store", document.createElement("select"));
+      for (const [value, label] of [["user", "For all projects"], ["project", "This project only"]]) {
+        const option = document.createElement("option");
+        option.value = value;
+        option.textContent = label;
+        scope.appendChild(option);
+      }
+      const state = wsNode("p", "chat-ws-review-state", "");
+      const save = wsNode("button", "chat-btn primary t-press", "Save skill");
+      save.type = "button";
+      save.addEventListener("click", async () => {
+        save.disabled = true;
+        try {
+          const response = await postJSON("/api/agents/skills/save", {
+            name: title.value,
+            description: description.value,
+            kind: kind.value,
+            collection: collection.value,
+            content: content.value,
+            scope: scope.value,
+          });
+          const payload = await response.json();
+          if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
+          state.textContent = `Saved #${payload.skill.name}.`;
+          title.value = description.value = collection.value = content.value = "";
+          await loadWorkspace({ force: true });
+        } catch (exc) {
+          state.textContent = `Could not save: ${exc.message || exc}`;
+        } finally {
+          save.disabled = false;
+        }
+      });
+      inner.append(state, save);
+    });
+  }
+
   function wsSkills(body) {
-    syncWorkspaceReviewSelection();
     const model = workspace;
     const count = model.skills.length;
     wsPageHeading(
       body,
       "Skills",
-      count ? `${count} saved procedure${count === 1 ? "" : "s"}` : "Saved procedures",
-      "Reusable measurement procedures stored as markdown in "
-        + ".ifc-console/agents/skills. Agents check them at the start of a task "
-        + "and follow the one that matches.",
+      count ? `${count} skill${count === 1 ? "" : "s"}` : "Skills",
+      "Written procedures an assistant follows: general skills explain a knowledge "
+        + "collection, task skills say what to do for one job. Type # in chat, or pick "
+        + "them with the skills button next to the message box.",
     );
+    const groups = new Map();
+    for (const skill of model.skills) {
+      const kind = SKILL_KIND_LABELS[skill.kind] ? skill.kind : "prose";
+      if (!groups.has(kind)) groups.set(kind, []);
+      groups.get(kind).push(skill);
+    }
+    for (const kind of ["general", "task", "prose", "parametric_measurement"]) {
+      const rows = groups.get(kind);
+      if (!rows?.length) continue;
+      body.appendChild(wsNode("h3", "chat-pack-heading", SKILL_KIND_LABELS[kind]));
+      const list = wsNode("div", "chat-ws-disclosures");
+      for (const skill of rows) list.appendChild(skillRow(skill));
+      body.appendChild(list);
+    }
+    if (!count) {
+      body.appendChild(wsNode(
+        "p",
+        "chat-ws-lead",
+        "No skills yet. Add one below, drop .md files here or under Content, or install a pack.",
+      ));
+    }
+    skillForm(body);
+    const importRow = wsNode("div", "chat-ws-skill-import");
+    const importBtn = wsNode("button", "chat-btn t-press", "Import .md skills");
+    importBtn.type = "button";
+    const picker = document.createElement("input");
+    picker.type = "file";
+    picker.accept = ".md,.markdown";
+    picker.multiple = true;
+    picker.hidden = true;
+    picker.addEventListener("change", () => {
+      const files = [...picker.files];
+      picker.value = "";
+      if (files.length) void importSkillFiles(files);
+    });
+    importBtn.addEventListener("click", () => picker.click());
+    importRow.append(importBtn, picker);
+    importRow.appendChild(wsNode("small", "chat-ws-muted", "Skills written elsewhere (any LLM, any editor)."));
+    body.appendChild(importRow);
+    wsFold(body, "Advanced", "Record viewer measurements as skills and dry-run them on a selection.", "", (inner) => {
+      wsSkillsAdvanced(inner);
+    });
+  }
+
+  function wsSkillsAdvanced(body) {
+    syncWorkspaceReviewSelection();
+    const model = workspace;
+    const count = model.skills.length;
     appendGeometryReview(body);
     const recordRow = wsNode("div", "chat-ws-skill-record");
     const measured = Number(sessionStatus.measurements) || 0;
@@ -4851,6 +5120,7 @@ export function mountChat(root, options = {}) {
       if (skill.description) detail.appendChild(wsNode("p", "", skill.description));
       const chips = wsNode("div", "chat-ws-tags");
       if (skill.applies_to) chips.appendChild(wsNode("span", "chat-ws-tag", skill.applies_to));
+      if (skill.pack) chips.appendChild(wsNode("span", "chat-ws-tag", `pack ${skill.pack}`));
       chips.appendChild(wsNode(
         "span",
         `chat-ws-tag ${skill.spec_status === "invalid" ? "bad" : ""}`,
@@ -5172,13 +5442,257 @@ export function mountChat(root, options = {}) {
     return task;
   }
 
+  // A skill pack zip is staged and shown before anything becomes active: its
+  // skill text is LLM-written instructions from an untrusted document.
+  let packPreview = null;
+  let packBusy = false;
+
+  async function stagePackFile(file) {
+    contentLibraryError = `Reading ${file.name}...`;
+    renderContentWorkspace();
+    try {
+      const response = await api(
+        `/api/agents/packs/upload?name=${encodeURIComponent(file.name)}`,
+        { method: "POST", body: file },
+      );
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
+      packPreview = payload.preview;
+      contentLibraryError = "";
+    } catch (exc) {
+      contentLibraryError = `${file.name}: ${exc.message || exc}`;
+    }
+    renderContentWorkspace();
+  }
+
+  async function installStagedPack() {
+    if (!packPreview || packBusy) return;
+    packBusy = true;
+    renderContentWorkspace();
+    try {
+      const response = await postJSON("/api/agents/packs/install", {
+        staging_id: packPreview.staging_id,
+        agent: currentAgent || undefined,
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
+      const installed = payload.installed || {};
+      packPreview = null;
+      const skills = (installed.skills || []).map((name) => `#${name}`).join(", ");
+      contentLibraryError = `Installed ${installed.title || installed.name}`
+        + `${skills ? `: type ${skills} in chat to use it` : ""}.`;
+      contentLibrary = null;
+      await loadWorkspace({ force: true });
+      await loadContentLibrary({ force: true });
+    } catch (exc) {
+      contentLibraryError = `Install failed: ${exc.message || exc}`;
+    } finally {
+      packBusy = false;
+      renderContentWorkspace();
+    }
+  }
+
+  async function discardStagedPack() {
+    const staged = packPreview;
+    packPreview = null;
+    renderContentWorkspace();
+    if (!staged) return;
+    try {
+      await postJSON("/api/agents/packs/discard", { staging_id: staged.staging_id });
+    } catch {
+      // the staging folder expires on its own
+    }
+  }
+
+  async function uninstallPack(name) {
+    if (packBusy) return;
+    packBusy = true;
+    contentLibraryError = `Removing ${name}...`;
+    renderContentWorkspace();
+    try {
+      const response = await postJSON("/api/agents/packs/uninstall", { name });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
+      contentLibraryError = "";
+      contentLibrary = null;
+      await loadWorkspace({ force: true });
+      await loadContentLibrary({ force: true });
+    } catch (exc) {
+      contentLibraryError = `${name}: ${exc.message || exc}`;
+    } finally {
+      packBusy = false;
+      renderContentWorkspace();
+    }
+  }
+
+  function packPreviewCard() {
+    const preview = packPreview;
+    const count = (rows, word) => `${rows.length} ${word}${rows.length === 1 ? "" : "s"}`;
+    const card = wsNode("div", "chat-ws-callout chat-pack-preview");
+    const inner = wsNode("div", "chat-pack-preview-body");
+    inner.appendChild(wsNode("b", "", `Install skill pack: ${preview.title || preview.name}`));
+    inner.appendChild(wsNode(
+      "small",
+      "chat-ws-muted",
+      [
+        `version ${preview.version}`,
+        count(preview.skills || [], "skill"),
+        count(preview.knowledge || [], "knowledge file"),
+        count(preview.documents || [], "document"),
+        count(preview.tables || [], "table"),
+        preview.replaces ? `replaces version ${preview.replaces.version}` : "",
+      ].filter(Boolean).join(" · "),
+    ));
+    if (preview.task) inner.appendChild(wsNode("p", "", preview.task));
+    if (preview.source?.title) {
+      const publisher = preview.source.publisher ? `, ${preview.source.publisher}` : "";
+      inner.appendChild(wsNode("small", "chat-ws-muted", `Source: ${preview.source.title}${publisher}`));
+    }
+    for (const warning of preview.warnings || []) {
+      inner.appendChild(wsNode("p", "chat-ws-review-state", warning));
+    }
+    for (const skill of preview.skills || []) {
+      const details = wsNode("details", "chat-ws-disclosure");
+      const summary = wsNode("summary", "");
+      const copy = wsNode("span", "");
+      copy.append(wsNode("b", "", `#${skill.name}`), wsNode("small", "", skill.description || ""));
+      summary.append(copy, wsNode("span", "chat-ws-disclosure-state", formatBytes(skill.size_bytes)));
+      const text = document.createElement("pre");
+      text.className = "chat-pack-skill-text";
+      text.textContent = skill.text || "";
+      details.append(summary, text);
+      inner.appendChild(details);
+    }
+    const actions = wsNode("div", "chat-ws-review-actions");
+    const install = wsNode("button", "chat-btn primary t-press", packBusy ? "Installing..." : "Install");
+    install.type = "button";
+    install.disabled = packBusy;
+    install.addEventListener("click", () => { void installStagedPack(); });
+    const cancel = wsNode("button", "chat-btn t-press", "Cancel");
+    cancel.type = "button";
+    cancel.disabled = packBusy;
+    cancel.addEventListener("click", () => { void discardStagedPack(); });
+    actions.append(install, cancel);
+    inner.appendChild(actions);
+    card.appendChild(inner);
+    return card;
+  }
+
+  function appendInstalledPacks(body) {
+    const packs = Array.isArray(contentLibrary?.packs) ? contentLibrary.packs : [];
+    if (!packs.length) return;
+    body.appendChild(wsNode("h3", "chat-pack-heading", "Installed skill packs"));
+    const list = wsNode("div", "chat-ws-disclosures");
+    for (const pack of packs) {
+      const details = wsNode("details", "chat-ws-disclosure");
+      const summary = wsNode("summary", "");
+      const copy = wsNode("span", "");
+      copy.append(
+        wsNode("b", "", pack.title || pack.name),
+        wsNode("small", "", pack.description || pack.task || ""),
+      );
+      summary.append(copy, wsNode("span", "chat-ws-disclosure-state", `v${pack.version}`));
+      const detail = wsNode("div", "chat-ws-disclosure-body");
+      const chips = wsNode("div", "chat-ws-tags");
+      for (const name of pack.skills || []) chips.appendChild(wsNode("span", "chat-ws-tag", `#${name}`));
+      chips.appendChild(wsNode("span", "chat-ws-tag", `${(pack.documents || []).length} documents`));
+      if ((pack.tables || []).length) {
+        chips.appendChild(wsNode("span", "chat-ws-tag", `${pack.tables.length} tables`));
+      }
+      if (pack.applies_to) chips.appendChild(wsNode("span", "chat-ws-tag", pack.applies_to));
+      detail.appendChild(chips);
+      if (pack.source?.title) {
+        const publisher = pack.source.publisher ? `, ${pack.source.publisher}` : "";
+        detail.appendChild(wsNode("p", "chat-ws-muted", `Source: ${pack.source.title}${publisher}`));
+      }
+      if (pack.attribution) detail.appendChild(wsNode("p", "chat-ws-muted", pack.attribution));
+      const where = wsNode("div", "chat-ws-code-list");
+      where.appendChild(wsNode("code", "", pack.directory || pack.name));
+      detail.appendChild(where);
+      const actions = wsNode("div", "chat-ws-review-actions");
+      const remove = wsNode("button", "chat-btn t-press", "Uninstall");
+      remove.type = "button";
+      remove.disabled = packBusy;
+      remove.addEventListener("click", () => { void uninstallPack(pack.name); });
+      actions.appendChild(remove);
+      detail.appendChild(actions);
+      details.append(summary, detail);
+      list.appendChild(details);
+    }
+    body.appendChild(list);
+  }
+
+  // Where Add files puts things: the library (every project) by default, or
+  // this project; a collection is a folder inside either.
+  let uploadScope = "library";
+  let uploadCollection = "";
+
+  /* A markdown file with skill front matter belongs in the skill store, not
+   * in the knowledge index: the two are different things to an agent. */
+  function looksLikeSkill(name, text) {
+    if (/^skill\.md$/i.test(name)) return true;
+    const head = String(text || "").slice(0, 600);
+    return /^---\s*\n(?:[\s\S]*?\n)?name:\s*\S+/m.test(head)
+      && /\n(?:kind|description):/m.test(head);
+  }
+
+  async function deleteContent(paths, question) {
+    if (!paths.length) return;
+    if (question && !window.confirm(question)) return;
+    contentLibraryError = `Removing ${paths.length} file${paths.length === 1 ? "" : "s"}...`;
+    renderContentWorkspace();
+    try {
+      const response = await postJSON("/api/agents/content/delete", { paths });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
+      contentLibraryError = "";
+    } catch (exc) {
+      contentLibraryError = `Delete failed: ${exc.message || exc}`;
+    }
+    contentLibrary = null;
+    await loadWorkspace({ force: true });
+    await loadContentLibrary({ force: true });
+  }
+
   async function uploadWorkspaceContent(files) {
+    const zips = files.filter((file) => /\.zip$/i.test(file.name));
+    if (zips.length) {
+      contentLibraryError = `${zips[0].name}: skill packs are installed from the shell with `
+        + "\"ifc-console agents pack install <zip>\"; add knowledge files here and skills under Skills.";
+      renderContentWorkspace();
+    }
+    const skills = [];
+    const documents = [];
     for (const file of files) {
+      if (/\.zip$/i.test(file.name)) continue;
+      if (/\.(md|markdown)$/i.test(file.name)) {
+        let text = "";
+        try {
+          text = await file.slice(0, 600).text();
+        } catch {
+          text = "";
+        }
+        if (looksLikeSkill(file.name, text)) {
+          skills.push(file);
+          continue;
+        }
+      }
+      documents.push(file);
+    }
+    if (skills.length) {
+      await importSkillFiles(skills);
+      contentLibraryError = `Added ${skills.length} skill${skills.length === 1 ? "" : "s"} under Skills.`;
+      renderContentWorkspace();
+    }
+    if (!documents.length) return;
+    const query = `scope=${encodeURIComponent(uploadScope)}`
+      + (uploadCollection ? `&collection=${encodeURIComponent(uploadCollection)}` : "");
+    for (const file of documents) {
       contentLibraryError = `Adding ${file.name}...`;
       renderContentWorkspace();
       try {
         const response = await api(
-          `/api/agents/content/upload?name=${encodeURIComponent(file.name)}`,
+          `/api/agents/content/upload?name=${encodeURIComponent(file.name)}&${query}`,
           { method: "POST", body: file },
         );
         const payload = await response.json();
@@ -5218,6 +5732,19 @@ export function mountChat(root, options = {}) {
       ),
     );
     row.append(box, icon, meta);
+    if (file.managed) {
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.className = "chat-content-remove t-press";
+      remove.title = `Delete ${file.name || path} from ${file.scope === "library" ? "the library" : "this project"}`;
+      remove.setAttribute("aria-label", remove.title);
+      remove.innerHTML = I.close;
+      remove.addEventListener("click", (event) => {
+        event.preventDefault();
+        void deleteContent([path], `Delete ${file.name || path}?`);
+      });
+      row.appendChild(remove);
+    }
     // Shift-click extends from the last box touched, the way a file list is
     // expected to behave. Granting twenty manuals one click at a time is
     // twenty round trips to the server.
@@ -5252,11 +5779,55 @@ export function mountChat(root, options = {}) {
         `Upload once, then choose what ${agentTitle()} may use in every conversation.`,
       ),
     );
+    const refresh = wsNode("button", "chat-btn t-press", "Refresh");
+    refresh.type = "button";
+    refresh.title = "Rescan the library and project folders and re-index changed files";
+    refresh.addEventListener("click", () => {
+      contentLibrary = null;
+      contentLibraryError = "";
+      void loadContentLibrary({ force: true });
+    });
     const add = wsNode("button", "chat-btn primary t-press", "Add files");
     add.type = "button";
     add.addEventListener("click", () => el("content-file").click());
-    head.append(copy, add);
+    head.append(copy, refresh, add);
     body.appendChild(head);
+    // Where the next files go. The library is the default: it follows the
+    // user to every project, and a collection keeps one source together.
+    const options = wsNode("div", "chat-content-options");
+    const scopeLabel = wsNode("label", "", "Add to");
+    const scope = document.createElement("select");
+    scope.setAttribute("aria-label", "Where new files are stored");
+    for (const [value, label] of [["library", "Library (all projects)"], ["project", "This project"]]) {
+      const option = document.createElement("option");
+      option.value = value;
+      option.textContent = label;
+      option.selected = uploadScope === value;
+      scope.appendChild(option);
+    }
+    scope.addEventListener("change", () => { uploadScope = scope.value; });
+    const collection = document.createElement("input");
+    collection.type = "text";
+    collection.value = uploadCollection;
+    collection.placeholder = "collection, e.g. arcelormittal-2027 (optional)";
+    collection.setAttribute("aria-label", "Collection folder for new files");
+    collection.setAttribute("list", "chat-content-collections");
+    const known = document.createElement("datalist");
+    known.id = "chat-content-collections";
+    for (const name of [...new Set([
+      ...((contentLibrary?.collections?.library) || []),
+      ...((contentLibrary?.collections?.project) || []),
+    ])]) {
+      const option = document.createElement("option");
+      option.value = name;
+      known.appendChild(option);
+    }
+    collection.addEventListener("input", () => {
+      uploadCollection = collection.value.trim().toLowerCase().replace(/[^a-z0-9._-]+/g, "-");
+    });
+    options.append(scopeLabel, scope, collection, known);
+    body.appendChild(options);
+    if (packPreview) body.appendChild(packPreviewCard());
 
     if (contentLibraryAgent !== currentAgent) contentLibrary = null;
     if (!contentLibrary && !contentLibraryError) seedContentFromWorkspace();
@@ -5270,7 +5841,10 @@ export function mountChat(root, options = {}) {
     }
     if (contentLibraryError) {
       const status = wsNode("div", "chat-content-status");
-      status.classList.toggle("bad", !contentLibraryError.startsWith("Adding "));
+      status.classList.toggle(
+        "bad",
+        !/^(Adding|Reading|Removing|Installed) /.test(contentLibraryError),
+      );
       status.textContent = contentLibraryError;
       body.appendChild(status);
     }
@@ -5377,12 +5951,43 @@ export function mountChat(root, options = {}) {
         );
         return;
       }
+      // One group per collection, library first, so a source uploaded as
+      // twenty files reads as one thing and can be granted or removed as one.
+      const groups = new Map();
       for (const file of shown) {
-        const row = contentFileRow(file, access, selectedPaths, canAssign, extendRange);
-        row.querySelector("input")?.addEventListener("mousedown", (event) => {
-          if (!event.shiftKey) anchorPath = String(file.path || "");
-        });
-        list.appendChild(row);
+        const scopeKey = file.scope === "project" ? "project" : "library";
+        const key = `${scopeKey}:${file.collection || ""}`;
+        if (!groups.has(key)) groups.set(key, { scope: scopeKey, collection: file.collection || "", files: [] });
+        groups.get(key).files.push(file);
+      }
+      const ordered = [...groups.values()].sort((a, b) =>
+        a.scope !== b.scope
+          ? (a.scope === "library" ? -1 : 1)
+          : a.collection.localeCompare(b.collection));
+      for (const group of ordered) {
+        const head = wsNode("div", "chat-content-group-head");
+        const title = wsNode("b", "", group.collection
+          ? `${group.scope === "library" ? "Library" : "This project"} · ${group.collection}`
+          : (group.scope === "library" ? "Library" : "This project"));
+        const count = wsNode("small", "", `${group.files.length} file${group.files.length === 1 ? "" : "s"}`);
+        head.append(title, count);
+        const managed = group.files.filter((file) => file.managed).map((file) => String(file.path || ""));
+        if (managed.length && group.collection) {
+          const drop = wsNode("button", "chat-content-bulk-action t-press", "Delete collection");
+          drop.type = "button";
+          drop.addEventListener("click", () => {
+            void deleteContent(managed, `Delete the ${managed.length} files of ${group.collection}?`);
+          });
+          head.appendChild(drop);
+        }
+        list.appendChild(head);
+        for (const file of group.files) {
+          const row = contentFileRow(file, access, selectedPaths, canAssign, extendRange);
+          row.querySelector("input")?.addEventListener("mousedown", (event) => {
+            if (!event.shiftKey) anchorPath = String(file.path || "");
+          });
+          list.appendChild(row);
+        }
       }
     };
     query.addEventListener("input", () => {
@@ -5402,6 +6007,7 @@ export function mountChat(root, options = {}) {
     });
     body.appendChild(list);
     drawRows();
+    appendInstalledPacks(body);
     if (!canAssign) {
       body.appendChild(
         wsNode(
@@ -6880,6 +7486,8 @@ export function mountChat(root, options = {}) {
 
   async function submit() {
     if (resetInProgress || uploadsInFlight()) return;
+    // Pinned skills ride in front of the message text, visibly.
+    if (pinnedSkills.size && input.value.trim()) input.value = withPinnedSkills(input.value.trim());
     const text = input.value.trim();
     if (text.length > PROMPT_LIMIT) {
       note("This message is too long. Shorten it to 100,000 characters before sending.", true);
@@ -7302,6 +7910,21 @@ export function mountChat(root, options = {}) {
     const files = [...el("content-file").files];
     el("content-file").value = "";
     if (files.length) await uploadWorkspaceContent(files);
+  });
+  el("skills-picker").addEventListener("click", (event) => {
+    event.stopPropagation();
+    const menu = el("skills-picker-menu");
+    menu.hidden = !menu.hidden;
+    el("skills-picker").setAttribute("aria-expanded", String(!menu.hidden));
+    if (!menu.hidden) renderSkillPicker();
+  });
+  el("skills-picker-menu").addEventListener("click", (event) => event.stopPropagation());
+  document.addEventListener("click", () => {
+    const menu = el("skills-picker-menu");
+    if (menu && !menu.hidden) {
+      menu.hidden = true;
+      el("skills-picker").setAttribute("aria-expanded", "false");
+    }
   });
   el("ifcmodel").addEventListener("change", () => {
     sendViewerCommand({ action: "set-model", modelId: el("ifcmodel").value });

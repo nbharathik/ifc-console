@@ -21,11 +21,17 @@ MARKDOWN_SUFFIXES = (".md", ".markdown")
 TEXT_SUFFIXES = (".txt",)
 PDF_SUFFIXES = (".pdf",)
 IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg")
-SUPPORTED_SUFFIXES = MARKDOWN_SUFFIXES + TEXT_SUFFIXES + PDF_SUFFIXES + IMAGE_SUFFIXES
+TABLE_SUFFIXES = (".jsonl", ".csv")
+SUPPORTED_SUFFIXES = (
+    MARKDOWN_SUFFIXES + TEXT_SUFFIXES + PDF_SUFFIXES + IMAGE_SUFFIXES + TABLE_SUFFIXES
+)
 
 # One chunk should fit a retrieval result, not a whole manual.
 _MAX_CHUNK = 4000
 _SUMMARY_CHARS = 240
+# A table becomes one record per row; a catalogue is hundreds, not millions.
+_MAX_ROWS = 20_000
+_NAME_FIELDS = ("designation", "name", "title", "id", "grade", "product", "system", "section")
 
 _HEADING = re.compile(r"^(#{1,6})\s+(.*)$")
 
@@ -63,6 +69,68 @@ def _split_big(section: str | None, text: str) -> list[tuple[str | None, str]]:
             for i, (section, text) in enumerate(parts)
         ]
     return parts
+
+
+def _coerce(value: str) -> Any:
+    text = value.strip()
+    if re.fullmatch(r"-?\d+", text):
+        return int(text)
+    if re.fullmatch(r"-?\d+\.\d+", text):
+        return float(text)
+    if text.lower() in {"true", "false"}:
+        return text.lower() == "true"
+    return text
+
+
+def chunk_table(path: Path) -> list[dict[str, Any]]:
+    """One dict per row of a .jsonl (an object per line) or .csv (header row) file."""
+    import csv
+    import json
+
+    rows: list[dict[str, Any]] = []
+    suffix = path.suffix.lower()
+    with path.open("r", encoding="utf-8", errors="replace", newline="") as handle:
+        if suffix == ".csv":
+            for row in csv.DictReader(handle):
+                rows.append({str(k): _coerce(v) for k, v in row.items() if k is not None})
+                if len(rows) >= _MAX_ROWS:
+                    break
+        else:
+            for line in handle:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    row = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(row, dict):
+                    rows.append(row)
+                if len(rows) >= _MAX_ROWS:
+                    break
+    return rows
+
+
+def _flatten(row: dict[str, Any], prefix: str = "") -> list[tuple[str, Any]]:
+    out: list[tuple[str, Any]] = []
+    for key, value in row.items():
+        name = f"{prefix}{key}"
+        if isinstance(value, dict):
+            out.extend(_flatten(value, f"{name}."))
+        else:
+            out.append((name, value))
+    return out
+
+
+def row_name(row: dict[str, Any]) -> str:
+    for field_name in _NAME_FIELDS:
+        value = row.get(field_name)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    for value in row.values():
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return "row"
 
 
 def chunk_markdown(text: str) -> tuple[str | None, list[tuple[str | None, str]]]:
@@ -213,6 +281,38 @@ def file_records(path: Path, *, base: Path) -> tuple[list[Record], dict[str, Any
                 )
             )
         entry["visual_only_pages"] = visual_only
+    elif suffix in TABLE_SUFFIXES:
+        # every row is its own record, so a designation search lands on the
+        # row and the row rides along in meta for deterministic lookup
+        entry["media"] = "table"
+        rows = chunk_table(path)
+        entry["rows"] = len(rows)
+        if not rows:
+            entry["no_text"] = True
+        for number, row in enumerate(rows, start=1):
+            name = row_name(row)
+            body = "\n".join(
+                f"{key}: {value}" for key, value in _flatten(row) if value not in (None, "")
+            )
+            records.append(
+                Record(
+                    kind="row",
+                    key=f"row:{rel}#{number}",
+                    name=f"{stem}: {name}",
+                    summary=_summary(body) or f"row {number} of {path.name}",
+                    body=body,
+                    meta={
+                        "path": rel,
+                        "media": "table",
+                        "sha256": sha,
+                        "table": stem,
+                        "line": number,
+                        "row": row,
+                        "aliases": [stem, path.name, name],
+                        **_flags(body),
+                    },
+                )
+            )
     else:
         media = "markdown" if suffix in MARKDOWN_SUFFIXES else "text"
         entry["media"] = media
@@ -233,4 +333,13 @@ def file_records(path: Path, *, base: Path) -> tuple[list[Record], dict[str, Any
     return records, entry
 
 
-__all__ = ["SUPPORTED_SUFFIXES", "chunk_markdown", "chunk_pdf", "chunk_text", "file_records"]
+__all__ = [
+    "SUPPORTED_SUFFIXES",
+    "TABLE_SUFFIXES",
+    "chunk_markdown",
+    "chunk_pdf",
+    "chunk_table",
+    "chunk_text",
+    "file_records",
+    "row_name",
+]

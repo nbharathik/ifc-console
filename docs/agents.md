@@ -443,12 +443,25 @@ class match. Agents may read recipes but cannot write them.
 
 ### Skills
 
-Skills are reviewable markdown procedures in `.ifc-console/agents/skills/`.
-Agents receive their names and applicability at composition time, load full
-instructions with `get_agent_skill`, and may write with `save_agent_skill`
-only after host approval. Import a skill from **Agent workspace > Skills**,
-`POST /api/agents/skills/import?name=<file>.md`, or by copying the file into
-the skills directory. Existing names are never overwritten during import.
+Skills are reviewable markdown procedures. The panel keeps them under the
+console home: `~/.ifc-console/agents/skills/` for skills that follow the user
+to every project, and `~/.ifc-console/agents/projects/<project-hash>/skills/`
+for skills recorded for one project (a project skill of the same name hides
+the shared one). Nothing is written into the project folder. Two kinds carry
+meaning for agents: `kind: general` explains how to use one knowledge
+collection (its files and tables), `kind: task` gives the procedure for one
+job and names the general skill to read first; `collection:` ties both to a
+Content collection. Agents receive names, kinds and applicability at
+composition time, load full instructions with `get_agent_skill`, and may
+write with `save_agent_skill` only after host approval. Add a skill from
+**Agent workspace > Skills** (the form, an `.md` import, or an `.md` dropped
+under Content, which routes files with skill front matter here),
+`POST /api/agents/skills/save`, `POST /api/agents/skills/import?name=<file>.md`,
+or by copying the file into a skills directory; `skills/read` and
+`skills/delete` complete the set. Existing names are never overwritten during
+import. In chat, type `#` to mention a skill, or pick several with the skills
+button beside the message box: they are followed by every message until
+dropped, so "general collection skill plus task skill" is two clicks.
 
 A version 2 parametric measurement skill adds these front-matter fields:
 
@@ -548,3 +561,46 @@ is not executable and leaves the source unchanged. Review it, resolve every
 item, then save under a new name unless overwrite was explicitly approved.
 Reading, listing, importing, or previewing migration of an old skill never
 rewrites it.
+
+### Skill packs
+
+The panel way is direct: generate a knowledge base from a document with any
+LLM (knowledge files, one `.jsonl` per table, one general skill), add the
+files under **Content** in a collection, add the skills under **Skills**, and
+write task skills for each job on top. A skill pack is the zipped form of
+the same files for scripted installs: a folder any LLM can produce from a
+document and that `ifc-console agents pack install <zip-or-folder>` installs
+once per user. Packs live in `~/.ifc-console/agents/packs/<name>/`, their
+skills in `~/.ifc-console/agents/skills/`, and their documents and tables in
+the user's library index, so one install serves every project and nothing
+is written into a repository. A project skill of the same name hides a pack
+skill.
+
+```
+<pack-name>/
+  pack.json        name, version, source, task           required
+  SKILL.md         the procedure, front matter + steps    required
+  skills/*.md      further skills, one per file           optional
+  knowledge/*.md   meanings and rules, no numeric tables  optional
+  data/*.jsonl     tables, one row per line               optional
+  source.pdf       the document, if under 12 MB           optional
+```
+
+Zip the folder and upload it from **Agent workspace > Content > Add files**
+with the agent that should use it selected. The upload is staged and shown
+first (skill text, files, warnings); nothing becomes active until you press
+**Install**. The skill then appears under `#` in chat, grouped by pack, the
+knowledge files and PDF answer `search_ifc_knowledge`, `list_project_documents`,
+and `get_project_document_page`, and an agent that works from a selected
+content list is granted the pack's documents. **Uninstall** in the content
+tab removes exactly what `installed.json` recorded.
+
+Over HTTP: `POST /api/agents/packs/upload?name=<file>.zip` (returns the
+preview and a `staging_id`), `POST /api/agents/packs/install` with
+`{"staging_id", "agent"}`, `GET /api/agents/packs`, and
+`POST /api/agents/packs/uninstall` with `{"name"}`. From the shell:
+`ifc-console agents pack check <zip-or-folder>`, `install`, `list`, and
+`uninstall <name>`; a folder is zipped in memory, so the pack does not need
+to be zipped by hand. A zip without `pack.json` gets a minimal manifest
+derived from its file name. Data tables are stored with the pack;
+deterministic row lookup is planned.

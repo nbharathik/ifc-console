@@ -77,7 +77,12 @@ class AgentPack(Protocol):
 class AgentPackRegistry:
     """Built-in packs plus packs registered explicitly by an embedding app."""
 
-    def __init__(self, project_dir: str | Path | None = None) -> None:
+    def __init__(
+        self,
+        project_dir: str | Path | None = None,
+        *,
+        blueprints_dir: str | Path | None = None,
+    ) -> None:
         self._packs: dict[str, AgentPack] = {}
         self._order: list[str] = []
         self._builtin_names: set[str] = set()
@@ -91,7 +96,7 @@ class AgentPackRegistry:
         if project_dir is not None:
             from ifc_console_agents.blueprints import AgentBlueprintStore
 
-            self.blueprints = AgentBlueprintStore(project_dir)
+            self.blueprints = AgentBlueprintStore(project_dir, directory=blueprints_dir)
             self.refresh_custom()
 
     def register(self, pack: AgentPack, *, builtin: bool = False) -> None:

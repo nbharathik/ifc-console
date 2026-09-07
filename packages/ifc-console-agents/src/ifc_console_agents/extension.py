@@ -62,8 +62,14 @@ class AgentExtension:
             model=settings.model,
             base_url=settings.base_url,
         )
-        packs = AgentPackRegistry(core.store.project_dir)
-        files = AgentReferenceStore(core.store.project_dir)
+        from ifc_console_agents.paths import blueprints_dir
+
+        # Every panel store lives under the console home; a repository never
+        # gains a .ifc-console folder from the agent workspace.
+        packs = AgentPackRegistry(
+            core.store.project_dir, blueprints_dir=blueprints_dir(core.store.home)
+        )
+        files = AgentReferenceStore.for_project(core.store.home, core.store.project_dir)
         state = AgentExtensionState(chat=chat, packs=packs, files=files)
 
         # Compatibility attributes keep current CLI/TUI, SDK, and embedders
@@ -71,6 +77,8 @@ class AgentExtension:
         core.chat = chat
         core.agent_packs = packs
         core.agent_files = files
+        # The user library follows the user to every project.
+        core.agent_library = AgentReferenceStore.for_library(core.store.home)
         return state
 
     def register_operations(
@@ -82,9 +90,7 @@ class AgentExtension:
         del state
         register_skill_operations(registry, core)
 
-    def http_routes(
-        self, core: AppCore, state: AgentExtensionState
-    ) -> Sequence[Any]:
+    def http_routes(self, core: AppCore, state: AgentExtensionState) -> Sequence[Any]:
         del state
         return [
             *build_chat_routes(core),
@@ -92,18 +98,14 @@ class AgentExtension:
             Mount("/agents/static", app=static_app(), name="agents-static"),
         ]
 
-    def status(
-        self, core: AppCore, state: AgentExtensionState
-    ) -> Mapping[str, Any]:
+    def status(self, core: AppCore, state: AgentExtensionState) -> Mapping[str, Any]:
         return {
             "enabled": state.chat.enabled,
             "provider": state.chat.provider,
             "model": state.chat.model,
         }
 
-    def browser_panel(
-        self, core: AppCore, state: AgentExtensionState
-    ) -> BrowserPanel | None:
+    def browser_panel(self, core: AppCore, state: AgentExtensionState) -> BrowserPanel | None:
         del core, state
         return BrowserPanel(
             name="agents",

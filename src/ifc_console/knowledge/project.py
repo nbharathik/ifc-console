@@ -19,6 +19,7 @@ from typing import Any
 
 from ifc_console.core.results import ToolError
 from ifc_console.knowledge.ingest import SUPPORTED_SUFFIXES, file_records
+from ifc_console.knowledge.records import Record
 from ifc_console.knowledge.store import SCHEMA_VERSION, Store, build
 
 log = logging.getLogger("ifc-console.knowledge")
@@ -30,14 +31,44 @@ _MANIFEST_VERSION = 1
 class ProjectKnowledge:
     """Owns one project index: ingests documents, then answers searches."""
 
-    def __init__(self, project_dir: Path) -> None:
+    def __init__(
+        self,
+        project_dir: Path,
+        *,
+        directory: Path | None = None,
+        base: Path | None = None,
+        label: str = "project",
+        recipes: bool = True,
+    ) -> None:
+        # `label` names the index and manifest so a second corpus (installed
+        # skill packs, keyed at the user home) can share one directory.
         self.project_dir = project_dir
-        self.directory = project_dir / ".ifc-console" / "knowledge"
-        self.manifest_path = self.directory / "project-sources.json"
+        self.directory = directory or project_dir / ".ifc-console" / "knowledge"
+        self.base = base or project_dir
+        self.label = label
+        self._recipes = recipes
+        self.manifest_path = self.directory / f"{label}-sources.json"
         self._store: Store | None = None
         self._lock = threading.RLock()
         self._update_lock = threading.Lock()
         self.last_error: str | None = None
+
+    @classmethod
+    def for_library(cls, home: Path) -> ProjectKnowledge:
+        """The user-level index: the reference library and installed skill packs."""
+        home = Path(home).expanduser()
+        return cls(home, directory=home / "knowledge", base=home, label="library", recipes=False)
+
+    def rows(self, kind: str = "row") -> list[dict[str, Any]]:
+        """Every record of one kind, for deterministic lookups over table rows."""
+        with self._lock:
+            store = self._open_locked()
+            if store is None:
+                return []
+            rows = store.records(kind)
+        for row in rows:
+            row["corpus"] = self.label
+        return rows
 
     # -- state ---------------------------------------------------------------
     def _manifest_locked(self) -> dict[str, Any]:
@@ -63,7 +94,9 @@ class ProjectKnowledge:
         index = manifest.get("index")
         if not isinstance(index, str) or Path(index).name != index:
             return None
-        if not index.startswith(f"project-kb-v{SCHEMA_VERSION}-") or not index.endswith(".sqlite"):
+        if not index.startswith(f"{self.label}-kb-v{SCHEMA_VERSION}-") or not index.endswith(
+            ".sqlite"
+        ):
             return None
         return self.directory / index
 
@@ -98,6 +131,18 @@ class ProjectKnowledge:
             if not isinstance(files, list):
                 return []
             return [dict(entry) for entry in files if isinstance(entry, dict)]
+
+    def resolve(self, path: str) -> tuple[dict[str, Any], Path] | None:
+        """The manifest entry and absolute file for one indexed path."""
+        normalized = str(path).replace("\\", "/")
+        for entry in self.sources():
+            if str(entry.get("path", "")).replace("\\", "/") != normalized:
+                continue
+            target = Path(normalized)
+            if not target.is_absolute():
+                target = self.base / target
+            return entry, target.expanduser().resolve()
+        return None
 
     # -- ingest ----------------------------------------------------------------
     def _expand(self, paths: list[Path]) -> tuple[list[Path], list[str]]:
@@ -142,7 +187,7 @@ class ProjectKnowledge:
                 stored = entry.get("path", "")
                 candidate = Path(stored)
                 if not candidate.is_absolute():
-                    candidate = self.project_dir / stored
+                    candidate = self.base / stored
                 if candidate.is_file():
                     kept.append(candidate)
                 else:
@@ -164,7 +209,7 @@ class ProjectKnowledge:
         flagged = 0
         no_text: list[str] = []
         for path in files:
-            file_recs, entry = file_records(path, base=self.project_dir)
+            file_recs, entry = file_records(path, base=self.base)
             records.extend(file_recs)
             entries.append(entry)
             flagged += entry.get("instruction_like", 0)
@@ -172,9 +217,11 @@ class ProjectKnowledge:
                 no_text.append(entry["path"])
 
         # measurement recipes are searchable beside the documents they cite
-        from ifc_console.knowledge.project_recipes import recipe_records
+        recipes: list[Record] = []
+        if self._recipes:
+            from ifc_console.knowledge.project_recipes import recipe_records
 
-        recipes = recipe_records(self.project_dir)
+            recipes = recipe_records(self.project_dir)
         records.extend(recipes)
 
         if not files and not recipes:
@@ -206,7 +253,7 @@ class ProjectKnowledge:
         digest = hashlib.sha256(
             "\n".join(f"{e['path']}:{e['sha256']}" for e in entries).encode("utf-8")
         ).hexdigest()[:12]
-        index_name = f"project-kb-v{SCHEMA_VERSION}-{digest}.sqlite"
+        index_name = f"{self.label}-kb-v{SCHEMA_VERSION}-{digest}.sqlite"
         index_path = self.directory / index_name
         staged = index_path.with_name(f".{index_name}.{uuid.uuid4().hex}.staged")
 
@@ -214,7 +261,7 @@ class ProjectKnowledge:
             info = build(
                 staged,
                 iter(records),
-                {"corpus": "project", "documents": len(entries)},
+                {"corpus": self.label, "documents": len(entries)},
             )
             manifest = {
                 "version": _MANIFEST_VERSION,
@@ -261,7 +308,7 @@ class ProjectKnowledge:
         return report
 
     def _prune_indexes(self, *, keep: Path | None) -> None:
-        for old in self.directory.glob("project-kb-*.sqlite"):
+        for old in self.directory.glob(f"{self.label}-kb-*.sqlite"):
             if keep is not None and old == keep:
                 continue
             try:
@@ -305,7 +352,7 @@ class ProjectKnowledge:
                 files = manifest.get("files")
                 documents = len(files) if isinstance(files, list) else -1
                 if (
-                    candidate.meta.get("corpus") != "project"
+                    candidate.meta.get("corpus") != self.label
                     or candidate.meta.get("documents") != documents
                 ):
                     candidate.close()
@@ -334,7 +381,7 @@ class ProjectKnowledge:
                 return []
             rows = store.search(query, kind=kind, limit=limit)
         for row in rows:
-            row["corpus"] = "project"
+            row["corpus"] = self.label
         return rows
 
     def get(self, key: str) -> dict[str, Any] | None:
@@ -344,7 +391,7 @@ class ProjectKnowledge:
                 return None
             record = store.get(key)
         if record is not None:
-            record["corpus"] = "project"
+            record["corpus"] = self.label
         return record
 
     def stats(self) -> dict[str, Any]:
