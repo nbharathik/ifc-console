@@ -1014,10 +1014,11 @@ def test_header_and_composer_controls_open_the_shared_models_view(chat_js: str) 
     """Every model entry point resolves to Models in the same workspace."""
     template = _template(chat_js)
     openers = _attributes_all(chat_js, "data-act", "settings")
-    assert len(openers) == 3, "header, composer, and first-run setup should share one action"
+    assert len(openers) == 2, "the composer pill and first-run setup share one action"
     header = template.split('<header class="chat-head">', 1)[1].split("</header>", 1)[0]
-    assert header.index('class="chat-spacer"') < header.index("chat-model-setup-toggle")
-    assert 'chat-model-setup-toggle t-press" data-act="settings"' in header
+    # one door to the workspace in the header; the composer pill opens Models
+    assert "chat-model-setup-toggle" not in header
+    assert header.count('data-act="workspace"') == 1
     assert 'chat-workspace-toggle t-press" data-act="workspace"' in header
     assert 'chat-model-pill t-press" data-act="settings"' in template
     composer = re.search(r'<button class="chat-composer-pill chat-model-pill[^>]+>', template)
@@ -1047,11 +1048,8 @@ def test_open_sidebars_hide_duplicate_header_launchers_and_keep_focus(
     chat_js: str, chat_css: str
 ) -> None:
     hidden = _css_rule_with(chat_css, ".chat-root.side-open .chat-side-toggle", "display: none")
-    for selector in (
-        ".chat-root.side-open .chat-workspace-toggle",
-        ".chat-root.side-open .chat-model-setup-toggle",
-    ):
-        assert selector in chat_css
+    assert ".chat-root.side-open .chat-workspace-toggle" in chat_css
+    assert "chat-model-setup-toggle" not in chat_css
     assert "display: none" in hidden
     side = chat_js.split("function setSide(", 1)[1].split(
         "const closeSideIfOverlay", 1
@@ -1556,6 +1554,42 @@ def test_project_content_supports_bulk_and_range_selection(chat_js: str) -> None
     assert "if (event.shiftKey && onRange?.(path, box.checked)) event.preventDefault();" in chat_js
 
 
+def test_content_is_grouped_by_collection_and_skills_are_one_filtered_list(
+    chat_js: str, chat_css: str
+) -> None:
+    """A collection folds, is granted as one, and can be deleted as one; skills
+    are one list narrowed by kind, with the form editing a stored skill."""
+    content = chat_js.split("function renderContentWorkspace()", 1)[1].split(
+        "function wsInstructions", 1
+    )[0]
+    assert "chat-content-group-toggle" in content
+    assert "collapsedContentGroups" in content
+    assert "chat-content-group-access" in content
+    assert "box.indeterminate = granted > 0 && granted < group.files.length" in content
+    assert "contentEmptyState(openPicker)" in content
+    assert 'postJSON("/api/agents/skills/scaffold"' in content
+    assert 'contentPane.addEventListener("drop"' in chat_js
+    assert "void uploadWorkspaceContent(files)" in chat_js
+    skills = chat_js.split("function wsSkills(body)", 1)[1].split("function wsSkillsAdvanced", 1)[0]
+    assert "chat-skill-chip" in skills
+    assert "skillKindFilter" in skills
+    assert "chat-pack-heading" not in skills, "kinds are chips, not headings"
+    form = chat_js.split("function skillForm(body)", 1)[1].split("function wsSkills", 1)[0]
+    assert "overwrite: Boolean(editing)" in form
+    assert "title.disabled = Boolean(editing)" in form
+    template = _template(chat_js)
+    assert "chat-model-duo" in template
+    for selector in (
+        ".chat-content-group.collapsed .chat-content-group-rows",
+        ".chat-content-empty",
+        ".chat-content-pane.drop-target .chat-ws-body",
+        ".chat-skill-form[hidden]",
+        ".chat-root .chat-skill-chip.active",
+        ".chat-ws-page-actions",
+    ):
+        assert selector in chat_css
+
+
 def test_the_viewer_exposes_selection_commands_to_the_panel(script: str) -> None:
     """An answer that names elements should be able to show them."""
     for command in ("set-selection", "clear-selection", "focus-selection"):
@@ -1790,7 +1824,7 @@ def test_hash_lists_skills_and_at_lists_workflows(chat_js: str) -> None:
     # `#` offers the saved procedures, spelled out so the run cannot misread it
     assert 'token.kind === "skill"' in suggestions
     assert "const rows = skillRows();" in suggestions
-    assert "insert: `Follow the ${row.title} skill:`" in suggestions
+    assert "skill: row.name," in suggestions
     # `@` offers the workflows alongside the selection, views and files
     mentions = chat_js.split("function mentionRows()", 1)[1].split(SPLIT_BLOCK_END, 1)[0]
     assert 'group: "Workflows"' in mentions

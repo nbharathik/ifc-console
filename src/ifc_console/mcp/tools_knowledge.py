@@ -202,15 +202,17 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
     @mcp.tool(
         annotations=KNOWLEDGE_ANN,
         description=(
-            "[QUERY] Rows of one indexed table (a .jsonl or .csv in the project content or "
-            "the user library), by its file stem, e.g. table='u-sections'. where keeps rows "
-            "whose columns equal the given values, spaces and case ignored, so "
-            "{'designation': 'GU6N'} finds 'GU 6N'; nearest ranks rows by the summed absolute "
-            "residual against numeric column targets, e.g. {'width_b_mm': 600, "
-            "'height_h_mm': 309}, smallest first, with each residual reported. Call it with "
-            "no filter to see the columns. Returns full rows with their source path; a "
-            "'hidden' count means rows exist that this agent may not read. Use it instead of "
-            "typing table values from memory."
+            "[QUERY] Rows of an indexed table: a .jsonl or .csv by its file stem, e.g. "
+            "table='u-sections', the table-like lines of an indexed PDF by the PDF's stem "
+            "(rows there have name, positional values v0, v1, ... and the printed header), "
+            "or table='*' for every table. where keeps rows whose columns equal the given "
+            "values, spaces and case ignored, so {'designation': 'GU6N'} finds 'GU 6N'; "
+            "nearest ranks rows by the summed absolute residual against numeric column "
+            "targets, e.g. {'width_b_mm': 600, 'height_h_mm': 309}, smallest first, with each "
+            "residual reported; fields keeps only the named columns. Call it with no filter "
+            "to see the columns. A 'hidden' count means rows exist that this agent may not "
+            "read. Use it instead of typing table values from memory, and narrow instead of "
+            "paging."
         ),
     )
     @enveloped(core, "lookup_table_rows")
@@ -226,7 +228,11 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
             dict[str, float] | None,
             Field(description="Numeric field targets to rank by, e.g. {'width_b_mm': 700}."),
         ] = None,
-        limit: Annotated[int, Field(ge=1, le=100, description="Maximum rows.")] = 10,
+        fields: Annotated[
+            list[str] | None,
+            Field(description="Columns to return; the rest are dropped so the answer stays small."),
+        ] = None,
+        limit: Annotated[int, Field(ge=1, le=25, description="Maximum rows.")] = 10,
     ) -> Envelope:
         _require_project(core)
         needle = table.replace("\\", "/").strip().lower()
@@ -245,7 +251,7 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
                 name = str(meta.get("table") or "").lower()
                 path = str(meta.get("path") or "").replace("\\", "/").lower()
                 known.add(str(meta.get("table") or ""))
-                if name != stem and path != needle:
+                if stem not in {"*", ""} and name != stem and path != needle:
                     continue
                 row = meta.get("row") or {}
                 if not columns:
@@ -263,13 +269,17 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
                         residuals[key] = round(float(value) - float(target), 6)
                     if skip:
                         continue
+                # one compact hit: the row (or the asked columns), where it
+                # came from, and the residuals; a run re-reads every result
+                # on every round, so bytes here are tokens everywhere
                 hit: dict[str, Any] = {
                     "key": record.get("key"),
                     "path": meta.get("path"),
-                    "line": meta.get("line"),
-                    "corpus": record.get("corpus"),
-                    "row": row,
+                    "table": meta.get("table"),
+                    "row": {k: row.get(k) for k in fields if k in row} if fields else row,
                 }
+                if meta.get("page") is not None:
+                    hit["page"] = meta.get("page")
                 if nearest:
                     hit["residuals"] = residuals
                     hit["residual_sum"] = round(sum(abs(v) for v in residuals.values()), 6)
@@ -294,6 +304,11 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
         if not matches and (where or nearest):
             payload["hint"] = (
                 "no row matched the filter; the columns of this table are: " + ", ".join(columns)
+            )
+        if len(matches) > limit:
+            payload["note"] = (
+                f"{len(matches) - limit} more rows match; narrow with where or nearest, "
+                "or pass fields to shrink each row, instead of paging."
             )
         return ok(
             payload,

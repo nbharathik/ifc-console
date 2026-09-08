@@ -75,8 +75,11 @@ Agents** or with `/agent new`. Custom assistants choose reviewed blocks; they
 cannot widen policy or approve their own changes.
 
 Use **Content** to add manuals, drawings, photographs, and other supported
-references. Access is either all project content or an explicit selected set.
-The server enforces it for retrieval, records, images, and rendered PDF pages.
+references: press **Add files** or drop them onto the page. Files are listed
+by collection; a collection folds, is granted to the assistant with one
+checkbox, and is deleted or turned into a general skill from its row. Access
+is either all content or an explicit selected set. The server enforces it for
+retrieval, records, images, and rendered PDF pages.
 
 Composer attachments are different: the paperclip and camera add evidence only
 to the next message.
@@ -106,9 +109,16 @@ the default for **Add files**, and `~/.ifc-console/agents/projects/<hash>/refere
 holds files added for one project. A subfolder is a collection, shown as a
 group in the Content tab. Supported files are markdown, text, PDF, images,
 and `.jsonl` or `.csv` tables, which are indexed row by row for search and
-for `lookup_table_rows`. Add them from the panel, with
+for `lookup_table_rows`. A PDF is indexed per page, its table-like lines
+become rows too (a name, positional values `v0, v1, ...`, and the printed
+header), and a digest record lists every page with its title and table
+rows. Add files from the panel, with
 `ifc-console agents files <paths> [--collection name]`, or by copying files
-into those folders and pressing **Refresh**. See
+into those folders and pressing the refresh control (shift-click rebuilds the
+index after an update). The Content page also searches the index the way an
+agent does (**Test a search**), reads any file in place (**View**), and can
+write a collection's general skill (**Make general skill**) from the files and
+tables it holds. See
 [Agent applications](agents.md#project-workspace).
 
 ## Credentials and privacy

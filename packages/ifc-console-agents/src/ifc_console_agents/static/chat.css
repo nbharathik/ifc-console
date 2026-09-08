@@ -3705,6 +3705,19 @@ body.viewer-closed #chat-dock-resize { display: none; }
 .chat-content-doc-nav { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; font-size: 11.5px; color: var(--chat-quiet); }
 .chat-content-doc-md { max-height: 420px; overflow: auto; font-size: 12.5px; }
 .chat-content-doc .chat-pack-skill-text { max-height: 420px; }
+.chat-content-search-form { display: flex; gap: 8px; margin-bottom: 8px; }
+.chat-content-search-form input { flex: 1; }
+.chat-content-hits { display: grid; gap: 6px; }
+.chat-content-hit {
+  padding: 6px 8px;
+  background: var(--chat-raise);
+  border: 1px solid var(--chat-accent-line);
+  border-radius: 6px;
+}
+.chat-content-hit-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.chat-content-hit-head b { font-size: 12px; color: var(--chat-text); }
+.chat-content-hit-head small { flex: 1; color: var(--chat-quiet); font-size: 11px; }
+.chat-content-hit-snippet { margin: 4px 0 0; color: var(--chat-dim); font-size: 11.5px; }
 .chat-ws-skill-record { margin-bottom: 14px; }
 .chat-ws-skill-record-form {
   display: flex;
@@ -4127,10 +4140,10 @@ text.chat-ws-axis { stroke: none; font: 700 11px var(--chat-mono); }
   /* Percentages rather than vw/dvh: they resolve against whatever containing
      block this fixed box actually gets, so the sheet still fits if an
      ancestor ever establishes one. */
-  width: min(760px, calc(100% - 32px));
-  max-width: 760px;
-  height: min(760px, calc(100% - 32px));
-  max-height: 760px;
+  width: min(920px, calc(100% - 32px));
+  max-width: 920px;
+  height: min(820px, calc(100% - 32px));
+  max-height: 820px;
   margin: auto;
   padding: 0;
   overflow: hidden;
@@ -4158,10 +4171,8 @@ text.chat-ws-axis { stroke: none; font: 700 11px var(--chat-mono); }
 
 .chat-root.workspace-open .chat-shell-scrim { display: none; }
 .chat-root.workspace-open .chat-workspace-toggle,
-.chat-root.workspace-open .chat-model-setup-toggle,
 .chat-root.side-open .chat-side-toggle,
-.chat-root.side-open .chat-workspace-toggle,
-.chat-root.side-open .chat-model-setup-toggle { display: none; }
+.chat-root.side-open .chat-workspace-toggle { display: none; }
 
 .chat-root > dialog.chat-workspace > .chat-ws-head {
   min-height: 54px;
@@ -4186,7 +4197,7 @@ text.chat-ws-axis { stroke: none; font: 700 11px var(--chat-mono); }
 
 .chat-ws-shell {
   display: grid;
-  grid-template-columns: 176px minmax(0, 1fr);
+  grid-template-columns: 188px minmax(0, 1fr);
   min-width: 0;
   min-height: 0;
 }
@@ -4700,4 +4711,204 @@ text.chat-ws-axis { stroke: none; font: 700 11px var(--chat-mono); }
 
 @media (prefers-reduced-motion: reduce) {
   .chat-root > dialog.chat-workspace[open] { animation: none; }
+}
+
+/* ======================================== workspace: content and skills pages
+   A page heading may carry its actions on the right; the content list is one
+   foldable group per collection with a group-level grant; skills are one list
+   narrowed by kind chips and a filter, with the form above the list. */
+.chat-ws-page-head {
+  grid-template-columns: minmax(0, 1fr) auto;
+  column-gap: 16px;
+  align-items: start;
+}
+.chat-ws-page-head > :not(.chat-ws-page-actions) { grid-column: 1; }
+.chat-ws-page-actions {
+  display: flex;
+  grid-column: 2;
+  grid-row: 1 / span 3;
+  align-items: center;
+  align-self: center;
+  gap: 8px;
+}
+.chat-ws-body .chat-ws-page-actions .chat-btn { align-self: center; white-space: nowrap; }
+.chat-ws-page-actions .chat-icon { width: 31px; height: 31px; min-height: 31px; }
+
+.chat-content-toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.chat-content-toolbar .chat-content-search { flex: 1 1 200px; }
+.chat-content-dest {
+  display: flex;
+  flex: 1 1 280px;
+  align-items: center;
+  gap: 6px;
+  color: var(--chat-quiet);
+  font-size: 11.5px;
+  white-space: nowrap;
+}
+.chat-content-dest select { flex: none; height: 31px; }
+.chat-content-dest input { flex: 1; min-width: 120px; height: 31px; }
+.chat-content-bulk {
+  margin: 0;
+  padding: 5px 8px;
+  background: var(--chat-bg);
+  border: 1px solid var(--chat-line);
+  border-radius: 6px;
+}
+.chat-content-all { display: flex; align-items: center; gap: 5px; cursor: pointer; }
+.chat-content-all input { margin: 0; accent-color: var(--chat-accent); }
+.chat-content-status { margin: 0; }
+.chat-content-list { gap: 12px; }
+.chat-content-group { display: grid; gap: 3px; }
+.chat-content-group-head { margin: 0; min-height: 30px; }
+.chat-root .chat-content-group-toggle {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  min-height: 28px;
+  padding: 2px 4px;
+  color: var(--chat-text);
+  background: transparent;
+  border: 0;
+  border-radius: 5px;
+  font: inherit;
+  text-align: left;
+}
+.chat-root .chat-content-group-toggle:hover { background: var(--chat-hover); }
+.chat-content-group-toggle b { overflow: hidden; font-size: 12.5px; text-overflow: ellipsis; white-space: nowrap; }
+.chat-content-group-toggle small { flex: none; color: var(--chat-quiet); font-size: 11px; }
+.chat-content-caret {
+  display: grid;
+  flex: none;
+  place-items: center;
+  color: var(--chat-quiet);
+  transform: rotate(90deg);
+  transition: transform var(--chat-ease);
+}
+.chat-content-group.collapsed .chat-content-caret { transform: none; }
+.chat-content-group.collapsed .chat-content-group-rows { display: none; }
+.chat-content-group-access {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 5px;
+  color: var(--chat-quiet);
+  font-size: 11px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.chat-content-group-access input { margin: 0; accent-color: var(--chat-accent); }
+.chat-content-group-rows { display: grid; gap: 3px; padding-left: 6px; }
+.chat-root .chat-content-bulk-action.danger:hover:not(:disabled) { color: var(--chat-bad); border-color: var(--chat-bad); }
+.chat-content-type {
+  flex: none;
+  min-width: 42px;
+  padding: 1px 5px;
+  color: var(--chat-quiet);
+  background: var(--chat-raise);
+  border: 1px solid var(--chat-line);
+  border-radius: 4px;
+  font: 600 9.5px/1.6 var(--chat-mono);
+  letter-spacing: 0.05em;
+  text-align: center;
+}
+.chat-content-type[data-type="pdf"] { color: var(--chat-accent-bright); border-color: var(--chat-accent-line); }
+.chat-content-type[data-type="csv"],
+.chat-content-type[data-type="jsonl"] { color: var(--chat-ok); }
+.chat-content-empty {
+  display: grid;
+  justify-items: center;
+  gap: 6px;
+  padding: 30px 16px;
+  color: var(--chat-quiet);
+  text-align: center;
+  background: var(--chat-bg);
+  border: 1px dashed var(--chat-line-strong);
+  border-radius: 8px;
+}
+.chat-content-empty i {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  margin-bottom: 4px;
+  color: var(--chat-accent-bright);
+  background: var(--chat-wash);
+  border: 1px solid var(--chat-accent-line);
+  border-radius: 9px;
+}
+.chat-content-empty b { color: var(--chat-text); font-size: 13.5px; }
+.chat-content-empty small { max-width: 46ch; font-size: 11.5px; line-height: 1.5; }
+.chat-ws-body .chat-content-empty .chat-btn { align-self: center; margin-top: 4px; }
+.chat-content-pane.drop-target .chat-ws-body { outline: 2px dashed var(--chat-accent); outline-offset: -6px; }
+
+.chat-skill-form {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  background: var(--chat-bg);
+  border: 1px solid var(--chat-accent-line);
+  border-radius: 8px;
+}
+.chat-skill-form[hidden] { display: none !important; }
+.chat-skill-form-head { display: grid; gap: 2px; }
+.chat-skill-form-head b { color: var(--chat-text); font-size: 13px; }
+.chat-skill-form-head small { color: var(--chat-quiet); font-size: 11.5px; }
+.chat-skill-form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.chat-ws-body .chat-skill-form-grid .chat-field { margin: 0; }
+.chat-skill-form-grid .chat-field.wide { grid-column: 1 / -1; }
+.chat-skill-form-grid .chat-field > label { font-size: 11.5px; }
+.chat-skill-form-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.chat-ws-body .chat-skill-form-actions .chat-btn { align-self: center; }
+.chat-skill-form-actions .chat-ws-review-state { flex: 1 1 100%; margin: 0; }
+.chat-skill-form-actions .chat-ws-review-state[hidden] { display: none; }
+.chat-skill-toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.chat-skill-toolbar .chat-content-search { flex: 1 1 180px; }
+.chat-skill-kinds { display: flex; gap: 4px; flex-wrap: wrap; }
+.chat-root .chat-skill-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 26px;
+  padding: 2px 10px;
+  color: var(--chat-dim);
+  background: transparent;
+  border: 1px solid var(--chat-line);
+  border-radius: 999px;
+  font: inherit;
+  font-size: 11.5px;
+}
+.chat-root .chat-skill-chip:hover { color: var(--chat-text); border-color: var(--chat-line-strong); }
+.chat-root .chat-skill-chip.active {
+  color: var(--chat-accent-bright);
+  background: var(--chat-wash);
+  border-color: var(--chat-accent-line);
+}
+.chat-skill-chip small { color: var(--chat-quiet); font-size: 10.5px; }
+.chat-skill-chip.active small { color: inherit; }
+.chat-skill-tags { display: flex; flex: none; align-items: center; gap: 4px; }
+.chat-skill-tags .chat-ws-tag { color: var(--chat-quiet); }
+.chat-skill-kind {
+  padding: 1px 6px;
+  color: var(--chat-quiet);
+  background: var(--chat-raise);
+  border: 1px solid var(--chat-line);
+  border-radius: 4px;
+  font: 600 10px/1.6 var(--chat-mono);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+.chat-skill-kind.general { color: var(--chat-accent-bright); border-color: var(--chat-accent-line); }
+.chat-skill-kind.task { color: var(--chat-ok); }
+.chat-skill-kind.parametric_measurement { color: var(--chat-warn); }
+
+.chat-model-duo { margin-top: 4px; }
+.chat-model-duo > .chat-field + .chat-field { margin-top: 0; }
+
+@container (max-width: 560px) {
+  .chat-ws-page-head { grid-template-columns: 1fr; }
+  .chat-ws-page-actions { grid-column: 1; grid-row: auto; }
+  .chat-skill-form-grid { grid-template-columns: 1fr; }
+  .chat-skill-tags { display: none; }
 }

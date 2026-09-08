@@ -2218,3 +2218,54 @@ async def test_attached_skills_open_their_collection_and_pack_files(panel_core):
     assert _skill_content_paths(panel_core, [{"collection": "Demo", "pack": ""}]) == [table]
     assert other not in _skill_content_paths(panel_core, [{"collection": "demo"}])
     assert _skill_content_paths(panel_core, [{"kind": "task"}]) == []
+
+
+async def test_content_search_and_general_skill_scaffold(panel_core):
+    client = _client(panel_core)
+    client.post(
+        "/api/agents/content/upload?name=guide.md&scope=library&collection=piles",
+        headers=_auth(panel_core),
+        content=b"# Guide\n\n## Guide: interlock\nThe interlock of GU 6N is measured at the neutral axis.\n",
+    )
+    client.post(
+        "/api/agents/content/upload?name=u-sections.jsonl&scope=library&collection=piles",
+        headers=_auth(panel_core),
+        content=(
+            b'{"id": "gu-6n:per_m_wall", "designation": "GU 6N", "basis": "per_m_wall", '
+            b'"width_b_mm": 600, "source_page": 18, "verified": true}\n'
+        ),
+    )
+    hits = client.get("/api/agents/content/search?q=interlock", headers=_auth(panel_core)).json()
+    assert hits["hits"] and hits["hits"][0]["path"].endswith("guide.md")
+    assert "interlock" in (hits["hits"][0]["snippet"] or "").lower()
+    assert client.get("/api/agents/content/search", headers=_auth(panel_core)).status_code == 400
+
+    made = client.post(
+        "/api/agents/skills/scaffold",
+        headers=_auth(panel_core),
+        json={"collection": "piles", "save": True},
+    )
+    assert made.status_code == 200, made.text
+    payload = made.json()
+    assert payload["name"] == "piles-general" and payload["saved"]
+    assert "kind: general" in payload["content"] and "guide.md" in payload["content"]
+    assert (
+        'lookup_table_rows(table="u-sections", where={"designation": "GU 6N"})'
+        in payload["content"]
+    )
+    assert "`width_b_mm`" in payload["content"]
+    # the skill exists now, so a second write without overwrite is refused
+    again = client.post(
+        "/api/agents/skills/scaffold",
+        headers=_auth(panel_core),
+        json={"collection": "piles", "save": True},
+    )
+    assert again.status_code == 409, again.text
+    preview = client.post(
+        "/api/agents/skills/scaffold", headers=_auth(panel_core), json={"collection": "piles"}
+    ).json()
+    assert preview["saved"] is False and preview["content"] == payload["content"]
+    missing = client.post(
+        "/api/agents/skills/scaffold", headers=_auth(panel_core), json={"collection": "nothing"}
+    )
+    assert missing.status_code == 404

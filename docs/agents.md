@@ -454,8 +454,10 @@ job and names the general skill to read first; `collection:` ties both to a
 Content collection. Agents receive names, kinds and applicability at
 composition time, load full instructions with `get_agent_skill`, and may
 write with `save_agent_skill` only after host approval. Add a skill from
-**Agent workspace > Skills** (the form, an `.md` import, or an `.md` dropped
-under Content, which routes files with skill front matter here),
+**Agent workspace > Skills** (**New skill**, **Import .md**, or an `.md`
+dropped under Content, which routes files with skill front matter here); the
+page is one list narrowed by kind chips and a filter, and **Edit** on a
+written skill reopens the form and saves over the stored text. Endpoints:
 `POST /api/agents/skills/save`, `POST /api/agents/skills/import?name=<file>.md`,
 or by copying the file into a skills directory; `skills/read` and
 `skills/delete` complete the set. Existing names are never overwritten during
@@ -573,6 +575,15 @@ is not executable and leaves the source unchanged. Review it, resolve every
 item, then save under a new name unless overwrite was explicitly approved.
 Reading, listing, importing, or previewing migration of an old skill never
 rewrites it.
+
+A general skill does not have to be written by hand. **Make general skill**
+on a collection in the Content tab (`POST /api/agents/skills/scaffold`)
+writes `<collection>-general` from the index: the files, each table with its
+columns, one example `lookup_table_rows` call per table, and the rules for
+using values. The same tab searches the index the way an agent does
+(`GET /api/agents/content/search?q=`), and shift-click on **Refresh**
+rebuilds the index so PDFs indexed by an older version gain their table
+rows and digest.
 
 ### Skill packs
 

@@ -2720,10 +2720,25 @@
       "destructive": false,
       "input_schema": {
         "properties": {
+          "fields": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Columns to return; the rest are dropped so the answer stays small."
+          },
           "limit": {
             "default": 10,
             "description": "Maximum rows.",
-            "maximum": 100,
+            "maximum": 25,
             "minimum": 1,
             "type": "integer"
           },

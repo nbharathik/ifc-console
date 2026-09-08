@@ -66,3 +66,41 @@ async def test_lookup_finds_rows_by_loose_name_and_lists_columns(core, tmp_path:
 
     empty = await call("lookup_table_rows", table="u-sections", where={"designation": "nope"})
     assert empty["data"]["rows"] == [] and "columns of this table" in empty["data"]["hint"]
+
+
+async def test_lookup_fields_star_and_note_keep_results_small(core, tmp_path: Path):
+    table = tmp_path / "z-sections.jsonl"
+    rows = [
+        {
+            "id": f"az-{n}:per_m_wall",
+            "designation": f"AZ {n}",
+            "basis": "per_m_wall",
+            "width_b_mm": 700 + n,
+            "source_page": 20,
+            "verified": True,
+        }
+        for n in range(1, 5)
+    ]
+    table.write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
+    core.project_knowledge.ingest([table])
+    from ifc_console.application.operations import build_operations
+
+    ops = build_operations(core)
+
+    async def call(name, **arguments):
+        return (await ops.call(name, arguments)).model_dump()
+
+    picked = await call(
+        "lookup_table_rows",
+        table="z-sections",
+        where={"designation": "AZ 2"},
+        fields=["designation", "width_b_mm"],
+    )
+    hit = picked["data"]["rows"][0]
+    assert hit["row"] == {"designation": "AZ 2", "width_b_mm": 702}
+    assert hit["table"] == "z-sections" and "corpus" not in hit
+
+    everything = await call("lookup_table_rows", table="*", limit=2)
+    assert everything["data"]["matched"] >= 4 and len(everything["data"]["rows"]) == 2
+    assert "more rows match" in everything["data"]["note"]
+    assert "z-sections" in everything["data"]["known_tables"]

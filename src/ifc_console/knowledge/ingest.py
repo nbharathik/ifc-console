@@ -111,6 +111,93 @@ def chunk_table(path: Path) -> list[dict[str, Any]]:
     return rows
 
 
+_NUMBERISH = re.compile(r"^[-+]?\d+(?:[.,]\d+)?%?$|^[-–—]$|^[xX]$")
+_FOOTNOTE_MARK = re.compile(r"\d\)$")
+_MAX_PDF_ROW_NAME = 6
+_DIGEST_CHARS = 12_000
+
+
+def pdf_table_rows(text: str) -> list[dict[str, Any]]:
+    """Table-like lines of one PDF page: a short name followed by numbers.
+
+    A printed table row is a name and at least three numeric cells; the
+    non-numeric lines just above a block of rows are kept as the header the
+    reader would use to name the columns. Values stay positional (v0, v1,
+    ...) because the layout, not the text, carries the column names.
+    """
+    rows: list[dict[str, Any]] = []
+    recent: list[str] = []
+    header = ""
+    in_block = False
+    previous: list[str] = []
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        tokens = line.split()
+        tail = 0
+        for token in reversed(tokens):
+            if _NUMBERISH.match(token):
+                tail += 1
+            else:
+                break
+        name_tokens = tokens[: len(tokens) - tail]
+        is_row = (
+            tail >= 3
+            and 0 < len(name_tokens) <= _MAX_PDF_ROW_NAME
+            and any(re.search(r"[A-Za-z]", token) for token in name_tokens)
+        )
+        if not is_row:
+            in_block = False
+            if tail == 0:
+                recent.append(line)
+                recent = recent[-3:]
+            continue
+        if not in_block:
+            header = " | ".join(recent)
+            in_block = True
+            previous = []
+        # "GU 6N Per S" followed by "Per D": a name that starts with a later
+        # word of the previous name continues it, so it inherits the head
+        if previous and name_tokens[0] != previous[0] and name_tokens[0] in previous[1:]:
+            name_tokens = previous[: previous.index(name_tokens[0])] + name_tokens
+        previous = name_tokens
+        name = _FOOTNOTE_MARK.sub("", " ".join(name_tokens)).strip()
+        values = [_coerce(token.replace(",", ".")) for token in tokens[len(name_tokens) :]]
+        values = [
+            None if isinstance(v, str) and v in {"-", "–", "—", "x", "X"} else v for v in values
+        ]
+        row: dict[str, Any] = {"name": name, "values": values, "header": header}
+        for index, value in enumerate(values):
+            row[f"v{index}"] = value
+        rows.append(row)
+    return rows
+
+
+def pdf_digest(pages: list[tuple[int, str]], rows_by_page: dict[int, list[dict[str, Any]]]) -> str:
+    """One outline of a PDF: per page, its first heading-like line and its table rows."""
+    lines = []
+    for number, text in pages:
+        title = next(
+            (
+                line.strip()
+                for line in text.splitlines()
+                if line.strip() and re.search(r"[A-Za-z]{3}", line) and len(line.strip()) <= 90
+            ),
+            "",
+        )
+        rows = rows_by_page.get(number) or []
+        names = [row["name"] for row in rows[:6]]
+        entry = f"p{number}: {title}"
+        if rows:
+            entry += f" | {len(rows)} table rows: " + ", ".join(names)
+            if len(rows) > len(names):
+                entry += ", ..."
+        lines.append(entry)
+    digest = "\n".join(lines)
+    return digest[:_DIGEST_CHARS]
+
+
 def _flatten(row: dict[str, Any], prefix: str = "") -> list[tuple[str, Any]]:
     out: list[tuple[str, Any]] = []
     for key, value in row.items():
@@ -265,6 +352,63 @@ def file_records(path: Path, *, base: Path) -> tuple[list[Record], dict[str, Any
             entry["no_text"] = True
         text_by_page = dict(pages)
         visual_only = 0
+        # Every table-like line becomes a row record, so a designation search
+        # lands on the row and lookup_table_rows can rank rows by value; the
+        # digest is the one-page map of the document an agent reads first.
+        rows_by_page: dict[int, list[dict[str, Any]]] = {}
+        table_rows = 0
+        for number, text in pages:
+            found = pdf_table_rows(text)
+            if not found:
+                continue
+            rows_by_page[number] = found
+            for row in found:
+                if table_rows >= _MAX_ROWS:
+                    break
+                table_rows += 1
+                row = {**row, "page": number}
+                body = "\n".join(
+                    f"{key}: {value}" for key, value in _flatten(row) if value not in (None, "")
+                )
+                records.append(
+                    Record(
+                        kind="row",
+                        key=f"row:{rel}#p{number}-{table_rows}",
+                        name=f"{stem}: {row['name']}",
+                        summary=_summary(body) or f"table row on page {number} of {path.name}",
+                        body=body,
+                        meta={
+                            "path": rel,
+                            "media": "pdf",
+                            "sha256": sha,
+                            "table": stem,
+                            "page": number,
+                            "line": table_rows,
+                            "row": row,
+                            "aliases": [stem, path.name, row["name"]],
+                            **_flags(body),
+                        },
+                    )
+                )
+        entry["rows"] = table_rows
+        if pages:
+            digest = pdf_digest(pages, rows_by_page)
+            records.append(
+                Record(
+                    kind="doc",
+                    key=f"doc:{rel}#digest",
+                    name=f"{title or stem} - digest",
+                    summary=_summary(digest) or "document outline",
+                    body=digest,
+                    meta={
+                        "path": rel,
+                        "media": "pdf",
+                        "sha256": sha,
+                        "section": "digest",
+                        "aliases": [stem, path.name, "digest", "outline", "contents"],
+                    },
+                )
+            )
         for number in range(1, int(entry["pages"]) + 1):
             text = text_by_page.get(number)
             if text:
@@ -341,5 +485,7 @@ __all__ = [
     "chunk_table",
     "chunk_text",
     "file_records",
+    "pdf_digest",
+    "pdf_table_rows",
     "row_name",
 ]

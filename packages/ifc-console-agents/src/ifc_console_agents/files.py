@@ -354,8 +354,12 @@ class AgentReferenceStore:
             known.add(relative)
         return sorted(rows, key=lambda row: str(row["name"]).casefold())
 
-    def sync(self, knowledge: Any) -> dict[str, Any]:
-        """Index changed files, including files copied into the folder by hand."""
+    def sync(self, knowledge: Any, *, force: bool = False) -> dict[str, Any]:
+        """Index changed files, including files copied into the folder by hand.
+
+        `force` re-reads every file even when nothing changed, which is how
+        an index catches up after the extraction rules improve.
+        """
         paths = self.paths()
         sources = knowledge.sources()
         before = self.entries(sources)
@@ -369,7 +373,12 @@ class AgentReferenceStore:
         }
         stale = indexed_managed - current
         needs_repair = bool(sources) and not bool(getattr(knowledge, "ready", True))
-        if not stale and not needs_repair and all(entry["indexed"] for entry in before):
+        if (
+            not force
+            and not stale
+            and not needs_repair
+            and all(entry["indexed"] for entry in before)
+        ):
             return {
                 "changed": False,
                 "directory": str(self.directory),

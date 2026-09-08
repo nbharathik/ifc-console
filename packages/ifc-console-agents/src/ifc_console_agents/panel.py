@@ -489,6 +489,124 @@ _SKILL_NOTE_CHARS = 12_000
 _KIND_ORDER = {"general": 0, "task": 1}
 
 
+def _scaffold_general_skill(core: AppCore, collection: str, entries: list[dict[str, Any]]) -> str:
+    """A general skill for one collection, written from the index, no model involved.
+
+    It says which files exist, which tables with which columns, and shows one
+    lookup per table the way an agent will call it, so the agent's first call
+    is the right one.
+    """
+    paths = {str(row.get("path") or "") for row in entries}
+    sources = {
+        str(source.get("path") or "").replace("\\", "/"): source
+        for source in [*core.project_knowledge.sources(), *core.library_knowledge.sources()]
+    }
+    tables: dict[str, dict[str, Any]] = {}
+    for store in (core.project_knowledge, core.library_knowledge):
+        if not store.ready:
+            continue
+        for record in store.rows("row"):
+            meta = record.get("meta") or {}
+            path = str(meta.get("path") or "").replace("\\", "/")
+            if path not in paths:
+                continue
+            table = tables.setdefault(
+                str(meta.get("table") or Path(path).stem),
+                {"path": path, "rows": 0, "example": None, "pdf": meta.get("media") == "pdf"},
+            )
+            table["rows"] += 1
+            if table["example"] is None:
+                table["example"] = meta.get("row") or {}
+    docs = [
+        row
+        for row in entries
+        if str(row.get("path", "")).lower().endswith((".md", ".markdown", ".txt"))
+    ]
+    pdfs = [row for row in entries if str(row.get("path", "")).lower().endswith(".pdf")]
+    lines = [
+        "---",
+        f"name: {collection}-general",
+        f"description: How to use the {collection} files and tables.",
+        "kind: general",
+        f"collection: {collection}",
+        "---",
+        "",
+        "## What this collection holds",
+        f"{len(entries)} file(s) in the collection `{collection}`: {len(docs)} knowledge file(s), "
+        f"{len(pdfs)} PDF(s), {len(tables)} table(s). Every value must come from these files with "
+        "its source path and page; nothing is typed from memory.",
+        "",
+        "## Where to look",
+    ]
+    for row in docs:
+        lines.append(
+            f'- `{row["path"]}`: search it with `search_ifc_knowledge(query=..., corpus="project")`; each `##` section is one hit, `get_knowledge_record(key)` returns the whole section.'
+        )
+    for row in pdfs:
+        source = sources.get(str(row.get("path") or ""), {})
+        pages = source.get("pages") or row.get("pages") or "?"
+        lines.append(
+            f"- `{row['path']}` ({pages} pages): search finds pages and table rows; read a page with "
+            f'`get_project_document_page(path="{row["path"]}", page=N)` when layout or a drawing matters; '
+            "the digest record (search for its name plus 'digest') lists every page's title and table rows."
+        )
+    for name, table in sorted(tables.items()):
+        example = table["example"] or {}
+        if table["pdf"]:
+            lines.append(
+                f"- Table rows of `{table['path']}` ({table['rows']} rows, positional): each row has `name`, "
+                "`values`, `header` (the printed column header) and `v0`, `v1`, ...; look one up with "
+                f'`lookup_table_rows(table="{name}", where={{"name": "{example.get("name", "...")}"}})` '
+                "and read the header to know what each value means."
+            )
+            continue
+        columns = [key for key in example if key not in {"id", "verified"}]
+        text_col = next(
+            (
+                k
+                for k in ("designation", "name", "title", "grade", "product", "system")
+                if k in example
+            ),
+            None,
+        )
+        numeric = [
+            k
+            for k, v in example.items()
+            if isinstance(v, int | float)
+            and not isinstance(v, bool)
+            and k not in {"source_page", "document_page", "line", "page"}
+        ][:2]
+        call = (
+            f'`lookup_table_rows(table="{name}", where={{"{text_col}": "{example.get(text_col)}"}})`'
+            if text_col
+            else f'`lookup_table_rows(table="{name}")`'
+        )
+        near = (
+            f'; by value: `lookup_table_rows(table="{name}", nearest={{'
+            + ", ".join(f'"{k}": {example.get(k)}' for k in numeric)
+            + "})`"
+            if numeric
+            else ""
+        )
+        lines.append(
+            f"- `{name}` ({table['rows']} rows): columns {', '.join(f'`{c}`' for c in columns)}. Example {call}{near}."
+        )
+    lines += [
+        "",
+        "## Rules for using the values",
+        "- A row's `basis` (per piece, per pair, per metre, per unit area) is never mixed with another basis.",
+        "- Values are nominal; compare a measurement against the document's tolerances before calling it a match.",
+        "- A `hidden` count or `access_note` in a result means files exist that this agent may not read: stop and ask the user to enable the collection, never guess.",
+        "- Rows with `verified: false`, and pages whose tables are drawn rather than printed, need the page rendered and read before an answer.",
+        "",
+        "## Never",
+        "- Do not estimate, interpolate or type a document value from memory; copy the row and cite its page.",
+        "- Do not present these files as the publisher's product; they are a derived reference.",
+        "",
+    ]
+    return "\n".join(lines)
+
+
 def _skill_content_paths(core: AppCore, rows: list[dict[str, Any]]) -> list[str]:
     """The indexed files behind the attached skills: their collections and packs."""
     collections = {str(row.get("collection") or "").strip().lower() for row in rows}
@@ -1083,12 +1201,15 @@ def build_agent_panel_routes(core: AppCore) -> list[Route]:
         if name and pack is None:
             return JSONResponse({"error": f"no agent named {name!r}"}, status_code=404)
         problem = None
+        rebuild = request.query_params.get("rebuild") in {"1", "true", "yes"}
         for store in (core.agent_files, _library_store(core)):
             try:
-                await asyncio.to_thread(store.sync, core.library_knowledge)
+                await asyncio.to_thread(store.sync, core.library_knowledge, force=rebuild)
             except Exception as exc:
                 problem = str(exc)
                 log.warning("agent content sync failed", exc_info=True)
+        if rebuild:
+            core.audit.record("agent_content_reindexed")
         library = await asyncio.to_thread(_library_entries, core)
         payload: dict[str, Any] = {
             "directory": str(core.agent_files.directory),
@@ -2226,6 +2347,96 @@ def build_agent_panel_routes(core: AppCore) -> list[Route]:
             payload["rows"] = source.get("rows")
         return JSONResponse(payload)
 
+    async def content_search(request) -> JSONResponse:
+        """Search the knowledge index from the panel, the way an agent does."""
+        if not core.chat.enabled:
+            return _disabled()
+        query = (request.query_params.get("q") or "").strip()
+        if not query:
+            return JSONResponse({"error": "pass q"}, status_code=400)
+        try:
+            limit = max(1, min(int(request.query_params.get("limit") or 12), 50))
+        except ValueError:
+            limit = 12
+
+        def search() -> list[dict[str, Any]]:
+            hits: list[dict[str, Any]] = []
+            for store in (core.project_knowledge, core.library_knowledge):
+                if store.ready:
+                    hits.extend(store.search(query, limit=limit))
+            hits.sort(key=lambda row: -float(row.get("score") or 0))
+            return hits[:limit]
+
+        rows = []
+        for hit in await asyncio.to_thread(search):
+            meta = hit.get("meta") or {}
+            rows.append(
+                {
+                    "key": hit.get("key"),
+                    "kind": hit.get("kind"),
+                    "name": hit.get("name"),
+                    "path": meta.get("path"),
+                    "page": meta.get("page"),
+                    "section": meta.get("section"),
+                    "snippet": hit.get("snippet") or hit.get("summary"),
+                    "score": hit.get("score"),
+                }
+            )
+        return JSONResponse({"query": query, "hits": rows})
+
+    async def skills_scaffold(request) -> JSONResponse:
+        """Write the general skill of one collection from what the index holds."""
+        if not core.chat.enabled:
+            return _disabled()
+        try:
+            body = await request.json()
+        except (ValueError, UnicodeDecodeError):
+            return JSONResponse({"error": "request body is not valid JSON"}, status_code=400)
+        from ifc_console.core.results import ToolError
+
+        from ifc_console_agents.files import collection_slug
+
+        try:
+            collection = collection_slug(body.get("collection") if isinstance(body, dict) else None)
+        except ToolError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        if not collection:
+            return JSONResponse({"error": "pass a collection name"}, status_code=400)
+        entries = [
+            row
+            for row in await asyncio.to_thread(_library_entries, core)
+            if str(row.get("collection") or "").lower() == collection
+            or str(row.get("pack") or "").lower() == collection
+        ]
+        if not entries:
+            return JSONResponse(
+                {"error": f"no content in collection {collection!r}"}, status_code=404
+            )
+        content = await asyncio.to_thread(_scaffold_general_skill, core, collection, entries)
+        name = f"{collection}-general"
+        saved = False
+        if isinstance(body, dict) and body.get("save"):
+            store = _skill_store(core)
+            try:
+                await asyncio.to_thread(
+                    store.save,
+                    name,
+                    content,
+                    description=f"How to use the {collection} files and tables.",
+                    kind="general",
+                    collection=collection,
+                    scope="user",
+                    overwrite=bool(body.get("overwrite")),
+                )
+                saved = True
+            except ToolError as exc:
+                status = 409 if exc.code == "FILE_EXISTS" else 400
+                return JSONResponse(
+                    {"error": str(exc), "code": exc.code, "hint": exc.hint}, status_code=status
+                )
+            core.audit.record("skill_scaffolded", name=name, collection=collection)
+        return JSONResponse({"name": name, "content": content, "saved": saved})
+
     async def packs_list(_request) -> JSONResponse:
         if not core.chat.enabled:
             return _disabled()
@@ -3211,6 +3422,8 @@ def build_agent_panel_routes(core: AppCore) -> list[Route]:
         Route("/api/agents/skills/delete", skills_delete, methods=["POST"]),
         Route("/api/agents/content/delete", content_delete, methods=["POST"]),
         Route("/api/agents/content/read", content_read, methods=["GET"]),
+        Route("/api/agents/content/search", content_search, methods=["GET"]),
+        Route("/api/agents/skills/scaffold", skills_scaffold, methods=["POST"]),
         Route("/api/agents/packs", packs_list, methods=["GET"]),
         Route("/api/agents/packs/upload", packs_upload, methods=["POST"]),
         Route("/api/agents/packs/install", packs_install, methods=["POST"]),
