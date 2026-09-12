@@ -1,124 +1,93 @@
+---
+description: Ask and edit modes, working copies, the generated-code sandbox, and what stays on your machine.
+---
+
 # Safety
 
-ifc-console treats AI output and IFC text as untrusted. The central rule is:
-**the terminal user controls whether the active model may change.**
-
-```text
-ask mode  -> inspect and analyze only
-edit mode -> copy the open file aside -> change memory -> /save writes the copy
-```
+ifc-console treats AI output and IFC text as untrusted. One rule sits above
+everything else: **you, in the terminal, decide whether the model may change.**
 
 ## Ask and edit
 
-| action | `ask` (default) | `edit` |
-| ------ | --------------- | ------ |
-| inspect, validate, and calculate | allowed | allowed |
-| preview a structured change | allowed | allowed |
-| run model-changing Python | blocked | allowed |
-| commit an approved ChangeSet | blocked | allowed |
+```mermaid
+flowchart LR
+    ask["ask mode (default)<br/>inspect, query, validate, measure"] -- "/mode edit<br/>confirmed by you" --> edit["edit mode<br/>a copy of your file, changed in memory"]
+    edit -- "/save" --> saved["copy written"]
+    edit -- "/reload or /mode ask" --> ask
+```
+
+| Action | `ask` | `edit` |
+| :--- | :--- | :--- |
+| inspect, validate, measure | allowed | allowed |
+| preview a change | allowed | allowed |
+| run model-changing code | blocked | allowed |
 | AI tool writes the working copy | blocked | allowed |
 | AI tool writes the file you opened | blocked | blocked by default |
-| user runs `/save` | allowed | allowed |
+| you run `/save` | allowed | allowed |
 
-Switch with `/mode`. Moving to `edit` requires confirmation, and no AI tool can
+Switch with `/mode`. Moving to `edit` asks for confirmation, and no AI tool can
 change the mode. Blocked operations return `ASK_MODE_BLOCKED` with a hint.
 
 ## Working copies
 
-Entering edit mode copies the open file into `~/.ifc-console/working` and points
-the session at that copy. From then on every save, reload and download touches
-the copy, and the file you opened is never written. That is why an assistant may
-call `save_ifc_file` in edit mode: the only file it can reach is the snapshot.
-`meta.working_copy` names the copy in every tool response, and the terminal
-status bar says *working in a copy*.
+Entering edit mode copies the open file into `~/.ifc-console/working` and
+points the session at that copy. Every save, reload, and download from then on
+touches the copy. That is why an assistant may call `save_ifc_file` in edit
+mode: the only file it can reach is the snapshot.
 
-`/save <path>` still writes anywhere you allow, including back over the original.
-`files.working_copy=false` restores in-place editing, in which case saving is
-the user's alone again unless `files.allow_ai_save=true`. Generated code can
-never write an IFC file itself without `files.allow_ai_save`, working copy or
-not. Client-level permission prompts still apply on top of ifc-console policy.
+`/save <path>` writes anywhere you allow, including over the original.
+`files.working_copy=false` restores in-place editing; then saving is yours
+alone unless `files.allow_ai_save=true`.
 
 ## Generated code
 
-`execute_ifc_code` passes through five controls:
+`execute_ifc_code` runs Python against the model. Each run passes through:
 
-```text
-parse and classify -> capability check -> sandbox when eligible
-        -> runtime guards -> mutation canary
+```mermaid
+flowchart LR
+    code["code"] --> classify["classify<br/>read-only or mutating"]
+    classify --> policy["mode and<br/>capability check"]
+    policy --> sandbox["restricted process<br/>read-only code, Python 3.12+"]
+    policy --> inproc["main process<br/>mutating code, edit mode only"]
+    sandbox --> guards["import, file and<br/>model guards"]
+    inproc --> guards
+    guards --> canary["mutation check<br/>after the run"]
 ```
 
-1. Ambiguous code is treated as mutating.
-2. The current mode and capabilities decide whether it may run.
-3. On CPython 3.12+, eligible read-only code uses a restricted process.
-4. Import, file, and model guards apply at runtime.
-5. Unexpected mutation is detected after guarded execution.
+- Ambiguous code is treated as mutating.
+- Read-only code runs in a separate process with no network, no subprocesses,
+  no credential environment, and a read allowlist for model folders.
+- Mutating code must reach the live model, so it runs in the main process and
+  only in edit mode.
+- On Python 3.10 and 3.11 the restricted process is unavailable; `sandbox.mode=auto`
+  falls back to guarded in-process execution and reports `sandboxed: false`.
+  `strict` refuses the fallback.
 
-In `sandbox.mode=auto`, unavailable isolation falls back to guarded in-process
-execution and reports `sandboxed: false`. `strict` refuses that fallback.
-Python 3.10 and 3.11 do not expose the raw-thread audit event required by the
-complete boundary, so isolation is treated as unavailable on those versions.
+The sandbox is a containment process, not a virtual machine. Treat edit mode
+with untrusted prompts like running a script a stranger sent you.
 
-Mutating code always runs in the main process because it must reach the live
-model. See [Code sandbox](sandbox.md).
+## Files and audit
 
-## Files, saves, and audit
+- **Allowed roots.** AI tools reach only the launch folder, the model folder,
+  and directories you add with `--allow-dir` or `files.allowed_dirs`.
+- **Safe replacement.** Every overwrite creates a timestamped backup, writes a
+  temporary file, then replaces the target atomically.
+- **Audit.** Calls, mode changes, mutations, and saves are logged under
+  `~/.ifc-console/sessions/<id>/` with secret redaction and a hash chain.
+  Inspect them with `/audit` or `ifc-console sessions show <id>`.
 
-- **Allowed roots:** AI tools can access only the launch folder, model folder,
-  and directories explicitly added by the user. Other paths return
-  `PATH_NOT_ALLOWED`.
-- **Memory first:** edits stay in memory until a save; `/reload` discards them.
-  The viewer reads the in-memory model, so it shows an edit without any save.
-- **Copy first:** edit mode saves to a working copy, not to the file you opened.
-- **Safe replacement:** every overwrite creates a timestamped backup, writes a
-  temporary file, then replaces the target atomically. A failed backup stops
-  the save.
-- **Audit:** calls, mode changes, mutations, saves, and taint events are written
-  under `~/.ifc-console/sessions/<id>/` with secret redaction and a hash chain.
+## Local server
 
-Use `/audit`, `ifc-console sessions show <id>`, or
-`ifc-console sessions verify <id>`. Local verification detects modified or
-reordered records; it is not an external append-only audit system.
-
-## Local server boundary
-
-- HTTP and WebSocket services bind to `127.0.0.1`.
-- Session APIs require a bearer token.
-- Host and Origin checks reject non-loopback requests.
-- Viewer tokens use a URL fragment and are removed from the address bar.
-- The stdio bridge verifies the listener before sending its token.
-
-Rotate an exposed token with `ifc-console token rotate`. These controls do not
-isolate applications running as the same OS user.
+- HTTP and WebSocket bind to `127.0.0.1` only.
+- Session APIs need a bearer token; rotate it with `ifc-console token rotate`.
+- Viewer tokens travel in the URL fragment and are removed from the address bar.
+- The viewer can read the model and report your selection. It cannot edit the
+  model or change the mode.
 
 ## Untrusted model text
 
-Names, descriptions, headers, and property values come from the IFC author.
-They may contain text designed to manipulate an AI assistant.
-
-- `ask` mode remains read-only regardless of model text.
-- Server instructions label IFC content as data, not commands.
-- Instruction-shaped tool output is flagged.
-- Every operation is visible and audited.
-
-Review unfamiliar models in `ask` mode. Treat claims that "the model approved"
-an action as suspicious.
-
-## Structured changes and workflows
-
-AI tools may preview and inspect a revision-bound ChangeSet. They cannot
-approve, commit, restore, or change the mode; those are direct SDK or CLI
-actions.
-
-Version 1 workflows are read-only. They allow validation and selector queries,
-but no Python, shell commands, plugins, network calls, or mutations.
-
-## Limits
-
-The sandbox is a containment process, not a virtual machine. It cannot defend
-against Python or operating-system vulnerabilities, and ordinary files inside
-an allowed model folder may be readable.
-
-In-process guards reduce accidents but are not a security boundary against
-deliberately malicious Python. Treat `edit` mode with untrusted prompts like
-running an untrusted script. If an in-process call times out or taints the
-session, use `/reload`.
+Names, descriptions, and property values come from whoever wrote the IFC file
+and may contain text aimed at an AI assistant. Ask mode stays read-only
+whatever the text says, tool output that looks like instructions is flagged,
+and every operation is visible in the feed. Review unfamiliar models in ask
+mode.

@@ -93,10 +93,11 @@ before editing untrusted files or prompts.
 ## Documentation
 
 - [Getting started](https://nbharathik.github.io/ifc-console/getting-started/)
-- [Console and client setup](https://nbharathik.github.io/ifc-console/console/)
-- [Python SDK](https://nbharathik.github.io/ifc-console/sdk/) and [agent applications](https://nbharathik.github.io/ifc-console/agents/)
-- [MCP tools](https://nbharathik.github.io/ifc-console/tools/) and [workflows](https://nbharathik.github.io/ifc-console/workflows/)
+- [The console](https://nbharathik.github.io/ifc-console/console/) and [connecting a client](https://nbharathik.github.io/ifc-console/clients/)
+- [Safety](https://nbharathik.github.io/ifc-console/safety/)
 - [3D viewer](https://nbharathik.github.io/ifc-console/viewer/) and [Agent workspace](https://nbharathik.github.io/ifc-console/chat/)
+- [Python SDK](https://nbharathik.github.io/ifc-console/sdk/)
+- [MCP tools](https://nbharathik.github.io/ifc-console/tools/) and [CLI and settings](https://nbharathik.github.io/ifc-console/cli/)
 - [Troubleshooting](https://nbharathik.github.io/ifc-console/troubleshooting/)
 
 For development setup and tests, see [Contributing](docs/contributing.md).

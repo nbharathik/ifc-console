@@ -1,129 +1,96 @@
+---
+description: Fixes for connection, port, viewer, and sandbox problems.
+---
+
 # Troubleshooting
 
-Start with:
+Start here:
 
 ```bash
 ifc-console doctor --file your-model.ifc
 ```
 
 It checks Python, dependencies, settings, the port, viewer assets, and model
-parsing. Add `--json` for machine-readable output.
+parsing. Add `--json` for a bug report.
 
 ## Client connections
 
-### Client is disabled or not connected
+**The client does not see ifc-console.**
+Run `/connect <client>` again and paste the printed setup; copying is not a
+connection check. Then ask the client to report the active model and watch the
+console feed for its calls. Replace older direct URL, `npx`, or `mcp-remote`
+entries with the bridge setup.
 
-Regenerate the current bridge setup and restart the client once:
+**401 unauthorized.**
+The client has a stale token. Run `/connect <client>` again after a token
+rotation, after deleting `~/.ifc-console`, or after moving a config between
+machines.
 
-```bash
-ifc-console mcp-config --client <client>
-```
+**The client sees an old model.**
+Compare the model it reports with `/status`. A second `ifc-console` process is
+a separate session; generate the setup from the one you mean. A stdio entry
+with `--file` owns its own model; replace it with the bridge setup so `/file`
+controls what every client sees.
 
-The entry should run `ifc-console ... bridge`. Replace older direct URL, `npx`,
-or `mcp-remote` setups. The bridge allows the client and console to start in
-either order.
+## Server
 
-Regenerate setup after changing `server.port`. If persistent tokens are
-disabled, use direct HTTP or standalone stdio instead.
+**Port 8383 is in use.**
+`ifc-console doctor` names the listener when it can. Use `/port 8390` in a
+running session or start with `--port 8390`, then regenerate client setups.
 
-### 401 unauthorized
+**The console needs a terminal.**
+Use `--no-tui` for a headless HTTP server or `serve --stdio` for a
+client-owned process. On Windows, prefer Windows Terminal.
 
-The client has a stale token. Run `/connect <client>` again after token
-rotation, deleting `~/.ifc-console`, or moving a config between machines.
-
-For Codex, `bearer_token_env_var` names an environment variable; it is not the
-token value. Replacing the old entry with the current bridge setup is simpler.
-
-### Client uses an old model
-
-It is probably a standalone stdio server with `--file` in its configuration.
-Replace it with the default bridge setup. Then `/file` controls the shared
-model.
-
-## Server and terminal
-
-### Port 8383 is in use
-
-`ifc-console doctor` identifies the listener when possible.
-
-- Existing ifc-console: use it or start another session with `--port 8390`.
-- Other application: set another port, then regenerate client configs.
-- Different ifc-console token: check whether processes use different
-  `IFC_CONSOLE_HOME` directories.
-
-Use `/port 8390` to move a running session. Rotate the token if an old direct
-HTTP client may have sent it to an untrusted listener.
-
-### Console needs a terminal
-
-Use `--no-tui` for headless HTTP or `serve --stdio` for a client-owned process.
-On Windows, prefer Windows Terminal.
-
-### Windows firewall prompt
-
-Deny external access. Loopback on `127.0.0.1` continues to work.
+**Windows firewall prompt.**
+Deny external access. Loopback on `127.0.0.1` keeps working.
 
 ## Model and code
 
-| problem | fix |
-| ------- | --- |
-| mutations are blocked | review the change, run `/mode edit`, then `/save` or `/reload` |
-| `MODEL_BUSY` or paused session | an in-process call timed out; run `/reload` |
+| Problem | Fix |
+| :--- | :--- |
+| changes are blocked | run `/mode edit`, then `/save` or `/reload` when done |
+| `MODEL_BUSY` or a paused session | a call timed out; run `/reload` |
 | tainted session | guarded code changed memory unexpectedly; run `/reload` |
-| `sandboxed: false` | run `/sandbox` to see why |
-| first code run is slow | sandbox startup loads a second model copy; optionally enable `sandbox.warm_on_load` |
+| `sandboxed: false` | run `/sandbox` to see why; Python 3.10 and 3.11 have no sandbox |
+| first code run is slow | the sandbox loads a second copy; set `sandbox.warm_on_load=true` |
 
-Common sandbox fallbacks are Python 3.10 or 3.11, unsaved changes, mutating
-code, a model over `sandbox.max_model_mb`, or worker startup failure.
-Save/reload, upgrade Python where applicable, try `/sandbox restart`, or use
-`sandbox.mode=strict` to refuse fallback.
+**Where did my changes go?**
+Run `/status`. It shows unsaved changes, the file the next `/save` writes, and
+the original path when a working copy is in use.
 
-## Viewer and chat
+## Viewer
 
-### Assets are missing
+**Assets are missing.**
+Reinstall: `uv tool install --force ifc-console` or
+`pip install --force-reinstall ifc-console`. The viewer ships in the main
+package, so missing assets mean a broken install.
 
-```bash
-uv tool install --force ifc-console
-# or: pip install --force-reinstall ifc-console
-```
+**Model is too large.**
+Raise `viewer.max_model_mb` only if the browser has the memory:
+`/settings viewer.max_model_mb 500`.
 
-Restart ifc-console. The viewer assets are bundled in the main wheel, so
-`doctor` reports missing assets as a broken installation, not an optional
-extra. The one-release `ifc-console[viewer]` compatibility extra is a no-op.
+**Unauthorized.**
+Get a fresh link with `/viewer`. Paste the whole URL including the part after
+`#`; a URL copied from the address bar later no longer has it.
 
-### Model is too large
+**`/viewer vscode` did not open a tab.**
+It prepares a link; it does not launch a tab. Ctrl+click the link or use
+**Browser: Open Integrated Browser** and paste it.
 
-Raise `viewer.max_model_mb` only if the browser has enough memory:
+## Agent workspace
 
-```text
-/settings viewer.max_model_mb 500
-```
+**Chat cannot reach a provider.**
+Confirm `ifc-console-agents` is installed, then check the key, model ID, and
+base URL. Local servers need an OpenAI-compatible `/v1` URL, and
+`chat.local_only=true` refuses remote URLs on purpose. The console, MCP
+server, SDK, and viewer keep working if the extension fails to load.
 
-### Viewer says unauthorized
+## Logs
 
-Close the stale tab and run `/viewer` again.
-
-### Chat cannot reach a provider
-
-First confirm the optional agent product is installed:
-
-```bash
-pip install ifc-console-agents
-```
-
-Check the key, model ID, and base URL. Local servers need an OpenAI-compatible
-`/v1` URL. `chat.local_only=true` intentionally refuses remote URLs.
-
-Viewer-only use does not need the agent product, a provider key, or an LLM. If
-the agent extension fails to load, its browser panel is omitted while the
-console, MCP server, SDK, and viewer continue to work; inspect
-`ifc-console doctor --json` and the application log for the extension error.
-
-## Logs and bug reports
-
-- Live activity: console feed.
+- Live activity: the console feed.
 - Application log: `~/.ifc-console/logs/ifc-console.log`.
 - Audit: `/audit` or `ifc-console sessions show <id>`.
 
-Include `ifc-console doctor --json` and relevant log lines in a bug report.
-Remove private paths and never upload a confidential model.
+For a bug report include `ifc-console doctor --json` and the relevant log
+lines. Remove private paths and never upload a confidential model.

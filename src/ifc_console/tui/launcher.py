@@ -23,7 +23,7 @@ if TYPE_CHECKING:
     from ifc_console.app import AppCore
 
 _IFC_SUFFIXES = (".ifc", ".ifczip", ".ifcxml")
-_SCAN_CAP = 400  # stop scanning after this many files; /open <path> always works
+_SCAN_CAP = 400  # stop scanning after this many files; /file <path> always works
 
 
 def discover_ifc_files(core: AppCore) -> list[tuple[Path, str]]:
@@ -79,6 +79,7 @@ class FilePickerModal(ModalScreen["Path | None"]):
         Binding("escape", "cancel", "Cancel", show=False),
         Binding("up", "cursor_up", show=False, priority=True),
         Binding("down", "cursor_down", show=False, priority=True),
+        Binding("ctrl+l", "clear_filter", "Clear filter", show=False, priority=True),
     ]
 
     DEFAULT_CSS = """
@@ -88,7 +89,7 @@ class FilePickerModal(ModalScreen["Path | None"]):
         border: heavy $primary; background: $surface; padding: 1 2;
     }
     FilePickerModal OptionList { height: 1fr; border: round $panel; }
-    FilePickerModal .hint { color: $text-muted; height: 1; }
+    FilePickerModal .hint { color: $text-muted; height: auto; }
     """
 
     def __init__(self, core: AppCore, initial_filter: str = "") -> None:
@@ -101,14 +102,17 @@ class FilePickerModal(ModalScreen["Path | None"]):
     def compose(self) -> ComposeResult:
         with Vertical():
             yield Label("Open an IFC model")
+            yield Static(f"Folder: {escape(str(self.core.launch_dir))}", classes="hint")
             yield Input(
                 value=self.initial_filter,
-                placeholder="type to filter; Enter opens the highlighted file",
+                placeholder="filter files or paste an IFC path; Enter opens it",
                 id="filter",
             )
+            yield Static("", classes="hint", id="filter-summary")
             yield OptionList(id="files")
             yield Static(
-                "up/down select · Enter open · Esc cancel · /open <path> for anything else",
+                "Up/Down select · Enter open · Ctrl+L clear filter · Esc cancel\n"
+                'Paste an IFC path here, or Esc then /file "<path>".',
                 classes="hint",
             )
 
@@ -118,6 +122,8 @@ class FilePickerModal(ModalScreen["Path | None"]):
         options.add_option(Option("(scanning for IFC files…)", disabled=True))
         # the scan hits the filesystem; keep it off the UI thread
         self._entries = await asyncio.to_thread(discover_ifc_files, self.core)
+        if not self.is_attached:
+            return
         self._apply_filter(self.query_one("#filter", Input).value)
 
     def _apply_filter(self, text: str) -> None:
@@ -126,6 +132,9 @@ class FilePickerModal(ModalScreen["Path | None"]):
         options.clear_options()
         self._visible = []
         root = self.core.launch_dir
+        self.query_one("#filter-summary", Static).update(
+            f"Filter: {escape(text.strip()) if needle else '(all IFC files)'}"
+        )
         for path, detail in self._entries:
             if needle and needle not in str(path).lower():
                 continue
@@ -134,10 +143,26 @@ class FilePickerModal(ModalScreen["Path | None"]):
             except ValueError:
                 shown = path
             self._visible.append(path)
-            options.add_option(Option(f"{escape(str(shown))}  [dim]({escape(detail)})[/dim]"))
+            role = "IFC model"
+            if self.core.session.loaded and path in (
+                self.core.session.path,
+                self.core.session.origin_path,
+            ):
+                role = "active IFC"
+            elif any(
+                path in (session.path, session.origin_path)
+                for session in self.core.models.sessions.values()
+            ):
+                role = "attached IFC"
+            options.add_option(
+                Option(f"{escape(str(shown))}  [dim]({role} · {escape(detail)})[/dim]")
+            )
         if not self._visible:
             options.add_option(
-                Option("(no matching IFC files; use /open <path>)", disabled=True)
+                Option(
+                    "No matching IFC files. Ctrl+L clears the filter; paste an IFC path.",
+                    disabled=True,
+                )
             )
         else:
             options.highlighted = 0
@@ -150,12 +175,22 @@ class FilePickerModal(ModalScreen["Path | None"]):
     def on_input_submitted(self, event: Input.Submitted) -> None:
         if event.input.id != "filter":
             return
+        raw = event.value.strip().strip("\"'")
+        if raw:
+            candidate = Path(raw).expanduser()
+            if candidate.suffix.lower() in _IFC_SUFFIXES and candidate.is_file():
+                self.dismiss(candidate.resolve())
+                return
         options = self.query_one("#files", OptionList)
         index = options.highlighted if options.highlighted is not None else 0
         if self._visible and 0 <= index < len(self._visible):
             self.dismiss(self._visible[index])
         else:
-            self.dismiss(None)
+            self.query_one("#filter-summary", Static).update(
+                "[yellow]No matching IFC file. Ctrl+L clears the filter; "
+                'paste a file path, or Esc then /file "<path>".[/yellow]'
+            )
+            event.input.focus()
 
     def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
         if 0 <= event.option_index < len(self._visible):
@@ -166,6 +201,11 @@ class FilePickerModal(ModalScreen["Path | None"]):
 
     def action_cursor_down(self) -> None:
         self.query_one("#files", OptionList).action_cursor_down()
+
+    def action_clear_filter(self) -> None:
+        field = self.query_one("#filter", Input)
+        field.value = ""
+        field.focus()
 
     def action_cancel(self) -> None:
         self.dismiss(None)

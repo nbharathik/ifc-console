@@ -1,78 +1,122 @@
 site_name: ifc-console
 site_description: >-
-  A terminal interface to connect IFC files to LLMs: a standalone MCP server
-  for IFC/BIM with an ask/edit safety switch and a local 3D viewer.
+  A local IFC workbench: terminal, MCP server, Python SDK and a 3D viewer,
+  with an ask/edit switch that keeps you in control of the model.
 site_url: https://nbharathik.github.io/ifc-console/
 repo_url: https://github.com/nbharathik/ifc-console
-repo_name: ifc-console
+repo_name: GitHub
 edit_uri: ""
+use_directory_urls: true
+
+# Theme overrides are templates, not pages.
+exclude_docs: |
+  overrides/
 
 theme:
   name: material
-  logo: assets/brand/mark-white.svg
+  custom_dir: docs/overrides
+  language: en
+  font: false
+  logo: assets/brand/favicon.svg
   favicon: assets/brand/favicon.svg
+  icon:
+    repo: material/github
   palette:
-    - media: "(prefers-color-scheme: dark)"
-      scheme: slate
-      primary: blue
-      accent: light blue
+    - media: "(prefers-color-scheme)"
+      primary: custom
+      accent: custom
       toggle:
-        icon: material/weather-sunny
+        icon: material/brightness-auto
         name: Switch to light mode
     - media: "(prefers-color-scheme: light)"
       scheme: default
-      primary: blue
-      accent: light blue
+      primary: custom
+      accent: custom
       toggle:
-        icon: material/weather-night
+        icon: material/brightness-7
         name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/brightness-4
+        name: Follow system theme
   features:
+    - navigation.tabs
     - navigation.sections
+    - navigation.expand
+    - navigation.path
     - navigation.top
     - navigation.footer
+    - search.suggest
+    - search.highlight
     - content.code.copy
     - content.tabs.link
-    - search.suggest
-    - toc.integrate
+    - toc.follow
+
+nav:
+  - Home: index.md
+  - Documentation:
+      - Overview: overview.md
+      - Start here:
+          - Getting started: getting-started.md
+          - Safety: safety.md
+      - Use:
+          - The console: console.md
+          - Connect a client: clients.md
+          - 3D viewer: viewer.md
+          - Agent workspace: chat.md
+      - Build:
+          - Python SDK: sdk.md
+          - Architecture: architecture.md
+      - Reference:
+          - MCP tools: tools.md
+          - CLI and settings: cli.md
+          - Troubleshooting: troubleshooting.md
+          - Contributing: contributing.md
+
+plugins:
+  - search:
+      lang: en
 
 markdown_extensions:
   - admonition
   - attr_list
+  - md_in_html
   - tables
   - toc:
       permalink: true
+      toc_depth: 3
   - pymdownx.details
-  - pymdownx.highlight
-  - pymdownx.superfences
+  - pymdownx.keys
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
   - pymdownx.tabbed:
       alternate_style: true
 
-nav:
-  - Home: index.md
-  - Getting started: getting-started.md
-  - Use ifc-console:
-      - The console: console.md
-      - Connecting clients: clients.md
-      - 3D viewer: viewer.md
-      - Agent workspace: chat.md
-      - Troubleshooting: troubleshooting.md
-  - Safety:
-      - Safety model: safety.md
-      - Code sandbox: sandbox.md
-  - Build and automate:
-      - Python SDK: sdk.md
-      - Agent applications: agents.md
-      - Agent workflows: agent-workflows.md
-      - Automation workflows: workflows.md
-      - Operation plugins: plugins.md
-      - Testing the panel: testing.md
-  - Reference:
-      - MCP tools: tools.md
-      - CLI: cli.md
-      - Settings: settings.md
-      - Knowledge index: knowledge.md
-      - Versioning: versioning.md
-  - Project:
-      - Architecture: architecture.md
-      - Development: development.md
-      - Contributing and security: contributing.md
+validation:
+  nav:
+    omitted_files: warn
+    not_found: warn
+    absolute_links: ignore
+  links:
+    not_found: warn
+    anchors: warn
+    unrecognized_links: warn
+    absolute_links: ignore
+
+extra_css:
+  - stylesheets/extra.css
+extra_javascript:
+  - javascripts/extra.js
+extra:
+  generator: false

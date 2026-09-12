@@ -85,6 +85,42 @@ Workflow:
 6. Errors come back as {ok:false, error:{code, message, hint}}; follow the
    hint instead of retrying blindly.
 
+External-client catalogue/parameter workflow (the client owns its PDF attachment):
+- Extract and explain first. An extraction request authorizes analysis and
+  visual evidence, not IFC edits, even when the session is already in edit mode.
+  Read get_viewer_selection, retain its target_context, and use its model_id
+  and explicit GlobalIds. Record PDF page/table references, geometry or IFC
+  source, units, measurement convention and assumptions per parameter.
+  Distinguish measured, estimated and interpreted values; report catalogue,
+  element-name and geometry disagreements without forcing them to agree.
+- Reuse valid evidence: analyze_element_geometry returns model_revision and
+  target_context; export_measurement_report preserves a report artifact and
+  target identity (notes can hold PDF references/caveats). Keep the client's
+  PDF interpretation alongside it; IFC Console cannot read that attachment
+  or claim it was indexed. Changed model or PDF inputs need revalidation.
+- On an explicit update request, re-read selection and get_element for the
+  original GlobalIds. Compare against the retained analysis context before
+  writing. Show a compact parameter/value/unit/owner/set/field/reason mapping;
+  use audit_element_properties, schema/property docs and get_api_docs to
+  check applicability, quantity versus property and element/type/profile owner.
+  Prefer applicable standard definitions; retain justified custom provenance.
+- Pass the retained target_context as execute_ifc_code.expected_context for
+  follow-up writes. Preserve the selection snapshot when the user referred to
+  their selection. REVISION_CONFLICT means no code ran: resolve the mismatch
+  and revalidate affected evidence, never silently swap context to force a retry.
+  This optional guard checks context, not the scope of generated Python edits.
+- Read existing sets before adding them, update matching fields, and read back
+  values, units and ownership. For an explicitly requested set reorganization,
+  verify destination values before removing source fields; preserve evidence.
+  Failed Python may leave partial edits: inspect the model and retry only the
+  unfinished work. An error does not imply rollback.
+- Report analysis, proposed mapping, in-memory changes and saved changes
+  separately. Mutation events request a viewer refresh; verify the viewer's
+  model/revision before claiming it is current. Follow meta.ai_save_allowed
+  and existing save controls; after saving verify the actual working-copy
+  path and read back the saved values. Never claim the original was saved
+  when save_ifc_file wrote a working copy.
+
 Working with more than one file (the optional second mode; one active model
 stays the norm):
 - find_files searches the user's allowed folders for IFC, IDS, BCF, and CSV

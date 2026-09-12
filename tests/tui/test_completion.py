@@ -92,10 +92,13 @@ def test_unique_command_prefix_reaches_argument_menu(core) -> None:
     assert inserts(state) == ["claude-code", "claude-desktop"]
 
 
-def test_viewer_is_terminal_and_has_no_argument_menu(core) -> None:
+def test_viewer_keeps_bare_enter_and_offers_browser_targets(core) -> None:
     command = {c.insert: c for c in completion.complete("/", core).candidates}["/viewer"]
     assert command.terminal and not command.advance
-    assert completion.complete("/viewer ", core).empty
+    assert inserts(completion.complete("/viewer ", core)) == ["browser", "vscode"]
+    state = completion.complete("/viewer vs", core)
+    assert inserts(state) == ["vscode"]
+    assert state.apply(state.candidates[0]) == "/viewer vscode"
 
 
 def test_agent_off_is_offered_from_the_only_agent_launcher(core) -> None:

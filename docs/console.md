@@ -1,9 +1,12 @@
+---
+description: The ifc-console terminal, its commands and keys, and how files, modes and saving work.
+---
+
 # The console
 
-Run `ifc-console` without a subcommand to open the control surface for models,
-permissions, clients, and browser tools. Chat happens in your MCP client or the
-optional browser panel contributed by `ifc-console-agents`. The console and
-bundled viewer work without an LLM.
+Run `ifc-console` with no arguments to open the terminal. It owns the model,
+the ask/edit switch, the MCP endpoint, and the viewer. Chat happens in your AI
+client or the optional [Agent workspace](chat.md).
 
 ```text
 +------------------------------------------------------------+
@@ -16,73 +19,70 @@ bundled viewer work without an LLM.
 +------------------------------------------------------------+
 ```
 
-## Layout and keys
-
-- **Status:** model, mode, dirty state, endpoint, and viewer.
+- **Status bar:** model, mode, unsaved changes, endpoint, viewer.
 - **Feed:** server events and every AI operation.
 - **Prompt:** slash commands with completion.
 
-| key | action |
-| --- | ------ |
+## Keys
+
+| Key | Action |
+| :--- | :--- |
 | ++tab++ | insert a completion |
 | ++up++ / ++down++ | move through choices or history |
 | ++enter++ | select or run |
 | ++escape++ | close the menu or clear the line |
 | ++page-up++ / ++page-down++ | scroll the feed |
 | ++ctrl+l++ | clear the feed |
+| ++ctrl+c++ | copy the selected feed text, or exit with nothing selected |
 
-Type `/` to browse commands. Values for `/mode`, `/viewer`, `/connect`, and
-`/settings` complete too.
+Type `/` to browse commands. Unique prefixes work, so `/stat` runs `/status`.
 
 ## Commands
 
 ### Models
 
-| command | use |
-| ------- | --- |
+| Command | Use |
+| :--- | :--- |
 | `/file [path]` | pick or open the active model |
-| `/workspace [dir]` | browse and select related files |
-| `/models` | list models and attachments |
-| `/attach <path>` / `/detach <id>` | add or remove a model or companion file |
-| `/use <id>` | make a resident model active |
-| `/recent` | show recent models |
-| `/info` | show entity counts |
-| `/save [path]` / `/reload` | keep (path = save-as) or discard changes |
+| `/workspace [dir]` | browse a folder and attach related files |
+| `/attach <path>` / `/detach <id>` | add or remove a read-only model or companion file |
+| `/use <id>` | make an attached model the active one |
+| `/models` | list resident models and attachments |
+| `/info` | entity counts for the active model |
+| `/save [path]` / `/reload` | keep or discard changes |
 
 ### Session and browser
 
-| command | use |
-| ------- | --- |
-| `/mode [ask\|edit]` | show or change AI authority |
+| Command | Use |
+| :--- | :--- |
+| `/mode [ask\|edit]` | show or change what the AI may do |
 | `/sandbox [auto\|strict\|off\|restart]` | control generated-code isolation |
-| `/viewer` | open the viewer; close its browser tab when finished |
-| `/agent [name\|new\|list\|files\|off]` | open or manage the Agent workspace; requires `ifc-console-agents` |
-| `/connect [client\|all]` | show and copy client setup |
+| `/viewer [browser\|vscode]` | open the 3D viewer, or prepare a link for VS Code's browser |
+| `/agent [name\|new\|list\|off]` | open the optional Agent workspace |
+| `/connect [client\|all]` | print a client's setup |
 | `/copy [client\|url\|viewer\|token]` | copy connection data |
 | `/port <n>` | move the HTTP server |
-| `/theme [light\|dark\|modern\|blue]` | change the console and viewer theme, plus the Agent workspace when installed |
+| `/theme [light\|dark\|modern\|blue]` | change the console and viewer theme |
 
 ### Help and diagnostics
 
-| command | use |
-| ------- | --- |
-| `/status` | show session status |
-| `/tools [section]` | inspect commands, AI tools, prompts, resources, or settings |
+| Command | Use |
+| :--- | :--- |
+| `/status` | model, revision, selection, save destination |
+| `/tools [section]` | inspect AI tools, prompts, resources, or settings |
 | `/kb [query]` | search the offline IFC reference |
 | `/settings [key value]` | inspect or change settings |
 | `/audit [n]` | show recent audit records |
 | `/help [command]` | show help |
 | `/clear` / `/quit` | clear the feed or exit |
 
-Unique prefixes work when unambiguous, so `/stat` runs `/status`.
+## Files
 
-## Files and workspaces
+Start the console in your model folder. `/file` lists recent models and the
+IFC files in that folder and one level below. Type part of a name to filter,
+or paste a path (quoted if it has spaces). ++ctrl+l++ clears the filter.
 
-Start the console in your model folder. `/file` lists recents, supported IFC
-files in that folder, and files one level below it. Type part of a name to
-filter, or pass any allowed absolute or relative path.
-
-Most sessions need one model. For coordination:
+Most sessions need one model. For coordination work:
 
 ```text
 > /workspace C:/models/project
@@ -91,31 +91,23 @@ Most sessions need one model. For coordination:
 > /models
 ```
 
-Only the active model is writable. Attached IFC models are read-only; IDS, BCF,
-and CSV files are companion paths. Workspace settings limit scan depth, model
-count, and total memory. Dirty models are never evicted.
+Only the active model is writable. Attached IFC models are read-only; IDS,
+BCF, and CSV files are companions that tools can read.
 
-## Tool catalog
+## Edit and save
 
-`/tools` reads the live registries, including enabled plugins and viewer tools.
-
-```text
-/tools ai query_elements
-/tools settings sandbox.mode
-/tools search validation
+```mermaid
+flowchart LR
+    open["open model.ifc"] -- "/mode edit" --> copy["working copy"]
+    copy -- "/save" --> written["copy written"]
+    copy -- "/save other.ifc" --> other["other.ifc written"]
+    copy -- "/reload" --> open
 ```
 
-The catalog shows schemas and permissions but does not run tools or grant
-authority.
+`ask` is read-only. `/mode edit` copies the open file aside and allows changes
+in memory; the status bar then reads *working in a copy*. `/save` writes that
+copy, `/save <path>` writes anywhere else, and `/reload` discards. The file you
+opened is never written unless you name it yourself. `/status` always shows
+where the next save goes.
 
-## Edit, save, and exit
-
-`ask` is read-only. `/mode edit` copies the open file into
-`~/.ifc-console/working` and allows in-memory changes after confirmation; the
-status bar then reads *working in a copy*. `/save` writes that copy, `/save
-<path>` writes the result anywhere else, `/reload` discards unsaved changes, and
-`/mode ask` locks the model again. The file you opened is never written unless
-you name it yourself.
-
-Select feed text and press ++ctrl+c++ to copy it. With no selection, ++ctrl+c++
-exits. `/quit` and ++ctrl+q++ also exit and warn about unsaved changes.
+`/quit` and ++ctrl+q++ exit and warn about unsaved changes.

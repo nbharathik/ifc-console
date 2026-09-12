@@ -42,6 +42,7 @@ from ifc_console.ifc.query import ALLOWED_FIELDS, DEFAULT_FIELDS, element_row
 from ifc_console.ifc.report import build_measurement_report
 from ifc_console.ifc.units import si_to_file, unit_info
 from ifc_console.ifc.validation import run_ids_validation, run_schema_validation
+from ifc_console.mcp.target_context import target_context
 from ifc_console.mcp.tools_query import MODEL_ARG, _validate_subset, read_meta
 from ifc_console.policy.modes import OpClass, Verdict
 
@@ -1113,6 +1114,9 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
                     "fingerprint": s.fingerprint,
                     "revision": s.revision,
                 }
+                report["target_context"] = target_context(
+                    s, [entry["global_id"] for entry in report["elements"] if entry.get("global_id")]
+                )
                 report.setdefault("performance", {})["mesh_cache"] = dict(mesh_stats)
                 report["performance"]["read_cache_hit"] = False
                 return report
@@ -1451,7 +1455,7 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
         gids = list(global_ids) if global_ids else None
         cuts = tuple(stations) if stations else None
 
-        def job() -> tuple[dict, list[dict], dict]:
+        def job() -> tuple[dict, list[dict], dict, dict]:
             import ifcopenshell.util.element as element_util
 
             with mesh_cache(core, session):
@@ -1478,9 +1482,17 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
                 "file": session.path.name if session.path else None,
                 "schema": session.ifc.schema,
             }
-            return analysis, entries, model_info
+            context = target_context(
+                session,
+                [
+                    entry["analysis"]["global_id"]
+                    for entry in entries
+                    if entry["analysis"].get("global_id")
+                ],
+            )
+            return analysis, entries, model_info, context
 
-        analysis, entries, model_info = await session.run(job, timeout=_HEAVY_TIMEOUT)
+        analysis, entries, model_info, context = await session.run(job, timeout=_HEAVY_TIMEOUT)
         text = build_measurement_report(
             title=title or f"Measurement report: {model_info.get('file') or 'model'}",
             model=model_info,
@@ -1490,9 +1502,7 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
             generated_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
             analysis_version=analysis.get("analysis_version"),
             model_revision={
-                "model_id": session.model_id,
-                "fingerprint": session.fingerprint,
-                "revision": session.revision,
+                key: context[key] for key in ("model_id", "fingerprint", "revision")
             },
         )
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -1503,7 +1513,7 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
             kind="measurement-report",
             media_type="text/markdown",
             producer="export_measurement_report",
-            metadata={"elements": len(entries), "selector": selector},
+            metadata={"elements": len(entries), "selector": selector, "target_context": context},
         )
         core.audit.record(
             "artifact_write",
@@ -1516,6 +1526,7 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
             "path": str(target),
             "elements": len(entries),
             "artifact_id": ref.artifact_id,
+            "target_context": context,
             "flags": sorted({flag for e in entries for flag in e["analysis"].get("flags", [])}),
         }
         return ok(data, core.session_meta(), char_limit=limit_)

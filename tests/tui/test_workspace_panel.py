@@ -109,11 +109,15 @@ async def test_use_and_detach_report_unknown_ids(console: FakeConsole, work_mode
     assert "no resident model" in console.text
 
 
-async def test_workspace_command_sets_the_root_and_opens_the_panel(
+async def test_workspace_command_previews_the_root_without_changing_scope(
     console: FakeConsole, project: Path
 ) -> None:
-    await commands.dispatch(console, f"/workspace {project}")
-    assert project.resolve() in console.core.allowed_dirs
+    previous_dirs = list(console.core.allowed_dirs)
+    previous_root = console.core.workspace.primary_root
+    await commands.dispatch(console, f'/workspace "{project}"')
+    assert console.core.allowed_dirs == previous_dirs
+    assert console.core.workspace.primary_root == previous_root
+    assert console.panel_root == project.resolve()
     assert console.panel_opened == 1
 
 

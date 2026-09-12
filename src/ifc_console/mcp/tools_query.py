@@ -31,6 +31,7 @@ from ifc_console.ifc.query import (
 )
 from ifc_console.ifc.schema_docs import build_pset_docs, build_schema_docs, find_property
 from ifc_console.ifc.spatial import build_spatial_tree
+from ifc_console.mcp.target_context import target_context
 from ifc_console.policy.guards import exec_environment
 
 if TYPE_CHECKING:
@@ -505,7 +506,7 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
         _validate_subset(include, INCLUDE_ALLOWED, "include")
         use_include = tuple(include) if include is not None else INCLUDE_DEFAULT
 
-        def job() -> tuple[list[dict], list[str]]:
+        def job() -> tuple[list[dict], list[str], dict]:
             found, missing = [], []
             for gid in global_ids:
                 try:
@@ -516,11 +517,15 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
                     missing.append(gid)
                 else:
                     found.append(element_detail(e, use_include))
-            return found, missing
+            return found, missing, target_context(s, global_ids)
 
-        elements, missing = await s.run(job, timeout=120)
+        elements, missing, context = await s.run(job, timeout=120)
         return ok(
-            {"elements": elements, "missing": missing},
+            {
+                "elements": elements,
+                "missing": missing,
+                "target_context": context,
+            },
             core.session_meta(),
             char_limit=limit_(),
             returned=len(elements),
@@ -551,7 +556,7 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
                 "Set at most one of them.",
             )
 
-        def job() -> list[dict]:
+        def job() -> tuple[list[dict], dict]:
             import ifcopenshell.util.element as element_util
 
             results = []
@@ -574,11 +579,11 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
                 if not psets_only:
                     entry["qtos"] = element_util.get_psets(e, qtos_only=True)
                 results.append(entry)
-            return results
+            return results, target_context(s, global_ids)
 
-        results = await s.run(job, timeout=120)
+        results, context = await s.run(job, timeout=120)
         return ok(
-            {"results": results},
+            {"results": results, "target_context": context},
             core.session_meta(),
             char_limit=limit_(),
             returned=len(results),

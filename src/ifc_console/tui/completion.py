@@ -89,7 +89,7 @@ def _resolve(name: str) -> commands.Command | None:
 
 # Commands that do something useful with no argument, so Enter runs them even
 # though Tab can still complete an argument. /file opens the file picker.
-_RUN_ON_ENTER = frozenset({"agent", "file", "tools"})
+_RUN_ON_ENTER = frozenset({"agent", "file", "tools", "viewer"})
 
 
 # ------------------------------------------------------------- command names
@@ -203,8 +203,8 @@ def _connect_args(_core: AppCore, rest: str, _files: FilesProvider | None) -> Me
         "connect",
         rest,
         [
-            ("claude-code", "user-scoped HTTP command · default"),
-            ("claude-desktop", "HTTP bridge config"),
+            ("claude-code", "user-scoped stdio bridge command"),
+            ("claude-desktop", "stdio bridge config"),
             ("cursor", "global bridge config"),
             ("vscode", "user-profile bridge config"),
             ("codex", "shared bridge config.toml"),
@@ -379,7 +379,17 @@ def _use_args(core: AppCore, rest: str, files: FilesProvider | None) -> MenuStat
     )
 
 
+def _viewer_args(core: AppCore, rest: str, _files: FilesProvider | None) -> MenuState:
+    return _choices(
+        "viewer", rest,
+        [("browser", "open the default browser"),
+         ("vscode", "link for VS Code's Integrated Browser")],
+        context="viewer",
+    )
+
+
 _ARG_PROVIDERS: dict[str, Provider] = {
+    "viewer": _viewer_args,
     "agent": _agent_args,
     "tools": _tools_args,
     "mode": _mode_args,

@@ -27,6 +27,7 @@ from ifc_console.core.operations import OperationImage, OperationRegistry
 from ifc_console.core.results import Envelope, ToolError, ok
 from ifc_console.ifc.geometry import selected
 from ifc_console.ifc.query import DEFAULT_FIELDS, element_row
+from ifc_console.mcp.target_context import selection_context, target_context
 
 if TYPE_CHECKING:
     from ifc_console.app import AppCore
@@ -463,14 +464,15 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
     async def get_viewer_selection() -> Envelope:
         hub = core.viewer_hub
         hub.require_connected()
-        guids = list(hub.selection)
+        selection = selection_context(core)
+        selected_at = hub.selected_at
+        selections = hub.selection_rows()
+        guids = selection["global_ids"]
         session = core.session
-        if hub.selection_model_id:
-            selected_session = core.models.get(hub.selection_model_id)
-            if selected_session is not None:
-                session = selected_session
+        if selection["model_id"]:
+            session = core.models.require(selection["model_id"])
 
-        def job() -> tuple[list[dict], list[str]]:
+        def job() -> tuple[list[dict], list[str], dict]:
             rows, missing = [], []
             for gid in guids:
                 try:
@@ -481,24 +483,27 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
                     missing.append(gid)
                 else:
                     rows.append(element_row(entity, DEFAULT_FIELDS))
-            return rows, missing
+            return rows, missing, {**target_context(session, guids), "selection": selection}
 
         rows: list[dict] = []
         missing: list[str] = []
-        if guids and session.loaded:
-            rows, missing = await session.run(job, timeout=60)
+        context: dict | None = None
+        if session.loaded:
+            rows, missing, context = await session.run(job, timeout=60)
         data = {
             "connected": hub.connected,
             "model_id": session.model_id,
             "guids": guids,
             "elements": rows,
             "missing": missing,
-            "selections": hub.selection_rows(),
-            "selected_at": hub.selected_at,
+            "selections": selections,
+            "selected_at": selected_at,
             # With several tabs open, say which one the user clicked in so a
             # disagreement between them is visible rather than silent.
-            "tab": hub.selection_client_id,
+            "tab": selection["client_id"],
         }
+        if context is not None:
+            data["target_context"] = context
         # What the user is actually looking at: a section already cutting the
         # model, or elements already hidden, otherwise gets re-done blind.
         viewport = hub.viewport_summary(session.model_id)

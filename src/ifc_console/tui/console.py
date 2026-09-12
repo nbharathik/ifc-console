@@ -164,6 +164,7 @@ class ConsoleScreen(Screen):
         self._files_cache: list[tuple[Path, str]] | None = None
         self._files_scanning = False
         self._loading: str | None = None
+        self.last_tool_activity: dict | None = None
         self.refresh_status()
         self.query_one("#prompt", CommandInput).focus()
         app: IfcConsoleApp = self.app  # type: ignore[assignment]
@@ -231,6 +232,9 @@ class ConsoleScreen(Screen):
     def on_core_event(self, event: dict) -> None:
         etype = event.get("type")
         if etype == "tool_called":
+            # A tool event is observed activity, not proof that a named client
+            # remains connected; browser and in-process tools also emit it.
+            self.last_tool_activity = dict(event)
             status = "[green]ok[/green]" if event.get("ok") else "[red]err[/red]"
             detail = event.get("detail") or ""
             self.print(
@@ -357,6 +361,13 @@ class ConsoleScreen(Screen):
             tabs = event.get("tabs", "?")
             verb = "connected" if etype == "viewer_connected" else "closed"
             self.print(f"[dim]viewer tab {verb} ({tabs} open)[/dim]")
+        elif etype == "viewer_model_ready":
+            model_id = escape(str(event.get("model_id", "?")))
+            name = escape(str(event.get("name", "model")))
+            self.print(
+                f"[green]viewer tab {event.get('client_id')}: model ready[/green] "
+                f"{name} ({model_id}, revision {event.get('revision')})"
+            )
         elif etype == "viewer_selection":
             n = event.get("count", 0)
             shown = ", ".join(event.get("guids", [])[:3])
@@ -366,6 +377,15 @@ class ConsoleScreen(Screen):
             )
 
     # -- completion menu ---------------------------------------------------------------
+    def show_command_choices(self, command: str) -> None:
+        """Reopen a command's argument menu when its bare form was submitted."""
+        prompt = self.query_one("#prompt", CommandInput)
+        self._menu_suppressed = False
+        prompt.value = f"/{command} "
+        prompt.cursor_position = len(prompt.value)
+        self.refresh_menu()
+        prompt.focus()
+
     def suppress_menu(self) -> None:
         """Skip the next auto-refresh (history recall must not pop the menu)."""
         self._menu_suppressed = True
@@ -511,7 +531,7 @@ class ConsoleScreen(Screen):
         if picked is not None:
             await commands._open_path(self, picked)
 
-    async def open_workspace_panel(self) -> bool:
+    async def open_workspace_panel(self, *, root: Path | None = None) -> bool:
         """True when a panel choice was applied, False on cancel."""
         # The panel scans on mount, which raises when indexing is off.
         if not self.core.settings.workspace.enabled:
@@ -520,8 +540,16 @@ class ConsoleScreen(Screen):
                 "workspace.enabled true turns it on"
             )
             return False
-        choice = await self.app.push_screen_wait(WorkspaceModal(self.core))
+        choice = await self.app.push_screen_wait(WorkspaceModal(self.core, root=root))
         if choice:
+            if root is not None:
+                self.core.add_allowed_dir(root)
+                self.print(
+                    f"workspace root: {escape(str(root))} "
+                    "[dim](added to the allowed directories)[/dim]"
+                )
+            self.core.workspace.primary_root = root
+            self.core.workspace.scanned_at = None
             await commands.apply_workspace_choice(self, choice)
             return True
         return False

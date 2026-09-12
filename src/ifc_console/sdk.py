@@ -217,18 +217,18 @@ def _apply_settings(store: Any, overrides: dict[str, Any]) -> dict[str, Any]:
         *parents, leaf = dotted.split(".")
         if not leaf or any(not part for part in parents):
             raise IfcConsoleError(
-                "INVALID_INPUT", f"unknown setting {dotted!r}", "See docs/settings.md."
+                "INVALID_INPUT", f"unknown setting {dotted!r}", "See docs/cli.md."
             )
         for part in parents:
             nested = target.get(part)
             if not isinstance(nested, dict):
                 raise IfcConsoleError(
-                    "INVALID_INPUT", f"unknown setting {dotted!r}", "See docs/settings.md."
+                    "INVALID_INPUT", f"unknown setting {dotted!r}", "See docs/cli.md."
                 )
             target = nested
         if leaf not in target:
             raise IfcConsoleError(
-                "INVALID_INPUT", f"unknown setting {dotted!r}", "See docs/settings.md."
+                "INVALID_INPUT", f"unknown setting {dotted!r}", "See docs/cli.md."
             )
         target[leaf] = value
     try:
@@ -241,7 +241,7 @@ def _apply_settings(store: Any, overrides: dict[str, Any]) -> dict[str, Any]:
         raise IfcConsoleError(
             "INVALID_INPUT",
             f"invalid setting overrides: {issues}",
-            "See docs/settings.md for accepted values and limits.",
+            "See docs/cli.md for accepted values and limits.",
         ) from None
     return {key: store.get(key) for key in overrides}
 
@@ -437,7 +437,7 @@ class AsyncWorkbench:
             return self._core.store.get(key)
         except KeyError:
             raise IfcConsoleError(
-                "INVALID_INPUT", f"unknown setting {key!r}", "See docs/settings.md."
+                "INVALID_INPUT", f"unknown setting {key!r}", "See docs/cli.md."
             ) from None
 
     def configure(self, overrides: Mapping[str, Any]) -> dict[str, Any]:

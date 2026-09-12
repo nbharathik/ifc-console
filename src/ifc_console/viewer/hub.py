@@ -466,6 +466,9 @@ class ViewerClient:
         # A tab that predates the scene_state frame never sends one, so
         # "ready" is the only default that keeps it working.
         self.scene_state = "ready"
+        # Explicit acknowledgement is separate from legacy command readiness.
+        self.ready_model_id: str | None = None
+        self.ready_etag: str | None = None
         # Last viewport this tab published: camera, section, visibility counts.
         self.viewport: dict | None = None
         self.viewport_at: str | None = None
@@ -984,6 +987,28 @@ class ViewerHub:
             state = frame.get("state")
             if state in ("rebuilding", "ready"):
                 client.scene_state = state
+                if state == "rebuilding":
+                    client.ready_model_id = None
+                    client.ready_etag = None
+        elif ftype == "model_ready":
+            model_id = frame.get("model_id")
+            if not isinstance(model_id, str):
+                return
+            session = self.core.models.get(model_id)
+            if session is None or not session.loaded:
+                return
+            etag = frame.get("etag")
+            if etag != self.model_etag(session) or client.scene_state != "ready":
+                return
+            if client.ready_model_id == model_id and client.ready_etag == etag:
+                return
+            client.ready_model_id = model_id
+            client.ready_etag = etag
+            client.view_model_id = model_id
+            self.core.events.emit(
+                "viewer_model_ready", client_id=client.id, model_id=model_id,
+                name=session.name, revision=session.revision,
+            )
         elif ftype == "viewer_state":
             viewport = _clean_viewport_state(frame.get("state") or frame)
             if viewport is not None:

@@ -11,5 +11,4 @@ Do not open a public issue.
 ## Using ifc-console Safely
 
 For details on security boundaries, safe operating modes, and sandboxing, see
-the [safety model](https://nbharathik.github.io/ifc-console/safety/) and
-[code sandbox](https://nbharathik.github.io/ifc-console/sandbox/) documentation.
+the [safety model](https://nbharathik.github.io/ifc-console/safety/) documentation.

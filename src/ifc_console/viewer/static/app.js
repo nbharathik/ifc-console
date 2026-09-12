@@ -661,6 +661,7 @@ function ensureFullResolution() {
 
 // ---------------------------------------------------------------- model state
 let currentEtag = null;
+let readyScene = null;
 let loading = false;
 let reloadQueued = false;
 // Which resident model this tab shows. null follows the console's active
@@ -2172,6 +2173,7 @@ function finalizeAllAccumulators() {
 }
 
 function disposeModel() {
+  readyScene = null;
   for (const child of [...modelRoot.children]) {
     modelRoot.remove(child);
     if (child.isInstancedMesh) child.dispose();
@@ -2483,6 +2485,7 @@ async function loadModel() {
       const rendered = await buildScene(null, cached.parsed, targetModelId, cached.etag);
       if (rendered) {
         currentEtag = cached.etag;
+        sendModelReady(true);
         hideProgress();
         refreshStatus();
       }
@@ -2545,6 +2548,7 @@ async function loadModel() {
     const rendered = await buildScene(buffer, null, targetModelId, nextEtag);
     if (rendered) {
       currentEtag = nextEtag;
+      sendModelReady(true);
       hideProgress();
       // the hub's change frames carry no name/schema; re-sync the top bar
       refreshStatus();
@@ -2563,10 +2567,11 @@ async function loadModel() {
     if (reloadQueued) {
       reloadQueued = false;
       loadModel();
-    } else if (sceneState !== "ready") {
+    } else {
       // a 304, a 404 or an error left the scene as it was; the hub must not
       // go on holding commands for a rebuild that is not happening
-      sendSceneState("ready");
+      if (sceneState !== "ready") sendSceneState("ready");
+      sendModelReady();
     }
   }
 }
@@ -5793,6 +5798,18 @@ function sendSceneState(state) {
   } catch { /* a build must never fail because the socket did */ }
 }
 
+function sendModelReady(built = false) {
+  // A socket connection or a finished failed load is not a rendered model.
+  // Only acknowledge the bytes that successfully built this scene.
+  if (built && renderedModelId && currentEtag) {
+    readyScene = { model_id: renderedModelId, etag: currentEtag };
+  }
+  if (!viewerDocumentOpen || !readyScene || reloadQueued || sceneState !== "ready") return;
+  if (currentModelRow()?.id === readyScene.model_id) {
+    wsSend({ type: "model_ready", ...readyScene });
+  }
+}
+
 function scheduleReload() {
   // Bursts of edits collapse into one refetch (2 s debounce).
   clearTimeout(reloadTimer);
@@ -5817,6 +5834,7 @@ function connect() {
     wsSend({ type: "hello", token });
     // a tab that reconnects mid-rebuild would otherwise be taken for ready
     sendSceneState(sceneState);
+    if (!loading && sceneState === "ready") sendModelReady();
   });
 
   ws.addEventListener("message", (event) => {
@@ -6481,7 +6499,10 @@ function selectViewerModel(picked) {
     }
     renderModelTabs();
     if (!currentEtag && !loading) loadModel();
-    else sendSelection();
+    else {
+      sendSelection();
+      if (!loading) sendModelReady();
+    }
     scheduleViewerContext(reopening ? "opened" : "model");
     return true;
   }

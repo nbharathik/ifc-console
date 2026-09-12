@@ -1,0 +1,70 @@
+{% extends "main.html" %}
+
+{% block extrahead %}
+  {{ super() }}
+  <meta property="og:title" content="ifc-console · Load your models. Connect any LLM.">
+  <meta property="og:description" content="A local IFC workbench: terminal, MCP server, Python SDK and a 3D viewer. No LLM required.">
+  <meta property="og:image" content="{{ config.site_url }}assets/brand/console.png">
+{% endblock %}
+
+{% block content %}
+<div class="ic-home">
+  <section class="ic-hero" aria-labelledby="hero-title">
+    <div class="ic-hero-copy">
+      <a class="ic-release" href="https://pypi.org/project/ifc-console/"><span></span>Any OS · Python 3.10+</a>
+      <h1 id="hero-title">Load your models.<br>Connect any LLM.</h1>
+      <p class="ic-description">ifc-console opens IFC files and serves them to your AI client, to Python, and to a 3D viewer, from one local console.</p>
+      <div class="ic-actions">
+        <a class="md-button md-button--primary" href="{{ 'getting-started/' | url }}">Get started <span class="twemoji">{% include ".icons/material/arrow-right.svg" %}</span></a>
+        <a class="md-button" href="{{ 'overview/' | url }}">Documentation</a>
+      </div>
+      <p class="ic-local"><span class="twemoji">{% include ".icons/material/lock-outline.svg" %}</span> Runs on localhost. No LLM, account or API key required.</p>
+    </div>
+    <figure class="ic-preview">
+      <div class="ic-preview-bar"><span class="ic-preview-name"><span class="twemoji">{% include ".icons/material/console.svg" %}</span> ifc-console</span><span>BasicHouse.ifc · IFC2X3 · MODE: ASK</span></div>
+      <a href="{{ 'console/' | url }}" aria-label="Read about the console">
+        <img src="{{ 'assets/brand/console.png' | url }}" alt="The ifc-console terminal with a model loaded, showing the status bar, the feed and the slash command menu" width="961" height="673" fetchpriority="high" decoding="async">
+      </a>
+      <figcaption>Type / for every command.<span>Every AI call shows up in the feed.</span></figcaption>
+    </figure>
+  </section>
+
+  <section class="ic-pipeline" aria-label="How it fits together">
+    <div><span class="ic-pipeline-label">Open</span><strong>IFC2X3 / IFC4 / IFC4X3</strong></div>
+    <span class="ic-pipeline-arrow" aria-hidden="true">{% include ".icons/material/arrow-right.svg" %}</span>
+    <div><span class="ic-pipeline-label">Serve</span><strong>Terminal + MCP + Python</strong></div>
+    <span class="ic-pipeline-arrow" aria-hidden="true">{% include ".icons/material/arrow-right.svg" %}</span>
+    <div><span class="ic-pipeline-label">Work with</span><strong>Claude, Codex, Cursor, VS Code, the viewer</strong></div>
+  </section>
+
+  <section class="ic-capabilities" aria-label="What ifc-console does">
+    <div><span class="ic-feature-icon twemoji">{% include ".icons/material/connection.svg" %}</span><h2>One console, every client</h2><p>Connect Claude, Codex, Cursor or VS Code once. They all see the models open in your console, and every call shows up in its feed.</p></div>
+    <div><span class="ic-feature-icon twemoji">{% include ".icons/material/shield-check-outline.svg" %}</span><h2>You hold the switch</h2><p>Ask mode is read-only. Edit mode works in a copy of your file. The AI cannot change the mode, and the file you opened is never written unless you say so.</p></div>
+    <div><span class="ic-feature-icon twemoji">{% include ".icons/material/cube-scan.svg" %}</span><h2>See what changed</h2><p>A local 3D viewer with selection, sections and measurements. Edits appear as soon as they land, and the AI can read what you selected.</p></div>
+  </section>
+
+  <section class="ic-gallery" aria-labelledby="gallery-title">
+    <div class="ic-section-heading"><h2 id="gallery-title">One console, three windows</h2><a href="{{ 'getting-started/' | url }}">See them in the guide</a></div>
+    <div class="ic-gallery-grid">
+      <a href="{{ 'console/' | url }}"><img src="{{ 'assets/brand/console.png' | url }}" alt="The ifc-console terminal" width="961" height="673" decoding="async"><span><strong>Terminal console</strong>Open models, switch modes, watch every call.</span></a>
+      <a href="{{ 'clients/' | url }}"><img src="{{ 'assets/brand/claude.png' | url }}" alt="Claude summarising the model through MCP" width="771" height="891" decoding="async"><span><strong>AI assistant</strong>Claude, Codex, Cursor or VS Code on the same models.</span></a>
+      <a href="{{ 'viewer/' | url }}"><img src="{{ 'assets/brand/viewer.png' | url }}" alt="The 3D viewer" width="1059" height="733" decoding="async"><span><strong>3D viewer</strong>Select, section and measure in the browser.</span></a>
+    </div>
+  </section>
+
+  <section class="ic-quickstart" aria-label="Quick start">
+    {{ page.content }}
+  </section>
+
+  <section class="ic-resources" aria-labelledby="resources-title">
+    <div class="ic-section-heading"><h2 id="resources-title">Where to go next</h2><a href="{{ 'overview/' | url }}">All documentation</a></div>
+    <div class="ic-resource-grid">
+      <a href="{{ 'clients/' | url }}"><span class="twemoji">{% include ".icons/material/robot-outline.svg" %}</span><h3>Connect a client</h3><p>Claude Code, Claude Desktop, Cursor, VS Code and Codex in one command each.</p><span class="ic-resource-link">Connect a client <span aria-hidden="true">↗</span></span></a>
+      <a href="{{ 'safety/' | url }}"><span class="twemoji">{% include ".icons/material/shield-check-outline.svg" %}</span><h3>Understand the safety model</h3><p>Ask and edit modes, working copies, and what generated code can reach.</p><span class="ic-resource-link">Safety <span aria-hidden="true">↗</span></span></a>
+      <a href="{{ 'sdk/' | url }}"><span class="twemoji">{% include ".icons/material/language-python.svg" %}</span><h3>Script it in Python</h3><p>The same operations as the MCP tools, for notebooks, CI and your own agents.</p><span class="ic-resource-link">Python SDK <span aria-hidden="true">↗</span></span></a>
+    </div>
+  </section>
+
+  <aside class="ic-preview-note"><span class="twemoji">{% include ".icons/material/information-outline.svg" %}</span><p><strong>Everything stays on your machine.</strong> The server binds to 127.0.0.1. Only the optional <a href="{{ 'chat/' | url }}">Agent workspace</a> talks to an LLM provider, and only when you turn it on.</p></aside>
+</div>
+{% endblock %}

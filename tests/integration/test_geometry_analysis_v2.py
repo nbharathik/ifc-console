@@ -49,6 +49,10 @@ async def test_high_level_analysis_returns_versioned_semantic_inventory(
         "revision": h.core.session.revision,
     }
     record = data["elements"][0]
+    assert data["target_context"] == {
+        **data["model_revision"],
+        "global_ids": [record["global_id"]],
+    }
     assert record["dimensions"]
     assert record["measurements"]
     assert record["coverage"]["extracted"]

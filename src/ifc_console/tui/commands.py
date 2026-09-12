@@ -215,6 +215,12 @@ async def _open_path(console: ConsoleScreen, path: Path) -> bool:
     if not path.exists():
         console.print(f"[red]{escape(str(path))} does not exist[/red]")
         return False
+    if path.is_dir():
+        console.print(
+            f'[yellow]{escape(str(path))} is a directory[/yellow]; '
+            f'use /workspace "{escape(str(path))}" to choose files'
+        )
+        return False
     discard_dirty = core.session.dirty
     if discard_dirty and not await console.confirm(
         "Discard unsaved changes and open another model?"
@@ -243,13 +249,27 @@ async def _attach_path(console: ConsoleScreen, path: Path) -> bool:
     if not path.exists():
         console.print(f"[red]{escape(str(path))} does not exist[/red]")
         return False
+    if path.is_dir():
+        console.print(
+            f'[yellow]{escape(str(path))} is a directory[/yellow]; '
+            f'use /workspace "{escape(str(path))}" to choose files'
+        )
+        return False
     core.add_allowed_dir(path.parent)
     try:
-        if await asyncio.to_thread(detect_kind, path) == "ifc":
+        file_kind = await asyncio.to_thread(detect_kind, path)
+        if file_kind == "ifc":
             # "auto" attaches only if a model is active, decided under the lock
             await core.open_model(path, attach="auto")
         else:
             await core.attach_file(path)
+            if file_kind in ("pdf", "md", "txt", "image"):
+                console.print(
+                    f"[dim]{escape(path.name)}: document path registered only; "
+                    "not indexed or analysed. Attach it in your Codex conversation "
+                    "for the external-client workflow, or add it to Agent Content "
+                    "for the optional browser Agent workspace.[/dim]"
+                )
     except ToolError as exc:
         console.print(
             f"[red]could not attach {escape(path.name)}: {escape(exc.message)}[/red] "
@@ -266,21 +286,41 @@ async def apply_workspace_choice(console: ConsoleScreen, choice) -> None:
     """Apply a workspace panel selection: one active model, the rest attached."""
     core = console.core
     models = list(choice.models)
-    landed = 0
+    loaded = attached = skipped = failed = 0
+    seen: set[Path] = set()
     if models and not core.session.loaded:
         while models and not core.session.loaded:
-            first = models.pop(0)
+            first = models.pop(0).expanduser().resolve()
+            if first in seen:
+                skipped += 1
+                continue
+            seen.add(first)
             if await _open_path(console, first):
-                landed += 1
-    for path in models:
-        if core.session.path == path:
+                loaded += 1
+            else:
+                failed += 1
+    for path in [*models, *choice.files]:
+        path = path.expanduser().resolve()
+        already_present = any(
+            path in (session.path, session.origin_path)
+            for session in core.models.sessions.values()
+        ) or any(
+            attachment.path == path for attachment in core.models.attachments.values()
+        )
+        if path in seen or already_present:
+            skipped += 1
+            console.print(f"[dim]skipped {escape(path.name)}: already loaded, attached or selected[/dim]")
             continue
+        seen.add(path)
         if await _attach_path(console, path):
-            landed += 1
-    for path in choice.files:
-        if await _attach_path(console, path):
-            landed += 1
-    if landed:
+            attached += 1
+        else:
+            failed += 1
+    console.print(
+        f"workspace selection: {loaded} loaded · {attached} attached · "
+        f"{skipped} skipped · {failed} failed"
+    )
+    if loaded or attached:
         console.print(
             "[dim]attached files stay read-only; the LLM sees them through list_models[/dim]"
         )
@@ -393,24 +433,13 @@ async def _workspace(console: ConsoleScreen, args: str) -> None:
             "workspace.enabled true turns it on"
         )
         return
-    previous_root = core.workspace.primary_root
+    root = None
     if args:
         root = Path(_strip_quotes(args)).expanduser().resolve()
         if not root.is_dir():
             console.print(f"[red]{escape(str(root))} is not a directory[/red]")
             return
-        core.add_allowed_dir(root)
-        core.workspace.primary_root = root
-        console.print(
-            f"workspace root: {escape(str(root))} [dim](added to the allowed "
-            "directories; the AI can read it, not widen it)[/dim]"
-        )
-    else:
-        core.workspace.primary_root = None
-    applied = await console.open_workspace_panel()
-    if not applied:
-        # a cancelled panel must not leave find_files scoped to another root
-        core.workspace.primary_root = previous_root
+    await console.open_workspace_panel(root=root)
 
 
 @command(
@@ -613,48 +642,49 @@ async def _theme(console: ConsoleScreen, args: str) -> None:
 
 @command(
     "viewer",
-    "/viewer",
+    "/viewer [browser|vscode]",
     "open the 3D viewer",
     "connect",
-    examples=("/viewer",),
+    examples=("/viewer", "/viewer browser", "/viewer vscode"),
 )
 async def _viewer(console: ConsoleScreen, args: str) -> None:
+    from ifc_console.tui.viewer_launch import present_viewer_url
+
     core = console.core
-    if args.strip():
-        console.print("[red]usage: /viewer[/red]")
+    target = args.strip().lower() or "browser"
+    if target not in {"browser", "vscode"}:
+        console.print("[red]usage: /viewer \\[browser|vscode][/red]")
         return
     if not await _require_server(console):
         return
     core.enable_viewer()
     url = core.viewer.url or core.viewer_url
-    console.app.copy_to_clipboard(url)
-    import webbrowser
-
-    try:
-        opened = webbrowser.open(url)
-    except Exception:
-        opened = False
-    if opened:
-        console.print(f"[green]viewer opened in your browser[/green] (URL copied): {url}")
-    else:
-        console.print(f"viewer URL copied: {url}")
+    present_viewer_url(console, url, target)
 
 
 @command(
     "connect",
     "/connect [client|all]",
-    "show how to connect an MCP client",
+    "choose an MCP client and show its setup",
     "connect",
-    examples=("/connect all", "/connect codex"),
+    examples=("/connect", "/connect codex", "/connect all"),
 )
 async def _connect(console: ConsoleScreen, args: str) -> None:
     core = console.core
     args = args.strip().lower()
-    wanted = (
-        [args]
-        if args and args != "all"
-        else (list(_CONNECT_CLIENTS) if args == "all" else ["claude-code"])
-    )
+    if not args:
+        show_choices = getattr(console, "show_command_choices", None)
+        if callable(show_choices):
+            show_choices("connect")
+            console.print("choose your MCP client in the menu; Enter shows its setup")
+        else:
+            console.print(
+                "choose an MCP client: "
+                + ", ".join(f"/connect {client}" for client in _CONNECT_CLIENTS)
+                + " (or /connect all)"
+            )
+        return
+    wanted = list(_CONNECT_CLIENTS) if args == "all" else [args]
     unknown = [w for w in wanted if w not in _CONNECT_CLIENTS]
     if unknown:
         console.print(
@@ -671,11 +701,20 @@ async def _connect(console: ConsoleScreen, args: str) -> None:
         )
     if len(wanted) == 1:
         client = wanted[0]
-        console.app.copy_to_clipboard(snippets[client])
-        console.print(
-            f"[green]{client} setup copied to clipboard[/green] "
-            f"([dim]/copy {client} copies it again[/dim])"
-        )
+        try:
+            copied = console.app.copy_to_clipboard(snippets[client]) is not False
+        except Exception:
+            copied = False
+        if copied:
+            console.print(
+                f"[green]{client} setup copied to clipboard[/green] "
+                f"([dim]/copy {client} copies it again[/dim])"
+            )
+        else:
+            console.print(
+                "[yellow]could not copy the setup; copy the configuration shown above "
+                "manually[/yellow]"
+            )
     else:
         console.print(
             "[dim]copy one complete setup with /copy <client>, for example /copy codex[/dim]"
@@ -692,6 +731,12 @@ async def _connect(console: ConsoleScreen, args: str) -> None:
     console.print(
         "[dim]Merge the ifc-console entry with any existing config; do not replace "
         "unrelated server entries.[/dim]"
+    )
+    console.print(
+        "[dim]Configuration alone does not verify a client connection. "
+        "Ask that client: \"Use IFC Console to report the active model ID/revision "
+        "and the viewer selection, including its model ID and GlobalIds.\" "
+        "Observed tool activity appears in this console.[/dim]"
     )
     if not core.settings.server.persistent_token:
         if core.settings.server.token_in_config_snippets:
@@ -746,7 +791,7 @@ async def _copy(console: ConsoleScreen, args: str) -> None:
         )
 
 
-@command("status", "/status", "session summary: model, mode, server, viewer", "session")
+@command("status", "/status", "model, selection, save destination, and runtime status", "session")
 async def _status(console: ConsoleScreen, _args: str) -> None:
     core = console.core
     s = core.session
@@ -755,8 +800,19 @@ async def _status(console: ConsoleScreen, _args: str) -> None:
         lines.append(
             f"  model    {escape(s.name or '')}  ({s.schema}, {s.size_bytes / 1_048_576:.1f} MB)"
         )
-        lines.append(f"  path     {escape(str(s.path))}")
-        lines.append(f"  dirty    {'yes' if s.dirty else 'no'}    fingerprint {s.fingerprint}")
+        lines.append(
+            f"  active   {escape(str(core.models.active_id))} "
+            "(only the active model can be edited in edit mode)"
+        )
+        lines.append(f"  revision {s.fingerprint}:{s.revision}")
+        lines.append(f"  original {escape(str(s.origin_path))}")
+        if s.working_copy is not None:
+            lines.append(f"  copy     {escape(str(s.working_copy.path))}")
+        lines.append(f"  save to  {escape(str(s.path))}  (/save; /save <path> changes this)")
+        lines.append(
+            f"  edits    {'unsaved' if s.dirty else 'none unsaved'} "
+            f"({s.change_count} change(s))"
+        )
     else:
         lines.append("  model    (none; /file to pick one)")
     mode = core.policy.mode.value
@@ -768,19 +824,55 @@ async def _status(console: ConsoleScreen, _args: str) -> None:
     else:
         lines.append("  server   (starting)")
     if core.viewer.enabled:
-        lines.append(f"  viewer   {core.viewer.connected} tab(s)  {core.viewer.url}")
+        lines.append(
+            f"  viewer   {core.viewer.connected} connected tab(s)  {escape(core.viewer.url or '')}"
+        )
     else:
         lines.append("  viewer   off (/viewer to start)")
+    selections = core.viewer_hub.selection_rows()
+    selection_count = sum(row["count"] for row in selections)
+    if selections:
+        lines.append(f"  selected {selection_count} element(s) across {len(selections)} model(s)")
+        for row in selections:
+            role = "active" if row["model_id"] == core.models.active_id else "attached; read-only"
+            lines.append(
+                f"           {escape(row['model_id'])} ({escape(row['model'])}; {role}): "
+                f"{row['count']} element(s)"
+            )
+    else:
+        lines.append("  selected 0 elements")
+    activity = getattr(console, "last_tool_activity", None)
+    if activity:
+        outcome = "ok" if activity.get("ok") else "failed"
+        lines.append(
+            f"  tools    last observed: {escape(str(activity.get('tool', '?')))} "
+            f"({outcome}; {escape(str(activity.get('ts', '?')))})"
+        )
+    else:
+        lines.append("  tools    no tool activity observed by this console yet")
     if not core.extensions.available("agents"):
-        lines.append("  agent    unavailable (install ifc-console-agents)")
+        lines.append("  agent    unavailable (optional browser workspace; install ifc-console-agents)")
     elif core.chat.enabled:
         model = core.chat.model or "no model chosen"
         lines.append(f"  agent    on  {core.chat.provider} | {model}")
     else:
-        lines.append("  agent    off (/agent to start)")
+        lines.append("  agent    off (/agent to start)  (optional browser workspace)")
     sandbox = core.sandbox.status()
     where = "sandboxed" if sandbox["would_sandbox"] else "in-process"
     lines.append(f"  sandbox  {sandbox['mode']}; next code run {where} (/sandbox)")
+    if not s.loaded:
+        lines.append("  next     /file to choose the active IFC model")
+    elif s.dirty:
+        lines.append("  next     review the edits, then /save to the destination above")
+    elif not core.viewer.connected:
+        lines.append("  next     /viewer to open a view, or /viewer vscode for its local link")
+    elif not selection_count:
+        lines.append("  next     select an element in the viewer before asking about that object")
+    elif any(row["model_id"] != core.models.active_id for row in selections):
+        lines.append(
+            "  next     selection includes a read-only model; /use <model> makes it active "
+            "before edits"
+        )
     console.print("\n".join(lines))
 
 

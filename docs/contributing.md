@@ -1,60 +1,66 @@
-# Contributing and security
+---
+description: Development setup, tests, project scope, and how to report a security issue.
+---
 
-## Contributing
+# Contributing
 
-Setup, tests, and style live on the [Development](development.md) page. The short
-version: `uv sync --all-packages --all-extras`, then
-`uv run --all-packages --all-extras pytest` and
-`uv run --all-packages --all-extras ruff check src tests packages scripts` must
-both be green.
+## Setup
 
-- **Bugs and ideas.** Open a
-  [GitHub issue](https://github.com/nbharathik/ifc-console/issues). For bugs,
-  include `ifc-console doctor` output. Never upload confidential models.
-- **Scope.** `ifc-console` stays deterministic: a safe IFC/MCP/SDK workbench,
-  console, and bundled viewer that needs no LLM. Provider chat, built-in and
-  custom packs, the agent panel, devkit, testing helpers, and graph adapters
-  belong to `ifc-console-agents`. Anything that widens the `execute_ifc_code`
-  attack surface, weakens the mode model, or adds network calls needs a strong
-  case.
-- **Compatibility.** The MCP tool names, their input schemas, and the response
-  envelope are public API. So are the `ifc_console.extensions` contract and
-  the canonical `ifc_console_agents` namespace. Changing them needs a version
-  bump.
+```bash
+git clone https://github.com/nbharathik/ifc-console && cd ifc-console
+uv sync --all-packages --all-extras
+uv run --all-packages --all-extras ifc-console doctor
+uv run --all-packages --all-extras pytest
+uv run --all-packages --all-extras ruff check src tests packages scripts
+```
+
+The workspace holds two packages:
+
+```text
+src/ifc_console/                                     ifc-console
+packages/ifc-console-agents/src/ifc_console_agents/  ifc-console-agents
+```
+
+Both support Python 3.10 to 3.14. Core owns deterministic IFC behavior and
+the viewer; agents depend on core and register through
+`ifc_console.extensions`. Never import from core into `ifc_console_agents`.
+
+For the browser panel, `npm run dev` serves a demo project and opens the
+Agent workspace, `npm run check` exercises it headlessly, and `npm test`
+runs the panel unit tests. None of them need an API key.
+
+Docs are built with `uv sync --extra docs` and `uv run mkdocs serve`.
+
+## Scope
+
+- `ifc-console` stays deterministic: a safe IFC, MCP, SDK, terminal, and
+  viewer product that needs no LLM. Provider chat, packs, and the Agent
+  panel belong in `ifc-console-agents`.
+- The MCP tool names, their input schemas, and the response envelope are
+  public API. Changing them needs a version bump.
+- Anything that widens what generated code can reach, weakens the mode model,
+  or adds network calls needs a strong case.
+
+Open a [GitHub issue](https://github.com/nbharathik/ifc-console/issues) for
+bugs and ideas. Include `ifc-console doctor` output and never upload a
+confidential model.
 
 ## Security
 
-### Reporting a vulnerability
+Report vulnerabilities privately through GitHub Security Advisories
+("Report a vulnerability" on the repository's Security tab), not in a public
+issue.
 
-Report privately through GitHub Security Advisories ("Report a vulnerability" on
-the repository's Security tab). Please do not open a public issue.
+The read-only sandbox is a real boundary: an escape from the restricted
+process is a security issue. The in-process guards used for mutating code in
+edit mode reduce accidents but are not a boundary against hostile Python.
+Reports of particular interest:
 
-### Threat model, honestly
-
-On CPython 3.12+, eligible read-only generated Python uses a separate restricted
-process with no network or subprocess access, no inherited credential
-environment, blocks for common credential stores, and a read allowlist for
-model directories. An arbitrarily named secret inside an allowed root remains
-readable. Python 3.10 and 3.11 cannot provide the raw-thread audit event needed
-by the complete boundary. The default auto mode reports and uses guarded
-in-process fallback when isolation is not available; strict mode refuses it.
-Mutating code always runs in-process after the user explicitly selects edit
-mode, where namespace guards reduce accidents but are not a secure boundary
-against adversarial Python. One documented xfail records that in-process
-limitation.
-
-An escape from the restricted read-only process is a security issue. A bypass
-of only the edit-mode in-process namespace guards is an acknowledged limitation
-unless it also crosses another boundary. Reports of particular interest are:
-
-- writing to disk, or mutating the on-disk model, from `ask` mode
-- reaching the network or the OS from a guarded run
+- writing to disk, or the on-disk model, from `ask` mode
+- reaching the network or the OS from a sandboxed run
 - reading files outside the allowed directories
 - bypassing the bearer token, or reaching the server off loopback
-- the viewer gaining any mutation capability
+- the viewer gaining any way to change the model
 
-### Staying safe
-
-Keep the default `ask` mode for untrusted prompts and models. Rotate a leaked
-token with `ifc-console token rotate`. Treat `edit` mode plus untrusted prompts like
-running a script a stranger sent you.
+Keep `ask` mode for untrusted prompts and models, and rotate a leaked token
+with `ifc-console token rotate`. See [Safety](safety.md).

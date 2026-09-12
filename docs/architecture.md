@@ -1,106 +1,71 @@
+---
+description: How one operation core serves the terminal, MCP, the SDK, and the viewer.
+---
+
 # Architecture
 
-All interfaces share one operation core:
+Every interface calls the same operations. There is one implementation of
+each IFC behavior, one policy check, and one response shape.
 
-```text
-SDK                    CLI/TUI       MCP       Viewer
- |                        |           |           |
- +------------------------+-----------+-----------+
-                         |
-            OperationService + Registry
-              schemas, policy, envelopes
-                         |
-                      AppCore
-         model sessions, settings, audit, viewer state
-              |                       |
-       model worker threads     jobs and transactions
-                                      |
-                              restricted workers
+```mermaid
+flowchart TB
+    tui["terminal"] --> ops
+    mcp["MCP clients"] --> ops
+    sdk["Python SDK"] --> ops
+    viewer["3D viewer"] --> ops
+    ops["operation core<br/>schemas, policy, audit, envelopes"] --> core["AppCore<br/>model sessions, settings, viewer state"]
+    core --> model["model worker thread<br/>one per resident model"]
+    core --> workers["restricted processes<br/>read-only code, validation, transactions"]
 ```
 
-`ifc-console` contains the deterministic runtime: console/TUI, MCP, SDK,
-operations, plugins, jobs, workflows, viewer routes, and the complete browser
-viewer bundle. `ifc-console-agents` is an optional dependent distribution for
-the agent SDK, providers/chat, built-in and custom packs, agent panel, devkit,
-testing helpers, document/vision support, and LangGraph integration.
+## Two packages
 
-Installed products advertise entry points in `ifc_console.extensions`.
-`ExtensionManager` validates their versioned manifests, attaches state,
-registers operations and HTTP routes once, contributes browser panels, and
-isolates startup and shutdown failures. The dependency direction remains
-`ifc-console-agents -> ifc-console`; core does not import agent modules.
+| Package | Owns |
+| :--- | :--- |
+| `ifc-console` | terminal, MCP server, SDK, IFC operations, jobs and workflows, the viewer |
+| `ifc-console-agents` | provider chat, agent packs, the Agent panel, document ingestion |
 
-## Operation contract
+The agents package plugs in through the `ifc_console.extensions` entry point.
+Core never imports it, so everything in core works without an LLM.
 
-Built-in operations register once. Every interface receives the same schema,
-capability requirements, policy decision, `{ok, data/error, meta}` envelope,
-and correlation ID. Adapters do not reimplement IFC behavior.
+## The operation contract
 
-`ask` and `edit` are capability profiles. Mode changes, ChangeSet approval,
-commit, restore, and allowed paths remain host-controlled actions.
+Operations register once. Every interface gets the same input schema, the
+same capability requirements, the same ask/edit policy decision, and the same
+`{ok, data | error, meta}` envelope. Mode changes, approvals, and allowed
+paths are host actions and are never exposed as tools.
 
 ## Model access
 
-IfcOpenShell file objects are not thread-safe. Each resident model has one
-worker thread, and all access is serialized through it. One model is active
+IfcOpenShell file objects are not thread-safe, so each resident model has one
+worker thread and every access is serialized through it. One model is active
 and writable; attached models are read-only.
 
-```text
-model thread          short reads and approved in-memory edits
-restricted process   read-only code, validation, and queries
-transaction process  preview, commit, restore, and verification
+```mermaid
+flowchart LR
+    read["short reads and<br/>approved in-memory edits"] --> thread["model thread"]
+    code["read-only generated code,<br/>validation, queries"] --> restricted["restricted process<br/>verified on-disk copy"]
+    tx["preview, commit, restore"] --> txproc["transaction process"]
 ```
 
-Workers receive bounded filesystem, network, subprocess, time, and memory
-capabilities. The generated-code sandbox uses a verified on-disk copy, so it
-is limited to clean read-only work.
+## Structured changes
 
-## Durable work
-
-```text
-job -> batch -> workflow
-  \------ content-addressed artifacts ------/
+```mermaid
+flowchart LR
+    preview["preview"] --> cs["ChangeSet<br/>bound to a revision"] --> approve["host approval"] --> commit["commit"] --> receipt["backup + receipt"]
 ```
 
-Jobs run one validation or transaction. Batches capture inputs for repeated
-validation or queries. Workflows connect batches through a versioned dependency
-graph. Source hashes and artifact checksums prevent unsafe resume.
-
-Structured writes follow one path:
-
-```text
-preview -> ChangeSet -> host approval -> commit -> receipt and backup
-```
-
-Commit rechecks the revision and source hash, validates a reopened candidate,
-and replaces the target under a cross-process lock. Durable journals support
-recovery and checksum-guarded restore.
-
-## Audit and artifacts
-
-Audit JSONL uses sequence numbers and a SHA-256 hash chain. Generated source,
-secrets, and sensitive values are redacted. An external append-only sink is
-still required for enterprise retention.
-
-Artifact cleanup preserves pinned outputs and references held by retained jobs,
-recent activity, and transaction history.
-
-## Browser boundary
-
-Core ships plain browser modules, Three.js, web-ifc, and WASM. It has no CDN
-dependency or Node runtime and works without an LLM. Core also owns the HTTP
-routes, authentication, selection bridge, and seven stable viewer operations;
-without a connected tab, those operations return an actionable availability
-state.
-
-When the agents extension is installed, it contributes chat routes and a
-declarative browser panel. The viewer shell loads that panel's JavaScript and
-CSS lazily only when the extension exists and the user opens it, so a core-only
-viewer does not download or render dead agent UI.
+AI tools can preview and inspect a ChangeSet. Approving and committing are
+SDK or CLI actions. Commit rechecks the revision and source hash, validates a
+reopened candidate, and replaces the file under a lock.
 
 ## Runtime
 
-Textual and Uvicorn share one asyncio loop. Operation handlers send IFC access
-to model threads; long validation, queries, code, and transactions use
-supervised subprocesses. Results return to the loop and update the console and
-browser clients.
+The terminal (Textual) and the HTTP server (Uvicorn) share one asyncio loop.
+Operation handlers send IFC access to model threads; long validation, code
+runs, and transactions use supervised subprocesses. Results return to the
+loop and update the console and every connected browser tab.
+
+The viewer is plain browser modules plus Three.js and web-ifc, shipped inside
+the package. It makes no requests outside localhost. When the agents package
+is installed, its panel's JavaScript and CSS load only when you open it.

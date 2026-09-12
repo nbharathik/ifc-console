@@ -30,3 +30,5 @@ CLAUDE.md
 .ifc-console/agents/threads/
 .ifc-console/knowledge/
 .ifc-console/settings.local.json
+tmp/*
+output/*

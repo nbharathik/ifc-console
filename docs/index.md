@@ -1,51 +1,56 @@
-<p align="center">
-  <img alt="ifc-console" width="360" src="assets/brand/horizontal-light.svg#only-light">
-  <img alt="ifc-console" width="360" src="assets/brand/horizontal-dark.svg#only-dark">
-</p>
+---
+title: Load your models, connect any LLM
+description: A local IFC workbench with a terminal, an MCP server, a Python SDK and a 3D viewer. No LLM required.
+template: home.html
+hide:
+  - navigation
+  - toc
+  - footer
+---
 
-**A local IFC workbench and bridge.** `ifc-console` provides the terminal,
-MCP server, deterministic Python SDK and workflows, IFC operations, and local
-3D viewer. It works fully without an LLM. Install `ifc-console-agents` when you
-also want provider chat, agent applications, reusable packs, and their browser
-panel.
+## Up and running in a minute
 
-```text
-MCP client ---------+
-Python application -+--> ifc-console --> IfcOpenShell model
-Terminal -----------+       |   |
-Browser viewer -----+       |   +--> policy, jobs, workflows, audit
-                            |
-                    ifc-console-agents (optional extension)
-```
+Install, open a model, then pick how you want to work with it.
 
-## Start here
+=== "Terminal"
 
-```bash
-uv tool install ifc-console
-cd path/to/your/models
-ifc-console
-```
+    ```bash title="Install and open a model"
+    uv tool install ifc-console
+    cd path/to/your/models
+    ifc-console
+    ```
 
-Run `/file`, then `/viewer` for local visual work or `/connect <client>` for an
-external MCP client. Add `ifc-console-agents` only when you want the built-in
-Agent workspace experience.
+    ```text title="In the console"
+    > /file             choose an IFC model
+    > /viewer           open the 3D viewer
+    > /connect codex    print the setup for your AI client
+    > /mode edit        allow changes, in a copy of the file
+    ```
 
-```text
-> /file
-> /connect codex
-> /viewer
-```
+=== "AI client"
 
-[Follow the first-session guide](getting-started.md){ .md-button .md-button--primary }
+    ```bash title="One command per client"
+    ifc-console mcp-config --client claude-code
+    ifc-console mcp-config --client claude-desktop
+    ifc-console mcp-config --client cursor
+    ifc-console mcp-config --client vscode
+    ifc-console mcp-config --client codex
+    ```
 
-## Find a topic
+    Paste the output where the console tells you, reload the client, and ask:
 
-| goal | page |
-| ---- | ---- |
-| learn the terminal or connect a client | [Console](console.md) and [Clients](clients.md) |
-| understand editing and saving | [Safety](safety.md) |
-| use browser tools | [3D viewer](viewer.md) and [Chat](chat.md) |
-| automate or build an agent | [Python SDK](sdk.md) and [Agents](agents.md) |
-| run repeatable checks | [Workflows](workflows.md) |
-| look up commands | [CLI](cli.md) and [MCP tools](tools.md) |
-| fix a problem | [Troubleshooting](troubleshooting.md) |
+    > Summarize the project, its storeys, and the number of elements by type.
+
+=== "Python"
+
+    ```python title="Same operations, no server"
+    from ifc_console import Workbench
+
+    with Workbench.open("tower.ifc") as wb:
+        print(wb.info()["project"]["name"])
+        walls = wb.query("IfcWall, Pset_WallCommon.IsExternal=TRUE")
+        report = wb.validate()
+        print(len(walls), report["valid"])
+    ```
+
+[Read the getting started guide](getting-started.md){ .ic-text-link }

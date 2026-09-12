@@ -42,8 +42,10 @@ class FakeConsole:
     async def open_file_picker(self, initial_filter: str = "") -> None:
         self.picker_opened += 1
 
-    async def open_workspace_panel(self, initial_filter: str = "") -> None:
+    async def open_workspace_panel(self, *, root: Path | None = None) -> bool:
         self.panel_opened = getattr(self, "panel_opened", 0) + 1
+        self.panel_root = root
+        return False
 
     def copy_to_clipboard(self, value: str) -> None:
         self.clipboard = value
@@ -193,7 +195,7 @@ async def test_connect_includes_reusable_configs(
 ) -> None:
     await commands.dispatch(console, f"/open {work_model}")
     console.clear_log()
-    await commands.dispatch(console, "/connect")
+    await commands.dispatch(console, "/connect claude-code")
     # the default wiring is the stdio bridge: no token in the client config,
     # and the client may start before ifc-console does
     assert "bridge" in console.text
@@ -266,14 +268,14 @@ async def test_connect_embeds_and_warns_about_a_per_run_token(
 ) -> None:
     console.core.settings.server.persistent_token = False
     console.core.settings.server.token_in_config_snippets = True
-    await commands.dispatch(console, "/connect")
+    await commands.dispatch(console, "/connect claude-code")
     assert console.core.token in console.text
     assert "must be copied again after every restart" in console.text
 
 
 async def test_connect_hides_a_per_run_token_by_default(console: FakeConsole) -> None:
     console.core.settings.server.persistent_token = False
-    await commands.dispatch(console, "/connect")
+    await commands.dispatch(console, "/connect claude-code")
     assert console.core.token not in console.text
     assert "<TOKEN>" in console.text
     assert "replace <TOKEN>" in console.text

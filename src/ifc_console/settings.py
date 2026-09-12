@@ -68,7 +68,7 @@ class ExecSettings(BaseModel):
 
 
 class SandboxSettings(BaseModel):
-    """Where generated code runs. See docs/sandbox.md."""
+    """Where generated code runs. See docs/safety.md."""
 
     # auto: sandbox whenever it can, fall back to in-process guards otherwise.
     # strict: refuse the run instead of falling back. off: never sandbox.

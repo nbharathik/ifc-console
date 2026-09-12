@@ -19,6 +19,7 @@ from ifc_console.application.operations import enveloped
 from ifc_console.core.operations import OperationAnnotations as ToolAnnotations
 from ifc_console.core.operations import OperationRegistry
 from ifc_console.core.results import Envelope, ToolError, ok
+from ifc_console.mcp.target_context import TargetContext, execution_context, require_target_context
 from ifc_console.policy.classify import classify
 from ifc_console.policy.guards import (
     GuardError,
@@ -56,7 +57,11 @@ _DESCRIPTION_TAIL = (
     "rejected with an error; generate and show code to the user instead, or "
     "ask them to switch to edit mode. In edit mode mutations run. Include a "
     "one-line `description` of intent; the user sees it in their terminal and "
-    "audit log. After mutating, the model is dirty. AI saving is disabled by "
+    "audit log. For follow-up edits pass the analysis `target_context` as "
+    "`expected_context`: stale model/revision/selection or missing targets are "
+    "rejected before any code runs. This precondition does not limit which "
+    "objects your Python changes; use the explicit analysed GlobalIds. "
+    "After mutating, the model is dirty. AI saving is disabled by "
     "default, so the user reviews and runs /save or /reload; when explicitly "
     "enabled, finish batches with save_ifc_file. Eligible read-only runs use "
     "an isolated sandbox with no "
@@ -121,6 +126,10 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
                 description="One-line intent, shown in the user's terminal and audit log.",
             ),
         ] = "",
+        expected_context: Annotated[
+            TargetContext | None,
+            Field(description="Copy target_context from analysis/selection; rejects stale context."),
+        ] = None,
     ) -> Envelope:
         session = core.session
 
@@ -184,7 +193,11 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
         decision = core.sandbox.decide(session, mutating=allow_mutation)
         sandbox_failure = ""
         if decision.use:
-            envelope, sandbox_failure = await _run_sandboxed(core, code, cls, description)
+            if expected_context is not None:
+                await session.run(lambda: require_target_context(core, expected_context), timeout=60)
+            envelope, sandbox_failure = await _run_sandboxed(
+                core, code, cls, description, expected_context=expected_context
+            )
             if envelope is not None:
                 return envelope
         elif core.sandbox.enabled and core.sandbox.strict and not allow_mutation:
@@ -203,6 +216,7 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
             description,
             allow_mutation=allow_mutation,
             allow_system=allow_system,
+            expected_context=expected_context,
             # Only worth saying when the sandbox was wanted and could not run;
             # a user who turned it off does not need telling every call.
             fallback_reason=(
@@ -213,7 +227,12 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
 
 
 async def _run_sandboxed(
-    core: AppCore, code: str, cls: Any, description: str
+    core: AppCore,
+    code: str,
+    cls: Any,
+    description: str,
+    *,
+    expected_context: TargetContext | None = None,
 ) -> tuple[Envelope | None, str]:
     """Run in the worker.
 
@@ -221,6 +240,7 @@ async def _run_sandboxed(
     back, and reason says why so the fallback is never silent.
     """
     settings = core.settings
+    context = execution_context(core.session, expected_context)
     try:
         result: SandboxResult = await core.sandbox.run(
             code,
@@ -306,6 +326,8 @@ async def _run_sandboxed(
         "mutated": False,
         "sandboxed": True,
         "duration_ms": result.info.get("duration_ms"),
+        "input_context": context,
+        "target_context": context,
     }
     if result.contained:
         data["note"] = (
@@ -365,6 +387,7 @@ async def _run_in_process(
     allow_mutation: bool,
     allow_system: bool,
     fallback_reason: str,
+    expected_context: TargetContext | None = None,
 ) -> Envelope:
     """The original path: guarded execution on the model worker thread."""
     settings = core.settings
@@ -385,12 +408,20 @@ async def _run_in_process(
         deny_dirs=core.generated_code_deny_paths(),
     )
 
+    mutation_started = False
+    input_context: dict[str, Any] = {}
+
     def job() -> tuple[executor.ExecResult, int | None, int | None]:
+        nonlocal mutation_started, input_context
+        if expected_context is not None:
+            require_target_context(core, expected_context)
+        input_context = execution_context(session, expected_context)
         pre = session.max_id()
         if allow_mutation:
             # The thread that performs the edit owns the flag. A cancelled or
             # timed-out await unwinds while this thread keeps mutating, and a
             # false clean flag silently discards the edit at the next open.
+            mutation_started = True
             session.mark_dirty()
         with (
             entity_mutation_lock(enabled=not allow_mutation),
@@ -405,7 +436,7 @@ async def _run_in_process(
     def announce_mutation() -> None:
         """Publish what job() already flagged, so live consumers refresh."""
         nonlocal announced
-        if not (allow_mutation and session.dirty) or announced:
+        if not mutation_started or announced:
             return
         announced = True
         changes = session.record_change(description, tool="execute_ifc_code")
@@ -415,6 +446,15 @@ async def _run_in_process(
             description=description,
             changes=changes,
         )
+
+    def partial_change_data() -> dict[str, Any]:
+        if not mutation_started:
+            return {}
+        return {
+            "partial_changes_possible": True,
+            "input_context": input_context,
+            "target_context": execution_context(session, expected_context),
+        }
 
     # Generating geometry takes longer than answering a question, and a
     # mutating run that times out costs the user their changes, so an edit is
@@ -427,9 +467,11 @@ async def _run_in_process(
         result, pre, post = await session.run(
             job, timeout=budget, timeout_code="EXEC_TIMEOUT"
         )
-    except ToolError:
+    except ToolError as exc:
         # includes EXEC_TIMEOUT, where the worker is still mutating
         announce_mutation()
+        if mutation_started:
+            exc.data = {**(exc.data or {}), **partial_change_data()}
         raise
     except asyncio.CancelledError:
         # a BaseException, so the handlers below never see it
@@ -450,6 +492,7 @@ async def _run_in_process(
                 "intended, ask the user to run /mode edit in the ifc-console "
                 "terminal and resubmit."
             ),
+            data=partial_change_data() or None,
         ) from exc
     except Exception as exc:
         announce_mutation()
@@ -457,8 +500,11 @@ async def _run_in_process(
         raise ToolError(
             "EXEC_ERROR",
             f"{type(exc).__name__}: {exc}",
-            "Read the traceback in data, fix the code, and resubmit.",
-            data={"traceback": executor.format_traceback(exc)},
+            "Read the traceback in data. Changes may be partial: read back the intended "
+            "objects and retry only unfinished edits."
+            if mutation_started
+            else "Read the traceback in data, fix the code, and resubmit.",
+            data={"traceback": executor.format_traceback(exc), **partial_change_data()},
         ) from exc
     duration_ms = int((time.perf_counter() - start) * 1000)
 
@@ -492,6 +538,8 @@ async def _run_in_process(
         "mutated": mutated,
         "sandboxed": False,
         "duration_ms": duration_ms,
+        "input_context": input_context,
+        "target_context": execution_context(session, expected_context),
     }
     if mutated:
         copy = session.working_copy

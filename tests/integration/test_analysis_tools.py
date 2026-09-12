@@ -358,6 +358,15 @@ async def test_export_measurement_report_writes_and_registers(
     listed = await h.call("list_artifacts")
     kinds = [row["kind"] for row in listed["data"]["artifacts"]]
     assert "measurement-report" in kinds
+    artifact = next(
+        row
+        for row in listed["data"]["artifacts"]
+        if row["artifact_id"] == out["data"]["artifact_id"]
+    )
+    assert artifact["metadata"]["target_context"] == out["data"]["target_context"]
+    assert out["data"]["target_context"]["model_id"] == h.core.session.model_id
+    assert out["data"]["target_context"]["revision"] == h.core.session.revision
+    assert len(out["data"]["target_context"]["global_ids"]) == 1
 
     again = await h.call("export_measurement_report", selector="IfcWall", path=str(target))
     assert again["ok"] is False
