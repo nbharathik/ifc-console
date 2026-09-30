@@ -135,11 +135,28 @@ def test_discovery_uses_the_extension_group_and_is_deterministic(monkeypatch) ->
 
     assert calls == [{"group": "ifc_console.extensions"}]
     assert [(entry.name, entry.value) for entry in discovered] == [
+        ("agents", "ifc_console.agents.extension:AgentExtension"),
         ("alpha", "alpha:extension"),
         ("alpha", "zulu:extension"),
         ("zeta", "zeta:extension"),
     ]
     assert all(entry.loads == 0 for entry in entries)
+
+
+def test_an_installed_extension_cannot_replace_a_builtin(monkeypatch) -> None:
+    stale = FakeEntryPoint("agents", "ifc_console_agents.extension:AgentExtension", object())
+    monkeypatch.setattr(extension_module.metadata, "entry_points", lambda **_: [stale])
+
+    discovered = ExtensionManager().discover()
+
+    assert [(entry.name, entry.value) for entry in discovered] == [
+        ("agents", "ifc_console.agents.extension:AgentExtension")
+    ]
+    assert stale.loads == 0
+
+
+def test_an_explicit_entry_list_never_adds_the_builtins() -> None:
+    assert ExtensionManager(()).discover() == []
 
 
 @pytest.mark.parametrize(

@@ -7,19 +7,12 @@ import enum
 import inspect
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, get_origin
 
 from pydantic import BaseModel
 
 SDK_GOLDEN_PATH = Path(__file__).parent / "golden" / "sdk_contract.json"
-AGENT_SDK_GOLDEN_PATH = (
-    Path(__file__).parent.parent
-    / "packages"
-    / "ifc-console-agents"
-    / "tests"
-    / "golden"
-    / "sdk_contract.json"
-)
+AGENT_SDK_GOLDEN_PATH = Path(__file__).parent / "agents" / "golden" / "sdk_contract.json"
 
 
 def _annotation(value: Any) -> str:
@@ -92,7 +85,10 @@ def _build_module_contract(
         if name == "__version__" or name in optional:
             continue
         value = getattr(module, name)
-        if inspect.isclass(value) and issubclass(value, BaseModel):
+        if get_origin(value) is not None:
+            # Python 3.10 reports collections.abc.Callable[...] as a class
+            aliases[name] = _annotation(value)
+        elif inspect.isclass(value) and issubclass(value, BaseModel):
             models[name] = value.model_json_schema()
         elif inspect.isclass(value) and issubclass(value, enum.Enum):
             enums[name] = {member.name: member.value for member in value}
@@ -140,16 +136,16 @@ def build_sdk_contract() -> dict[str, Any]:
 
 def build_agent_sdk_contract() -> dict[str, Any]:
     """Snapshot the canonical agent SDK independently of core compatibility."""
-    import ifc_console_agents
+    import ifc_console.agents
 
     method_owners = (
-        ifc_console_agents.Agent,
-        ifc_console_agents.AgentToolSource,
-        ifc_console_agents.ProviderModel,
-        ifc_console_agents.InMemoryThreadStore,
-        ifc_console_agents.JsonThreadStore,
+        ifc_console.agents.Agent,
+        ifc_console.agents.AgentToolSource,
+        ifc_console.agents.ProviderModel,
+        ifc_console.agents.InMemoryThreadStore,
+        ifc_console.agents.JsonThreadStore,
     )
-    return _build_module_contract(ifc_console_agents, method_owners)
+    return _build_module_contract(ifc_console.agents, method_owners)
 
 
 def dump_sdk_contract(contract: dict[str, Any]) -> str:

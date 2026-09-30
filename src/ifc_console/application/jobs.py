@@ -124,7 +124,7 @@ class JobService:
                 "the selected model has no durable source revision.",
                 "Open a saved IFC model before submitting a validation job.",
             )
-        captured_revision = f"{session.fingerprint}:{session.revision}"
+        captured_revision = session.revision_id
         if expected_revision is not None and expected_revision != captured_revision:
             raise ToolError(
                 "REVISION_CONFLICT",
@@ -138,7 +138,7 @@ class JobService:
             asyncio.to_thread(describe_source, session.path),
             *(asyncio.to_thread(describe_source, path) for path in resolved_ids),
         )
-        current_revision = f"{session.fingerprint}:{session.revision}"
+        current_revision = session.revision_id
         if session.dirty or current_revision != captured_revision:
             raise ToolError(
                 "REVISION_CONFLICT",
@@ -652,6 +652,7 @@ class JobService:
                     scratch_dir=work,
                     deny_dirs=[self.core.store.home],
                     memory_mb=self.core.settings.sandbox.memory_mb,
+                    exempt_dirs=self.core.sandbox_read_exemptions(),
                 ).to_dict(),
             }
             self._write_json(input_path, payload)
@@ -818,6 +819,7 @@ class JobService:
                     scratch_dir=work,
                     deny_dirs=[self.core.store.home],
                     memory_mb=self.core.settings.sandbox.memory_mb,
+                    exempt_dirs=self.core.sandbox_read_exemptions(),
                 ).to_dict(),
             }
             self._write_json(input_path, payload)

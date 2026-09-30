@@ -18,8 +18,10 @@ def inserts(state: completion.MenuState) -> list[str]:
 # ------------------------------------------------------------- command names
 def test_slash_alone_lists_every_command(core) -> None:
     state = completion.complete("/", core)
-    assert inserts(state) == sorted(f"/{name}" for name in commands.REGISTRY)
+    shown = sorted(f"/{name}" for name in commands.REGISTRY if name not in commands.HIDDEN)
+    assert inserts(state) == shown
     assert "/chat" not in inserts(state)
+    assert "/attach" not in inserts(state)
 
 
 def test_prefix_filters_and_exact_name_ranks_first(core) -> None:
@@ -35,13 +37,12 @@ def test_command_flags_decide_enter_behavior(core) -> None:
     # no argument worth completing: Enter runs it
     assert by_insert["/help"].terminal and not by_insert["/help"].advance
     assert by_insert["/status"].terminal
+    assert by_insert["/models"].terminal  # bare /models lists them
     assert by_insert["/tools"].terminal  # bare /tools opens its overview
     assert by_insert["/agent"].terminal  # bare /agent opens General
     # argument values exist: Enter advances to them instead of running
     assert not by_insert["/mode"].terminal and by_insert["/mode"].advance
-    assert not by_insert["/use"].terminal
-    # required freeform argument: advance, never auto-run
-    assert not by_insert["/port"].terminal and by_insert["/port"].advance
+    assert not by_insert["/connect"].terminal and by_insert["/connect"].advance
 
 
 def test_unknown_and_ambiguous_names_offer_nothing(core) -> None:

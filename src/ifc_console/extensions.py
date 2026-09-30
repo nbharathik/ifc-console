@@ -1,13 +1,14 @@
-"""Trusted, install-time extensions for optional IFC Console products.
+"""Trusted, install-time extensions for IFC Console products.
 
 Operation plugins add individual tools and remain deny-by-default. Extensions
-are a different boundary: an explicitly installed companion distribution may
-add a complete first-party surface such as routes, state, operations, and a
-browser panel. Core never imports an extension implementation directly.
+are a different boundary: a first-party module or an explicitly installed
+distribution may add a complete surface such as routes, state, operations, and
+a browser panel. Implementations are imported by name when attached.
 """
 
 from __future__ import annotations
 
+import importlib
 import inspect
 import json
 import logging
@@ -28,6 +29,22 @@ log = logging.getLogger("ifc-console.extensions")
 
 EXTENSION_API_VERSION = "1"
 ENTRY_POINT_GROUP = "ifc_console.extensions"
+# First-party extensions that ship in this package, loaded by name so the
+# implementation is imported only when an application attaches it.
+BUILTIN_EXTENSIONS = {"agents": "ifc_console.agents.extension:AgentExtension"}
+
+
+@dataclass(frozen=True)
+class _BuiltinEntry:
+    """Shaped like an entry point so discovery treats both alike."""
+
+    name: str
+    value: str
+    dist: None = None
+
+    def load(self) -> Any:
+        module, _, attribute = self.value.partition(":")
+        return getattr(importlib.import_module(module), attribute)
 
 
 class ExtensionManifest(BaseModel):
@@ -124,11 +141,15 @@ class ExtensionManager:
         self._core: AppCore | None = None
 
     def discover(self) -> list[Any]:
-        entries = (
-            list(self._provided)
-            if self._provided is not None
-            else list(metadata.entry_points(group=ENTRY_POINT_GROUP))
-        )
+        if self._provided is not None:
+            entries = list(self._provided)
+        else:
+            entries = [
+                entry
+                for entry in metadata.entry_points(group=ENTRY_POINT_GROUP)
+                if entry.name not in BUILTIN_EXTENSIONS
+            ]
+            entries.extend(_BuiltinEntry(name, value) for name, value in BUILTIN_EXTENSIONS.items())
         return sorted(entries, key=lambda entry: (entry.name.casefold(), entry.value))
 
     @staticmethod
@@ -197,11 +218,10 @@ class ExtensionManager:
     def require(self, name: str) -> object:
         state = self.state(name)
         if state is None:
-            package = "ifc-console-agents" if name == "agents" else name
             raise ToolError(
                 "EXTRA_NOT_INSTALLED",
-                f"the {name} extension is not installed",
-                f"Install {package} and restart IFC Console.",
+                f"the {name} extension did not load",
+                "Run ifc-console doctor for the reason, then restart IFC Console.",
             )
         return state
 

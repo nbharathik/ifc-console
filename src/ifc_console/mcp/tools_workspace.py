@@ -38,28 +38,29 @@ async def _ensure_index(core: AppCore) -> None:
 
 
 def register(mcp: OperationRegistry, core: AppCore) -> None:
-    limit_ = core.settings.exec.output_char_limit
+    def limit_() -> int:
+        return core.settings.exec.output_char_limit
 
     @mcp.tool(
         annotations=QUERY_ANN,
         description=(
-            "[QUERY] Search the allowed folders for BIM files of any supported "
-            f"kind ({', '.join(_KIND_NAMES)}) and return ranked candidates with "
-            "path, kind, size, IFC schema or IDS spec count, and a guessed "
-            "discipline. Opens nothing: pass a returned path to open_ifc_file or "
-            "attach. Omit query to list what is there. If meta.ambiguous is "
-            "true, ask the user which file they meant instead of picking one."
+            "[QUERY] Search the allowed folders for BIM files "
+            f"(kinds: {', '.join(_KIND_NAMES)}) and return ranked candidates with "
+            "path, kind, size, schema or IDS spec count, and a guessed "
+            "discipline. Opens nothing: pass a path to open_ifc_file or attach. "
+            "Omit query to list. If meta.ambiguous is true, ask the user which "
+            "file they meant."
         ),
     )
     @enveloped(core, "find_files")
     async def find_files(
         query: Annotated[
             str | None,
-            Field(description="Free text, e.g. 'architecture', 'ids', 'rev3'. Omit to list."),
+            Field(description="Free text, e.g. 'architecture' or 'rev3'; omit to list."),
         ] = None,
         kinds: Annotated[
             list[str] | None,
-            Field(description=f"Restrict to these kinds. Allowed: {list(_KIND_NAMES)}."),
+            Field(description="Restrict to these kinds (names in the tool description)."),
         ] = None,
         limit: Annotated[int, Field(ge=1, le=200)] = 30,
         refresh: Annotated[bool, Field(description="Re-walk the folders first.")] = False,
@@ -100,10 +101,10 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
         annotations=QUERY_ANN,
         description=(
             "[QUERY] Every model held in this session and every attached "
-            "companion file. Shows which model is active (the only writable "
-            "one), which are attached read-only, their dirty flags, and the "
-            "memory budget. Use the model_id values with set_active_model, "
-            "detach, or the `model` parameter of the read tools."
+            "companion file: which model is active (the only writable one), "
+            "which are read-only, dirty flags, and the memory budget. Use the "
+            "model_id values with set_active_model, detach, or the `model` "
+            "parameter of read tools."
         ),
     )
     @enveloped(core, "list_models")
@@ -129,20 +130,19 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
     @mcp.tool(
         annotations=SESSION_ANN,
         description=(
-            "[SESSION] Attach a file alongside the active model, without "
-            "replacing it. An IFC file is loaded read-only as an extra model "
-            "(use list_models for its model_id); an IDS, BCF, or CSV is "
-            "registered as a companion file so its path is available to the "
-            "tools that read it, for example validate_ids. Allowed in ask mode: "
-            "attaching reads, it never changes a model. To switch the active "
-            "model instead, use open_ifc_file or set_active_model."
+            "[SESSION] Attach a file alongside the active model without "
+            "replacing it. An IFC is loaded read-only as an extra model (see "
+            "list_models for its model_id); an IDS, BCF or CSV is registered as "
+            "a companion file for tools that read it, e.g. validate_ids. Allowed "
+            "in ask mode. To switch the active model use open_ifc_file or "
+            "set_active_model."
         ),
     )
     @enveloped(core, "attach")
     async def attach(
         path: Annotated[str, Field(description="Path to the file; see find_files.")],
         alias: Annotated[
-            str | None, Field(description="Short name to refer to it by; defaults to the stem.")
+            str | None, Field(description="Short name; defaults to the file stem.")
         ] = None,
     ) -> Envelope:
         target = core.require_path_allowed(Path(path))
@@ -178,9 +178,9 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
         annotations=SESSION_ANN,
         description=(
             "[SESSION] Release an attached model (by model_id) or companion file "
-            "(by alias). Refuses to drop a model with unsaved changes. The "
-            "active model cannot be detached while others are attached; switch "
-            "with set_active_model first."
+            "(by alias). Refuses a model with unsaved changes. The active model "
+            "cannot be detached while others are attached; use "
+            "set_active_model first."
         ),
     )
     @enveloped(core, "detach")
@@ -221,10 +221,9 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
     @mcp.tool(
         annotations=SESSION_ANN,
         description=(
-            "[SESSION] Make an already-resident model the active one, so it "
-            "becomes the model every tool reads by default and the only "
-            "writable one. The model that was active stays resident, read-only, "
-            "and keeps any unsaved changes."
+            "[SESSION] Make a resident model the active one: the default for "
+            "every tool and the only writable one. The previous active model "
+            "stays resident, read-only, with its unsaved changes."
         ),
     )
     @enveloped(core, "set_active_model")

@@ -254,3 +254,28 @@ def test_unknown_key_warns(tmp_path: Path) -> None:
     _write(tmp_path / "h" / "settings.json", {"nope": {"x": 1}})
     store = SettingsStore(home=tmp_path / "h", project_dir=tmp_path, env={})
     assert any("nope" in w for w in store.warnings)
+
+
+def test_harness_engines_are_a_user_level_list(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    engines = [{"name": "opencode", "command": "opencode", "args": ["acp"]}]
+    (home / "settings.json").write_text(
+        json.dumps({"harness": {"enabled": True, "engines": engines}}), encoding="utf-8"
+    )
+    project = tmp_path / "project" / ".ifc-console"
+    project.mkdir(parents=True)
+    (project / "settings.json").write_text(
+        json.dumps({"harness": {"enabled": True, "engines": engines}}), encoding="utf-8"
+    )
+    store = SettingsStore(home=home, project_dir=tmp_path / "project", env={})
+    assert store.settings.harness.enabled is True
+    [engine] = store.settings.harness.engines
+    assert engine.name == "opencode" and engine.mcp == "bridge" and engine.cwd == "run"
+    assert store.provenance["harness.engines"] == "user"
+    assert any("harness.engines" in warning for warning in store.warnings)
+
+    from ifc_console.settings import HarnessSettings
+
+    with pytest.raises(ValidationError):
+        HarnessSettings.model_validate({"engines": [engines[0], engines[0]]})

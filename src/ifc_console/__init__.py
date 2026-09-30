@@ -1,9 +1,8 @@
 """ifc-console: a terminal interface to connect IFC files to LLMs."""
 
-from importlib.util import find_spec
 from typing import TYPE_CHECKING, Any
 
-__version__ = "0.1.4"
+__version__ = "0.2.0"
 
 # The SDK pulls in the whole backend, so it stays behind a lazy attribute:
 # `ifc-console --help` must not pay for ifcopenshell.
@@ -118,7 +117,7 @@ __all__ = [
 ]
 
 if TYPE_CHECKING:
-    from ifc_console_agents import (
+    from ifc_console.agents import (
         Agent,
         AgentEvent,
         AgentEventType,
@@ -143,7 +142,6 @@ if TYPE_CHECKING:
         ThreadStore,
         ThreadStoreError,
     )
-
     from ifc_console.integrations import McpToolSource
     from ifc_console.runtime import (
         ConsoleRuntime,
@@ -261,16 +259,6 @@ _AGENT_EXPORTS = {
     "ThreadStoreError",
 }
 
-# Keep explicit one-release imports such as ``from ifc_console import Agent``
-# working when the companion distribution is installed, without making a
-# core-only ``from ifc_console import *`` try to resolve unavailable symbols.
-try:
-    _AGENTS_AVAILABLE = find_spec("ifc_console_agents") is not None
-except (ImportError, ValueError):
-    _AGENTS_AVAILABLE = False
-if not _AGENTS_AVAILABLE:
-    __all__ = [name for name in __all__ if name not in _AGENT_EXPORTS]
-
 _RUNTIME_EXPORTS = {
     "ConsoleRuntime",
     "EmbeddedWebApp",
@@ -294,15 +282,9 @@ _TOOLSET_EXPORTS = {
 
 def __getattr__(name: str) -> Any:
     if name in _AGENT_EXPORTS:
-        try:
-            import ifc_console_agents
-        except ModuleNotFoundError as exc:
-            if exc.name != "ifc_console_agents":
-                raise
-            raise AttributeError(
-                f"{name} is provided by the optional ifc-console-agents package"
-            ) from exc
-        return getattr(ifc_console_agents, name)
+        from ifc_console import agents
+
+        return getattr(agents, name)
     if name in _RUNTIME_EXPORTS:
         from ifc_console import runtime
 

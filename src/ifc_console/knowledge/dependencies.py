@@ -8,8 +8,8 @@ import sys
 def missing_document_dependency(distribution: str) -> str:
     """Return a repair command for a missing document parser or renderer."""
     return (
-        f"{distribution} is part of optional document support. Install it for this "
-        f'interpreter with: "{sys.executable}" -m pip install "ifc-console[documents]".'
+        f"{distribution} is part of the optional agents extra. Install it for this "
+        f'interpreter with: "{sys.executable}" -m pip install "ifc-console[agents]".'
     )
 
 

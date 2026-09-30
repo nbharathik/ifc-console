@@ -35,7 +35,7 @@ async def test_typing_opens_and_narrows_the_menu(app: IfcConsoleApp) -> None:
         assert menu.display is False
         await pilot.press("/")
         assert menu.display is True
-        assert menu.option_count == len(commands.REGISTRY)
+        assert menu.option_count == len(commands.REGISTRY) - len(commands.HIDDEN)
         await pilot.press("m", "o")
         assert menu.option_count == 2  # /mode, /models
 

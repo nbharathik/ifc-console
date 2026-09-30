@@ -18,7 +18,7 @@ from ifc_console.core.operations import OperationAnnotations as ToolAnnotations
 from ifc_console.core.operations import OperationRegistry
 from ifc_console.core.results import Envelope, ToolError, ok
 from ifc_console.ifc.elements import INCLUDE_ALLOWED, INCLUDE_DEFAULT, element_detail
-from ifc_console.ifc.info import build_project_info
+from ifc_console.ifc.info import build_project_info, disk_stamp
 from ifc_console.ifc.query import (
     ALLOWED_FIELDS,
     DEFAULT_FIELDS,
@@ -39,7 +39,7 @@ if TYPE_CHECKING:
 
 QUERY_ANN = ToolAnnotations(readOnlyHint=True, destructiveHint=False)
 
-MODEL_ARG = "model_id of an attached model (see list_models); omit for the active model."
+MODEL_ARG = "model_id from list_models; omit for the active model."
 
 
 def read_meta(core: AppCore, session: Any) -> dict[str, Any]:
@@ -87,10 +87,9 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
         annotations=QUERY_ANN,
         data_model=SessionStatusData,
         description=(
-            "[QUERY] Return server/session state: loaded model (name, path, schema, "
+            "[QUERY] Server and session state: loaded model (name, path, schema, "
             "size), mode (ask = query-only, edit = mutations allowed), "
-            "unsaved-changes flag, fingerprint, viewer connection state, server "
-            "version. Call this first if unsure about session state."
+            "unsaved-changes flag, viewer connection, server version."
         ),
     )
     @enveloped(core, "get_session_status")
@@ -126,9 +125,8 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
     @mcp.tool(
         annotations=QUERY_ANN,
         description=(
-            "[QUERY] One-call orientation: session status, project summary, and "
-            "the spatial tree to depth 2, in a single round-trip. Start here on "
-            "a fresh connection; it replaces three separate calls."
+            "[QUERY] One-call orientation: session status, project summary and "
+            "the spatial tree to depth 2. Start here on a fresh connection."
         ),
     )
     @enveloped(core, "orient")
@@ -159,7 +157,7 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
                     build_spatial_tree(s.ifc, None, 2, True),
                 )
 
-            (info, tree), cached = await core.cached_read("orient", job)
+            (info, tree), cached = await core.cached_read("orient", job, key=disk_stamp(s))
             data["project"] = info
             data["spatial_tree"] = tree
             return ok(data, core.session_meta(), char_limit=limit_(), cached=cached)
@@ -169,10 +167,9 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
     @mcp.tool(
         annotations=QUERY_ANN,
         description=(
-            "[QUERY] Live capability map: every currently registered tool with a "
-            "one-line purpose, the session mode and what it permits, viewer "
-            "readiness, transport constraints, and worked examples. This is the "
-            "ground truth for what can execute now."
+            "[QUERY] Live capability map: every registered tool with a one-line "
+            "purpose, session mode and what it permits, viewer readiness, "
+            "transport limits, and examples. Ground truth for what can run now."
         ),
     )
     @enveloped(core, "describe_capabilities")
@@ -197,7 +194,7 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
             if core.transport != "http":
                 return "unavailable_on_transport"
             if not viewer_installed:
-                return "viewer_extra_missing"
+                return "viewer_assets_missing"
             if tool.name == "open_viewer":
                 return "ready"
             if not core.viewer.enabled:
@@ -296,10 +293,9 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
     @mcp.tool(
         annotations=QUERY_ANN,
         description=(
-            "[QUERY] Summary of the loaded IFC: schema, project name/description, "
-            "units, counts of sites/buildings/storeys/spaces, entity counts for "
-            "common classes, top materials and classifications, authoring-tool "
-            "header info. Start here to orient yourself in a model."
+            "[QUERY] Summary of the loaded IFC: schema, project, units, counts of "
+            "sites/buildings/storeys/spaces and common classes, top materials and "
+            "classifications, authoring-tool header info."
         ),
     )
     @enveloped(core, "get_ifc_project_info")
@@ -311,6 +307,7 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
         data, cached = await core.cached_read(
             "project_info",
             lambda: build_project_info(s.ifc, s.path),
+            key=disk_stamp(s),
             session=s,
         )
         return ok(
@@ -320,9 +317,9 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
     @mcp.tool(
         annotations=QUERY_ANN,
         description=(
-            "[QUERY] The spatial containment tree (Project→Site→Building→Storey→"
-            "Space) with direct element counts per node. Use root_global_id and "
-            "depth to zoom into a branch."
+            "[QUERY] Spatial containment tree (Project→Site→Building→Storey→"
+            "Space) with direct element counts per node. Zoom with root_global_id "
+            "and depth."
         ),
     )
     @enveloped(core, "get_spatial_structure")
@@ -354,12 +351,11 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
         annotations=QUERY_ANN,
         data_model=SearchElementsData,
         description=(
-            "[QUERY] Resolve a human reference to IFC elements without making the "
-            "model write selector syntax. A name, partial name, class, type name, or "
-            "GlobalId is accepted. Bare IFC classes and expressions containing '=' "
-            "use IfcOpenShell selector syntax; other input is a case-insensitive text "
-            "search. Paginate with limit/offset. Use get_viewer_selection instead when "
-            "the human points at the 3D view."
+            "[QUERY] Resolve a name, partial name, class, type name or GlobalId to "
+            "elements without writing selector syntax. Bare classes and expressions "
+            "with '=' use selector syntax; other input is a case-insensitive text "
+            "search. Paginate with limit/offset. For what the user picked in the 3D "
+            "view use get_viewer_selection."
         ),
     )
     @enveloped(core, "search_elements")
@@ -393,16 +389,12 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
         annotations=QUERY_ANN,
         data_model=QueryElementsData,
         description=(
-            "[QUERY] Find elements with the IfcOpenShell selector syntax and return "
-            "one summary row each. It can filter AND project: `properties` adds any "
-            "named property as a column, which is far cheaper than get_psets. "
-            "Examples: `IfcWall` (all walls); `IfcWall, IfcSlab` (both); "
-            "`IfcWall, material=concrete`; `IfcWall, Pset_WallCommon.FireRating=F30`; "
-            "`IfcElement, Name=/W.*1/` (regex); "
-            "query_elements(query='IfcDoor', fields=[], "
-            "properties=['Pset_DoorCommon.FireRating']) for one property across every "
-            "door. Paginate with limit/offset; then use get_element on interesting "
-            "GlobalIds. On syntax errors the response includes a cheat-sheet."
+            "[QUERY] Find elements with IfcOpenShell selector syntax, one summary "
+            "row each. `properties` adds named properties as columns, far cheaper "
+            "than get_psets. Examples: `IfcWall, IfcSlab`; `IfcWall, material=concrete`; "
+            "`IfcWall, Pset_WallCommon.FireRating=F30`; `IfcElement, Name=/W.*1/` "
+            "(regex). Paginate with limit/offset, then get_element on GlobalIds of "
+            "interest. Syntax errors return a cheat-sheet."
         ),
     )
     @enveloped(core, "query_elements")
@@ -414,9 +406,8 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
         fields: Annotated[
             list[str] | None,
             Field(
-                description="Extra columns beyond global_id+class. "
-                f"Allowed: {list(ALLOWED_FIELDS)}. Default: {list(DEFAULT_FIELDS)}. "
-                "Pass [] for the smallest row (global_id + class only)."
+                description=f"Extra columns, any of: {', '.join(ALLOWED_FIELDS)}. "
+                "[] for global_id + class only."
             ),
         ] = None,
         properties: Annotated[
@@ -424,7 +415,7 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
             Field(
                 max_length=20,
                 description="Dotted Pset_Name.Property columns, e.g. "
-                "['Pset_WallCommon.FireRating']. Missing values come back as null.",
+                "Pset_WallCommon.FireRating. Missing values are null.",
             ),
         ] = None,
         order_by: Literal["class", "name", "storey"] = "class",
@@ -483,10 +474,10 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
     @mcp.tool(
         annotations=QUERY_ANN,
         description=(
-            "[QUERY] Full detail for up to 50 elements by GlobalId: direct "
-            "attributes, property sets, quantity sets, materials, type, spatial "
-            "container chain, and optionally openings/decomposition. Choose "
-            "sections with `include` to save tokens."
+            "[QUERY] Full detail for up to 50 elements by GlobalId: attributes, "
+            "property and quantity sets, materials, type, spatial container chain, "
+            "optionally openings/decomposition. Pick sections with `include` to "
+            "save tokens."
         ),
     )
     @enveloped(core, "get_element")
@@ -496,8 +487,8 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
         include: Annotated[
             list[str] | None,
             Field(
-                description=f"Sections to include. Allowed: {list(INCLUDE_ALLOWED)}. "
-                f"Default: {list(INCLUDE_DEFAULT)}. Pass [] for global_id + class only."
+                description=f"Sections, any of: {', '.join(INCLUDE_ALLOWED)}. "
+                "[] for global_id + class only."
             ),
         ] = None,
         model: Annotated[str | None, Field(description=MODEL_ARG)] = None,
@@ -535,9 +526,9 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
     @mcp.tool(
         annotations=QUERY_ANN,
         description=(
-            "[QUERY] Property sets and quantity sets for up to 100 elements by "
-            "GlobalId. Response preserves input order in `results`. Lighter than "
-            "get_element when you only need psets."
+            "[QUERY] Property and quantity sets for up to 100 elements by "
+            "GlobalId, in input order under `results`. Lighter than get_element "
+            "when only psets are needed."
         ),
     )
     @enveloped(core, "get_psets")
@@ -593,15 +584,12 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
     @mcp.tool(
         annotations=QUERY_ANN,
         description=(
-            "[QUERY] Official IFC schema documentation, three ways. `entity` "
-            "gives the definition, attributes with types and optionality, the "
-            "supertype chain, predefined-type values, and the property sets that "
-            "apply to it. `pset` gives one property set: every property with its "
-            "data type, enumerated values, and which entities it applies to. "
-            "`property` is the reverse lookup, naming the property sets that "
-            "define a property such as FireRating. Use before writing "
-            "execute_ifc_code or a selector against unfamiliar classes. Works "
-            "without a loaded model (defaults to IFC4)."
+            "[QUERY] Official IFC schema docs. `entity`: definition, attributes "
+            "with types and optionality, supertypes, predefined types, applicable "
+            "psets. `pset`: every property with data type, enum values and "
+            "applicable entities. `property`: reverse lookup of the psets defining "
+            "it, e.g. FireRating. Use before writing execute_ifc_code or selectors "
+            "for unfamiliar classes. Works without a model (defaults to IFC4)."
         ),
     )
     @enveloped(core, "get_schema_docs")

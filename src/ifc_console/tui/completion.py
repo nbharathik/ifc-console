@@ -71,6 +71,16 @@ def complete(line: str, core: AppCore, files: FilesProvider | None = None) -> Me
     cmd = _resolve(name)
     if cmd is None:
         return _EMPTY
+    head, more, tail = rest.partition(" ")
+    if more and head.lower() in commands.FOLDED.get(cmd.name, ()):
+        # `/settings theme <arg>`: complete the way the folded command would
+        target = "models" if head.lower() == "list" else head.lower()
+        sub = _ARG_PROVIDERS.get(target)
+        if sub is None:
+            return _EMPTY
+        state = sub(core, tail, files)
+        prefix = f"/{cmd.name} {head} " + state.prefix.removeprefix(f"/{target} ")
+        return MenuState(prefix=prefix, candidates=state.candidates, context=state.context)
     provider = _ARG_PROVIDERS.get(cmd.name)
     if provider is None:
         return _EMPTY
@@ -89,13 +99,15 @@ def _resolve(name: str) -> commands.Command | None:
 
 # Commands that do something useful with no argument, so Enter runs them even
 # though Tab can still complete an argument. /file opens the file picker.
-_RUN_ON_ENTER = frozenset({"agent", "file", "tools", "viewer"})
+_RUN_ON_ENTER = frozenset({"agent", "file", "models", "status", "tools", "viewer"})
 
 
 # ------------------------------------------------------------- command names
 def _command_menu(token: str) -> MenuState:
     token = token.lower()
-    matches = [n for n in sorted(commands.REGISTRY) if n.startswith(token)]
+    matches = [
+        n for n in sorted(commands.REGISTRY) if n.startswith(token) and n not in commands.HIDDEN
+    ]
     # an exactly-typed name outranks the longer commands it prefixes
     matches.sort(key=lambda n: n != token)
     out = []
@@ -157,7 +169,6 @@ def _theme_args(core: AppCore, rest: str, _files: FilesProvider | None) -> MenuS
 
 def _agent_args(core: AppCore, rest: str, _files: FilesProvider | None) -> MenuState:
     rows = [
-        ("new", "compose a project agent from reviewed capability blocks"),
         ("list", "show built-in and project agents"),
         ("files", "refresh and list project references"),
         ("off", "disable the Agent workspace and forget in-memory keys"),
@@ -357,6 +368,24 @@ def _tools_args(core: AppCore, rest: str, _files: FilesProvider | None) -> MenuS
 Provider = Callable[["AppCore", str, "FilesProvider | None"], MenuState]
 
 
+def _models_args(_core: AppCore, rest: str, _files: FilesProvider | None) -> MenuState:
+    return _choices(
+        "models",
+        rest,
+        [
+            ("attach", "load a file alongside the active model"),
+            ("detach", "release an attached model or file"),
+            ("use", "make a loaded model the active one"),
+            ("info", "entity counts for the active model"),
+        ],
+        context="models",
+    )
+
+
+def _status_args(_core: AppCore, rest: str, _files: FilesProvider | None) -> MenuState:
+    return _choices("status", rest, [("audit", "show the last audit records")], context="status")
+
+
 def _loaded_args(core: AppCore, rest: str, _files: FilesProvider | None) -> MenuState:
     """Ids of what is already loaded: models first, then attached files."""
     rows: list[tuple[str, str]] = []
@@ -402,4 +431,6 @@ _ARG_PROVIDERS: dict[str, Provider] = {
     "file": _open_args,
     "port": _port_args,
     "settings": _settings_args,
+    "models": _models_args,
+    "status": _status_args,
 }

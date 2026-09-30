@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import shutil
 from pathlib import Path
 
 import pytest
@@ -335,6 +336,59 @@ def test_the_scratch_stays_writable_when_it_sits_inside_a_denied_root(tmp_path, 
         process.terminate()
 
 
+def test_a_working_copy_inside_the_denied_home_is_readable_but_never_writable(
+    tmp_path, model_path
+) -> None:
+    """Edit mode keeps its copy under the console home. That folder alone is
+    carved out of the deny list, and only for reading."""
+    home = tmp_path / "home"
+    working = home / "working"
+    scratch = home / "sandbox" / "run"
+    working.mkdir(parents=True)
+    (home / "token").write_text("SECRET-TOKEN")
+    copy = working / "model.edit-1.ifc"
+    shutil.copyfile(model_path, copy)
+
+    policy = SandboxPolicy.build(
+        read_dirs=[],
+        scratch_dir=scratch,
+        deny_dirs=[home],
+        memory_mb=1024,
+        exempt_dirs=[working],
+    )
+    process = SandboxProcess(policy, scratch)
+    process.start(timeout=300)
+    try:
+        loaded = process.request({"op": "load", "path": str(copy), "key": "k"}, timeout=300)
+        assert loaded.get("ok", True) is not False, loaded
+
+        evil = working / "evil.txt"
+        write = process.request(
+            {
+                "op": "run",
+                "code": ESCAPE + f"b['open'](r'{evil}', 'w').write('x')",
+                "output_limit": 4096,
+            },
+            timeout=60,
+        )
+        assert write["ok"] is False
+        assert write["kind"] == "violation"
+        assert not evil.exists()
+
+        token = process.request(
+            {
+                "op": "run",
+                "code": ESCAPE + f"print(b['open'](r'{home / 'token'}').read())",
+                "output_limit": 4096,
+            },
+            timeout=60,
+        )
+        assert token["ok"] is False
+        assert "SECRET-TOKEN" not in str(token)
+    finally:
+        process.terminate()
+
+
 def test_the_scratch_directory_stays_writable(sandbox) -> None:
     target = sandbox.scratch_dir / "ok.txt"  # type: ignore[attr-defined]
     reply = run(sandbox, ESCAPE + f"b['open'](r'{target}', 'w').write('fine')")
@@ -352,6 +406,30 @@ async def test_ask_mode_queries_are_sandboxed(ask_harness) -> None:
     assert out["ok"] is True
     assert out["data"]["sandboxed"] is True
     assert out["data"]["result"] == "3"
+
+
+@pytest.mark.skipif(
+    not secure_isolation_supported(),
+    reason="secure sandbox isolation requires CPython 3.12 or newer",
+)
+async def test_an_idle_worker_is_stopped_and_the_next_run_starts_it_again(ask_harness) -> None:
+    import asyncio
+
+    ask_harness.core.settings.sandbox.idle_stop_s = 0.3
+    first = await ask_harness.call("execute_ifc_code", code="len(ifc.by_type('IfcWall'))")
+    assert first["data"]["sandboxed"] is True
+    sandbox = ask_harness.core.sandbox
+    assert sandbox._process is not None
+
+    for _ in range(100):
+        if sandbox._process is None:
+            break
+        await asyncio.sleep(0.1)
+    assert sandbox._process is None
+
+    again = await ask_harness.call("execute_ifc_code", code="len(ifc.by_type('IfcWall'))")
+    assert again["data"]["sandboxed"] is True
+    assert again["data"]["result"] == "3"
 
 
 async def test_runtime_without_thread_audit_falls_back_or_refuses(

@@ -244,6 +244,7 @@ async def test_copy_supports_every_client(
     expected = build_config_snippet(
         client,
         None,
+        tools=commands._profile_for(console.core, client),
         port=console.core.port,
         file=None,
         mode=console.core.policy.mode.value,
@@ -252,6 +253,7 @@ async def test_copy_supports_every_client(
     assert console.clipboard == expected
     assert work_model.name not in console.clipboard
     assert f"{client} setup copied to clipboard" in console.text
+    assert ("--tools" in console.clipboard) == (client != "claude-code")
 
 
 @pytest.mark.parametrize("client", CLIENTS)
@@ -448,7 +450,7 @@ async def test_file_with_a_plain_word_filters_the_picker(console) -> None:
 
 async def test_help_explains_one_command(console) -> None:
     await commands.dispatch(console, "/help file")
-    assert "/file [path|filter]" in console.text
+    assert "/file [path|filter|recent|workspace]" in console.text
     assert "examples" in console.text
 
 

@@ -35,47 +35,40 @@ It runs locally on Windows, macOS, and Linux.
 
 | install | includes |
 | ------- | -------- |
-| `ifc-console` | console/TUI, deterministic IFC operations and workflows, MCP, Python SDK, and the local 3D viewer |
-| `ifc-console-agents` | compatible core plus the complete agent SDK, providers/chat, built-in/custom packs, browser panel, PDF ingestion/rendering, LangGraph checkpoints, devkit, and testing helpers |
+| `ifc-console` | console/TUI, IFC operations and workflows, MCP, Python SDK, the local 3D viewer, and the Agent workspace with its SDK, providers, packs, and skills |
+| `ifc-console[agents]` | agent engines over ACP, the system keyring for provider keys, and PDF text and page rendering for project documents |
 | `ifc-console[validation]` | IDS validation support |
-| `ifc-console[geometry]` | Trimesh-backed raw-mesh health checks |
+| `ifc-console[all]` | both extras |
 
 ```bash
-# Core product:
-uv tool install ifc-console
-
-# Or core plus the complete agents product:
-uv tool install --with ifc-console-agents ifc-console
+uv tool install "ifc-console[agents]"
 
 cd path/to/your/models
 ifc-console
 ```
 
-You can use `pip` instead, or run the core application once with
+You can use `pip` instead, or run the application once with
 `uvx ifc-console`. In the console:
 
 ```text
 > /file             choose an IFC model
 > /connect codex    copy one-time client setup
 > /viewer           open the bundled browser viewer
-> /agent            open the Agent workspace (agent install only)
+> /agent            open the Agent workspace
 ```
 
-With `pip`, install `ifc-console` for the deterministic product or
-`ifc-console-agents` for the agent product and its compatible core. Installed
-agent features register through `ifc_console.extensions`; core never imports
-an agent implementation directly. Existing `ifc-console[viewer]` and
-`ifc-console-viewer` installs remain one-release compatibility no-ops/shims.
-New installations need neither because Three.js, web-ifc, WASM, and the viewer
-application are part of `ifc-console`.
+Everything is in one package: Three.js, web-ifc, the viewer, and the Agent
+workspace ship inside `ifc-console`, and the extras only add third-party
+libraries. The separate `ifc-console-viewer` package is retired.
 
 ## Safety
 
 `ask` mode is read-only. `/mode edit` copies the open file aside and allows
 in-memory changes; `/save` writes that copy, `/save <path>` writes the result
-somewhere else, and `/reload` discards it. The AI cannot change the mode, and
-the file you opened is never written unless you name it yourself or enable
-`files.allow_ai_save`.
+somewhere else, and `/reload` discards it. Every edit is one undoable step
+(`/undo`, `/redo`), and an edit that fails is rolled back whole. The AI cannot
+change the mode, and the file you opened is never written unless you name it
+yourself or enable `files.allow_ai_save`.
 
 Eligible read-only generated code runs in a restricted process on CPython
 3.12+. Python 3.10 and 3.11 use the documented `auto` fallback, while `strict`
@@ -85,10 +78,12 @@ before editing untrusted files or prompts.
 ## Included features
 
 - IFC queries, schema and IDS validation, clashes, quantities, geometry, CSV export, and multi-model review.
+- Structured, undoable edits: `set_properties` with a dry run, all-or-nothing execution, and a viewer that follows without a rebuild.
+- A lean tool profile (14 tools plus a search) that costs a client a sixth of the context of the full listing.
 - A typed, framework-neutral core SDK with scoped toolsets, MCP sources, jobs, artifacts, and deterministic workflows.
 - A bundled local 3D viewer with selection-aware MCP tools, measurements, sections, and screenshots, usable without an LLM.
-- Optional general, measurement, document, and model-review agents from `ifc-console-agents`.
-- Optional provider chat, custom packs, project document retrieval, vision, skills, and reviewable AI-marked changes.
+- General, measurement, document, and model-review agents in the browser Agent workspace.
+- Provider chat, custom packs, project document retrieval, vision, skills, and reviewable AI-marked changes.
 
 ## Documentation
 
@@ -104,7 +99,7 @@ For development setup and tests, see [Contributing](docs/contributing.md).
 
 ## License
 
-The core and agent packages are Apache-2.0. IfcOpenShell is
-LGPL-3.0-or-later, Trimesh is MIT, Three.js is MIT, and web-ifc is MPL-2.0.
+ifc-console is Apache-2.0. IfcOpenShell is LGPL-3.0-or-later, Trimesh is MIT,
+Three.js is MIT, web-ifc is MPL-2.0, and pypdfium2 is Apache-2.0 or BSD-3-Clause.
 
 Inspired by [Bonsai MCP](https://github.com/Show2Instruct/bonsai-mcp).

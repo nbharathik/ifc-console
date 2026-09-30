@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from ifc_console.viewer import assets
+from tests.viewer_sources import application_script
 
 STATIC = assets.require_static_dir()
 @pytest.fixture(scope="module")
@@ -22,7 +23,8 @@ def html() -> str:
 
 @pytest.fixture(scope="module")
 def script() -> str:
-    return (STATIC / "app.js").read_text(encoding="utf-8")
+    """app.js and the modules split out of it."""
+    return application_script()
 
 
 @pytest.fixture(scope="module")
@@ -80,7 +82,7 @@ def test_side_panels_use_contextual_close_controls_and_edge_tabs(
         assert f'id="{side}-panel-tab"' in html
         assert f'aria-controls="{side}-panel"' in html
     panel = script.split("function initSidePanel(", 1)[1].split(
-        "const treePanelController", 1
+        '$("panel-scrim").addEventListener', 1
     )[0]
     assert "panel.inert = !open" in panel
     assert "tab.hidden = open || chatCoversLeftTab" in panel
@@ -403,7 +405,9 @@ def test_spatial_branch_actions_include_the_branch_geometry(script: str) -> None
 def test_measurement_depth_is_computed_from_interpolated_view_position(
     script: str,
 ) -> None:
-    shader = script.split("const depthMaterial", 1)[1].split("makeStateTextures()", 1)[0]
+    shader = script.split("function createDepthMaterial(", 1)[1].split(
+        "/** One translucent plane", 1
+    )[0]
     assert shader.count("varying vec3 vMeasureViewPosition;") == 2
     assert "vMeasureViewPosition = mvPosition.xyz;" in shader
     # Both projections encode view-axis depth over the model's actual range,
@@ -425,9 +429,7 @@ def test_measurement_depth_is_computed_from_interpolated_view_position(
 
 
 def test_search_cancels_stale_work_and_resets_short_queries(script: str) -> None:
-    search = script.split("// ---------------------------------------------------------------- search", 1)[1].split(
-        "// ---------------------------------------------------------------- saved views", 1
-    )[0]
+    search = (STATIC / "search_panel.js").read_text(encoding="utf-8")
     assert "let searchAbort = null;" in search
     assert "searchAbort.abort();" in search
     assert "{ signal: controller.signal }" in search
@@ -811,7 +813,9 @@ def test_the_measurement_maths_is_pure_and_all_of_it_is_used(
     assert 'from "./measure_math.js"' in script
     exported = set(re.findall(r"export function (\w+)", measure_math))
     assert len(exported) > 10
-    imports = script.split('} from "./measure_math.js";', 1)[0].rsplit("import {", 1)[1]
+    imports = "".join(
+        re.findall(r'import \{([^}]*)\} from "\./measure_math\.js";', script)
+    )
     for name in sorted(exported):
         # exported either because app.js calls it or because another export
         # builds on it; anything else is a function nothing runs
@@ -960,7 +964,7 @@ def test_coordinates_leave_the_viewer_in_the_model_s_own_axes(script: str) -> No
     """web-ifc draws Y-up and slides the model to the origin. Both are right
     for drawing and wrong for saying where something is."""
     assert "const IFC_TO_GL = new THREE.Matrix4().set(" in script
-    frames = script.split("function refreshFrames()", 1)[1].split(chr(10) + "/**", 1)[0]
+    frames = script.split("function refreshFrames(", 1)[1].split(chr(10) + "/**", 1)[0]
     # the coordination matrix carries the origin shift, IFC_TO_GL the axes
     assert "modelToScene.copy(coordinationMatrix).multiply(IFC_TO_GL)" in frames
     assert "makeTranslation(-origin[0], -origin[1], -origin[2])" in frames

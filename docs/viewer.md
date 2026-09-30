@@ -18,7 +18,7 @@ it refreshes itself whenever the model changes.
 | :--- | :--- |
 | `/viewer` | open the viewer in your browser |
 | `/viewer vscode` | prepare a link for VS Code's built-in browser |
-| `/copy viewer` | copy the viewer URL |
+| `/connect copy viewer` | copy the viewer URL |
 | `ifc-console --viewer` | enable it at startup |
 
 The stdio server has no viewer. Use the console or `--no-tui`.
@@ -76,10 +76,17 @@ flowchart LR
     console --> ai["AI client reads them"]
 ```
 
-The top bar shows a change count and two actions: **Save IFC** writes the
-working copy, and **Download** hands you the model as it stands. Several tabs
-can be open; each keeps its own camera and selection. With several models
-attached, tabs switch between them.
+The top bar shows a change count and three actions: **Undo** and **Redo** step
+over the AI's edits (they appear only while there is something to step over),
+**Save IFC** writes the working copy, and **Download** hands you the model as it
+stands. Several tabs can be open; each keeps its own camera and selection. With
+several models attached, tabs switch between them.
+
+An edit that touches no geometry, such as setting properties or renaming an
+element, is applied in place: the open properties refresh and renamed elements
+are relabelled in the tree, and the scene is not parsed again. An edit that
+changes shapes, adds or removes elements, or rearranges the tree rebuilds the
+scene once. Saving never rebuilds it.
 
 ## For AI clients
 

@@ -26,6 +26,8 @@ CASES = [
     ("ifc_api.run('root.create_entity', ifc, ifc_class='IfcWall')", E),
     ("import ifcopenshell.api\nifcopenshell.api.run('x', ifc)", E),
     ("ifc.create_entity('IfcWall')", E),
+    ("ifc.createIfcWall(ifcopenshell.guid.new())", E),  # dynamic factory
+    ("e = ifc.by_type('IfcWall')[0]\ne.file.createIfcCartesianPoint((0.0, 0.0, 0.0))", E),
     ("ifc.remove(ifc.by_type('IfcWall')[0])", E),
     ("ifc.add(other_entity)", E),
     ("w = ifc.by_type('IfcWall')[0]\nw.Name = 'x'", E),

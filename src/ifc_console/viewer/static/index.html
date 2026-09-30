@@ -12,6 +12,22 @@
        and web-ifc (5.9 MB) only after the worker spawns. Declaring them here
        starts every download while the HTML is still being read. -->
   <link rel="modulepreload" href="/viewer/static/app.js">
+  <link rel="modulepreload" href="/viewer/static/batching.js">
+  <link rel="modulepreload" href="/viewer/static/delta.js">
+  <link rel="modulepreload" href="/viewer/static/dom.js">
+  <link rel="modulepreload" href="/viewer/static/file_actions.js">
+  <link rel="modulepreload" href="/viewer/static/frames.js">
+  <link rel="modulepreload" href="/viewer/static/measure_view.js">
+  <link rel="modulepreload" href="/viewer/static/model_tree.js">
+  <link rel="modulepreload" href="/viewer/static/parsed_cache.js">
+  <link rel="modulepreload" href="/viewer/static/parser_bridge.js">
+  <link rel="modulepreload" href="/viewer/static/properties_view.js">
+  <link rel="modulepreload" href="/viewer/static/saved_views.js">
+  <link rel="modulepreload" href="/viewer/static/scene_parts.js">
+  <link rel="modulepreload" href="/viewer/static/search_panel.js">
+  <link rel="modulepreload" href="/viewer/static/session.js">
+  <link rel="modulepreload" href="/viewer/static/ui_state.js">
+  <link rel="modulepreload" href="/viewer/static/workspace_layout.js">
   <link rel="modulepreload" href="/viewer/static/vendor/three.module.min.js">
   <link rel="modulepreload" href="/viewer/static/vendor/three.core.min.js">
   <link rel="modulepreload" href="/viewer/static/vendor/OrbitControls.js">
@@ -34,8 +50,6 @@
     </span>
     <span class="topbar-context">
       <span id="model-name" aria-label="Current model"></span>
-      <!-- Only shown once a second model is attached in the console. -->
-      <select id="model-select" aria-label="Model to view" hidden></select>
       <span id="schema" class="meta" hidden></span>
     </span>
     <span class="topbar-state">
@@ -60,6 +74,27 @@
           <path d="M5 6.2h6M5 8.2h3.6" stroke="currentColor" stroke-width="1.2"
                 stroke-linecap="square"/>
         </svg>
+      </button>
+      <!-- Undo and Redo appear only while there is an edit to step over. -->
+      <button id="btn-undo" class="text-action" type="button" hidden
+              title="Undo the last edit">
+        <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
+          <path d="M6.2 3.4 3 6.6l3.2 3.2" stroke="currentColor" stroke-width="1.4"
+                stroke-linecap="square"/>
+          <path d="M3 6.6h6.4a3.2 3.2 0 0 1 0 6.4H6" stroke="currentColor"
+                stroke-width="1.4" stroke-linecap="square"/>
+        </svg>
+        Undo
+      </button>
+      <button id="btn-redo" class="text-action" type="button" hidden
+              title="Redo the edit you undid">
+        <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
+          <path d="M9.8 3.4 13 6.6l-3.2 3.2" stroke="currentColor" stroke-width="1.4"
+                stroke-linecap="square"/>
+          <path d="M13 6.6H6.6a3.2 3.2 0 0 0 0 6.4H10" stroke="currentColor"
+                stroke-width="1.4" stroke-linecap="square"/>
+        </svg>
+        Redo
       </button>
       <!-- Saving is the one action no assistant takes for the user, so it
            lives in the topbar next to what it saves. -->
@@ -290,17 +325,6 @@
         </svg>
       </button>
 
-      <button id="btn-tools" class="icon-btn" aria-expanded="false" hidden
-              aria-controls="tools-panel" aria-label="View tools"
-              title="View tools">
-        <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
-          <path d="M8 2.2 13.8 5.4 8 8.6 2.2 5.4Z" stroke="currentColor" stroke-width="1.3"
-                stroke-linejoin="round"/>
-          <path d="M2.2 8.4 8 11.6 13.8 8.4M2.2 11 8 14.2 13.8 11" stroke="currentColor"
-                stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
-        </svg>
-      </button>
-
       <div id="tools-panel" class="popover" role="dialog" aria-label="View tools" hidden>
         <div class="popover-head">
           <div class="popover-heading">View tools</div>
@@ -506,64 +530,6 @@
                   title="Turn every section plane off">Clear sections</button>
         </div>
         </div>
-        <div class="tool-section" data-tool-panel="measure" hidden>
-        <div class="popover-title">Measure</div>
-        <div class="tool-list measure-launcher-list">
-          <button id="tool-open-measure" class="tool-btn tool-btn-primary" type="button"
-                  aria-controls="measure-card" aria-expanded="false"
-                  title="Open the measurement tools">
-            <span class="tool-btn-label">
-              <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
-                <path d="m2.5 11.5 9-9 2 2-9 9h-2v-2Z" stroke="currentColor"
-                      stroke-width="1.25" stroke-linejoin="round"/>
-                <path d="m7 7 2 2m-4 0 1.4 1.4M9 5l1.4 1.4" stroke="currentColor"
-                      stroke-width="1.1" stroke-linecap="round"/>
-              </svg>
-              Measure
-            </span>
-            <svg class="tool-chevron" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-              <path d="m6 4 4 4-4 4" stroke="currentColor" stroke-width="1.25"
-                    stroke-linecap="round" stroke-linejoin="round"/>
-            </svg>
-          </button>
-          <div class="tool-action-grid">
-            <button id="tool-measure-element" class="tool-btn tool-btn-compact" type="button"
-                    title="Length, width, thickness and diagonal of the selected elements">
-              <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
-                <path d="M3 5.5 8 3l5 2.5v5L8 13l-5-2.5v-5Z" stroke="currentColor"
-                      stroke-width="1.15" stroke-linejoin="round"/>
-                <path d="m3 5.5 5 2.6 5-2.6M8 8.1V13" stroke="currentColor"
-                      stroke-width="1.15"/>
-              </svg>
-              Size
-            </button>
-            <button id="tool-measure-laser" class="tool-btn tool-btn-compact" type="button"
-                    title="Distance to the nearest element each way along X, Y and Z">
-              <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
-                <path d="M2.5 8h11M4.5 5.5 2 8l2.5 2.5M11.5 5.5 14 8l-2.5 2.5"
-                      stroke="currentColor" stroke-width="1.2" stroke-linecap="round"
-                      stroke-linejoin="round"/>
-              </svg>
-              Clearance
-            </button>
-          </div>
-          <button id="tool-measure-clear" class="tool-btn tool-btn-subtle" type="button"
-                  title="Clear all measurements, including an unfinished one">
-            <span class="tool-btn-label">
-              <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
-                <path d="M4.5 5.5h7l-.5 8H5l-.5-8ZM6 5.5V3.7h4v1.8M3.5 5.5h9"
-                      stroke="currentColor" stroke-width="1.15" stroke-linecap="round"
-                      stroke-linejoin="round"/>
-              </svg>
-              Clear all
-            </span>
-          </button>
-        </div>
-        </div>
-        <p class="tool-note measure-launcher-note">
-          Alt-click an element for its size. Measurement locks and accuracy settings
-          are in the measurement card.
-        </p>
         <div id="tool-hidden-info" class="tool-note"></div>
 
         <div class="tool-section" data-tool-panel="display">
@@ -670,6 +636,28 @@
                     stroke-width="1.25" stroke-linejoin="round"/>
             </svg>
             <span>Area</span><kbd>R</kbd>
+          </button>
+        </div>
+
+        <div class="tool-action-grid measure-quick-actions">
+          <button id="tool-measure-element" class="tool-btn tool-btn-compact" type="button"
+                  title="Length, width, thickness and diagonal of the selected elements">
+            <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
+              <path d="M3 5.5 8 3l5 2.5v5L8 13l-5-2.5v-5Z" stroke="currentColor"
+                    stroke-width="1.15" stroke-linejoin="round"/>
+              <path d="m3 5.5 5 2.6 5-2.6M8 8.1V13" stroke="currentColor"
+                    stroke-width="1.15"/>
+            </svg>
+            Size
+          </button>
+          <button id="tool-measure-laser" class="tool-btn tool-btn-compact" type="button"
+                  title="Distance to the nearest element each way along X, Y and Z">
+            <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
+              <path d="M2.5 8h11M4.5 5.5 2 8l2.5 2.5M11.5 5.5 14 8l-2.5 2.5"
+                    stroke="currentColor" stroke-width="1.2" stroke-linecap="round"
+                    stroke-linejoin="round"/>
+            </svg>
+            Clearance
           </button>
         </div>
 

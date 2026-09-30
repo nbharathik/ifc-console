@@ -17,7 +17,7 @@ pip install ifc-console
 | `AsyncWorkbench` | the same API for async code |
 | `LocalRuntime` | tools for an agent over a local model |
 | `ConsoleRuntime` | tools connected to a running console |
-| `Agent` | provider-neutral tool loop, from `ifc-console-agents` |
+| `Agent` | provider-neutral tool loop, from `ifc_console.agents` |
 
 ## Workbench
 
@@ -70,6 +70,20 @@ with Workbench.open("tower.ifc", mode="edit") as wb:
     wb.save()
 ```
 
+Structured property edits are all or nothing, can be previewed, and are
+undoable:
+
+```python
+with Workbench.open("tower.ifc", mode="edit") as wb:
+    edit = [{"global_ids": ids, "pset": "Pset_WallCommon", "property": "FireRating", "value": "F60"}]
+    preview = wb.set_properties(edit, dry_run=True)   # rows, nothing changed
+    wb.set_properties(edit, description="fire rating")
+    wb.undo()                                          # back to the state before
+```
+
+`undo()` and `redo()` return the step they moved over. A run that raises is
+rolled back whole, so there is nothing to clean up.
+
 ### Several models
 
 One model is active and writable; attached models are read-only:
@@ -89,12 +103,12 @@ flowchart LR
     agent --> answer["answer with tool calls visible"]
 ```
 
-Install `ifc-console-agents` for the agent loop. The host keeps mode, settings,
+The agent loop ships in `ifc_console.agents`. The host keeps mode, settings,
 credentials, and tool selection in its own code:
 
 ```python
 from ifc_console import LocalRuntime
-from ifc_console_agents import Agent, ProviderModel
+from ifc_console.agents import Agent, ProviderModel
 
 async with await LocalRuntime.open("tower.ifc") as runtime:
     tools = await runtime.tools("query_elements", "get_element", "get_psets")

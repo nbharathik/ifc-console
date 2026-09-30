@@ -23,6 +23,7 @@ from typing import Any, Literal
 from ifc_console import __version__
 from ifc_console.application.artifacts import ArtifactService
 from ifc_console.application.batches import BatchService
+from ifc_console.application.gates import LifecycleGate
 from ifc_console.application.jobs import JobService
 from ifc_console.application.operations import OperationService
 from ifc_console.application.retention import ArtifactRetentionService
@@ -34,12 +35,14 @@ from ifc_console.core.results import ToolError
 from ifc_console.events import EventBus
 from ifc_console.extensions import AssistantState, ExtensionManager
 from ifc_console.knowledge import KnowledgeBase
+from ifc_console.mcp.clients import ClientRegistry
 from ifc_console.plugins import PluginManager
 from ifc_console.policy.modes import Mode, PolicyEngine
 from ifc_console.recents import RecentsStore
 from ifc_console.sandbox.policy import COMMON_CREDENTIAL_PATHS
 from ifc_console.sandbox.runner import SandboxRunner
 from ifc_console.session.backups import BackupStore
+from ifc_console.session.history import ChangeRecord
 from ifc_console.session.model import ModelSession
 from ifc_console.session.working_copy import WorkingCopy, WorkingCopyStore
 from ifc_console.settings import SettingsStore
@@ -117,13 +120,16 @@ class AppCore:
             provider=s.chat.provider, model=s.chat.model, base_url=s.chat.base_url
         )
         self.viewer_hub = ViewerHub(self)
+        self.clients = ClientRegistry()
+        # Bumped when what tools/list shows changes; the bridge forwards it to
+        # its client as tools/list_changed.
+        self.catalog_epoch = 0
         self.sandbox = SandboxRunner(self)
         self.knowledge = KnowledgeBase(store.home, schemas=tuple(s.knowledge.schemas))
         self._knowledge_thread: threading.Thread | None = None
         self._project_knowledge = None
         self._pack_knowledge = None
-        # Optional product extensions own their state. These compatibility
-        # attributes are populated by ifc-console-agents when it is installed.
+        # Extensions own their state; the built-in agents extension fills these.
         self.agent_packs = None
         self.agent_files = None
         self.agent_library = None
@@ -139,8 +145,8 @@ class AppCore:
         self.operations = OperationRegistry()
         self.plugins = PluginManager()
         # Embedders and contract tests may supply an explicit manager. An
-        # empty manager is the supported way to guarantee a core-only host
-        # even when companion distributions are installed in the interpreter.
+        # empty manager is the supported way to guarantee a host without the
+        # built-in agents extension or any installed extension.
         self.extensions = extension_manager or ExtensionManager()
         self.operation_service = OperationService(self, self.operations)
         self.tool_functions = self.operations.handlers
@@ -181,14 +187,15 @@ class AppCore:
         # Filled from public MCP listings by /tools so its synchronous
         # completion menu can offer prompt and resource names too.
         self.tool_catalog_names: dict[str, tuple[str, ...]] = {}
-        self._read_cache: dict[tuple, Any] = {}
+        self._read_cache: OrderedDict[tuple, Any] = OrderedDict()
         self._read_inflight: dict[tuple, asyncio.Future] = {}
         # World-space meshes survive across tools; every IFC read is serialized
         # on one worker, so paying for tessellation twice costs real seconds.
         self._mesh_cache: OrderedDict[tuple, tuple] = OrderedDict()
         self._mesh_triangles = 0
         self._mesh_lock = threading.Lock()
-        self._model_lifecycle = asyncio.Lock()
+        self.gate = LifecycleGate()
+        self._opening: dict[Path, asyncio.Future[None]] = {}
         self.ui_theme = s.tui.theme
 
         # Keep the directory the console was launched from as stable session
@@ -321,7 +328,7 @@ class AppCore:
     def enable_chat(self) -> bool:
         """Enable the optional Agent panel backend (idempotent)."""
         if not self.extensions.available("agents"):
-            log.warning("the chat panel requires ifc-console-agents")
+            log.warning("the Agent workspace is unavailable: the agents extension did not load")
             return False
         if self.chat.enabled:
             return True
@@ -340,16 +347,6 @@ class AppCore:
         self.chat.keys.clear()
         self.audit.record("chat_disabled")
         self.events.emit("chat_disabled")
-
-    def disable_viewer(self) -> None:
-        """Turn the viewer web surface off. Open tabs are closed by the caller."""
-        if not self.viewer.enabled:
-            return
-        self.viewer.enabled = False
-        self.viewer.url = None
-        self._sync_viewer_tools()
-        self.audit.record("viewer_disabled")
-        self.events.emit("viewer_disabled")
 
     def session_meta(self) -> dict:
         """The active model's meta, plus workspace keys only once more than one
@@ -371,14 +368,19 @@ class AppCore:
     ) -> tuple[Any, bool]:
         """Run a read builder on the model worker, cached per fingerprint+revision.
 
-        Returns (value, was_cached). The revision bumps on load, save, and
-        every mutation, so a hit can never be stale; entries from dead
-        revisions are pruned lazily to bound memory. Keyed on the model's own
-        fingerprint, so attached models never share the active model's entries.
+        Returns (value, was_cached). The revision moves on load and whenever an
+        edit is kept, so a hit describes the model as of its last finished
+        edit; during a running edit that is the state before it. Entries from
+        dead revisions are pruned lazily and the cache is a bounded LRU. Keyed
+        on the model's own fingerprint, so attached models never share the
+        active model's entries.
         """
         s = session or self.session
         cache_key = (name, id(s), s.fingerprint, s.revision, *key)
-        if cache_key in self._read_cache:
+        # A paused worker may be halfway through an edit the revision does not
+        # show yet, so a cached answer would describe a model that is changing.
+        if not s.poisoned and cache_key in self._read_cache:
+            self._read_cache.move_to_end(cache_key)
             return self._read_cache[cache_key], True
         inflight = self._read_inflight.get(cache_key)
         if inflight is not None:
@@ -401,6 +403,8 @@ class AppCore:
             live.add((id(s), s.fingerprint, s.revision))
             for stale in [k for k in self._read_cache if k[1:4] not in live]:
                 del self._read_cache[stale]
+            while len(self._read_cache) >= 64:
+                self._read_cache.popitem(last=False)
         self._read_cache[cache_key] = value
         return value, False
 
@@ -510,6 +514,10 @@ class AppCore:
         return evicted_count
 
     # -- allowed directories ------------------------------------------------------
+    def sandbox_read_exemptions(self) -> list[Path]:
+        """Read-only carve-outs inside the denied console home: working copies."""
+        return [self.store.working_dir]
+
     def generated_code_deny_paths(self) -> list[Path]:
         """Credential locations that generated Python must never read."""
         candidates = [self.store.home]
@@ -620,12 +628,18 @@ class AppCore:
         discard_dirty: bool = False,
     ) -> str:
         """Load an IFC file. The default replaces the active model, exactly as
-        before; attach=True adds it read-only alongside. "auto" resolves under
-        the lock (attach only if a model is already active), so two concurrent
-        calls cannot both decide to replace."""
+        before; attach=True adds it read-only alongside. "auto" attaches only
+        if a model is already active, decided when the model is installed.
+
+        The parse runs outside the gate, so tools keep answering from the
+        current model while a large file loads; only the decision before it and
+        the swap after it are exclusive.
+        """
         path = path.resolve()
-        async with self._model_lifecycle:
-            if attach == "auto":
+        await self._wait_for_open(path)
+        auto = attach == "auto"
+        async with self.gate.exclusive():
+            if auto:
                 attach = self.models.active_id is not None
             existing = self.models.id_for_path(path)
             if existing is not None:
@@ -657,60 +671,101 @@ class AppCore:
             self._guard_replacement(previous_id, None, discard_dirty or attach)
             self.models.plan_room(size_bytes, replacing=replacing)
             self.events.emit("model_loading", name=path.name, size_bytes=size_bytes)
-            t0 = time.perf_counter()
-            session = ModelSession()
+            settled: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+            self._opening[path] = settled
+
+        t0 = time.perf_counter()
+        session = ModelSession(undo_depth=self.settings.edit.undo_depth)
+        try:
             try:
                 await session.open(path, max_mb=self.settings.files.max_open_mb)
+            except asyncio.CancelledError:
+                session.close()
+                raise
             except Exception:
                 session.close()
                 self.events.emit("model_load_failed", name=path.name)
                 raise
-            try:
-                evicted = self.models.plan_room(session.size_bytes, replacing=replacing)
-                model_id = self.models.make_id(path, alias or self.suggest_alias(path))
-                for evicted_id in evicted:
-                    evicted_session = self.models.drop(evicted_id)
-                    self.audit.record(
-                        "model_evict", model_id=evicted_id, path=str(evicted_session.path)
-                    )
-                    self.events.emit(
-                        "model_evicted", model_id=evicted_id, name=evicted_session.name
-                    )
-                if not attach and previous_id is not None:
-                    self.models.drop(previous_id, force=True)
-                self.models.add(model_id, session, active=not attach)
-            except Exception:
-                session.close()
-                raise
+            async with self.gate.exclusive():
+                return self._install_model(
+                    session,
+                    path,
+                    attach=self.models.active_id is not None if auto else bool(attach),
+                    alias=alias,
+                    discard_dirty=discard_dirty,
+                    started=t0,
+                )
+        finally:
+            self._opening.pop(path, None)
+            if not settled.done():
+                settled.set_result(None)
 
-            assert session.path is not None
-            self.add_allowed_dir(session.path.parent)
-            self.recents.touch(
-                session.path,
-                size_bytes=session.size_bytes,
-                schema=session.schema or "?",
-                mode=self.policy.mode.value,
-            )
-            self.audit.record(
-                "model_attach" if attach else "model_open",
-                path=str(session.path),
-                model_id=model_id,
-                schema=session.schema,
-                size_bytes=session.size_bytes,
-                fingerprint=session.fingerprint,
-            )
-            self.events.emit(
-                "model_attached" if attach else "model_loaded",
-                path=str(session.path),
-                name=session.name,
-                model_id=model_id,
-                schema=session.schema,
-                fingerprint=session.fingerprint,
-                size_bytes=session.size_bytes,
-                duration_ms=int((time.perf_counter() - t0) * 1000),
-            )
-            self.sync_copy_save()
-            return model_id
+    async def _wait_for_open(self, path: Path) -> None:
+        """Let an open of the same file finish, so a second one finds it resident."""
+        pending = self._opening.get(path)
+        if pending is not None:
+            await asyncio.wait([pending])
+
+    def _install_model(
+        self,
+        session: ModelSession,
+        path: Path,
+        *,
+        attach: bool,
+        alias: str | None,
+        discard_dirty: bool,
+        started: float,
+    ) -> str:
+        """Put a parsed model into the registry. The caller holds the gate exclusively.
+
+        Everything decided before the parse is decided again: the user may have
+        edited the active model or opened something else while it loaded.
+        """
+        try:
+            previous_id = self.models.active_id
+            replacing = () if attach or previous_id is None else (previous_id,)
+            self._guard_replacement(previous_id, None, discard_dirty or attach)
+            evicted = self.models.plan_room(session.size_bytes, replacing=replacing)
+            model_id = self.models.make_id(path, alias or self.suggest_alias(path))
+            for evicted_id in evicted:
+                evicted_session = self.models.drop(evicted_id)
+                self.audit.record("model_evict", model_id=evicted_id, path=str(evicted_session.path))
+                self.events.emit("model_evicted", model_id=evicted_id, name=evicted_session.name)
+            if not attach and previous_id is not None:
+                self.models.drop(previous_id, force=True)
+            self.models.add(model_id, session, active=not attach)
+        except Exception:
+            session.close()
+            raise
+
+        assert session.path is not None
+        self.add_allowed_dir(session.path.parent)
+        self.recents.touch(
+            session.path,
+            size_bytes=session.size_bytes,
+            schema=session.schema or "?",
+            mode=self.policy.mode.value,
+        )
+        self.audit.record(
+            "model_attach" if attach else "model_open",
+            path=str(session.path),
+            model_id=model_id,
+            schema=session.schema,
+            size_bytes=session.size_bytes,
+            fingerprint=session.fingerprint,
+        )
+        self.events.emit(
+            "model_attached" if attach else "model_loaded",
+            path=str(session.path),
+            name=session.name,
+            model_id=model_id,
+            schema=session.schema,
+            fingerprint=session.fingerprint,
+            size_bytes=session.size_bytes,
+            duration_ms=int((time.perf_counter() - started) * 1000),
+        )
+        self.sync_copy_save()
+        return model_id
 
     def _guard_replacement(
         self, previous_id: str | None, next_id: str | None, discard_dirty: bool
@@ -744,11 +799,11 @@ class AppCore:
     async def set_active_model(self, model_id: str) -> ModelSession:
         """Move the write focus. Allowed while another model is dirty: the
         dirty model stays resident and unsaved work is never dropped."""
-        async with self._model_lifecycle:
+        async with self.gate.exclusive():
             return self._set_active_model(model_id)
 
     async def detach_model(self, model_id: str) -> ModelSession:
-        async with self._model_lifecycle:
+        async with self.gate.exclusive():
             previous_active = self.models.active_id
             session = self.models.drop(model_id)
             self.sync_copy_save()
@@ -767,10 +822,40 @@ class AppCore:
                 )
             return session
 
+    # How long a call waits for a model that is still parsing before it says busy.
+    LOAD_WAIT_S = 20.0
+
+    async def _await_loading(self) -> None:
+        """Give a model that is still parsing a moment before reporting none loaded."""
+        if self.session.loaded or not self._opening:
+            return
+        await asyncio.wait(list(self._opening.values()), timeout=self.LOAD_WAIT_S)
+        if not self.session.loaded and self._opening:
+            raise ToolError(
+                "MODEL_BUSY",
+                "the model is still loading.",
+                "Wait for the load to finish and retry; /status in the ifc-console "
+                "terminal shows where it is.",
+            )
+
     @asynccontextmanager
     async def active_session(self) -> AsyncIterator[ModelSession]:
-        """Pin the active model while one operation is in flight."""
-        async with self._model_lifecycle:
+        """Pin the active model while one operation is in flight.
+
+        Shared: operations on the model overlap. Anything that changes which
+        models are loaded waits for them and holds the gate exclusively.
+        """
+        await self._await_loading()
+        async with self.gate.shared():
+            session = self.session
+            session.require_loaded()
+            yield session
+
+    @asynccontextmanager
+    async def exclusive_session(self) -> AsyncIterator[ModelSession]:
+        """The active model with nothing else running against any model."""
+        await self._await_loading()
+        async with self.gate.exclusive():
             session = self.session
             session.require_loaded()
             yield session
@@ -790,7 +875,8 @@ class AppCore:
 
         @wraps(operation)
         async def guarded(*args, **kwargs):
-            async with self._model_lifecycle:
+            await self._await_loading()
+            async with self.gate.shared():
                 return await operation(*args, **kwargs)
 
         return guarded
@@ -887,9 +973,11 @@ class AppCore:
         """Persistence follows the active model: a working copy grants it.
 
         Editing a snapshot makes saving harmless, so an assistant may write it.
-        Switching to a model without a copy takes that grant away again.
+        Switching to a model without a copy takes that grant away, and so does
+        a save-as: the destination the user chose is theirs to write.
         """
-        self.policy.allow_copy_save = self.session.working_copy is not None
+        copy = self.session.working_copy
+        self.policy.allow_copy_save = copy is not None and self.session.path == copy.path
 
     def set_mode(self, new_mode: Mode, *, by: str) -> None:
         if new_mode is self.policy.mode:
@@ -914,7 +1002,7 @@ class AppCore:
         or when there is nothing loaded to copy. Held under the lifecycle lock:
         the model must not be swapped between the copy and the retarget.
         """
-        async with self._model_lifecycle:
+        async with self.gate.exclusive():
             session = self.session
             if session.working_copy is not None:
                 return session.working_copy
@@ -963,18 +1051,48 @@ class AppCore:
         In edit mode that is the working copy, so this writes the snapshot and
         leaves the file the user opened alone.
         """
-        session = self.session
-        destination = target or session.path
-        result = await session.save(destination, self.backups)
-        self.audit.record("model_saved", by=by, path=str(destination))
-        self.events.emit(
-            "model_saved",
-            path=str(destination),
-            **{
-                "working_copy": bool(result.get("working_copy")),
-            },
+        await self._await_loading()
+        async with self.gate.shared():
+            session = self.session
+            async with session.edit_lock:
+                result = await session.save(target or session.path, self.backups)
+        self.sync_copy_save()
+        self.recents.touch(
+            Path(result["path"]),
+            size_bytes=result["size_bytes"],
+            schema=session.schema or "?",
+            mode=self.policy.mode.value,
         )
+        self.audit.record("save", by=by, **result)
+        self.events.emit("model_saved", **result)
         return result
+
+    async def undo(self, *, by: str) -> ChangeRecord:
+        """Step the model back one edit. A user action: there is no MCP tool."""
+        return await self._step_history("undo", by)
+
+    async def redo(self, *, by: str) -> ChangeRecord:
+        return await self._step_history("redo", by)
+
+    async def _step_history(self, direction: str, by: str) -> ChangeRecord:
+        await self._await_loading()
+        async with self.gate.shared():
+            session = self.session
+            session.require_loaded()
+            session.require_writable()
+            async with session.edit_lock:
+                step = session.undo_change if direction == "undo" else session.redo_change
+                record = await session.run(step, timeout=60)
+        self.audit.record(
+            direction, by=by, change_id=record.change_id, description=record.description
+        )
+        self.events.emit(
+            "model_undone" if direction == "undo" else "model_redone",
+            description=record.description,
+            changes=session.change_count,
+            **record.event_fields(direction),
+        )
+        return record
 
     def set_ui_theme(self, name: str, *, persist: bool = False) -> str:
         """Record the theme choice and tell every surface its resolved palette.
@@ -1074,6 +1192,11 @@ class AppCore:
     # -- logging helper used by the tool wrapper ------------------------------------
     def tool_event(self, tool: str, *, ok: bool, duration_ms: int, detail: str = "") -> None:
         context = self.operation_service.workspace_context()
+        from ifc_console.core.context import current_operation_context
+
+        operation = current_operation_context()
+        client = operation.client if operation is not None else None
+        self.clients.called(client, tool, ok)
         self.audit.record(
             "tool_call",
             tool=tool,
@@ -1084,4 +1207,6 @@ class AppCore:
             result_model_id=context.active_model.model_id,
             result_revision_id=context.active_model.revision_id,
         )
-        self.events.emit("tool_called", tool=tool, ok=ok, duration_ms=duration_ms, detail=detail)
+        self.events.emit(
+            "tool_called", tool=tool, ok=ok, duration_ms=duration_ms, detail=detail, client=client
+        )

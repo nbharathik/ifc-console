@@ -58,7 +58,7 @@ _HEAVY_TIMEOUT = 600.0
 
 # Shared by every geometry tool that resolves a target set, so paging reads the
 # same way whichever one the caller reaches for.
-OFFSET_ARG = "Elements to skip in the deterministic order, for paging a large match."
+OFFSET_ARG = "Elements to skip, for paging a large match."
 
 
 @contextmanager
@@ -149,16 +149,17 @@ def _element_identity(element) -> dict:
 
 
 def register(mcp: OperationRegistry, core: AppCore) -> None:
-    limit_ = core.settings.exec.output_char_limit
+    def limit_() -> int:
+        return core.settings.exec.output_char_limit
 
     @mcp.tool(
         annotations=ANALYSIS_ANN,
         data_model=ValidationData,
         description=(
-            "[QUERY] Validate the loaded model against its IFC schema: attribute "
-            "types, cardinality, enumerations. express_rules=true adds the EXPRESS "
-            "where-rules (much slower on big models). Returns pass/fail, issue "
-            "counts by class and severity, and the first max_issues issues."
+            "[QUERY] Validate the model against its IFC schema (types, cardinality, "
+            "enumerations). express_rules=true adds EXPRESS where-rules (much slower "
+            "on big models). Returns pass/fail, counts by class and severity, and the "
+            "first max_issues issues."
         ),
     )
     @enveloped(core, "validate_model")
@@ -184,10 +185,9 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
     @mcp.tool(
         annotations=ANALYSIS_ANN,
         description=(
-            "[QUERY] Check a model against a buildingSMART IDS (Information "
-            "Delivery Specification) file: per-specification pass/fail, failing "
-            "elements with GlobalIds and reasons. Needs the optional ifctester "
-            "package; the error hint explains the install."
+            "[QUERY] Check the model against a buildingSMART IDS file: "
+            "per-specification pass/fail, failing elements with GlobalIds and "
+            "reasons. Needs the optional ifctester package."
         ),
     )
     @enveloped(core, "validate_ids")
@@ -224,11 +224,9 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
         annotations=ANALYSIS_ANN,
         description=(
             "[QUERY] Quantity takeoff for a selector-defined set from stored "
-            "quantity sets (Qto_*): per-group sums and grand totals with the "
-            "model's units. aggregate_by groups per class, type, storey, "
-            "material, or none. Optionally restrict to named quantities, e.g. "
-            "['NetVolume', 'GrossArea']. source='derived' fills elements that "
-            "have no stored values from their mesh geometry, marked as such."
+            "Qto_* quantity sets: per-group sums and grand totals in model units. "
+            "source='derived' fills elements without stored values from their mesh "
+            "geometry, marked as such."
         ),
     )
     @enveloped(core, "compute_quantities")
@@ -279,11 +277,10 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
         annotations=ANALYSIS_ANN,
         description=(
             "[QUERY] Derived geometry per element from its triangle mesh, in SI "
-            "metres: world bounding box, length/width/height extents along the "
-            "placement axes, plan footprint area, volume, centroid, and a "
-            "prismatic-confidence rating. The local y extent is the geometric "
-            "thickness of a placement-aligned wall. Pass a selector or explicit "
-            "global_ids from search_elements or get_viewer_selection."
+            "metres: world bounding box, extents along the placement axes, plan "
+            "footprint area, volume, centroid, prismatic-confidence rating. The "
+            "local y extent is the thickness of a placement-aligned wall. Pass a "
+            "selector or global_ids."
         ),
     )
     @enveloped(core, "get_element_geometry")
@@ -333,12 +330,11 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
         name="inspect_element_mesh",
         annotations=ANALYSIS_ANN,
         description=(
-            "[QUERY] Inspect the untouched IFC triangle mesh for a small element set. "
-            "Returns watertightness, winding, valid-volume status, connected components, "
-            "boundary/non-manifold edges, degenerate/duplicate faces, Euler characteristic, "
-            "a source hash and the exact tessellation settings. No repair is applied. "
-            "backend='auto' uses optional Trimesh when installed and otherwise the built-in "
-            "deterministic checks. Pass selector or global_ids."
+            "[QUERY] Inspect the untouched IFC triangle mesh of a small element set: "
+            "watertightness, winding, valid volume, components, boundary/non-manifold "
+            "edges, degenerate/duplicate faces, Euler characteristic, source hash and "
+            "tessellation settings. No repair. backend='auto' uses Trimesh if "
+            "installed, else built-in checks. Pass selector or global_ids."
         ),
     )
     @enveloped(core, "inspect_element_mesh")
@@ -467,11 +463,11 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
         name="measure_directional_extent",
         annotations=ANALYSIS_ANN,
         description=(
-            "[QUERY] Measure the complete outside-to-outside mesh extent along any "
-            "3D direction. This is a support projection, not wall/material thickness, "
-            "and remains meaningful for an open mesh. frame='local' interprets the "
-            "direction in IFC placement axes; frame='principal' returns the PCA basis "
-            "and ambiguity flags. Results include both support points and a source hash."
+            "[QUERY] Measure the outside-to-outside mesh extent along any 3D "
+            "direction (a support projection, not wall/material thickness; valid for "
+            "open meshes). frame='local' uses IFC placement axes; frame='principal' "
+            "returns the PCA basis and ambiguity flags. Includes support points and a "
+            "source hash."
         ),
     )
     @enveloped(core, "measure_directional_extent")
@@ -583,12 +579,11 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
         name="slice_element_mesh",
         annotations=ANALYSIS_ANN,
         description=(
-            "[QUERY] Cut one element mesh with an arbitrary plane. origin is a world "
-            "point in SI metres (omit it for the referenced-vertex centroid); frame "
-            "controls how normal is interpreted. Returns closure, area, perimeter, "
-            "thickness distribution and an optional bounded 2D outline with a world-space "
-            "origin/basis so a viewer can reconstruct it. Includes mesh prerequisites, "
-            "source hash and tessellation settings; no repair is applied."
+            "[QUERY] Cut one element mesh with a plane. origin is a world point in SI "
+            "metres (omit for the mesh centroid); frame sets how normal is read. "
+            "Returns closure, area, perimeter, thickness distribution and an optional "
+            "bounded 2D outline with world origin/basis, plus mesh prerequisites, source "
+            "hash and tessellation settings. No repair."
         ),
     )
     @enveloped(core, "slice_element_mesh")
@@ -692,11 +687,10 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
         annotations=ANALYSIS_ANN,
         description=(
             "[QUERY] Cast an infinite line through one element and return every "
-            "deduplicated surface hit, material interval and internal void/gap. origin "
-            "is always a world-coordinate point in SI metres; frame controls how the "
-            "direction is interpreted. Material intervals are returned only for a valid "
-            "closed, consistently wound volume with balanced oriented crossings; otherwise "
-            "the raw intersections and an explicit refusal are preserved."
+            "deduplicated surface hit, material interval and internal void. origin is "
+            "a world point in SI metres; frame sets how direction is read. Material "
+            "intervals only for a valid closed, consistently wound volume with balanced "
+            "crossings; otherwise raw hits and an explicit refusal."
         ),
     )
     @enveloped(core, "measure_local_thickness")
@@ -807,12 +801,12 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
         name="measure_elements",
         annotations=ANALYSIS_ANN,
         description=(
-            "[QUERY] Measure one metric for a set of elements with one named, "
-            "auditable method: stored_qto reads a quantity-set value, layer_sum "
-            "adds material layer thicknesses (include/exclude glob filters on "
-            "layer and material names), geometry_extent measures the mesh along "
-            "a placement or world axis. Values come back in the file's units "
-            "and SI, per element plus a summary. Pass a selector or global_ids."
+            "[QUERY] Measure one metric for a set of elements with one named method: "
+            "stored_qto reads a quantity-set value, layer_sum adds material layer "
+            "thicknesses (include/exclude globs on layer and material names), "
+            "geometry_extent measures the mesh along a placement or world axis. "
+            "Returns file units and SI per element plus a summary. Pass a selector or "
+            "global_ids."
         ),
     )
     @enveloped(core, "measure_elements")
@@ -921,14 +915,12 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
         name="measure_distance",
         annotations=ANALYSIS_ANN,
         description=(
-            "[QUERY] Closest approach between two element sets: centroid "
-            "distance, axis-aligned bounding-box gap, and closest-point surface "
-            "distance estimate for the nearest AABB pair, in SI metres and file units. "
-            "The result names its sampling/selection methods and flags the surface value "
-            "as an upper bound. AABB overlap is never called a solid overlap unless "
-            "sampled occupancy confirms it on two valid-volume meshes. Each "
-            "side is a selector or a GlobalId list. Overlapping pairs report a "
-            "surface distance of zero; detect_clashes quantifies the overlap."
+            "[QUERY] Closest approach between two element sets: centroid distance, "
+            "axis-aligned bounding-box gap, and a surface-distance estimate (an upper "
+            "bound) for the nearest AABB pair, in SI metres and file units. AABB overlap "
+            "counts as solid overlap only if sampled occupancy confirms it on two "
+            "valid-volume meshes. Each side is a selector or GlobalId list. Use "
+            "detect_clashes to quantify overlaps."
         ),
     )
     @enveloped(core, "measure_distance")
@@ -976,17 +968,13 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
         name="analyze_element_geometry",
         annotations=ANALYSIS_ANN,
         description=(
-            "[QUERY] The high-level, versioned geometry analysis for a few objects, "
-            "made for 'measure everything about the selected object'. It combines "
-            "exact IFC representation parameters, semantic object frames, mesh "
-            "health, adaptive cross sections, topology, material thicknesses and "
-            "source reconciliation into stable namespaced measurements. Every value "
-            "carries units, method, source, frame, confidence and alternatives; "
-            "coverage lists unavailable, ambiguous and conflicting requests. detail "
-            "controls response size. Legacy dimensions, box and cross_section fields "
-            "remain for compatibility. Pass model from get_viewer_selection.model_id "
-            "when analyzing a viewer selection. Use measure_elements for one simple "
-            "metric over many elements."
+            "[QUERY] Versioned geometry analysis for a few objects: representation "
+            "parameters, object frames, mesh health, cross sections, topology, material "
+            "thicknesses, source reconciliation. Each value carries units, method, "
+            "source, frame, confidence and alternatives; coverage lists unavailable, "
+            "ambiguous and conflicting requests. For a viewer selection pass model from "
+            "get_viewer_selection.model_id. Use measure_elements for one metric over "
+            "many elements."
         ),
     )
     @enveloped(core, "analyze_element_geometry")
@@ -1003,8 +991,8 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
             Field(
                 max_length=17,
                 description=(
-                    "Explicit 0..1 section fractions. Passing these without "
-                    "station_strategy selects fixed mode for compatibility."
+                    "Explicit 0..1 section fractions; without station_strategy this "
+                    "selects fixed mode."
                 ),
             ),
         ] = None,
@@ -1012,24 +1000,20 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
             Literal["compact", "standard", "full"],
             Field(
                 description=(
-                    "compact returns preferred measurements and coverage; standard "
-                    "adds alternatives and section summaries; full adds bounded "
-                    "representation, sampling and outline evidence."
+                    "compact: preferred values; standard: adds alternatives and "
+                    "sections; full: adds representation and outline evidence."
                 )
             ),
         ] = "standard",
         measurement_set: Annotated[
             Literal["standard", "profile", "envelope", "fabrication"],
-            Field(description="Supported measurement inventory to evaluate."),
+            Field(description="Measurement inventory to evaluate."),
         ] = "standard",
         measurement_ids: Annotated[
             list[str] | None,
             Field(
                 max_length=80,
-                description=(
-                    "Optional stable namespaced measurement ids. When provided, "
-                    "coverage reports every requested id."
-                ),
+                description="Namespaced measurement ids; coverage reports each one.",
             ),
         ] = None,
         frame: Annotated[
@@ -1040,15 +1024,14 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
             Literal["auto", "fixed", "none"],
             Field(
                 description=(
-                    "auto adaptively discovers profile regions; fixed uses stations; "
-                    "none skips mesh sections. Passing stations with auto selects fixed "
-                    "mode for compatibility."
+                    "auto finds profile regions; fixed uses stations (auto with "
+                    "stations also means fixed); none skips sections."
                 )
             ),
         ] = "auto",
         precision: Annotated[
             Literal["standard", "high"],
-            Field(description="Documented tessellation and adaptive sampling budget."),
+            Field(description="Tessellation and adaptive sampling budget."),
         ] = "standard",
         include_alternatives: Annotated[
             bool,
@@ -1173,13 +1156,11 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
         annotations=ANALYSIS_ANN,
         description=(
             "[QUERY] Geometric clash detection between two selector-defined sets, "
-            "optionally across two open models for federated coordination. "
-            "mode='overlap' reports solids that share space, with the shared "
-            "volume in cubic metres; mode='clearance' reports pairs closer than "
-            "tolerance. Openings, spaces and annotations are skipped unless "
-            "physical_only=false. precision='fast' does bounding boxes only and "
-            "over-reports. Feed the returned global_ids straight to "
-            "highlight_elements to see the clashes in the viewer."
+            "optionally across two open models. mode='overlap' reports solids sharing "
+            "space (shared volume in cubic metres); mode='clearance' reports pairs "
+            "closer than tolerance. Openings, spaces and annotations are skipped unless "
+            "physical_only=false. precision='fast' is bounding boxes only and "
+            "over-reports. Pass returned global_ids to highlight_elements."
         ),
     )
     @enveloped(core, "detect_clashes")
@@ -1247,12 +1228,11 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
         annotations=ANALYSIS_ANN,
         description=(
             "[QUERY] The project's measurement recipe for one element class and "
-            "property: the company's method, its parameters, tolerance, and the "
-            "document citation it came from. Type-specific recipes beat "
-            "class-level ones; pass type_name when you know it. The result "
-            "includes suggested_arguments ready for measure_elements. A miss is "
-            "not a failure: fall back to search_ifc_knowledge(corpus='project') "
-            "and pick a method yourself, saying so in the report."
+            "property: method, parameters, tolerance and document citation. "
+            "Type-specific recipes beat class-level ones; pass type_name when known. "
+            "Includes suggested_arguments for measure_elements. A miss is not a "
+            "failure: fall back to search_ifc_knowledge(corpus='project') and pick a "
+            "method yourself, saying so in the report."
         ),
     )
     @enveloped(core, "get_measurement_recipe")
@@ -1279,10 +1259,10 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
     @mcp.tool(
         annotations=ARTIFACT_ANN,
         description=(
-            "[ARTIFACT] Export a selector query as a CSV file on disk. Allowed in "
-            "ask mode: writing a report file is not editing the model (the write "
-            "is allowed-dir checked and audited). Columns: global_id, class, the "
-            "requested fields, plus dotted 'Pset_Name.Property' columns."
+            "[ARTIFACT] Export a selector query as a CSV file. Allowed in ask mode: "
+            "a report file is not a model edit (path is allowed-dir checked and "
+            "audited). Columns: global_id, class, the requested fields, plus dotted "
+            "'Pset_Name.Property' columns."
         ),
     )
     @enveloped(core, "export_csv")
@@ -1293,8 +1273,8 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
         fields: Annotated[
             list[str] | None,
             Field(
-                description=f"Row fields beyond global_id+class. Allowed: {list(ALLOWED_FIELDS)}. "
-                "Pass [] for the smallest row (global_id + class only)."
+                description=f"Extra row fields. Allowed: {list(ALLOWED_FIELDS)}. "
+                "[] gives global_id + class only."
             ),
         ] = None,
         properties: Annotated[
@@ -1397,12 +1377,11 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
     @mcp.tool(
         annotations=ARTIFACT_ANN,
         description=(
-            "[ARTIFACT] Write a markdown measurement report for a few elements: "
-            "identity, merged dimensions with sources, measured cross section, "
-            "profile definition, bounding box, and stored quantities, using "
-            "analyze_element_geometry under the hood. Allowed in ask mode: it "
-            "writes a report file, never the model. The report is registered as "
-            "an artifact; give the user the path and the artifact id."
+            "[ARTIFACT] Write a markdown measurement report for a few elements "
+            "(identity, merged dimensions with sources, cross section, profile, "
+            "bounding box, stored quantities) via analyze_element_geometry. Allowed "
+            "in ask mode: it writes a report file, never the model. Registered as an "
+            "artifact; give the user the path and artifact id."
         ),
     )
     @enveloped(core, "export_measurement_report")
@@ -1535,8 +1514,8 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
         annotations=ANALYSIS_ANN,
         description=(
             "[QUERY] Georeferencing of the loaded model: coordinate reference "
-            "system, map conversion parameters, true and grid north. Answers "
-            "'where is this model really' and diagnoses wrong-location issues."
+            "system, map conversion parameters, true and grid north. Diagnoses "
+            "wrong-location issues."
         ),
     )
     @enveloped(core, "get_georeferencing")

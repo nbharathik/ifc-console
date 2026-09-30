@@ -28,6 +28,11 @@ MUTATING_FILE_METHODS = {
     "unassign_inverse",
 }
 
+def _mutates_file(attr: str) -> bool:
+    """Named file mutators, plus the dynamic ifc.createIfcWall(...) factories."""
+    return attr in MUTATING_FILE_METHODS or (attr.startswith("createIfc") and len(attr) > 9)
+
+
 DUNDER_ESCAPES = {
     "__globals__",
     "__subclasses__",
@@ -214,12 +219,12 @@ class _Visitor(ast.NodeVisitor):
                 self.edit.append(f"calls ifc_api.{'.'.join(path)}")
             elif root == "ifcopenshell" and path and path[0] == "api":
                 self.edit.append(f"calls ifcopenshell.{'.'.join(path)}")
-            elif self._base_is_model(func.value) and func.attr in MUTATING_FILE_METHODS:
+            elif self._base_is_model(func.value) and _mutates_file(func.attr):
                 self.edit.append(f"calls model.{func.attr}(...)")
             elif (
                 isinstance(func.value, ast.Attribute)
                 and func.value.attr == "file"
-                and func.attr in MUTATING_FILE_METHODS
+                and _mutates_file(func.attr)
             ):
                 # entity.file hands back the raw model; mutating through it
                 # is an edit whatever the base expression is

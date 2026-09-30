@@ -21,7 +21,7 @@ from textual.widgets import Footer, Input, OptionList, RichLog, Static
 from textual.widgets.option_list import Option
 
 from ifc_console import branding
-from ifc_console.tui import commands, completion
+from ifc_console.tui import activity, commands, completion
 from ifc_console.tui.launcher import FilePickerModal, discover_ifc_files
 from ifc_console.tui.modals import ConfirmModal
 from ifc_console.tui.workspace import WorkspaceModal
@@ -226,7 +226,24 @@ class ConsoleScreen(Screen):
             viewer = f"viewer: [green]{tabs} tab{'s' if tabs > 1 else ''}[/green]"
         else:
             viewer = "viewer: no tab yet (/viewer)"
-        self.query_one("#mcpbar", Static).update(f" {server}   {viewer}")
+        connected = core.clients.count()
+        clients = f"clients: {connected}" if connected else "clients: none yet (/connect)"
+        profile = core.settings.mcp.tool_profile
+        self.query_one("#mcpbar", Static).update(
+            f" {server}   tools: {profile}   {clients}   {viewer}"
+        )
+
+    def _activity(self) -> activity.ActivityCoalescer:
+        folder = getattr(self, "_folder", None)
+        if folder is None:
+            def is_read(tool: str) -> bool:
+                spec = self.core.operations.get(tool)
+                return spec is not None and spec.annotations.readOnlyHint is True
+
+            folder = self._folder = activity.ActivityCoalescer(
+                self.print, is_read, self.set_timer
+            )
+        return folder
 
     # -- core events (forwarded by IfcConsoleApp) ---------------------------------------
     def on_core_event(self, event: dict) -> None:
@@ -235,12 +252,11 @@ class ConsoleScreen(Screen):
             # A tool event is observed activity, not proof that a named client
             # remains connected; browser and in-process tools also emit it.
             self.last_tool_activity = dict(event)
-            status = "[green]ok[/green]" if event.get("ok") else "[red]err[/red]"
-            detail = event.get("detail") or ""
-            self.print(
-                f"[dim]{event['ts'][11:19]}[/dim]  {status} [b]{event['tool']}[/b]  "
-                f"[dim]{event.get('duration_ms', 0)}ms  {detail}[/dim]"
-            )
+            self.refresh_status()
+            if self.core.settings.tui.feed == "verbose":
+                self.print(activity.line(event))
+            else:
+                self._activity().add(event)
         elif etype == "server_started":
             self.refresh_status()
         elif etype == "server_failed":
@@ -270,6 +286,10 @@ class ConsoleScreen(Screen):
             "model_saved",
             "model_loaded",
             "model_mutated",
+            "model_undone",
+            "model_redone",
+            "model_committed",
+            "model_restored",
             "working_copy_created",
             "working_copy_failed",
             "session_tainted",
@@ -294,6 +314,19 @@ class ConsoleScreen(Screen):
                     detail += f", {event['duration_ms'] / 1000:.1f}s"
                 self.print(
                     f"[green]loaded[/green] [b]{escape(str(event.get('name')))}[/b] ({detail})"
+                )
+            elif etype in ("model_undone", "model_redone"):
+                verb = "undone" if etype == "model_undone" else "redone"
+                self.print(
+                    f"[green]{verb}[/green] {escape(str(event.get('description') or 'edit'))} "
+                    f"[dim]({len(event.get('guids') or [])} element(s))[/dim]"
+                )
+            elif etype in ("model_committed", "model_restored"):
+                verb = "committed" if etype == "model_committed" else "restored"
+                self.print(
+                    f"[green]{verb}[/green] {len(event.get('guids') or [])} element(s) "
+                    f"in [b]{escape(Path(str(event.get('path', ''))).name)}[/b]; "
+                    "the model was reloaded from disk"
                 )
             elif etype == "working_copy_created":
                 self.print(

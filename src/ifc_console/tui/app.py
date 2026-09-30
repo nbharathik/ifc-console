@@ -142,16 +142,24 @@ class IfcConsoleApp(App):
             self.run_worker(self._startup(), exclusive=False)
 
     async def _startup(self) -> None:
+        # The server comes up while the model parses; a call that arrives first
+        # waits for the load instead of failing to connect.
+        loading = None
         if self.initial_file is not None:
-            try:
-                await self.core.open_model(self.initial_file)
-            except Exception as exc:
-                self.core.events.emit(
-                    "server_failed",  # reuse the console's error styling
-                    reason=f"could not load {self.initial_file}: {exc}",
-                )
+            loading = asyncio.create_task(self._load_initial(self.initial_file))
             self.initial_file = None
         await self.ensure_server_with_fallback()
+        if loading is not None:
+            await loading
+
+    async def _load_initial(self, path: Path) -> None:
+        try:
+            await self.core.open_model(path)
+        except Exception as exc:
+            self.core.events.emit(
+                "server_failed",  # reuse the console's error styling
+                reason=f"could not load {path}: {exc}",
+            )
 
     def _on_event(self, event: dict) -> None:
         # Events fire on the loop thread (tool handlers run there); forward to
@@ -308,7 +316,7 @@ class IfcConsoleApp(App):
                     return
                 if choice == "save" and self.core.session.path is not None:
                     try:
-                        await self.core.session.save(self.core.session.path, self.core.backups)
+                        await self.core.save_model(by="user")
                     except Exception as exc:
                         self.notify(f"save failed, not quitting: {exc}", severity="error")
                         return

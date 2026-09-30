@@ -99,7 +99,14 @@ def _read_bounded(response: Any, limit: int) -> bytes:
 
 
 class Bridge:
-    def __init__(self, url: str, token: str, cache_file: Path | None = None) -> None:
+    def __init__(
+        self,
+        url: str,
+        token: str,
+        cache_file: Path | None = None,
+        *,
+        profile: str | None = None,
+    ) -> None:
         target = urllib.parse.urlsplit(url)
         try:
             port = target.port
@@ -127,6 +134,12 @@ class Bridge:
             raise ValueError("bridge token must contain 1-4096 visible ASCII characters")
         self.url = url
         self.token = token
+        # Which tools the console lists for this client (full or lean).
+        self.profile = profile if profile in ("full", "lean") else None
+        # Who this bridge speaks for, read from the client's initialize request.
+        self.client_label: str | None = None
+        self._catalog_epoch: str | None = None
+        self._catalog_changed = False
         self._target = target
         self._port = port
         self.cache_file = cache_file
@@ -217,6 +230,10 @@ class Bridge:
         }
         if payload.get("id") is not None:
             headers["X-Request-ID"] = str(payload["id"])
+        if self.profile:
+            headers["X-IFC-Console-Tools"] = self.profile
+        if self.client_label:
+            headers["X-IFC-Client"] = self.client_label
         request = urllib.request.Request(
             self.url,
             data=body,
@@ -226,6 +243,7 @@ class Bridge:
         with self._opener.open(request, timeout=timeout) as response:
             raw = _read_bounded(response, _MAX_HTTP_RESPONSE_BYTES)
             content_type = response.headers.get("Content-Type", "")
+            self._note_catalog(response.headers.get("X-IFC-Console-Catalog"))
         if not raw:
             return None
         if "text/event-stream" in content_type:
@@ -344,10 +362,30 @@ class Bridge:
         return _EMPTY_RESULTS.get(method, {})
 
     # -- request handling -----------------------------------------------------
+    def _note_catalog(self, epoch: str | None) -> None:
+        """The console bumps its epoch when tools/list changes (/tools profile)."""
+        if epoch is None:
+            return
+        if self._catalog_epoch is not None and epoch != self._catalog_epoch:
+            self._catalog_changed = True
+        self._catalog_epoch = epoch
+
+    def _learn_client(self, params: dict) -> None:
+        info = params.get("clientInfo")
+        if not isinstance(info, dict):
+            return
+        name = str(info.get("name") or "").strip()
+        if not name:
+            return
+        version = str(info.get("version") or "").strip()
+        self.client_label = f"{name}/{version}" if version else name
+
     def handle(self, message: dict) -> None:
         method = message.get("method") or ""
         request_id = message.get("id")
         reason = "CONSOLE_NOT_RUNNING"
+        if method == "initialize":
+            self._learn_client(message.get("params") or {})
         if method == "notifications/initialized":
             self.initialized = True
             if self.online and self._notify_when_initialized:
@@ -398,6 +436,9 @@ class Bridge:
         if method == "tools/list" and isinstance(response.get("result"), dict):
             self._save_cache(response["result"])
         self.write(response)
+        if self._catalog_changed and self.initialized:
+            self._catalog_changed = False
+            self.write({"jsonrpc": "2.0", "method": "notifications/tools/list_changed"})
 
     def run(self, stdin: Any = None) -> int:
         # No startup probe: the first request checks reachability anyway, and

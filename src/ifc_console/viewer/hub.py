@@ -1,7 +1,7 @@
 """ViewerHub: the server side of the viewer WebSocket protocol.
 
 One hub per AppCore. It tracks connected browser tabs, holds the user's
-click-selection, fans out server-to-client frames (highlight, camera,
+click-selection, fans out server-to-client frames (highlight, color_theme,
 model_updated, mode_changed), and correlates screenshot requests with their
 responses. Everything runs on the server event loop; the hub never touches
 the IFC model itself.
@@ -67,6 +67,19 @@ def _triple(value: Any) -> list[float] | None:
     if not all(isfinite(number) for number in numbers):
         return None
     return [round(number, 6) for number in numbers]
+
+
+def _history_flags(session: Any) -> dict[str, Any]:
+    """Whether the tab may offer undo and redo, and what each would do."""
+    history = getattr(session, "history", None)
+    if history is None or not session.loaded:
+        return {"can_undo": False, "can_redo": False}
+    flags: dict[str, Any] = {"can_undo": history.can_undo, "can_redo": history.can_redo}
+    if history.can_undo:
+        flags["undo_label"] = history.applied[-1].description
+    if history.can_redo:
+        flags["redo_label"] = history.undone[-1].description
+    return flags
 
 
 def _guid_list(value: Any) -> list[str]:
@@ -450,7 +463,6 @@ class ViewerClient:
     def __init__(self, ws: Any) -> None:
         self.ws = ws
         self.id = next(self._ids)
-        self.connected_at = _utcnow()
         self.last_active = next(self._activity)
         self.selection: list[str] = []
         self.selection_model_id: str | None = None
@@ -471,7 +483,6 @@ class ViewerClient:
         self.ready_etag: str | None = None
         # Last viewport this tab published: camera, section, visibility counts.
         self.viewport: dict | None = None
-        self.viewport_at: str | None = None
         # Ids of the calls this tab still owes an answer to, so closing it
         # fails them now instead of at the timeout.
         self.commands: set[str] = set()
@@ -651,8 +662,7 @@ class ViewerHub:
                 entry[2].set_exception(self._tab_gone())
 
     def unregister(self, client: ViewerClient) -> None:
-        # close_all() unregisters first and the socket's finally block
-        # unregisters again; only the first call may emit.
+        # Idempotent: only the first call for a client may emit.
         if client not in self.clients:
             return
         self.clients.remove(client)
@@ -670,15 +680,6 @@ class ViewerHub:
         elif self._selection_client is client:
             self._restore_latest_selection()
         self._restore_model_selections()
-
-    async def close_all(self) -> int:
-        """Disconnect every viewer tab and return the number closed."""
-        clients = list(self.clients)
-        for client in clients:
-            with contextlib.suppress(Exception):
-                await client.ws.close(code=4000)
-            self.unregister(client)
-        return len(clients)
 
     def require_connected(self) -> None:
         if not self.clients:
@@ -757,10 +758,7 @@ class ViewerHub:
     # -- state payloads ----------------------------------------------------------
     def model_etag(self, session: Any = None) -> str | None:
         s = session or self.core.session
-        if not s.loaded:
-            return None
-        model_id = s.model_id or "model"
-        return f"{model_id}-{s.fingerprint}-{s.revision}"
+        return s.etag if s.loaded else None
 
     def units(self, session: Any = None) -> dict | None:
         """The cached length unit for a model, or None until it has been read."""
@@ -838,6 +836,7 @@ class ViewerHub:
             "dirty": s.dirty,
             # What a save would write, and how much is waiting for one.
             "changes": s.change_count,
+            **_history_flags(s),
             "origin": s.origin_name,
             "working_copy": (
                 s.working_copy.to_dict() if s.working_copy is not None else None
@@ -1018,7 +1017,6 @@ class ViewerHub:
                 elif shown is not None and self.core.models.get(shown) is not None:
                     client.view_model_id = shown
                 client.viewport = viewport
-                client.viewport_at = _utcnow()
         elif ftype == "command_result":
             pending = self._commands.get(str(frame.get("id")))
             if pending is not None:
@@ -1325,7 +1323,15 @@ class ViewerHub:
         a tab opened later does not inherit the previous model's state.
         """
         etype = event.get("type")
-        reasons = {"model_loaded": "loaded", "model_saved": "saved", "model_mutated": "edited"}
+        reasons = {
+            "model_loaded": "loaded",
+            "model_saved": "saved",
+            "model_mutated": "edited",
+            "model_committed": "committed",
+            "model_restored": "restored",
+            "model_undone": "undone",
+            "model_redone": "redone",
+        }
         frame: dict | None = None
         if etype in reasons:
             if etype == "model_loaded":
@@ -1333,19 +1339,39 @@ class ViewerHub:
                 self.last_highlight = None
                 self.last_color_theme = None
                 self._units.clear()
+            session = self.core.session
             frame = {
                 "type": "model_updated",
                 "etag": self.model_etag(),
                 "reason": reasons[etype],
-                "dirty": self.core.session.dirty,
-                "changes": self.core.session.change_count,
+                "dirty": session.dirty,
+                "changes": session.change_count,
+                **_history_flags(session),
                 "geometry": self._geometry_changed(etype, event),
             }
-            if etype == "model_mutated" and event.get("description"):
+            if session.loaded:
+                # A tab that shows exactly this revision can take the change in
+                # place; any other tab has to rebuild.
+                frame["base_etag"] = session.etag_at(session.revision - 1)
+            if event.get("description"):
                 frame["description"] = str(event["description"])[:200]
-            touched = _guid_list(event.get("guids"))
-            if touched:
-                frame["elements"] = touched
+            raw_guids = event.get("guids")
+            if isinstance(raw_guids, list) and len(raw_guids) <= 500 and not event.get("truncated"):
+                touched = _guid_list(raw_guids)
+                if touched:
+                    frame["elements"] = touched
+            for source, target in (("created_guids", "created"), ("removed_guids", "removed")):
+                listed = _guid_list(event.get(source))
+                if listed:
+                    frame[target] = listed
+            if event.get("tree"):
+                frame["tree"] = True
+            if event.get("labels"):
+                frame["labels"] = True
+                if isinstance(event.get("names"), dict):
+                    frame["names"] = event["names"]
+            if event.get("change_id"):
+                frame["change_id"] = event["change_id"]
         elif etype in (
             "model_attached",
             "model_detached",

@@ -338,6 +338,50 @@ def build_viewer_routes(core: AppCore) -> list[Any]:
             }
         )
 
+    async def _history_step(direction: str) -> Response:
+        """Step the model back or forward. Reached only from a control a person clicks."""
+        if not core.viewer.enabled:
+            return _disabled_response()
+        if not core.session.loaded:
+            return JSONResponse({"error": "NO_MODEL_LOADED"}, status_code=409)
+        try:
+            record = await (core.undo if direction == "undo" else core.redo)(by="viewer")
+        except ToolError as exc:
+            return _tool_error_response(exc, status=409)
+        except Exception as exc:
+            log.exception("viewer %s failed", direction)
+            return JSONResponse({"error": str(exc)}, status_code=500)
+        return JSONResponse(
+            {
+                "ok": True,
+                "step": record.to_dict(),
+                "dirty": core.session.dirty,
+                "changes": core.session.change_count,
+            }
+        )
+
+    async def model_undo(request) -> Response:
+        return await _history_step("undo")
+
+    async def model_redo(request) -> Response:
+        return await _history_step("redo")
+
+    async def model_changes(request) -> Response:
+        """The edits since the model was loaded, for the Changes list."""
+        if not core.viewer.enabled:
+            return _disabled_response()
+        history = core.session.history
+        saved = history.saved_index
+        return JSONResponse(
+            {
+                "applied": [record.to_dict() for record in history.applied],
+                "undone": [record.to_dict() for record in reversed(history.undone)],
+                "saved_after": saved if 0 <= saved <= len(history.applied) else None,
+                "can_undo": history.can_undo,
+                "can_redo": history.can_redo,
+            }
+        )
+
     async def _status_with_units(client: Any) -> None:
         """Resend status once the file's length unit is known.
 
@@ -411,6 +455,9 @@ def build_viewer_routes(core: AppCore) -> list[Any]:
         Route("/api/model.ifc", model_ifc, methods=["GET"]),
         Route("/api/model/state", model_state, methods=["GET"]),
         Route("/api/model/save", model_save, methods=["POST"]),
+        Route("/api/model/undo", model_undo, methods=["POST"]),
+        Route("/api/model/redo", model_redo, methods=["POST"]),
+        Route("/api/model/changes", model_changes, methods=["GET"]),
         Route("/api/elements/{guid}", element, methods=["GET"]),
         Route("/api/search", search, methods=["GET"]),
         WebSocketRoute("/ws", ws_endpoint),

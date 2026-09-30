@@ -48,35 +48,33 @@ TOOL_NAMES = (
 
 
 def register(mcp: OperationRegistry, core: AppCore) -> None:
-    limit_ = core.settings.exec.output_char_limit
+    def limit_() -> int:
+        return core.settings.exec.output_char_limit
 
     @mcp.tool(
         name="compare_models",
         annotations=INSIGHT_ANN,
         required_capabilities=GEOMETRY_READ,
         description=(
-            "[QUERY] Diff two open revisions of the same project: what was "
-            "added, removed, moved, reshaped, retyped, re-containered, or had "
-            "properties edited. `model` is the older baseline and `other_model` "
-            "the newer revision, so a positive move is where the element went. "
-            "Attach the second file first (attach, then list_models). Elements "
-            "are paired by GlobalId; when the two files barely share ids the "
-            "diff falls back to matching on class, type and name and says so in "
-            "`matcher`. Positions and volumes come from the triangle meshes, so "
-            "a move is a real move and not just an edited placement. Feed "
-            "`global_ids` straight to apply_color_theme to see the change set."
+            "[QUERY] Diff two open revisions of one project: added, removed, "
+            "moved, reshaped, retyped, re-containered and property-edited "
+            "elements. `model` is the older baseline, `other_model` the newer, so "
+            "a positive move is where the element went. Attach the second file "
+            "first. Elements pair by GlobalId, falling back to class, type and "
+            "name when few ids match (see `matcher`). Feed `global_ids` to "
+            "apply_color_theme."
         ),
     )
     @enveloped(core, "compare_models")
     async def compare_models_tool(
         other_model: Annotated[
             str,
-            Field(description="model_id of the newer revision to compare against; see list_models."),
+            Field(description="model_id of the newer revision (see list_models)."),
         ],
         model: Annotated[str | None, Field(description=MODEL_ARG)] = None,
         selector: Annotated[
             str | None,
-            Field(description="Limit the diff to one set, e.g. `IfcWall`; omit for every element."),
+            Field(description="Limit to one set, e.g. `IfcWall`; omit for all."),
         ] = None,
         move_tolerance: Annotated[
             float,
@@ -84,11 +82,11 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
         ] = 0.01,
         volume_tolerance: Annotated[
             float,
-            Field(ge=0.0, le=1.0, description="Fractional volume change before geometry counts as changed."),
+            Field(ge=0.0, le=1.0, description="Fractional volume change that counts as reshaped."),
         ] = 0.01,
         physical_only: bool = True,
         include_geometry: Annotated[
-            bool, Field(description="Compare meshes; false skips moves and reshapes but is far faster.")
+            bool, Field(description="Compare meshes; false skips moves and reshapes, much faster.")
         ] = True,
         include_properties: Annotated[
             bool, Field(description="Compare each element's own property sets, type values excluded.")
@@ -154,17 +152,13 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
         annotations=INSIGHT_ANN,
         required_capabilities=GEOMETRY_READ,
         description=(
-            "[QUERY] Which elements stand in a geometric relation to one target "
-            "or to a box: 'inside' (what is in this space or room), 'crosses' "
-            "(what this duct or pipe passes through), 'above' and 'below' (what "
-            "sits directly over or under it, nearest first), 'within_distance' "
-            "(what is within N metres, by real surface distance), and "
-            "'within_box' (what falls inside explicit bounds, or the target's "
-            "own bounding box). Answers containment that the selector's "
-            "`location=` facet cannot, because most exporters contain elements "
-            "in the storey rather than the space. Every result names the method "
-            "it used and a confidence; solid tests are unreliable on meshes that "
-            "are not closed, which the target block reports."
+            "[QUERY] Elements in a geometric relation to a target or box: 'inside' "
+            "(in a space or room), 'crosses' (what a duct passes through), "
+            "'above'/'below' (directly over or under, nearest first), "
+            "'within_distance' (N metres, surface distance), 'within_box' "
+            "(explicit bounds or the target's box). Answers containment the "
+            "`location=` facet cannot. Results name their method and confidence; "
+            "solid tests are unreliable on open meshes."
         ),
     )
     @enveloped(core, "query_spatial")
@@ -172,7 +166,7 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
         relation: Literal["inside", "crosses", "above", "below", "within_distance", "within_box"],
         target_global_id: Annotated[
             str | None,
-            Field(description="The element the relation is about, e.g. the space or the duct."),
+            Field(description="The target element, e.g. the space or the duct."),
         ] = None,
         box: Annotated[
             list[float] | None,
@@ -184,7 +178,7 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
         ] = None,
         selector: Annotated[
             str,
-            Field(description="The candidate set to test, e.g. `IfcSprinkler` or `IfcWall`."),
+            Field(description="Candidate set to test, e.g. `IfcSprinkler`."),
         ] = "IfcElement",
         distance: Annotated[
             float,
@@ -242,16 +236,13 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
         annotations=INSIGHT_ANN,
         required_capabilities=GEOMETRY_READ,
         description=(
-            "[QUERY] Is this file any good? Reports duplicate GlobalIds, "
+            "[QUERY] Data-quality check of the file: duplicate GlobalIds, "
             "elements in no spatial container, representations with no usable "
-            "solid, elements placed far outside the rest of the model, "
-            "double-modelled solids, a model extent that contradicts the "
-            "declared unit, empty storeys, and unused types. This is the "
-            "data-quality question validate_model does not answer: that one "
-            "checks the schema, and a file can satisfy every rule in it and "
-            "still be unusable. Each finding carries a severity, examples, and "
-            "global_ids for highlight_elements. The geometry checks are skipped "
-            "with a stated reason above max_elements."
+            "solid, placement outliers, double-modelled solids, model extent "
+            "contradicting the declared unit, empty storeys, unused types. "
+            "Complements validate_model, which checks schema rules only. "
+            "Findings carry severity, examples and global_ids for "
+            "highlight_elements. Geometry checks are skipped above max_elements."
         ),
     )
     @enveloped(core, "check_model_health")
@@ -260,7 +251,7 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
             list[str] | None,
             Field(
                 max_length=len(CHECKS),
-                description=f"Run only these checks. Allowed: {list(CHECKS)}.",
+                description=f"Checks to run, any of: {', '.join(CHECKS)}.",
             ),
         ] = None,
         max_findings: Annotated[
@@ -300,17 +291,13 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
         annotations=INSIGHT_ANN,
         required_capabilities=MODEL_READ,
         description=(
-            "[QUERY] What is an element missing? For a few elements, reads the "
-            "schema's property set templates for the class and predefined type "
-            "and reports, per applicable property and quantity set, which "
-            "properties are filled (on the occurrence or inherited from the "
-            "type), which are empty or absent, and where each gap is usually "
-            "filled from: geometry, material, spatial position, documents, the "
-            "type, or a person. `psets='core'` (default) covers the class's "
-            "Common set and BaseQuantities plus anything already present; "
-            "`'all'` lists every applicable template. `detail='full'` adds data "
-            "types and enumerations for every property. Call this before "
-            "deriving or proposing values; it is the gap list, not the answer."
+            "[QUERY] Gap list for a few elements: compares each with the schema's "
+            "property set templates for its class and predefined type, reports "
+            "which properties are filled (own or type) or missing, and where each "
+            "gap is usually filled from (geometry, material, position, documents, "
+            "type, a person). `psets='core'` (default) covers Common and "
+            "BaseQuantities plus what is present; 'all' every template. Call "
+            "before proposing values."
         ),
     )
     @enveloped(core, "audit_element_properties")
@@ -390,17 +377,13 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
         annotations=INSIGHT_ANN,
         required_capabilities=MODEL_READ,
         description=(
-            "[QUERY] How good is this file, and what would improve it? Scores "
-            "the open model 0-100 with a letter grade over ten dimensions: "
-            "project identity, units and georeferencing, spatial containment, "
-            "naming, types and predefined types, classification, common "
-            "property sets and their key properties per class, base "
-            "quantities, materials, and shape representations. Every dimension "
-            "carries its metrics, findings with example global_ids, and the "
-            "concrete improvements, and `top_improvements` orders them worst "
-            "first. `text` is a short digest for a report. Pair it with "
-            "check_model_health for geometry defects and validate_model for "
-            "schema rules; this scores usefulness, not conformance."
+            "[QUERY] Scores the model 0-100 with a letter grade over ten "
+            "dimensions (identity, units and georeferencing, containment, "
+            "naming, types, classification, psets, base quantities, materials, "
+            "representations), each with metrics, findings with example "
+            "global_ids and improvements. `top_improvements` lists fixes worst "
+            "first; `text` is a short digest. Scores usefulness, not "
+            "conformance; see check_model_health and validate_model."
         ),
     )
     @enveloped(core, "assess_model_quality")

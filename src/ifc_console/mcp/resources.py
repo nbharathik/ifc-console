@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from ifc_console.ifc.elements import INCLUDE_DEFAULT, element_detail
-from ifc_console.ifc.info import build_project_info
+from ifc_console.ifc.info import build_project_info, disk_stamp
 from ifc_console.ifc.spatial import build_spatial_tree
 from ifc_console.mcp.compat import MCPServer
 from ifc_console.mcp.envelope import dump
@@ -35,7 +35,9 @@ def register(mcp: MCPServer, core: AppCore) -> None:
         s = core.session
         if not s.loaded:
             return dump(_NO_MODEL)
-        info, _ = await core.cached_read("project_info", lambda: build_project_info(s.ifc, s.path))
+        info, _ = await core.cached_read(
+            "project_info", lambda: build_project_info(s.ifc, s.path), key=disk_stamp(s)
+        )
         return dump({"loaded": True, "revision": s.revision, **info})
 
     @mcp.resource(

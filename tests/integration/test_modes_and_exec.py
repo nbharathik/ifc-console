@@ -318,6 +318,42 @@ async def test_a_working_copy_session_cannot_save_anywhere_else(
     assert not (tmp_path / "elsewhere.ifc").exists()
 
 
+async def test_a_user_save_as_stops_the_assistant_from_overwriting_that_file(
+    harness_factory, work_model, tmp_path
+) -> None:
+    """The user picked a destination; the assistant must not write to it later."""
+    h = await harness_factory(model=work_model, mode=Mode.ASK)
+    copy = await h.core.enter_edit_mode(by="test")
+    assert copy is not None
+    chosen = tmp_path / "chosen.ifc"
+    await h.core.save_model(by="user", target=chosen)
+    await h.call(
+        "execute_ifc_code",
+        code="ifc_api.run('root.create_entity', ifc, ifc_class='IfcWall')",
+        description="add a wall after the user saved elsewhere",
+    )
+    written = _digest(chosen)
+
+    out = await h.call("save_ifc_file")
+
+    assert out["ok"] is False
+    assert out["error"]["code"] == "AI_SAVE_DISABLED"
+    assert _digest(chosen) == written
+
+
+async def test_the_assistant_saves_only_to_the_working_copy(
+    harness_factory, work_model
+) -> None:
+    h = await harness_factory(model=work_model, mode=Mode.ASK)
+    copy = await h.core.enter_edit_mode(by="test")
+    assert copy is not None
+
+    out = await h.call("save_ifc_file", output_path=str(work_model))
+
+    assert out["ok"] is False
+    assert out["error"]["code"] == "AI_SAVE_DISABLED"
+
+
 async def test_the_geometry_toolkit_reaches_generated_code(ask_harness) -> None:
     """Complex objects need vectors, matrices and a tessellator, not entities alone."""
     out = await ask_harness.call(

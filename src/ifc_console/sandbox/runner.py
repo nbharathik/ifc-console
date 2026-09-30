@@ -78,6 +78,8 @@ class SandboxRunner:
         self._process: SandboxProcess | None = None
         self._scratch: Path | None = None
         self._dirs_key: tuple[str, ...] = ()
+        self._last_used = time.monotonic()
+        self._idle_task: asyncio.Task[None] | None = None
         self.last_error: str | None = None
         # Subscribe unconditionally: warm_on_load is re-read per event, so
         # /settings can turn warming on without a restart.
@@ -102,6 +104,7 @@ class SandboxRunner:
             scratch_dir=scratch,
             deny_dirs=self.core.generated_code_deny_paths(),
             memory_mb=self.settings.memory_mb,
+            exempt_dirs=self.core.sandbox_read_exemptions(),
         )
 
     def _preload_names(self) -> tuple[str, ...]:
@@ -183,6 +186,7 @@ class SandboxRunner:
                 self._process = None
                 raise
             duration_ms = int((time.perf_counter() - start) * 1000)
+            self._touch()
 
         info = {"duration_ms": duration_ms, **process.info}
         if not reply.get("ok"):
@@ -203,6 +207,38 @@ class SandboxRunner:
             contained=contained,
             info=info,
         )
+
+    # -- idle stop ---------------------------------------------------------------------------
+    def _touch(self) -> None:
+        """Note use and make sure something is watching for idleness."""
+        self._last_used = time.monotonic()
+        if self.settings.idle_stop_s <= 0:
+            return
+        if self._idle_task is None or self._idle_task.done():
+            with contextlib.suppress(RuntimeError):
+                self._idle_task = asyncio.get_running_loop().create_task(self._idle_watch())
+
+    async def _idle_watch(self) -> None:
+        """Give the worker's copy of the model back once nothing has used it for a while."""
+        while self._process is not None:
+            limit = self.settings.idle_stop_s
+            if limit <= 0:
+                return
+            wait = limit - (time.monotonic() - self._last_used)
+            if wait > 0:
+                await asyncio.sleep(wait)
+                continue
+            if self._lock.locked():
+                await asyncio.sleep(1.0)  # a run is in flight and will touch
+                continue
+            async with self._lock:
+                if time.monotonic() - self._last_used < limit:
+                    continue
+                if self._process is not None:
+                    await self._stop(self._process)
+                    self._process = None
+                    self.core.audit.record("sandbox_idle_stop", idle_s=round(limit))
+            return
 
     async def _ensure_ready(self, session: ModelSession) -> SandboxProcess:
         """A live worker holding the same file the console holds."""
@@ -235,7 +271,11 @@ class SandboxRunner:
             )
 
         process = self._process
-        key = f"{session.path}|{session.fingerprint}|{session.revision}"
+        # An edit may have started while this run queued: the worker reads the
+        # file, which then lacks what the console holds.
+        if session.dirty or session.tainted:
+            raise SandboxNotReady("the model changed while this run was waiting for the sandbox")
+        key = f"{session.path}|{session.load_nonce}|{session.revision_id}"
         if process.loaded_key != key:
             try:
                 reply = await asyncio.to_thread(
@@ -258,6 +298,11 @@ class SandboxRunner:
                     reply.get("message") or "the sandbox could not read the model"
                 )
                 raise SandboxError(self.last_error)
+            if session.dirty or session.tainted or key != (
+                f"{session.path}|{session.load_nonce}|{session.revision_id}"
+            ):
+                process.loaded_key = None
+                raise SandboxNotReady("the model changed while the sandbox was reading it")
             process.loaded_key = key
         return process
 
@@ -278,6 +323,7 @@ class SandboxRunner:
         try:
             async with self._lock:
                 await self._ensure_ready(session)
+                self._touch()
         except (SandboxError, OSError) as exc:
             self.last_error = str(exc)
             return False
@@ -305,6 +351,9 @@ class SandboxRunner:
             await asyncio.to_thread(process.terminate)
 
     async def aclose(self) -> None:
+        if self._idle_task is not None:
+            self._idle_task.cancel()
+            self._idle_task = None
         async with self._lock:
             if self._process is not None:
                 await self._stop(self._process)
@@ -313,6 +362,10 @@ class SandboxRunner:
 
     def close(self) -> None:
         """Synchronous shutdown, for AppCore.shutdown."""
+        if self._idle_task is not None:
+            with contextlib.suppress(RuntimeError):
+                self._idle_task.cancel()
+            self._idle_task = None
         if self._process is not None:
             with contextlib.suppress(Exception):
                 self._process.terminate()

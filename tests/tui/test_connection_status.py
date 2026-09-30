@@ -202,7 +202,7 @@ async def test_status_next_action_uses_current_state(console, work_model, state,
         core.viewer.connected = 1
     if state == "dirty":
         core.session.dirty = True
-        core.session.change_count = 1
+        core.session.record_change("test edit", tool="test")
     await commands.dispatch(console, "/status")
     assert expected in console.text
 

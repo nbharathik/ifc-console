@@ -62,10 +62,32 @@ class AuditLog:
         self._lock = threading.Lock()
         self._sequence = 0
         self._previous_hash: str | None = None
+        # One append handle for the session: opening, chmod-ing and closing the
+        # file per event cost about a millisecond each on Windows.
+        self._handle: Any = None
+
+    def _close_handle(self) -> None:
+        handle, self._handle = self._handle, None
+        if handle is not None:
+            with contextlib.suppress(OSError):
+                handle.close()
+
+    def _open_handle(self, session_id: str) -> Any:
+        if self._handle is None:
+            session_dir = self._session_dir(session_id)
+            if session_dir is None:
+                raise RuntimeError("invalid audit session path")
+            path = session_dir / "audit.jsonl"
+            self._handle = path.open("a", encoding="utf-8", buffering=1)
+            with contextlib.suppress(OSError):
+                path.chmod(0o600)
+        return self._handle
 
     def start(self, meta: dict) -> str:
         stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
         self.sessions_dir.mkdir(parents=True, exist_ok=True)
+        with self._lock:
+            self._close_handle()
         for _attempt in range(10):
             session_id = f"{stamp}-{secrets.token_hex(8)}"
             d = self.sessions_dir / session_id
@@ -124,11 +146,8 @@ class AuditLog:
         payload = {
             key: value for key, value in {**context_fields, **fields}.items() if value is not None
         }
-        session_dir = self._session_dir(self.session_id)
-        if session_dir is None:
-            raise RuntimeError("invalid audit session path")
-        path = session_dir / "audit.jsonl"
         with self._lock:
+            handle = self._open_handle(self.session_id)
             self._sequence += 1
             line = {
                 "schema_version": AUDIT_SCHEMA_VERSION,
@@ -141,14 +160,13 @@ class AuditLog:
             }
             line["event_hash"] = _event_hash(line)
             self._previous_hash = line["event_hash"]
-            with path.open("a", encoding="utf-8") as fh:
-                fh.write(json.dumps(line, ensure_ascii=False, default=str) + "\n")
-            with contextlib.suppress(OSError):
-                path.chmod(0o600)
+            handle.write(json.dumps(line, ensure_ascii=False, default=str) + "\n")
         return line
 
     def end(self) -> None:
         self.record("session_end")
+        with self._lock:
+            self._close_handle()
 
     # -- reading (TUI Audit tab, `ifc-console sessions`) ----------------------
     def list_sessions(self) -> list[str]:

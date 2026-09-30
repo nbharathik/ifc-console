@@ -36,9 +36,30 @@ jobs:
       - name: Verify frozen dependencies
         run: uv lock --check
       - name: Sync dependencies
-        run: uv sync --extra dev
+        run: uv sync --group dev --all-extras
       - name: Tests
-        run: uv run pytest tests packages/ifc-console-agents/tests
+        run: uv run pytest tests
+
+  lowest:
+    name: Lowest supported dependencies
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    # Informational until the declared floors are raised to versions that pass.
+    continue-on-error: true
+    env:
+      UV_LOCKED: "0"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9 # v7
+        with:
+          version: "0.12.3"
+          python-version: "3.10"
+      - name: Sync lowest direct dependencies
+        run: uv sync --group dev --all-extras --resolution lowest-direct
+      - name: Tests
+        run: uv run --no-sync pytest tests
 
   package:
     name: Quality and package boundaries
@@ -58,21 +79,17 @@ jobs:
           uv run python scripts/check_release.py
           uv run python scripts/check_vendor_assets.py
       - name: Sync quality dependencies
-        run: uv sync --extra dev
+        run: uv sync --group dev --all-extras
       - name: Lint and compile
         run: |
-          uv run ruff check src tests packages scripts
-          uv run python -m compileall -q src tests packages scripts
-          node --check src/ifc_console/viewer/static/app.js
-          node --check src/ifc_console/viewer/static/parser.js
-          node --check src/ifc_console/viewer/static/worker.js
-          node --check packages/ifc-console-agents/src/ifc_console_agents/static/chat.js
-          node --check packages/ifc-console-agents/src/ifc_console_agents/static/chat-page.js
-      - name: Build and inspect all release packages
+          uv run ruff check src tests scripts
+          uv run python -m compileall -q src tests scripts
+          for file in src/ifc_console/viewer/static/*.js src/ifc_console/agents/static/*.js; do
+            node --check "$file"
+          done
+      - name: Build and inspect the release package
         run: |
           uv build --out-dir ci-dist
-          uv build --package ifc-console-agents --out-dir ci-dist
-          uv build --package ifc-console-viewer --out-dir ci-dist
           uv run python scripts/check_wheels.py --dist-dir ci-dist
 
   docs:
@@ -89,5 +106,5 @@ jobs:
       - name: Build docs
         run: |
           uv lock --check
-          uv sync --extra docs
-          uv run mkdocs build --strict
+          uv sync --group docs
+          uv run --no-sync mkdocs build --strict

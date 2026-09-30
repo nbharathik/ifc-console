@@ -14,6 +14,7 @@ from starlette.testclient import TestClient
 
 from ifc_console.viewer.assets import require_static_dir as _static_dir
 from tests.unit.test_viewer_hub import TINY_PNG, FakeWS
+from tests.viewer_sources import application_script
 
 pytestmark = pytest.mark.asyncio
 
@@ -127,10 +128,8 @@ async def test_model_ifc_etag_and_304(viewer_core):
     assert first.status_code == 200
     assert first.text.startswith("ISO-10303-21")
     etag = first.headers["etag"]
-    assert etag == (
-        f"{viewer_core.session.model_id}-{viewer_core.session.fingerprint}-"
-        f"{viewer_core.session.revision}"
-    )
+    s = viewer_core.session
+    assert etag == f"{s.model_id}-{s.fingerprint}-{s.load_nonce}-{s.revision}"
 
     again = client.get(
         "/api/model.ifc", headers={**_auth(viewer_core), "If-None-Match": etag}
@@ -843,7 +842,7 @@ async def test_picker_follows_a_pinned_model_after_it_becomes_active(viewer_core
 async def test_viewer_commits_complete_model_with_one_loading_state(viewer_core):
 
     static = _static_dir()
-    source = (static / "app.js").read_text(encoding="utf-8")
+    source = application_script()
     shell = (static / "index.html").read_text(encoding="utf-8")
 
     assert "progress-toast" not in source
@@ -873,7 +872,7 @@ async def test_section_planes_are_wired_to_every_patched_material(viewer_core):
     a plane-count change forces the recompile three.js needs."""
 
     static = _static_dir()
-    source = (static / "app.js").read_text(encoding="utf-8")
+    source = application_script()
     shell = (static / "index.html").read_text(encoding="utf-8")
 
     assert "patchedMaterials.add(mat)" in source
@@ -893,7 +892,7 @@ async def test_measurement_reads_depth_on_the_gpu_not_by_raycast(viewer_core):
     from the same 1x1 GPU pass the id picker uses."""
 
     static = _static_dir()
-    source = (static / "app.js").read_text(encoding="utf-8")
+    source = application_script()
     shell = (static / "index.html").read_text(encoding="utf-8")
 
     assert "attr.onUpload(freeUploadedArray)" in source, "the premise of this test"
@@ -906,8 +905,8 @@ async def test_measurement_reads_depth_on_the_gpu_not_by_raycast(viewer_core):
     assert "beginDepthProbe(" in surface
     # both 1x1 passes clip, so a sectioned-away face is neither pickable nor
     # measurable and the surface behind it answers instead
-    for material in ("pickMaterial", "depthMaterial"):
-        block = source.split(f"const {material} = new THREE.ShaderMaterial", 1)[1]
+    for material in ("createPickMaterial", "createDepthMaterial"):
+        block = source.split(f"function {material}(", 1)[1]
         block = block.split("});", 1)[0]
         assert "clipping: true" in block, material
         assert "#include <clipping_planes_fragment>" in block, material

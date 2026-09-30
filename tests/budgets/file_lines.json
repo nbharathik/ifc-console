@@ -1,0 +1,11 @@
+{
+  "src/ifc_console/agents/panel.py": 3616,
+  "src/ifc_console/agents/static/chat.js": 8088,
+  "src/ifc_console/ifc/profile.py": 2252,
+  "src/ifc_console/mcp/tools_analysis.py": 1529,
+  "src/ifc_console/sdk.py": 1819,
+  "src/ifc_console/tui/commands.py": 1656,
+  "src/ifc_console/viewer/static/app.js": 6412,
+  "tests/agents/integration/test_agent_panel.py": 2309,
+  "tests/agents/unit/test_browser_panel_assets.py": 2174
+}

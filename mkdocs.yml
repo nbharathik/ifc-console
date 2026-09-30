@@ -67,6 +67,7 @@ nav:
           - Connect a client: clients.md
           - 3D viewer: viewer.md
           - Agent workspace: chat.md
+          - Agent engines: engines.md
       - Build:
           - Python SDK: sdk.md
           - Architecture: architecture.md

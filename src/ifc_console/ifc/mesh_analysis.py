@@ -377,8 +377,8 @@ def _trimesh_module(*, required: bool) -> Any | None:
         if required:
             raise ToolError(
                 "EXTRA_NOT_INSTALLED",
-                "the Trimesh geometry backend is not installed",
-                "Install `ifc-console[geometry]`, restart ifc-console, then retry; "
+                "the Trimesh geometry backend could not be imported",
+                "Reinstall ifc-console to restore trimesh, then retry; "
                 "or use backend='builtin'.",
             ) from exc
         return None

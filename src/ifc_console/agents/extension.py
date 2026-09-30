@@ -1,0 +1,145 @@
+"""IFC Console extension entry point for agents, chat, and their browser panel."""
+
+from __future__ import annotations
+
+import logging
+from contextlib import suppress
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any
+
+from starlette.routing import Mount
+
+from ifc_console.agents import __version__
+from ifc_console.agents.assets import require_static_dir, static_app
+from ifc_console.agents.chat import ChatState
+from ifc_console.agents.chat.routes import build_chat_routes
+from ifc_console.agents.files import AgentReferenceStore
+from ifc_console.agents.packs import AgentPackRegistry
+from ifc_console.agents.panel import build_agent_panel_routes, migrate_legacy_panel_threads
+from ifc_console.agents.tools_skills import register as register_skill_operations
+from ifc_console.extensions import BrowserPanel, ExtensionManifest
+
+log = logging.getLogger("ifc-console.agents")
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping, Sequence
+
+    from ifc_console.app import AppCore
+    from ifc_console.core.operations import OperationRegistry
+
+
+@dataclass
+class AgentExtensionState:
+    """State owned by one attached agents extension."""
+
+    chat: ChatState
+    packs: AgentPackRegistry
+    files: AgentReferenceStore
+
+
+class AgentExtension:
+    """The built-in agent product, imported by name only when it is attached."""
+
+    manifest = ExtensionManifest(
+        name="agents",
+        version=__version__,
+        description="Agent SDK, provider chat, browser panel, and reusable skills.",
+    )
+
+    def attach(self, core: AppCore) -> AgentExtensionState:
+        # Fail while the extension manager is isolating discovery errors, not
+        # later when Starlette asks the extension to construct its route tree.
+        require_static_dir()
+        migrated = migrate_legacy_panel_threads(core)
+        if migrated:
+            log.info(
+                "migrated %d legacy Agent thread(s) into the user data directory",
+                migrated,
+            )
+        settings = core.settings.chat
+        chat = ChatState(
+            provider=settings.provider,
+            model=settings.model,
+            base_url=settings.base_url,
+        )
+        from ifc_console.agents.paths import blueprints_dir
+
+        # Every panel store lives under the console home; a repository never
+        # gains a .ifc-console folder from the agent workspace.
+        packs = AgentPackRegistry(
+            core.store.project_dir, blueprints_dir=blueprints_dir(core.store.home)
+        )
+        files = AgentReferenceStore.for_project(core.store.home, core.store.project_dir)
+        state = AgentExtensionState(chat=chat, packs=packs, files=files)
+
+        # Compatibility attributes keep current CLI/TUI, SDK, and embedders
+        # working while the implementation itself lives in this distribution.
+        core.chat = chat
+        core.agent_packs = packs
+        core.agent_files = files
+        # The user library follows the user to every project.
+        core.agent_library = AgentReferenceStore.for_library(core.store.home)
+        return state
+
+    def register_operations(
+        self,
+        core: AppCore,
+        registry: OperationRegistry,
+        state: AgentExtensionState,
+    ) -> None:
+        del state
+        register_skill_operations(registry, core)
+
+    def http_routes(self, core: AppCore, state: AgentExtensionState) -> Sequence[Any]:
+        del state
+        return [
+            *build_chat_routes(core),
+            *build_agent_panel_routes(core),
+            Mount("/agents/static", app=static_app(), name="agents-static"),
+        ]
+
+    def status(self, core: AppCore, state: AgentExtensionState) -> Mapping[str, Any]:
+        return {
+            "enabled": state.chat.enabled,
+            "provider": state.chat.provider,
+            "model": state.chat.model,
+        }
+
+    def browser_panel(self, core: AppCore, state: AgentExtensionState) -> BrowserPanel | None:
+        del core, state
+        return BrowserPanel(
+            name="agents",
+            label="Agent",
+            module_url="/agents/static/chat.js",
+            stylesheet_url="/agents/static/chat.css",
+        )
+
+    def close(self, core: AppCore, state: AgentExtensionState) -> None:
+        panel = getattr(core, "agent_panel", None)
+        if panel is not None:
+            for tasks in tuple(panel.active_streams.values()):
+                for task in tuple(tasks):
+                    if not task.done():
+                        with suppress(RuntimeError):
+                            task.cancel()
+            for _owner, pending in tuple(panel.pending_approvals.values()):
+                if not pending.done():
+                    with suppress(RuntimeError):
+                        pending.set_result(False)
+            panel.threads.clear()
+            panel.active_streams.clear()
+            panel.pending_approvals.clear()
+            harness = getattr(panel, "harness", None)
+            if harness is not None:
+                with suppress(Exception):
+                    harness.close_all_sync()
+                panel.harness = None
+        state.chat.keys.clear()
+        state.chat.enabled = False
+        state.chat.url = None
+        core.agent_panel = None
+        core.agent_packs = None
+        core.agent_files = None
+
+
+__all__ = ["AgentExtension", "AgentExtensionState"]

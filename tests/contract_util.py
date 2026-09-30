@@ -1,8 +1,9 @@
 """Builds the public-API contract snapshot the golden test enforces.
 
 The contract is what SemVer protects: tool names, input/output schemas,
-annotations, the envelope shape, and the error-code registry. Descriptions
-are deliberately excluded so wording can improve without a contract bump.
+annotations, the envelope shape, and the error-code registry. Descriptions,
+on tools and on their parameters, are deliberately excluded so wording can
+improve without a contract bump.
 """
 
 from __future__ import annotations
@@ -12,14 +13,30 @@ from pathlib import Path
 from typing import Any
 
 GOLDEN_PATH = Path(__file__).parent / "golden" / "api_contract.json"
-AGENT_GOLDEN_PATH = (
-    Path(__file__).parent.parent
-    / "packages"
-    / "ifc-console-agents"
-    / "tests"
-    / "golden"
-    / "api_contract.json"
-)
+AGENT_GOLDEN_PATH = Path(__file__).parent / "agents" / "golden" / "api_contract.json"
+
+
+def without_descriptions(node: Any) -> Any:
+    """A schema with its prose removed, so rewording never churns the golden.
+
+    Only a schema node's own `description` goes; a property that happens to be
+    called `description` is a property and stays.
+    """
+    if isinstance(node, list):
+        return [without_descriptions(item) for item in node]
+    if not isinstance(node, dict):
+        return node
+    out: dict[str, Any] = {}
+    for key, value in node.items():
+        if key == "description" and isinstance(value, str):
+            continue
+        if key in ("properties", "$defs", "definitions", "patternProperties") and isinstance(
+            value, dict
+        ):
+            out[key] = {name: without_descriptions(sub) for name, sub in value.items()}
+        else:
+            out[key] = without_descriptions(value)
+    return out
 
 
 async def build_contract(home: Path, *, with_agents: bool = False) -> dict[str, Any]:
@@ -31,11 +48,11 @@ async def build_contract(home: Path, *, with_agents: bool = False) -> dict[str, 
 
     entries: tuple[Any, ...] = ()
     if with_agents:
-        from ifc_console_agents.extension import AgentExtension
+        from ifc_console.agents.extension import AgentExtension
 
         class _AgentsEntryPoint:
             name = "agents"
-            value = "ifc_console_agents.extension:AgentExtension"
+            value = "ifc_console.agents.extension:AgentExtension"
             dist = None
 
             @staticmethod
@@ -59,8 +76,8 @@ async def build_contract(home: Path, *, with_agents: bool = False) -> dict[str, 
                     "name": tool.name,
                     "read_only": getattr(annotations, "readOnlyHint", None),
                     "destructive": getattr(annotations, "destructiveHint", None),
-                    "input_schema": getattr(tool, "inputSchema", None),
-                    "output_schema": getattr(tool, "outputSchema", None),
+                    "input_schema": without_descriptions(getattr(tool, "inputSchema", None)),
+                    "output_schema": without_descriptions(getattr(tool, "outputSchema", None)),
                 }
             )
         return {

@@ -1208,6 +1208,11 @@
         ],
         "returns": "str"
       },
+      "redo": {
+        "async": true,
+        "parameters": [],
+        "returns": "dict[str, Any]"
+      },
       "restore_commit": {
         "async": true,
         "parameters": [
@@ -1363,6 +1368,30 @@
           }
         ],
         "returns": "str"
+      },
+      "set_properties": {
+        "async": true,
+        "parameters": [
+          {
+            "annotation": "list[dict[str, Any]]",
+            "kind": "POSITIONAL_OR_KEYWORD",
+            "name": "changes",
+            "required": true
+          },
+          {
+            "annotation": "bool",
+            "default": "False",
+            "kind": "KEYWORD_ONLY",
+            "name": "dry_run"
+          },
+          {
+            "annotation": "str",
+            "default": "''",
+            "kind": "KEYWORD_ONLY",
+            "name": "description"
+          }
+        ],
+        "returns": "dict[str, Any]"
       },
       "status": {
         "async": true,
@@ -1606,6 +1635,11 @@
             "name": "depth"
           }
         ],
+        "returns": "dict[str, Any]"
+      },
+      "undo": {
+        "async": true,
+        "parameters": [],
         "returns": "dict[str, Any]"
       },
       "unpin_artifact": {
@@ -3614,6 +3648,11 @@
         ],
         "returns": "str"
       },
+      "redo": {
+        "async": false,
+        "parameters": [],
+        "returns": "dict[str, Any]"
+      },
       "restore_commit": {
         "async": false,
         "parameters": [
@@ -3769,6 +3808,30 @@
           }
         ],
         "returns": "str"
+      },
+      "set_properties": {
+        "async": false,
+        "parameters": [
+          {
+            "annotation": "list[dict[str, Any]]",
+            "kind": "POSITIONAL_OR_KEYWORD",
+            "name": "changes",
+            "required": true
+          },
+          {
+            "annotation": "bool",
+            "default": "False",
+            "kind": "KEYWORD_ONLY",
+            "name": "dry_run"
+          },
+          {
+            "annotation": "str",
+            "default": "''",
+            "kind": "KEYWORD_ONLY",
+            "name": "description"
+          }
+        ],
+        "returns": "dict[str, Any]"
       },
       "status": {
         "async": false,
@@ -4012,6 +4075,11 @@
             "name": "depth"
           }
         ],
+        "returns": "dict[str, Any]"
+      },
+      "undo": {
+        "async": false,
+        "parameters": [],
         "returns": "dict[str, Any]"
       },
       "unpin_artifact": {
@@ -16376,5 +16444,5 @@
     "ThreadStore",
     "ThreadStoreError"
   ],
-  "version": "0.1.4"
+  "version": "0.2.0"
 }

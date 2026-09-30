@@ -25,15 +25,16 @@ CANCEL_ANN = OperationAnnotations(readOnlyHint=False, destructiveHint=True)
 
 
 def register(registry: OperationRegistry, core: AppCore) -> None:
-    char_limit = core.settings.exec.output_char_limit
+    def char_limit() -> int:
+        return core.settings.exec.output_char_limit
 
     @registry.tool(
         annotations=START_ANN,
         data_model=JobData,
         description=(
             "[AUTOMATION] Submit schema and optional IDS validation to an isolated "
-            "worker. Returns immediately with a durable job_id. The model must be "
-            "clean because the job is bound to verified source bytes and a revision."
+            "worker; returns a durable job_id at once. The model must be clean: the "
+            "job is bound to verified source bytes and a revision."
         ),
     )
     @enveloped(core, "submit_validation_job")
@@ -61,8 +62,8 @@ def register(registry: OperationRegistry, core: AppCore) -> None:
         annotations=READ_ANN,
         data_model=JobData,
         description=(
-            "[AUTOMATION] Get durable job state, progress, events, failure details, "
-            "and result artifacts. Optionally wait for a terminal state."
+            "[AUTOMATION] Get durable job state, progress, events, failures and "
+            "result artifacts. Can wait for a terminal state."
         ),
     )
     @enveloped(core, "get_job")
@@ -136,7 +137,7 @@ def register(registry: OperationRegistry, core: AppCore) -> None:
         data_model=ArtifactData,
         description=(
             "[AUTOMATION] Get metadata for a content-addressed artifact. "
-            "The SDK or CLI can export its verified content."
+            "The SDK or CLI exports its verified content."
         ),
     )
     @enveloped(core, "get_artifact")

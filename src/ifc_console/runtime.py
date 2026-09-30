@@ -17,14 +17,13 @@ from ifc_console.toolsets import (
 )
 
 if TYPE_CHECKING:
-    from ifc_console_agents.agent import Agent
-    from ifc_console_agents.models import (
+    from ifc_console.agents.agent import Agent
+    from ifc_console.agents.models import (
         AgentLimits,
         AgentModel,
         ApprovalHandler,
         ThreadStore,
     )
-
     from ifc_console.toolsets import ToolMiddleware
 
 
@@ -157,14 +156,7 @@ class IfcRuntime:
     ) -> Agent:
         """Build the bundled provider-neutral agent over this runtime."""
 
-        try:
-            from ifc_console_agents import Agent
-        except ModuleNotFoundError as exc:
-            if exc.name != "ifc_console_agents":
-                raise
-            raise RuntimeError(
-                "agent creation requires the ifc-console-agents package"
-            ) from exc
+        from ifc_console.agents import Agent
 
         tools = await self.toolset(
             *tool_sources,

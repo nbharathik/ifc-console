@@ -10,8 +10,8 @@ from types import SimpleNamespace
 
 import pytest
 
-import ifc_console.cli as cli_module
 from ifc_console.cli import build_parser, main
+from ifc_console.cli import run as run_module
 
 FIXTURES = Path(__file__).parent.parent / "fixtures"
 MODEL = FIXTURES / "generated" / "minimal_ifc4.ifc"
@@ -87,13 +87,13 @@ def test_server_startup_model_failure_closes_core(
 
     monkeypatch.setattr(preload, "start", lambda: None)
     monkeypatch.setattr(preload, "release", lambda: None)
-    monkeypatch.setattr(cli_module, "_make_store", lambda _args: store)
-    monkeypatch.setattr(cli_module, "_setup_logging", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(cli_module, "_make_core", make_core)
-    monkeypatch.setattr(cli_module, "_load_model_blocking", lambda _core, _path: 4)
+    monkeypatch.setattr(run_module, "_make_store", lambda _args: store)
+    monkeypatch.setattr(run_module, "_setup_logging", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(run_module, "_make_core", make_core)
+    monkeypatch.setattr(run_module, "_load_model_blocking", lambda _core, _path: 4)
 
     args = build_parser().parse_args(argv)
-    assert getattr(cli_module, runner_name)(args) == 4
+    assert getattr(run_module, runner_name)(args) == 4
     assert transports == [transport]
     assert events == ["audit", "knowledge", "shutdown"]
 

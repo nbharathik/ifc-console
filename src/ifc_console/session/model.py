@@ -20,10 +20,16 @@ from pathlib import Path
 from typing import Any, TypeVar
 
 from ifc_console.core.results import ToolError
+from ifc_console.ifc.change_record import ChangeSummary, summarize, verify_rollback
 from ifc_console.session.backups import BackupStore
+from ifc_console.session.history import ChangeHistory, ChangeRecord
 from ifc_console.session.working_copy import WorkingCopy
 
 T = TypeVar("T")
+
+# An edit that logs more steps than this is kept in the model but not in the
+# undo log: the log holds a serialized copy of every entity it touched.
+MAX_UNDO_OPS = 250_000
 
 _file_digest = getattr(hashlib, "file_digest", None)  # 3.11+
 
@@ -31,8 +37,32 @@ _LOAD_TIMEOUT = 600.0
 _SAVE_TIMEOUT = 600.0
 
 
+class OpenChange:
+    """One edit in progress: the transaction it runs in and what to restore."""
+
+    def __init__(self, transaction: Any | None, was_dirty: bool, live: bool) -> None:
+        self.transaction = transaction
+        self.was_dirty = was_dirty
+        self.live = live  # False for a dry run, which never touches the flags
+
+
+class MutationOutcome:
+    """How an edit ended, for whoever has to report it."""
+
+    def __init__(
+        self,
+        record: ChangeRecord | None = None,
+        *,
+        rolled_back: bool = False,
+        verified: bool | None = None,
+    ) -> None:
+        self.record = record
+        self.rolled_back = rolled_back
+        self.verified = verified
+
+
 class ModelSession:
-    def __init__(self) -> None:
+    def __init__(self, undo_depth: int = 20) -> None:
         self.path: Path | None = None
         self.ifc: Any = None
         # Registry identity: set once the session joins a ModelRegistry.
@@ -54,16 +84,23 @@ class ModelSession:
         # `path` is the copy from then on; `working_copy.origin` names what the
         # user actually opened, which nothing in the session writes.
         self.working_copy: WorkingCopy | None = None
-        # What has changed since the last load or save, for the surfaces that
-        # offer to save it. The list is capped; the counter is not.
-        self.change_count: int = 0
-        self.change_log: list[dict[str, Any]] = []
+        # Every edit since the load as one undoable step, and where the saved
+        # state sits among them. IfcOpenShell keeps `undo_depth` steps.
+        self.undo_depth = max(0, int(undo_depth))
+        self.history = ChangeHistory()
         self.poisoned: bool = False
         self._timeout_poisoned = False
         self._cancelled_jobs = 0
-        # Monotonic change counter: bumped on load, save, and every mutation.
-        # fingerprint+revision is the viewer's ETag for the in-memory model.
+        # The model's identity is fingerprint + load_nonce + revision. The
+        # fingerprint hashes the file as it was loaded and the nonce tells one
+        # load from the next. The revision moves only when the in-memory model
+        # changes (a load or a mutation): saving writes it out and entering edit
+        # mode swaps the file underneath, neither of which changes the model.
+        self.load_nonce: str = ""
         self.revision: int = 0
+        # Held by a mutation or a save for its whole run, so their bookkeeping
+        # (dirty flag, change log, events) cannot interleave.
+        self.edit_lock = asyncio.Lock()
         # Remembered across reload()/recover(); 0 disables the size guard.
         self._max_open_mb: int = 0
         # Bumped by recover(); a job from an older generation must not write
@@ -188,11 +225,16 @@ class ModelSession:
         # and `ifc-console --help` should never pay it.
         import ifcopenshell
 
-        digest_before, size_before = self._hash_file(path)
+        # One hash, taken before the parse. A write during the parse moves the
+        # file's size or mtime, which the stat pair below catches.
+        stat_before = path.stat()
+        digest_after, size_hashed = self._hash_file(path)
         ifc = ifcopenshell.open(str(path))
-        digest_after, size_after = self._hash_file(path)
         stat = path.stat()
-        if digest_before != digest_after or size_before != size_after or size_after != stat.st_size:
+        if (
+            (stat.st_size, stat.st_mtime_ns) != (stat_before.st_size, stat_before.st_mtime_ns)
+            or size_hashed != stat.st_size
+        ):
             raise ToolError(
                 "SOURCE_CHANGED",
                 f"{path.name} changed while it was being opened.",
@@ -204,6 +246,7 @@ class ModelSession:
         # is a different model and starts from its own file again.
         if self.path is None or path != self.path:
             self.working_copy = None
+        ifc.set_history_size(self.undo_depth)
         self.ifc = ifc
         self.path = path
         self.schema = getattr(ifc, "schema", None)
@@ -211,11 +254,11 @@ class ModelSession:
         self.loaded_at = datetime.now(timezone.utc).isoformat()
         self.source_sha256 = digest_after
         self.fingerprint = digest_after[:12]
+        self.load_nonce = secrets.token_hex(4)
         self.disk_key = (stat.st_size, stat.st_mtime_ns)
         self.dirty = False
         self.tainted = False
-        self.change_count = 0
-        self.change_log.clear()
+        self.history = ChangeHistory()
         self.revision += 1
 
     async def open(self, path: Path, *, max_mb: int | None = None) -> None:
@@ -246,9 +289,10 @@ class ModelSession:
             raise
         except Exception as exc:
             raise ToolError(
-                "FILE_NOT_FOUND",
+                "INVALID_IFC",
                 f"could not parse {path.name}: {exc}",
-                "The file may be corrupt or not an IFC file.",
+                "The file may be corrupt or not an IFC file; check it with "
+                "`ifc-console check <file>`.",
             ) from exc
 
     async def reload(self) -> None:
@@ -275,40 +319,195 @@ class ModelSession:
         self._pool.shutdown(wait=False, cancel_futures=True)
 
     # -- mutation bookkeeping ----------------------------------------------------
+    @property
+    def change_count(self) -> int:
+        """Steps between the model and the file on disk."""
+        return self.history.unsaved
+
     def mark_dirty(self) -> None:
         self.dirty = True
         self.revision += 1
 
     def record_change(self, description: str, *, tool: str = "") -> int:
-        """Log one announced edit and return the running change count."""
-        self.change_count += 1
-        self.change_log.append(
-            {
-                "at": datetime.now(timezone.utc).isoformat(),
-                "tool": tool,
-                "description": (description or "model edit").strip()[:200],
-            }
-        )
-        del self.change_log[:-100]
+        """Log a step that has no transaction, so nothing before it can be undone."""
+        self.history.push(ChangeRecord.new(tool, description, ChangeSummary()), alive=0)
         return self.change_count
 
     def changes_summary(self, limit: int = 5) -> dict[str, Any]:
-        return {
-            "count": self.change_count,
-            "recent": [entry["description"] for entry in self.change_log[-limit:]],
-        }
+        return {"count": self.change_count, "recent": self.history.recent(limit)}
+
+    # -- undoable edits (worker thread only) --------------------------------------
+    def begin_change(self, *, dry_run: bool = False) -> OpenChange:
+        """Open the transaction one edit runs in and flag the model as changing.
+
+        The transaction is made here rather than by `begin_transaction`, which
+        does nothing when the undo depth is 0; rolling back a failed edit must
+        work either way. The revision moves when the edit is kept, not now: a
+        rolled-back edit leaves the model, and the context a caller holds, as
+        it was.
+        """
+        from ifcopenshell.file import Transaction
+
+        change = OpenChange(None, self.dirty, live=not dry_run)
+        if not dry_run:
+            self.dirty = True
+        change.transaction = Transaction(self.ifc)
+        self.ifc.transaction = change.transaction
+        return change
+
+    def keep_change(
+        self, change: OpenChange, *, tool: str, description: str
+    ) -> ChangeRecord | None:
+        """Close a finished edit as one step. None when it changed nothing."""
+        ifc = self.ifc
+        transaction = change.transaction
+        if ifc.transaction is not transaction:
+            # Something replaced the log mid-run, so it is incomplete: keep the
+            # edit, say it cannot be undone, and redraw everything.
+            ifc.transaction = None
+            ifc.history.clear()
+            ifc.future.clear()
+            summary = ChangeSummary(geometry=True, tree=True, labels=True, truncated=True)
+        else:
+            try:
+                summary = summarize(ifc, transaction)
+            except Exception:
+                summary = ChangeSummary(
+                    ops=len(transaction.operations), geometry=True, tree=True, truncated=True
+                )
+            if not summary.ops:
+                ifc.discard_transaction()
+                if change.live:
+                    self.dirty = change.was_dirty
+                return None
+            ifc.end_transaction()
+            if summary.ops > MAX_UNDO_OPS:
+                ifc.history.clear()
+                ifc.future.clear()
+        record = ChangeRecord.new(tool, description, summary)
+        self.history.push(record, alive=len(ifc.history))
+        self.dirty = True
+        self.revision += 1
+        return record
+
+    def drop_change(self, change: OpenChange) -> tuple[bool, bool | None]:
+        """Roll a failed or dry-run edit back. Returns (rolled_back, verified)."""
+        ifc = self.ifc
+        transaction = change.transaction
+        if ifc.transaction is transaction:
+            ifc.discard_transaction()
+        else:
+            ifc.transaction = None
+            transaction.rollback()
+        verified = verify_rollback(ifc, transaction)
+        if verified is True and change.live:
+            self.dirty = change.was_dirty
+        elif verified is False:
+            self.tainted = True  # the model no longer matches anything we can name
+        return True, verified
+
+    def mutate(
+        self,
+        fn: Callable[[], T],
+        *,
+        tool: str,
+        description: str,
+        dry_run: bool = False,
+    ) -> tuple[T, MutationOutcome]:
+        """Run `fn` as one atomic, undoable edit.
+
+        Raising inside `fn` rolls everything it did back; the exception carries
+        the outcome as `mutation_outcome`. A dry run always rolls back.
+        """
+        from ifc_console.policy.savepoints import savepoints
+
+        change = self.begin_change(dry_run=dry_run)
+        try:
+            with savepoints(self.ifc, change.transaction):
+                result = fn()
+        except BaseException as exc:
+            rolled_back, verified = self.drop_change(change)
+            exc.mutation_outcome = MutationOutcome(  # type: ignore[attr-defined]
+                rolled_back=rolled_back, verified=verified
+            )
+            raise
+        if dry_run:
+            rolled_back, verified = self.drop_change(change)
+            return result, MutationOutcome(rolled_back=rolled_back, verified=verified)
+        return result, MutationOutcome(self.keep_change(change, tool=tool, description=description))
+
+    def _after_history_step(self) -> None:
+        self.revision += 1
+        self.dirty = self.tainted or not self.history.at_saved_state
+
+    def undo_change(self) -> ChangeRecord:
+        if not self.history.can_undo or not self.ifc.history:
+            raise ToolError(
+                "NOTHING_TO_UNDO",
+                "there is no edit to undo.",
+                f"The undo log keeps the last {self.undo_depth} edits since the model "
+                "was loaded (edit.undo_depth). /reload restores the file.",
+            )
+        from ifcopenshell.file import UndoSystemError
+
+        try:
+            self.ifc.undo()
+        except UndoSystemError as exc:
+            self.tainted = True
+            raise ToolError(
+                "UNDO_FAILED",
+                f"the edit could not be undone cleanly: {exc}",
+                "The model may be half restored. Run /reload to start again from the file.",
+            ) from exc
+        record = self.history.undo(alive=len(self.ifc.history))
+        self._after_history_step()
+        return record
+
+    def redo_change(self) -> ChangeRecord:
+        if not self.history.can_redo or not self.ifc.future:
+            raise ToolError(
+                "NOTHING_TO_REDO",
+                "there is no undone edit to redo.",
+                "Redo is only available right after an undo; a new edit clears it.",
+            )
+        from ifcopenshell.file import UndoSystemError
+
+        try:
+            self.ifc.redo()
+        except UndoSystemError as exc:
+            self.tainted = True
+            raise ToolError(
+                "UNDO_FAILED",
+                f"the edit could not be redone cleanly: {exc}",
+                "The model may be half restored. Run /reload to start again from the file.",
+            ) from exc
+        record = self.history.redo(alive=len(self.ifc.history))
+        self._after_history_step()
+        return record
 
     def adopt_working_copy(self, copy: WorkingCopy) -> None:
         """Point the session at a byte-identical copy of the loaded file.
 
-        The bytes are the same, so the digest still describes them; only the
-        path and the (size, mtime) pair the fast reader compares move over.
+        The bytes are the same, so the digest and the model's identity still
+        describe them; only the path and the (size, mtime) pair the fast reader
+        compares move over.
         """
         stat = copy.path.stat()
         self.working_copy = copy
         self.path = copy.path
         self.disk_key = (stat.st_size, stat.st_mtime_ns) if not self.dirty else None
-        self.revision += 1
+
+    @property
+    def revision_id(self) -> str:
+        return f"{self.fingerprint}:{self.revision}"
+
+    def etag_at(self, revision: int) -> str:
+        return f"{self.model_id or 'model'}-{self.fingerprint}-{self.load_nonce}-{revision}"
+
+    @property
+    def etag(self) -> str:
+        """Names one state of the loaded model; the viewer caches on it."""
+        return self.etag_at(self.revision)
 
     def max_id(self) -> int | None:
         """Cheap mutation canary; call only from inside the worker."""
@@ -390,20 +589,21 @@ class ModelSession:
                 "fingerprint": fingerprint,
                 "superseded": True,
             }
-        self.fingerprint = fingerprint
+        # Saving changes where the model lives and what is on disk, not the model
+        # itself, so its identity (fingerprint, nonce, revision) stays put and
+        # anything keyed on it, a viewer tab or a reviewed context, stays valid.
         self.source_sha256 = source_sha256
         self.path = target
         self.size_bytes = saved_stat.st_size
         self.disk_key = (saved_stat.st_size, saved_stat.st_mtime_ns)
         self.dirty = False
-        self.change_count = 0
-        self.change_log.clear()
-        self.revision += 1
+        self.history.mark_saved()
         return {
             "path": str(target),
             "size_bytes": self.size_bytes,
             "backup_path": str(backup_path) if backup_path else None,
             "fingerprint": self.fingerprint,
+            "content_sha256": source_sha256,
             "working_copy": self._is_working_copy(target),
         }
 

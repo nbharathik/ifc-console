@@ -206,7 +206,8 @@ def install(
     if _installed:
         return []
 
-    read_roots = tuple(policy.read_roots) + runtime_roots()
+    exempt_roots = tuple(policy.exempt_roots)
+    read_roots = tuple(policy.read_roots) + exempt_roots + runtime_roots()
     write_roots = tuple(policy.write_roots)
     deny_roots = tuple(policy.deny_roots)
     allow_network = policy.allow_network
@@ -235,7 +236,8 @@ def install(
         # home, which is denied wholesale. Carve it out before the deny check,
         # or the sandbox has nowhere at all to write.
         in_scratch = _under(resolved, write_roots)
-        if not in_scratch and _under(resolved, deny_roots):
+        exempt = not write and _under(resolved, exempt_roots)
+        if not in_scratch and not exempt and _under(resolved, deny_roots):
             raise SandboxViolation(f"sandbox: {path} is in a directory the sandbox may never touch")
         if write:
             if not in_scratch:

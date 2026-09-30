@@ -74,7 +74,7 @@ async def test_bundled_viewer_starts_without_an_optional_extra(tmp_path) -> None
     core.shutdown()
 
 
-async def test_viewer_tool_catalog_is_stable_across_toggle(harness_factory, work_model) -> None:
+async def test_viewer_tool_catalog_is_stable_across_enable(harness_factory, work_model) -> None:
     """/viewer changes readiness, never names cached by an MCP client."""
     h = await harness_factory(model=work_model)
     assert set(VIEWER_TOOLS).issubset(set(await h.list_tools()))
@@ -82,10 +82,7 @@ async def test_viewer_tool_catalog_is_stable_across_toggle(harness_factory, work
     h.core.enable_viewer()
     assert set(VIEWER_TOOLS).issubset(set(await h.list_tools()))
 
-    h.core.disable_viewer()
-    assert set(VIEWER_TOOLS).issubset(set(await h.list_tools()))
-
-    # and back on: registration must be repeatable
+    # enabling twice: registration must be repeatable
     h.core.enable_viewer()
     assert set(VIEWER_TOOLS).issubset(set(await h.list_tools()))
 
@@ -116,18 +113,18 @@ async def test_viewer_tools_report_not_connected(harness_factory, work_model) ->
     assert "open_viewer" in out["error"]["hint"]
 
 
-async def test_mcp_tools_publish_interoperability_metadata(ask_harness) -> None:
+async def test_mcp_tools_publish_annotations_and_no_metadata(ask_harness) -> None:
     result = await ask_harness.session.list_tools()
     by_name = {tool.name: tool for tool in result.tools}
 
     control = by_name["control_viewer"]
-    assert "viewer" in control.meta["tags"]
-    assert control.meta["ifcConsole"]["requiredCapabilities"] == ["viewer:control"]
     assert control.annotations.readOnlyHint is False
-
     query = by_name["query_elements"]
-    assert "read" in query.meta["tags"]
-    assert query.meta["ifcConsole"]["sharedOperation"] is True
+    assert query.annotations.readOnlyHint is True
+    # destructiveHint means nothing on a read-only tool, so it is not sent
+    assert query.annotations.destructiveHint is None
+    # tags and capabilities cost every listing; find_tools and describe_capabilities answer them
+    assert all(tool.meta is None for tool in result.tools)
 
 
 async def test_capability_report_explains_viewer_readiness(ask_harness) -> None:

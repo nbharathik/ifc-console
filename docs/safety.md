@@ -39,6 +39,18 @@ mode: the only file it can reach is the snapshot.
 `files.working_copy=false` restores in-place editing; then saving is yours
 alone unless `files.allow_ai_save=true`.
 
+## Undo and rollback
+
+Every edit an assistant makes, a `set_properties` call or a mutating
+`execute_ifc_code` run, is one IfcOpenShell transaction. If it fails partway,
+everything it changed is rolled back and the result says so (`rolled_back`),
+after checking that the rollback held (`verified`). A run that changes nothing
+leaves the model clean. You step back and forward with `/undo` and `/redo`, and
+`/changes` lists the steps. The assistant has no tool for undo, and generated
+code that calls `ifc.undo()` is refused: those are yours. A run that times out
+keeps going on the model thread, so the session is paused and `/reload` restarts
+from the file.
+
 ## Generated code
 
 `execute_ifc_code` runs Python against the model. Each run passes through:

@@ -122,10 +122,7 @@ _EXECUTES_DATA = {
 
 # This console. Generated code must not reach the session token, the settings
 # store, the audit log, or the policy engine that is gating it.
-_HOST = {
-    "ifc_console",
-    "ifc_console_agents",
-}
+_HOST = {"ifc_console"}
 
 DENIED_IMPORT_ROOTS = SYSTEM_MODULES | _NETWORK | _SECRETS | _PROCESS | _EXECUTES_DATA | _HOST
 

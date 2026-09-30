@@ -8,6 +8,8 @@ from pathlib import Path
 
 import pytest
 
+from ifc_console.core.results import dump_compact
+
 pytestmark = pytest.mark.asyncio
 
 
@@ -59,9 +61,9 @@ async def test_session_status_does_not_serialize_the_viewer_token(ask_harness) -
     assert ask_harness.core.enable_viewer() is True
 
     result = await ask_harness.session.call_tool("get_session_status", {})
-    out = result.structuredContent
+    out = json.loads(result.content[0].text)
 
-    assert out is not None
+    assert out["ok"] is True
     assert out["data"]["viewer"]["url"] == ask_harness.core.viewer_public_url
     serialized = json.dumps(out) + "".join(
         block.text for block in result.content if getattr(block, "type", None) == "text"
@@ -131,7 +133,7 @@ async def test_query_elements_and_pagination(ask_harness) -> None:
 async def test_query_elements_pages_instead_of_dropping_rows(ask_harness) -> None:
     """An oversized page used to come back as ok=True with the rows gone."""
     full = await ask_harness.call("query_elements", query="IfcWall")
-    baseline = json.dumps({"ok": True, "data": full["data"], "meta": full["meta"]}, indent=2)
+    baseline = dump_compact({"ok": True, "data": full["data"], "meta": full["meta"]})
     ask_harness.core.settings.exec.output_char_limit = len(baseline) - 100
 
     out = await ask_harness.call("query_elements", query="IfcWall")

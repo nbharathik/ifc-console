@@ -223,6 +223,27 @@ def test_post_authenticates_listener_before_sending_bearer_token(tmp_path: Path)
     assert [request.get_method() for request in opener.requests] == ["GET", "POST"]
 
 
+@pytest.mark.parametrize(("profile", "sent"), [("lean", "lean"), ("full", "full"), (None, None)])
+def test_post_names_the_tool_profile_only_when_one_was_chosen(profile, sent) -> None:
+    seen: list[str | None] = []
+
+    def answer(request, _timeout):
+        if request.get_method() == "GET":
+            return _identity_response(request)
+        seen.append(request.get_header("X-ifc-console-tools"))
+        return _Response(b'{"jsonrpc":"2.0","id":1,"result":{}}')
+
+    bridge = Bridge("http://127.0.0.1:8383/mcp", "tok", profile=profile)
+    bridge._opener = _Opener(answer)
+    bridge.post(_request("tools/list"))
+
+    assert seen == [sent]
+
+
+def test_an_unknown_profile_is_not_sent() -> None:
+    assert Bridge("http://127.0.0.1:8383/mcp", "tok", profile="everything").profile is None
+
+
 def test_post_uses_a_fresh_high_entropy_identity_nonce(tmp_path: Path) -> None:
     nonces: list[str] = []
 

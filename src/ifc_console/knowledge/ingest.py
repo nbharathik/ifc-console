@@ -111,7 +111,7 @@ def chunk_table(path: Path) -> list[dict[str, Any]]:
     return rows
 
 
-_NUMBERISH = re.compile(r"^[-+]?\d+(?:[.,]\d+)?%?$|^[-–—]$|^[xX]$")
+_NUMBERISH = re.compile(r"^[-+]?\d+(?:[.,]\d+)?%?$|^[-–\N{EM DASH}]$|^[xX]$")
 _FOOTNOTE_MARK = re.compile(r"\d\)$")
 _MAX_PDF_ROW_NAME = 6
 _DIGEST_CHARS = 12_000
@@ -165,7 +165,7 @@ def pdf_table_rows(text: str) -> list[dict[str, Any]]:
         name = _FOOTNOTE_MARK.sub("", " ".join(name_tokens)).strip()
         values = [_coerce(token.replace(",", ".")) for token in tokens[len(name_tokens) :]]
         values = [
-            None if isinstance(v, str) and v in {"-", "–", "—", "x", "X"} else v for v in values
+            None if isinstance(v, str) and v in {"-", "–", "\N{EM DASH}", "x", "X"} else v for v in values
         ]
         row: dict[str, Any] = {"name": name, "values": values, "header": header}
         for index, value in enumerate(values):
@@ -252,33 +252,9 @@ def chunk_text(text: str) -> list[tuple[str | None, str]]:
 
 def chunk_pdf(path: Path) -> list[tuple[int, str]]:
     """(page number, page text) for every page that carries text."""
-    try:
-        from pypdf import PdfReader
-    except ImportError:
-        from ifc_console.knowledge.dependencies import missing_document_dependency
+    from ifc_console.knowledge.pdf import page_texts
 
-        raise ToolError(
-            "EXTRA_NOT_INSTALLED",
-            "PDF ingestion needs the pypdf package.",
-            missing_document_dependency("pypdf"),
-        ) from None
-    try:
-        reader = PdfReader(str(path))
-    except Exception as exc:
-        raise ToolError(
-            "INVALID_INPUT",
-            f"{path.name} could not be read as a PDF: {exc}",
-            "Check the file; encrypted PDFs must be decrypted first.",
-        ) from exc
-    pages: list[tuple[int, str]] = []
-    for number, page in enumerate(reader.pages, start=1):
-        try:
-            text = (page.extract_text() or "").strip()
-        except Exception:
-            text = ""
-        if text:
-            pages.append((number, text))
-    return pages
+    return page_texts(path)
 
 
 def file_records(path: Path, *, base: Path) -> tuple[list[Record], dict[str, Any]]:
@@ -340,9 +316,9 @@ def file_records(path: Path, *, base: Path) -> tuple[list[Record], dict[str, Any
         entry["media"] = "pdf"
         pages = chunk_pdf(path)
         try:
-            from pypdf import PdfReader
+            from ifc_console.knowledge.pdf import page_count
 
-            entry["pages"] = len(PdfReader(str(path)).pages)
+            entry["pages"] = page_count(path)
         except Exception:
             # chunk_pdf already produced the precise invalid-PDF error. This
             # fallback only protects metadata collection from a second read.

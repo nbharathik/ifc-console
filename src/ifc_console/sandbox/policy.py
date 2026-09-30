@@ -104,6 +104,9 @@ class SandboxPolicy:
     # Wins over read_roots: the console's own home holds the bearer token,
     # and a user working from their home directory would otherwise expose it.
     deny_roots: tuple[str, ...] = ()
+    # Read-only carve-outs inside a denied root, e.g. edit-mode working copies
+    # that live under the console home. Never writable.
+    exempt_roots: tuple[str, ...] = ()
     allow_network: bool = False
     allow_process: bool = False
     memory_mb: int = 2048
@@ -116,12 +119,15 @@ class SandboxPolicy:
         scratch_dir: Path,
         deny_dirs: list[Path],
         memory_mb: int,
+        exempt_dirs: list[Path] | None = None,
     ) -> SandboxPolicy:
         scratch = _norm(scratch_dir)
+        exempt = [_norm(d) for d in exempt_dirs or ()]
         return cls(
-            read_roots=_dedupe([_norm(d) for d in read_dirs] + [scratch]),
+            read_roots=_dedupe([_norm(d) for d in read_dirs] + exempt + [scratch]),
             write_roots=(scratch,),
             deny_roots=_dedupe([_norm(d) for d in deny_dirs]),
+            exempt_roots=_dedupe(exempt),
             memory_mb=memory_mb,
         )
 
@@ -130,6 +136,7 @@ class SandboxPolicy:
             "read_roots": list(self.read_roots),
             "write_roots": list(self.write_roots),
             "deny_roots": list(self.deny_roots),
+            "exempt_roots": list(self.exempt_roots),
             "allow_network": self.allow_network,
             "allow_process": self.allow_process,
             "memory_mb": self.memory_mb,
@@ -141,6 +148,7 @@ class SandboxPolicy:
             read_roots=tuple(raw.get("read_roots") or ()),
             write_roots=tuple(raw.get("write_roots") or ()),
             deny_roots=tuple(raw.get("deny_roots") or ()),
+            exempt_roots=tuple(raw.get("exempt_roots") or ()),
             allow_network=bool(raw.get("allow_network")),
             allow_process=bool(raw.get("allow_process")),
             memory_mb=int(raw.get("memory_mb") or 0),

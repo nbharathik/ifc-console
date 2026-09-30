@@ -22,15 +22,16 @@ flowchart LR
 
 ## 1. Install
 
-| Package | What it gives you |
+| Install | What it gives you |
 | :--- | :--- |
-| `ifc-console` | terminal, MCP server, Python SDK, IFC operations, and the 3D viewer |
-| `ifc-console-agents` | adds the optional Agent workspace: provider chat and agent packs |
+| `ifc-console` | terminal, MCP server, Python SDK, IFC operations, the 3D viewer, and the Agent workspace |
+| `ifc-console[agents]` | adds agent engines (ACP), keyring storage for provider keys, and PDF support |
 | `ifc-console[validation]` | adds IDS validation |
+| `ifc-console[all]` | both extras |
 
 ```bash
-uv tool install ifc-console
-# or: pip install ifc-console
+uv tool install "ifc-console[agents]"
+# or: pip install "ifc-console[agents]"
 ```
 
 Check the installation:
@@ -40,9 +41,8 @@ ifc-console doctor
 ```
 
 !!! note "Working on the source?"
-    Clone the repository, run `uv sync --all-packages --all-extras`, then use
-    `uv run --all-packages --all-extras ifc-console`. See
-    [Contributing](contributing.md).
+    Clone the repository, run `uv sync --group dev --all-extras`, then use
+    `uv run ifc-console`. See [Contributing](contributing.md).
 
 ## 2. Open a model
 
@@ -71,6 +71,7 @@ startup.
 | `/connect <client>` | print the setup for an AI client |
 | `/mode edit` | allow changes to the model |
 | `/save` and `/reload` | keep or discard changes |
+| `/undo` and `/redo` | step back over an AI edit, or replay it |
 | `/help` | list every command |
 
 ## 3. Open the viewer

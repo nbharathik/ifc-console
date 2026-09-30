@@ -311,21 +311,20 @@ def _viewer_call(action: str, **kw: Any) -> tuple[str, dict]:
 
 def register_launcher(mcp: OperationRegistry, core: AppCore) -> None:
     """The always-on tool that turns the viewer surface on for MCP clients."""
-    limit_ = core.settings.exec.output_char_limit
+
+    def limit_() -> int:
+        return core.settings.exec.output_char_limit
 
     @mcp.tool(
         name=LAUNCHER_TOOL,
         annotations=LAUNCH_ANN,
         required_capabilities=(Capability.VIEWER_CONTROL,),
         description=(
-            "[VIEW] Turn the 3D viewer on and open it in the user's browser, "
-            "so the viewer tools (highlight_elements, control_viewer with "
-            "focus, get_viewer_screenshot, get_viewer_selection) become "
-            "available. Call it when visual work is needed and "
-            "get_session_status says the viewer is off; it is a no-op when "
-            "already on. By default it waits briefly for the browser tab, so "
-            "a successful ready=true result can be followed immediately by "
-            "control_viewer and get_viewer_screenshot."
+            "[VIEW] Turn the 3D viewer on and open it in the user's browser so "
+            "the viewer tools work. Call it when visual work is needed and "
+            "get_session_status says the viewer is off; no-op when already on. "
+            "It waits briefly for the tab, so ready=true can be followed at "
+            "once by control_viewer or get_viewer_screenshot."
         ),
     )
     @enveloped(core, LAUNCHER_TOOL)
@@ -342,9 +341,8 @@ def register_launcher(mcp: OperationRegistry, core: AppCore) -> None:
                 ge=0,
                 le=30,
                 description=(
-                    "Wait this many seconds for the browser tab to connect before "
-                    "returning. Use 10 for an agent-driven visual workflow; use 0 "
-                    "to return immediately."
+                    "Seconds to wait for the browser tab to connect. Use 10 for "
+                    "agent-driven visual work, 0 to return at once."
                 ),
             ),
         ] = 8.0,
@@ -400,7 +398,8 @@ def register_launcher(mcp: OperationRegistry, core: AppCore) -> None:
 
 
 def register(mcp: OperationRegistry, core: AppCore) -> None:
-    limit_ = core.settings.exec.output_char_limit
+    def limit_() -> int:
+        return core.settings.exec.output_char_limit
 
     @core.model_lifecycle_operation
     async def _resolve_selector(
@@ -452,11 +451,10 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
     @mcp.tool(
         annotations=VIEW_READ_ANN,
         description=(
-            "[QUERY] GlobalIds the user has click-selected in every IFC tab in the web "
-            "viewer, with the current tab's brief element info. The human's way of "
-            "pointing at things - check it "
-            "when the user says 'this wall' or 'the selected elements'. Requires "
-            "the viewer (see get_session_status.viewer)."
+            "[QUERY] GlobalIds the user clicked in the web viewer (all IFC tabs), "
+            "with brief info for the current tab. Check it when the user says "
+            "'this wall' or 'the selected elements'. Requires the viewer "
+            "(get_session_status.viewer)."
         ),
     )
     @enveloped(core, "get_viewer_selection")
@@ -521,13 +519,11 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
     @mcp.tool(
         annotations=VIEW_READ_ANN,
         description=(
-            "[QUERY] Everything measured in the web viewer, by the user or by "
-            "control_viewer: lengths (M), paths, angles (A), areas (R), element "
-            "sizes and clearances. Each item carries its kind; lengths are "
-            "metres and points are model axes (z up). The human's way of "
-            "showing you a dimension - check it when the user says 'the "
-            "distance I measured'. Empty until something is measured; "
-            "requires the viewer."
+            "[QUERY] Everything measured in the web viewer, by the user or "
+            "control_viewer: lengths, paths, angles, areas, element sizes, "
+            "clearances. Each item has its kind; lengths are metres, points are "
+            "model axes (z up). Check it when the user says 'the distance I "
+            "measured'. Empty until something is measured; requires the viewer."
         ),
     )
     @enveloped(core, "get_viewer_measurements")
@@ -559,25 +555,15 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
     @mcp.tool(
         annotations=VIEW_CONTROL_ANN,
         description=(
-            "[VIEW] Drive the 3D viewer and read back what it did. Cut a "
-            "section, switch to orthographic, look from a named direction, "
-            "place the camera anywhere (set_camera) or frame something with "
-            "fit, select elements (frames them and opens their properties for "
-            "the user), isolate or hide elements, measure, and save or restore "
-            "a named viewpoint. select, isolate, hide, focus and fit take a "
-            "selector instead of ids, so 'isolate the doors on level 2' is one "
-            "call. Start from action='context' to read the camera, the viewport "
-            "and what is currently hidden. "
-            "focus isolates and frames the given elements directly; unfocus "
-            "returns from that focused view. The viewer keeps no per-object "
-            "focus-tab history; show_all remains the full visibility reset. "
-            "Measuring here uses the tessellated geometry on screen, so it "
-            "answers questions the schema cannot (a rotated wall's real "
-            "thickness, the clear distance between two elements, the area "
-            "inside an outline) and every result is added to the viewer's "
-            "measurement list where the user can see it. Sections and "
-            "projections change nothing in the file. Requires the viewer "
-            "(see get_session_status.viewer)."
+            "[VIEW] Drive the 3D viewer and read back the result. Actions: "
+            "context (camera, viewport, hidden elements; call first), set_view, "
+            "set_camera, fit, set_projection, section, select (frames and opens "
+            "properties), isolate, hide, show_all, focus (isolate and frame), "
+            "unfocus, measure_elements, measure_clearance, measure_points, "
+            "clear_measurements, save_view, restore_view, list_views. select, "
+            "isolate, hide, focus and fit take a selector instead of ids. "
+            "Measuring uses on-screen tessellated geometry; results show in the "
+            "viewer's list. Requires the viewer."
         ),
     )
     @enveloped(core, "control_viewer")
@@ -612,10 +598,8 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
                 default=None,
                 max_length=500,
                 description=(
-                    "GlobalIds for select, isolate, hide, focus, fit and "
-                    "measure_elements, and the element to shoot from for "
-                    "measure_clearance. All but select default to the user's "
-                    "viewer selection. Use selector instead of pasting a long list."
+                    "GlobalIds for element actions (select needs them; others "
+                    "default to the viewer selection). measure_clearance uses the first."
                 ),
             ),
         ] = None,
@@ -625,10 +609,8 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
                 default=None,
                 max_length=2000,
                 description=(
-                    "query_elements selector standing in for guids on select, "
-                    "isolate, hide, focus and fit, resolved against the requested "
-                    "model here: selector='IfcDoor, location=Level 2' isolates a "
-                    "storey's doors in one call and is not capped at 500 ids."
+                    "query_elements selector instead of guids (not capped at 500), "
+                    "e.g. 'IfcDoor, location=Level 2'."
                 ),
             ),
         ] = None,
@@ -644,12 +626,9 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
             Field(
                 default=None,
                 description=(
-                    "For set_camera: {'position': [x, y, z], 'target': [x, y, z], "
-                    "'up': [x, y, z], 'fov': 50, 'projection': 'perspective', "
-                    "'transition': true}, every field optional. Coordinates are "
-                    "metres in the model's own axes (z up), the same frame "
-                    "measurements use. action='context' returns the current "
-                    "camera in this shape, so read it, change one field, send it back."
+                    "set_camera: {position, target, up: [x, y, z] metres, z up; "
+                    "fov degrees; projection; transition}, all optional. "
+                    "context returns it."
                 ),
             ),
         ] = None,
@@ -659,10 +638,7 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
                 default=None,
                 gt=0,
                 le=100,
-                description=(
-                    "For fit: multiplier on the framed radius. 1.0 is snug, 1.5 "
-                    "leaves the element in its context."
-                ),
+                description="For fit: multiplier on the framed radius; 1.0 snug, 1.5 shows context.",
             ),
         ] = None,
         selection: Annotated[
@@ -670,8 +646,8 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
             Field(
                 default=False,
                 description=(
-                    "For fit: frame the user's current viewer selection. Without "
-                    "it, and without guids or selector, fit frames the whole model."
+                    "For fit: frame the viewer selection. With no guids, selector "
+                    "or selection, fit frames the whole model."
                 ),
             ),
         ] = False,
@@ -680,9 +656,8 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
             Field(
                 default=None,
                 description=(
-                    "For set_projection. Orthographic is parallel projection: "
-                    "use it whenever a length read off the screen has to mean "
-                    "the same thing anywhere in the frame."
+                    "For set_projection. Use orthographic when screen lengths "
+                    "must be consistent across the frame."
                 ),
             ),
         ] = None,
@@ -691,10 +666,8 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
             Field(
                 default=None,
                 description=(
-                    "For section: {'z': {'at': 1.2, 'keep': 'below'}} cuts the "
-                    "model's z axis at 1.2 m and keeps what is below it. Axes "
-                    "are the model's own (z up), positions are metres, and "
-                    "{'z': false} turns that axis off."
+                    "For section: {'z': {'at': 1.2, 'keep': 'below'}} (model "
+                    "axes, metres); {'z': false} turns that axis off."
                 ),
             ),
         ] = None,
@@ -705,9 +678,8 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
                 ge=0,
                 le=1000,
                 description=(
-                    "For section: keep this many metres beyond each cut instead "
-                    "of everything, which is what turns a cut into a floor plan. "
-                    "0 keeps everything."
+                    "For section: keep this many metres beyond each cut (a floor "
+                    "plan); 0 keeps everything."
                 ),
             ),
         ] = None,
@@ -717,9 +689,8 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
                 default=None,
                 max_length=200,
                 description=(
-                    "For measure_points, in model axes (z up). Two points "
-                    "measure a distance, three the angle at the middle one, "
-                    "four or more the area of the outline they close."
+                    "For measure_points, model axes (z up): 2 = distance, "
+                    "3 = angle at the middle, 4+ = area of the outline."
                 ),
             ),
         ] = None,
@@ -745,10 +716,8 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
             Field(
                 default=None,
                 description=(
-                    "Resident IFC model to control. Pass model_id returned by "
-                    "get_viewer_selection. When omitted, selection-based actions "
-                    "follow the model the user selected in; other actions use the "
-                    "active console model."
+                    "Resident IFC model, e.g. from get_viewer_selection. Default: "
+                    "selection-based actions follow the user's model, else the active one."
                 ),
             ),
         ] = None,
@@ -813,10 +782,9 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
     @mcp.tool(
         annotations=VIEW_CONTROL_ANN,
         description=(
-            "[VIEW] Colour-highlight elements in the web viewer (your way of "
-            "pointing at things for the user). Optionally isolate (hide everything "
-            "else) and zoom to fit; clear=true resets all highlights. Requires the "
-            "viewer."
+            "[VIEW] Colour-highlight elements in the web viewer to point them out "
+            "to the user. Optionally isolate them (hide the rest) and fit the "
+            "view; clear=true resets highlights. Requires the viewer."
         ),
     )
     @enveloped(core, "highlight_elements")
@@ -914,11 +882,10 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
     @mcp.tool(
         annotations=VIEW_CONTROL_ANN,
         description=(
-            "[VIEW] Paint viewer elements by group with a legend: you compute the "
-            "grouping (by storey, type, material, a pset value, pass/fail, "
-            "anything), the viewer colors it, the user reads it. Colors come from "
-            "a colorblind-safe palette unless a group sets its own. clear=true "
-            "removes the theme. Requires the viewer."
+            "[VIEW] Paint viewer elements by group with a legend; you compute the "
+            "grouping (storey, type, material, pset value, pass/fail). Colors "
+            "default to a colorblind-safe palette. clear=true removes the theme. "
+            "Requires the viewer."
         ),
     )
     @enveloped(core, "apply_color_theme")
@@ -1019,10 +986,9 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
         annotations=VIEW_READ_ANN,
         structured_output=False,
         description=(
-            "[QUERY] Capture the web-viewer canvas as an image (returned inline), "
-            "optionally setting a view preset and fit first. Requires the viewer. "
-            "Use highlight_elements + this to visually verify claims about the "
-            "model."
+            "[QUERY] Capture the web-viewer canvas as an inline image, optionally "
+            "setting a view preset and fit first. Requires the viewer. Pair with "
+            "highlight_elements to verify claims visually."
         ),
     )
     @enveloped(core, "get_viewer_screenshot")

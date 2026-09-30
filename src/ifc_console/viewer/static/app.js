@@ -4,7 +4,7 @@
  * bundler. Everything talks to the ifc-console server on the same origin:
  *   GET /api/model.ifc      the live in-memory model (ETag = fingerprint-rev)
  *   GET /api/elements/{id}  properties for the panel
- *   WS  /ws                 selection out, highlight/camera/screenshot in
+ *   WS  /ws                 selection out, highlight/theme/screenshot/command in
  *
  * Fast path for large models: worker.js parses IFC off the main thread and
  * streams deduplicated geometry + placements as transferable chunks. The
@@ -21,6 +21,100 @@
 import * as THREE from "./vendor/three.module.min.js";
 import { OrbitControls } from "./vendor/OrbitControls.js";
 import { createViewerComponent } from "./viewer_component.js";
+import { planUpdate, touchesElement } from "./delta.js";
+import { $, el, hideOverlay, hideProgress, showOverlay, showProgress } from "./dom.js";
+import {
+  Accumulator,
+  accrueMass,
+  edgeListFor,
+  finalizeSnapParts,
+  recordSnapParts,
+  registerChunkGeometry,
+  useKeyFor,
+} from "./batching.js";
+import {
+  MODEL_OF_SCENE,
+  axisFrame,
+  refreshFrames,
+  sceneToModel,
+  toModelAxis,
+  toModelDirection,
+  toModelPoint,
+  toSceneAxis,
+  toSceneDirection,
+  toScenePoint,
+} from "./frames.js";
+import { bindFileActions, setHistoryControls, setModelChanges, setWorkingCopy } from "./file_actions.js";
+import {
+  GLYPH_PX,
+  describeMeasurement,
+  disposeVisual,
+  labelSprite,
+  measureHint,
+  screenScaledDot,
+  snapGlyphTexture,
+} from "./measure_view.js";
+import { applyLabels, bindModelTree, markTreeSelection, renderTree } from "./model_tree.js";
+import { bindProperties, clearProperties, showProperties } from "./properties_view.js";
+import {
+  MAX_SAVED_VIEWS,
+  bindSavedViews,
+  renderSavedViews,
+  savedViews,
+} from "./saved_views.js";
+import { bindSearch, refreshSearch } from "./search_panel.js";
+import {
+  createDepthMaterial,
+  createPickMaterial,
+  createSectionHelpers,
+  injectElementState,
+  makeInfiniteGrid,
+} from "./scene_parts.js";
+import { isPlainObject, saveUi, uiState } from "./ui_state.js";
+import {
+  applyChatWidthForViewport,
+  applyPropsPanel,
+  applyTreePanel,
+  bindWorkspaceLayout,
+  chatBtn,
+  chatDock,
+  chatPanel,
+  chatResize,
+  closePanelsForChat,
+  extensionPanelPrimary,
+  propsPanelController,
+  setChat,
+  setChatAvailable,
+  syncChatResizeAria,
+  treePanelController,
+} from "./workspace_layout.js";
+import {
+  fetchModelBytes,
+  parseBuffer,
+  releaseInlineParser,
+  spawnWorker,
+  stopWorker,
+  worker,
+  workerBusy,
+} from "./parser_bridge.js";
+import {
+  bindParsedCache,
+  cacheParsedModel,
+  cachedParsedModel,
+  dropParsedCache,
+  dropParsedModel,
+  parsedModelCache,
+  parsedModelCacheBytes,
+  rekeyParsedModel,
+} from "./parsed_cache.js";
+import {
+  STALE_TOKEN_BODY,
+  STALE_TOKEN_TITLE,
+  api,
+  forgetStaleToken,
+  requestedPanel,
+  token,
+} from "./session.js";
 import {
   angleMeasure as angleCore,
   boxExtents,
@@ -29,7 +123,6 @@ import {
   formatArea as formatAreaIn,
   formatLength as formatLengthIn,
   formatVolume as formatVolumeIn,
-  geometryMass,
   LENGTH_UNITS,
   norm3,
   outlinePoints,
@@ -44,119 +137,6 @@ import {
   unitForFile,
   unitOf,
 } from "./measure_math.js";
-
-// ---------------------------------------------------------------- token / api
-// The token arrives in the URL fragment so it never reaches the server or its
-// logs; keep it per-tab and scrub it from the address bar immediately.
-const hashParams = new URLSearchParams(location.hash.replace(/^#/, ""));
-// Read the query before scrubbing. A named optional panel is attached only
-// when its launcher asks for it; a plain /viewer URL stays viewer-only even
-// when an agent extension is installed and enabled in this session.
-const queryParams = new URLSearchParams(location.search);
-const requestedPanel = queryParams.get("panel") || "";
-const token = hashParams.get("t") || sessionStorage.getItem("ifc-console-token") || "";
-if (token) sessionStorage.setItem("ifc-console-token", token);
-const tokenFromLink = hashParams.has("t");
-
-// A rejected token is almost always a remembered one from an earlier console
-// run, reached by opening a bookmarked URL with no #t= fragment. Forgetting it
-// is what makes the next fresh link work, so the message can be about the
-// link rather than about "authorization".
-function forgetStaleToken() {
-  try {
-    sessionStorage.removeItem("ifc-console-token");
-  } catch {
-    /* private mode: nothing was remembered anyway */
-  }
-}
-
-const STALE_TOKEN_TITLE = "This link has no valid access token";
-const STALE_TOKEN_BODY = tokenFromLink
-  ? "The console that issued this link is no longer running, or it restarted with a new token. "
-    + "Type /viewer in the ifc-console terminal for a fresh link."
-  : "This URL is missing its #t= access token, so the browser fell back to a remembered one from "
-    + "an earlier session. Type /viewer in the ifc-console terminal and use the link it copies.";
-if (hashParams.has("t")) history.replaceState(null, "", location.pathname + location.search);
-
-async function api(path, options = {}) {
-  const headers = { Authorization: `Bearer ${token}`, ...(options.headers || {}) };
-  return fetch(path, { ...options, headers });
-}
-
-// ---------------------------------------------------------------- dom helpers
-const $ = (id) => document.getElementById(id);
-const overlay = $("overlay");
-
-function showOverlay(title, detail = "", action = null, kind = "status") {
-  overlay.dataset.state = "message";
-  overlay.setAttribute("role", kind === "error" ? "alert" : "status");
-  overlay.setAttribute("aria-live", kind === "error" ? "assertive" : "polite");
-  overlay.setAttribute("aria-busy", "false");
-  overlay.textContent = "";
-  const card = el("div", "overlay-card");
-  card.appendChild(el("h2", "overlay-title", title));
-  if (detail) card.appendChild(el("p", "overlay-message", detail));
-  if (action) {
-    const button = el("button", "overlay-action", action.label);
-    button.type = "button";
-    button.addEventListener("click", action.run);
-    card.appendChild(button);
-  }
-  overlay.appendChild(card);
-  overlay.hidden = false;
-}
-function hideOverlay() {
-  overlay.hidden = true;
-  delete overlay.dataset.state;
-  overlay.setAttribute("aria-busy", "false");
-}
-function showProgress(label, fraction) {
-  let card = overlay.querySelector(".loading-card");
-  if (!card) {
-    overlay.textContent = "";
-    card = el("div", "overlay-card loading-card");
-    card.appendChild(el("span", "loading-label"));
-    const track = el("div", "progress-track");
-    track.setAttribute("role", "progressbar");
-    track.setAttribute("aria-label", "Model loading progress");
-    track.setAttribute("aria-valuemin", "0");
-    track.setAttribute("aria-valuemax", "100");
-    track.appendChild(el("div", "loading-bar"));
-    card.appendChild(track);
-    overlay.appendChild(card);
-  }
-  card.querySelector(".loading-label").textContent = label;
-  const bar = card.querySelector(".loading-bar");
-  const track = card.querySelector(".progress-track");
-  track.setAttribute("role", "progressbar");
-  track.setAttribute("aria-label", "Model loading progress");
-  track.setAttribute("aria-valuemin", "0");
-  track.setAttribute("aria-valuemax", "100");
-  if (fraction === null || fraction === undefined) {
-    bar.classList.add("indeterminate");
-    bar.style.width = "40%";
-    track.removeAttribute("aria-valuenow");
-  } else {
-    bar.classList.remove("indeterminate");
-    const percent = Math.round(Math.min(1, Math.max(0, fraction)) * 100);
-    bar.style.width = `${percent}%`;
-    track.setAttribute("aria-valuenow", String(percent));
-  }
-  overlay.dataset.state = "loading";
-  overlay.setAttribute("role", "status");
-  overlay.setAttribute("aria-live", "polite");
-  overlay.setAttribute("aria-busy", "true");
-  overlay.hidden = false;
-}
-function hideProgress() {
-  if (overlay.dataset.state === "loading") hideOverlay();
-}
-function el(tag, className, text) {
-  const node = document.createElement(tag);
-  if (className) node.className = className;
-  if (text !== undefined) node.textContent = text;
-  return node;
-}
 
 // ---------------------------------------------------------------- units
 // Geometry is SI metres whatever the file says, so every number the viewer
@@ -311,60 +291,6 @@ scene.add(new THREE.HemisphereLight(0xffffff, 0x445566, 1.6));
 const sun = new THREE.DirectionalLight(0xffffff, 1.4);
 sun.position.set(30, 50, 20);
 scene.add(sun);
-
-// The ground grid is one large plane whose shader draws 1 m / 10 m lines in
-// world space with a camera-distance fade, so it reads as infinite for any
-// model size. The lines live in world coordinates: repositioning the plane
-// (to follow the camera target) never makes them swim.
-function makeInfiniteGrid() {
-  const material = new THREE.ShaderMaterial({
-    transparent: true,
-    depthWrite: false,
-    side: THREE.DoubleSide,
-    extensions: { derivatives: true },
-    uniforms: {
-      uMinor: { value: new THREE.Color(0x24303d) },
-      uMajor: { value: new THREE.Color(0x3c536a) },
-      uFade: { value: 260 },
-    },
-    vertexShader: `
-      varying vec3 vWorld;
-      void main() {
-        vec4 world = modelMatrix * vec4(position, 1.0);
-        vWorld = world.xyz;
-        gl_Position = projectionMatrix * viewMatrix * world;
-      }`,
-    fragmentShader: `
-      varying vec3 vWorld;
-      uniform vec3 uMinor;
-      uniform vec3 uMajor;
-      uniform float uFade;
-      float gridLine(vec2 p, float spacing) {
-        vec2 coord = p / spacing;
-        vec2 width = max(fwidth(coord), vec2(0.0001));
-        vec2 line = abs(fract(coord - 0.5) - 0.5) / width;
-        float coverage = 1.0 - min(min(line.x, line.y), 1.0);
-
-        // Suppress a grid level before it becomes sub-pixel. This prevents
-        // distant lines from popping on and off while the camera is moving.
-        float frequency = max(width.x, width.y);
-        return coverage * (1.0 - smoothstep(0.35, 0.72, frequency));
-      }
-      void main() {
-        float minor = gridLine(vWorld.xz, 1.0) * 0.34;
-        float major = gridLine(vWorld.xz, 10.0) * 0.72;
-        float fade = 1.0 - smoothstep(uFade * 0.35, uFade,
-                                      distance(cameraPosition.xz, vWorld.xz));
-        float alpha = max(minor, major) * fade;
-        if (alpha < 0.015) discard;
-        gl_FragColor = vec4(mix(uMinor, uMajor, step(minor, major)), alpha);
-      }`,
-  });
-  const mesh = new THREE.Mesh(new THREE.PlaneGeometry(8000, 8000), material);
-  mesh.rotation.x = -Math.PI / 2;
-  mesh.renderOrder = -1;
-  return mesh;
-}
 
 const grid = makeInfiniteGrid();
 scene.add(grid);
@@ -677,77 +603,11 @@ let viewerDocumentOpen = true;
 // longer carries a cut, camera or selection into an unrelated model, and
 // returning to a tab feels like returning to the same drawing.
 const modelTabViews = new Map();
-// Parsing is the expensive WebAssembly step. Keep the parsed chunks for every
-// recent IFC revision so returning to a tab is quick, but bound the typed
-// arrays: an unlimited cache duplicated the GPU scene for every resident file.
-const parsedModelCache = new Map(); // model id -> { etag, parsed, bytes }
-const PARSED_CACHE_MAX_ENTRIES = 2;
-// Sized to the machine, and modest: a tab switch that re-parses costs a few
-// seconds, a laptop that starts swapping costs the whole session.
-const PARSED_CACHE_BUDGET = Math.round(
-  Math.min(160, Math.max(64, (Number(navigator.deviceMemory) || 4) * 32)) * 1_048_576,
-);
+bindParsedCache({ residentModelCount: () => modelRows.length });
 // A hidden tab does not switch models. After this long out of sight the
 // parsed cache goes back to the browser; a visible tab keeps it.
 const HIDDEN_CACHE_MS = 60_000;
-let parsedModelCacheBytes = 0;
 let hiddenCacheTimer = 0;
-
-function parsedModelBytes(parsed) {
-  let bytes = 0;
-  const addArrays = (record) => {
-    for (const value of Object.values(record || {})) {
-      if (ArrayBuffer.isView(value)) bytes += value.byteLength;
-    }
-  };
-  for (const chunk of parsed?.chunks || []) {
-    addArrays(chunk.geometry);
-    addArrays(chunk.placements);
-  }
-  addArrays(parsed?.maps);
-  for (const guid of parsed?.maps?.guids || []) bytes += guid.length * 2;
-  return bytes;
-}
-
-function dropParsedModel(modelId) {
-  const previous = parsedModelCache.get(modelId);
-  if (!previous) return;
-  parsedModelCache.delete(modelId);
-  parsedModelCacheBytes -= previous.bytes;
-}
-
-function cacheParsedModel(modelId, etag, parsed) {
-  if (!modelId || !etag || modelRows.length < 2) return;
-  const bytes = parsedModelBytes(parsed);
-  dropParsedModel(modelId);
-  if (bytes > PARSED_CACHE_BUDGET) return;
-  parsedModelCache.set(modelId, { etag, parsed, bytes });
-  parsedModelCacheBytes += bytes;
-  while (
-    parsedModelCache.size > PARSED_CACHE_MAX_ENTRIES
-    || parsedModelCacheBytes > PARSED_CACHE_BUDGET
-  ) {
-    dropParsedModel(parsedModelCache.keys().next().value);
-  }
-}
-
-function cachedParsedModel(modelId, etag) {
-  const entry = parsedModelCache.get(modelId);
-  if (!entry || entry.etag !== etag) {
-    if (entry) dropParsedModel(modelId);
-    return null;
-  }
-  // Map insertion order is the LRU list.
-  parsedModelCache.delete(modelId);
-  parsedModelCache.set(modelId, entry);
-  return entry;
-}
-
-function dropParsedCache() {
-  const freed = parsedModelCacheBytes;
-  for (const modelId of [...parsedModelCache.keys()]) dropParsedModel(modelId);
-  return freed;
-}
 
 /** What this page holds for the model, for the Agent panel's memory pill. */
 function viewerMemory() {
@@ -1146,67 +1006,7 @@ function patchMaterial(mat, { depthBias = 0 } = {}) {
     shader.uniforms.uStateSize = { value: new THREE.Vector2(STATE_W, stateH) };
     shader.uniforms.uGhostFill = ghostFill;
     shader.uniforms.uGhostTint = { value: ghostTint };
-    shader.vertexShader = shader.vertexShader
-      .replace("#include <common>",
-        "#include <common>\nattribute float aElementIndex;\nvarying float vIfcIndex;")
-      .replace("#include <begin_vertex>",
-        "vIfcIndex = aElementIndex;\n#include <begin_vertex>");
-    if (depthBias) {
-      // Edge lines sit exactly on the triangle edges they came from, so half
-      // their pixels lose the depth test to the surface and the outline
-      // shimmers. A constant nudge towards the eye in clip space is scale
-      // independent and costs one multiply-add.
-      shader.vertexShader = shader.vertexShader.replace(
-        "#include <project_vertex>",
-        `#include <project_vertex>\ngl_Position.z -= ${depthBias.toFixed(6)} * gl_Position.w;`);
-    }
-    shader.fragmentShader = shader.fragmentShader
-      .replace("#include <common>",
-        "#include <common>\n"
-        + "uniform sampler2D uStateTex;\n"
-        + "uniform sampler2D uOverrideTex;\n"
-        + "uniform vec2 uStateSize;\n"
-        + "uniform float uGhostFill;\n"
-        + "uniform vec3 uGhostTint;\n"
-        + "varying float vIfcIndex;\n"
-        // A 4x4 ordered threshold built from two nested 2x2 ones: sixteen
-        // distinct values per tile, no texture and no integer ops.
-        + "float ifcOrdered(vec2 p) {\n"
-        + "  vec2 c = floor(mod(p, 4.0));\n"
-        + "  vec2 lo = mod(c, 2.0);\n"
-        + "  vec2 hi = floor(c * 0.5);\n"
-        + "  return (4.0 * mod(2.0 * lo.x + 3.0 * lo.y, 4.0)\n"
-        + "        + mod(2.0 * hi.x + 3.0 * hi.y, 4.0)) / 16.0;\n"
-        + "}")
-      .replace("#include <clipping_planes_fragment>",
-        "float ifcId = floor(vIfcIndex + 0.5);\n"
-        + "vec2 ifcUv = vec2((mod(ifcId, uStateSize.x) + 0.5) / uStateSize.x,\n"
-        + "                  (floor(ifcId / uStateSize.x) + 0.5) / uStateSize.y);\n"
-        + "vec4 ifcState = texture2D(uStateTex, ifcUv);\n"
-        + "if (ifcState.r < 0.05) discard;\n"
-        + "float ifcGhost = step(ifcState.r, 0.5);\n"
-        + "if (ifcGhost > 0.5 && ifcOrdered(gl_FragCoord.xy) > uGhostFill) discard;\n"
-        + "vec4 ifcOverride = texture2D(uOverrideTex, ifcUv);\n"
-        + "#include <clipping_planes_fragment>")
-      // A colour theme repaints an element outright; a selection or a
-      // highlight must not. Flat-filling the body threw away the shading
-      // that says what the shape is, so it tints part way and puts the
-      // rest of the energy into a view-dependent rim, which reads as an
-      // outline along the silhouette.
-      .replace("#include <color_fragment>",
-        "#include <color_fragment>\n"
-        + "float ifcMarked = step(0.001, ifcState.g);\n"
-        + "float ifcTint = step(0.5, ifcOverride.a) * mix(1.0, 0.42, ifcMarked);\n"
-        + "diffuseColor.rgb = mix(diffuseColor.rgb, ifcOverride.rgb, ifcTint);\n"
-        // Context reads as context: what survives the dither is pulled most of
-        // the way to the background so it never competes with the subject.
-        + "diffuseColor.rgb = mix(diffuseColor.rgb, uGhostTint, 0.55 * ifcGhost);")
-      .replace("#include <emissivemap_fragment>",
-        "#include <emissivemap_fragment>\n"
-        + "vec3 ifcView = normalize(vViewPosition);\n"
-        + "float ifcFace = clamp(abs(dot(normal, ifcView)), 0.0, 1.0);\n"
-        + "float ifcRim = pow(1.0 - ifcFace, 2.2);\n"
-        + "totalEmissiveRadiance += ifcOverride.rgb * ifcState.g * (0.30 + 2.2 * ifcRim);");
+    injectElementState(shader, depthBias);
     liveShaders.add(shader);
   };
   mat.customProgramCacheKey = () => (depthBias ? "ifc-state-edge" : "ifc-state");
@@ -1240,16 +1040,7 @@ function instancedTransparentMaterialFor(alpha) {
 // colour that meet are one blob, and the adaptive resolution makes it an
 // aliased one. The lines carry the same aElementIndex as the surface they came
 // from, so hiding, clipping, ghosting and tinting all reach them for free.
-const EDGE_ANGLE = 30;
 const EDGE_DEPTH_BIAS = 0.0003;
-// Measurement keeps only a compact feature index. A tessellation too large
-// to inspect uses exact surface picking without feature snapping: a box edge
-// is not necessarily an edge of the product and must never be presented as
-// one. A product can retain at most 800 real segments. Placements reference the
-// shared local array, keeping the wider snap coverage inexpensive.
-const SNAP_TRIANGLE_LIMIT = 50_000;
-const SNAP_SEGMENT_LIMIT = 800;
-const EMPTY_SNAP_EDGES = new Float32Array(0);
 // Extraction is per unique shape and the bake is per placement, so the cost
 // tracks the merged half of the model; past this the lines stop paying for
 // their memory and the switch says so.
@@ -1295,181 +1086,9 @@ function syncEdgeSwitch() {
   }
 }
 
-/**
- * The crease and boundary edges of one unique shape, in its own coordinates.
- *
- * Deduplicated geometry is the point: a door type placed four hundred times
- * pays for this once. Cached on the registry entry and built lazily, so a
- * shape that ends up instanced never pays at all.
- */
-function edgeListFor(geom) {
-  if (geom.edges !== undefined) return geom.edges;
-  let out = null;
-  try {
-    const source = new THREE.BufferGeometry();
-    source.setAttribute("position", new THREE.BufferAttribute(geom.positions, 3));
-    source.setIndex(new THREE.BufferAttribute(geom.indices, 1));
-    const edges = new THREE.EdgesGeometry(source, EDGE_ANGLE);
-    out = edges.getAttribute("position").array;
-    source.dispose();
-    edges.dispose();
-  } catch {
-    // A degenerate tessellation is not worth failing a model load over.
-    out = null;
-  }
-  geom.edges = out;
-  return out;
-}
-
-/** Actual crease/boundary edges when affordable, otherwise no false feature. */
-function snapEdgeListFor(geom) {
-  if (geom.snapEdges !== undefined) return geom.snapEdges;
-  const triangles = geom.indices.length / 3;
-  const extracted = triangles <= SNAP_TRIANGLE_LIMIT ? edgeListFor(geom) : null;
-  if (extracted && extracted.length) {
-    const count = Math.floor(extracted.length / 6);
-    if (count <= SNAP_SEGMENT_LIMIT) {
-      geom.snapEdges = Float32Array.from(extracted);
-    } else {
-      // Spread the budget across the shape; taking only the first edges makes
-      // a long or multipart product snap at one end and nowhere else.
-      const sampled = new Float32Array(SNAP_SEGMENT_LIMIT * 6);
-      for (let i = 0; i < SNAP_SEGMENT_LIMIT; i++) {
-        const at = Math.floor((i * count) / SNAP_SEGMENT_LIMIT) * 6;
-        sampled.set(extracted.subarray(at, at + 6), i * 6);
-      }
-      geom.snapEdges = sampled;
-    }
-  } else {
-    geom.snapEdges = EMPTY_SNAP_EDGES;
-  }
-  return geom.snapEdges;
-}
-
-/** Retain shared local features plus this placement while ingest still owns both. */
-function recordSnapParts(rec, geom, matrix) {
-  const segments = snapEdgeListFor(geom);
-  const sourceCount = Math.floor(segments.length / 6);
-  if (!sourceCount) return;
-  for (let i = 0; i < 16; i++) {
-    if (!Number.isFinite(matrix[i])) return;
-  }
-  const placed = Float32Array.from(matrix);
-  placed[12] -= origin[0];
-  placed[13] -= origin[1];
-  placed[14] -= origin[2];
-  if (!rec.snapParts) rec.snapParts = [];
-  rec.snapParts.push({ segments, matrix: placed, sourceCount, count: 0 });
-}
-
-/** Share the per-product edge budget fairly across all of its placements. */
-function finalizeSnapParts() {
-  for (const rec of elements.values()) {
-    const parts = rec.snapParts || [];
-    let remaining = SNAP_SEGMENT_LIMIT;
-    for (let i = 0; i < parts.length; i++) {
-      const share = Math.max(1, Math.floor(remaining / (parts.length - i)));
-      parts[i].count = Math.min(parts[i].sourceCount, remaining, share);
-      remaining -= parts[i].count;
-      if (remaining <= 0) break;
-    }
-  }
-}
-
-// GPU id picking: a 1x1 render with this override encodes elementIndex + 1
-// into 24 bits of color; 0 is background. Hidden elements discard, so a pick
-// can never land on something the user cannot see.
-const pickMaterial = new THREE.ShaderMaterial({
-  side: THREE.DoubleSide,
-  clipping: true,
-  uniforms: {
-    uStateTex: { value: null },
-    uStateSize: { value: new THREE.Vector2(STATE_W, stateH) },
-  },
-  vertexShader: `
-    attribute float aElementIndex;
-    varying float vIfcIndex;
-    #include <clipping_planes_pars_vertex>
-    void main() {
-      vIfcIndex = aElementIndex;
-      vec4 p = vec4(position, 1.0);
-      #ifdef USE_INSTANCING
-        p = instanceMatrix * p;
-      #endif
-      vec4 mvPosition = modelViewMatrix * p;
-      #include <clipping_planes_vertex>
-      gl_Position = projectionMatrix * mvPosition;
-    }`,
-  fragmentShader: `
-    varying float vIfcIndex;
-    uniform sampler2D uStateTex;
-    uniform vec2 uStateSize;
-    #include <clipping_planes_pars_fragment>
-    void main() {
-      #include <clipping_planes_fragment>
-      float id = floor(vIfcIndex + 0.5);
-      vec2 uv = vec2((mod(id, uStateSize.x) + 0.5) / uStateSize.x,
-                     (floor(id / uStateSize.x) + 0.5) / uStateSize.y);
-      if (texture2D(uStateTex, uv).r < 0.05) discard;
-      float enc = id + 1.0;
-      gl_FragColor = vec4(
-        floor(enc / 65536.0) / 255.0,
-        floor(mod(enc, 65536.0) / 256.0) / 255.0,
-        mod(enc, 256.0) / 255.0,
-        1.0);
-    }`,
-});
-// Same 1x1 trick for measuring: encode view-axis depth into 24 bits. The range
-// is tightened to the model bounds for every probe instead of spanning the
-// camera's deliberately huge far plane. That keeps millimetre-scale picks
-// stable even in a kilometre-scale site. Merged chunks free their CPU arrays
-// after upload, so the GPU remains the source of the exact surface point.
-const depthMaterial = new THREE.ShaderMaterial({
-  side: THREE.DoubleSide,
-  clipping: true,
-  uniforms: {
-    uStateTex: { value: null },
-    uStateSize: { value: new THREE.Vector2(STATE_W, stateH) },
-    uNear: { value: 0 },
-    uFar: { value: 1 },
-  },
-  vertexShader: `
-    attribute float aElementIndex;
-    varying float vIfcIndex;
-    varying vec3 vMeasureViewPosition;
-    #include <clipping_planes_pars_vertex>
-    void main() {
-      vIfcIndex = aElementIndex;
-      vec4 p = vec4(position, 1.0);
-      #ifdef USE_INSTANCING
-        p = instanceMatrix * p;
-      #endif
-      vec4 mvPosition = modelViewMatrix * p;
-      vMeasureViewPosition = mvPosition.xyz;
-      #include <clipping_planes_vertex>
-      gl_Position = projectionMatrix * mvPosition;
-    }`,
-  fragmentShader: `
-    varying float vIfcIndex;
-    varying vec3 vMeasureViewPosition;
-    uniform sampler2D uStateTex;
-    uniform vec2 uStateSize;
-    uniform float uNear;
-    uniform float uFar;
-    #include <clipping_planes_pars_fragment>
-    void main() {
-      #include <clipping_planes_fragment>
-      float id = floor(vIfcIndex + 0.5);
-      vec2 uv = vec2((mod(id, uStateSize.x) + 0.5) / uStateSize.x,
-                     (floor(id / uStateSize.x) + 0.5) / uStateSize.y);
-      if (texture2D(uStateTex, uv).r < 0.05) discard;
-      float measured = -vMeasureViewPosition.z;
-      float d = clamp((measured - uNear) / (uFar - uNear), 0.0, 1.0);
-      vec3 enc = fract(vec3(1.0, 255.0, 65025.0) * d);
-      enc -= enc.yzz * vec3(1.0 / 255.0, 1.0 / 255.0, 0.0);
-      gl_FragColor = vec4(enc, 1.0);
-    }`,
-});
+// The 1x1 id and depth passes read the state texture and clip like the scene.
+const pickMaterial = createPickMaterial(STATE_W, stateH);
+const depthMaterial = createDepthMaterial(STATE_W, stateH);
 
 makeStateTextures();
 const pickTarget = new THREE.WebGLRenderTarget(1, 1);
@@ -1519,52 +1138,6 @@ let origin = [0, 0, 0];
 let drawCount = 0;
 let triangleCount = 0;
 
-class GrowArray {
-  constructor(Type) {
-    this.Type = Type;
-    this.data = new Type(4096);
-    this.length = 0;
-  }
-
-  reserve(extra) {
-    const need = this.length + extra;
-    if (need <= this.data.length) return;
-    let size = this.data.length;
-    while (size < need) size *= 2;
-    const next = new this.Type(size);
-    next.set(this.data.subarray(0, this.length));
-    this.data = next;
-  }
-
-  trim() {
-    return this.data.slice(0, this.length);
-  }
-}
-
-class Accumulator {
-  constructor(transparent) {
-    this.transparent = transparent;
-    this.positions = new GrowArray(Float32Array);
-    this.normals = new GrowArray(Int16Array);
-    this.colors = new GrowArray(Float32Array);
-    this.elementIndex = new GrowArray(Float32Array);
-    this.index = new GrowArray(Uint32Array);
-    this.vertexCount = 0;
-    // The outline of the same cell, staged alongside so one flush ships both.
-    this.edgePositions = null;
-    this.edgeElementIndex = null;
-    this.edgeVertexCount = 0;
-  }
-
-  edges() {
-    if (!this.edgePositions) {
-      this.edgePositions = new GrowArray(Float32Array);
-      this.edgeElementIndex = new GrowArray(Float32Array);
-    }
-    return this.edgePositions;
-  }
-}
-
 function elementRecord(expressID) {
   let rec = elements.get(expressID);
   if (!rec) {
@@ -1592,85 +1165,11 @@ const _m4 = new THREE.Matrix4();
 const _n3 = new THREE.Matrix3();
 
 // ------------------------------------------------------------- coordinates
-// Two frames. The scene's, which is what three.js draws and what every pick
-// and bounding box is in; and the model's, which is what the IFC file says
-// and what every answer has to be in. web-ifc's coordination matrix is the
-// step between them, and `origin` is the extra shift this viewer applies to
-// keep a georeferenced file inside f32.
-// web-ifc hands geometry back Y-up: the file's Z becomes the scene's Y and
-// the file's Y becomes the scene's -Z. Its coordination matrix carries the
-// origin shift on top of that and nothing else, so both are needed to get
-// back to the file's own coordinates.
-const IFC_TO_GL = new THREE.Matrix4().set(
-  1, 0, 0, 0,
-  0, 0, 1, 0,
-  0, -1, 0, 0,
-  0, 0, 0, 1,
-);
+// The frames live in frames.js; the matrix web-ifc reports for this model and
+// whether it was applied are per-load state, so they stay here.
 let coordinationMatrix = new THREE.Matrix4();
 let coordinationApplied = false;
-const modelToScene = new THREE.Matrix4();
-const sceneToModel = new THREE.Matrix4();
-// Which scene axis each model axis runs along, and which way round.
-let axisFrame = {
-  x: { axis: "x", sign: 1 }, y: { axis: "z", sign: 1 }, z: { axis: "y", sign: 1 },
-};
-const MODEL_OF_SCENE = { x: "x", y: "z", z: "y" };
-
-function refreshFrames() {
-  modelToScene.copy(coordinationMatrix).multiply(IFC_TO_GL);
-  modelToScene.premultiply(
-    new THREE.Matrix4().makeTranslation(-origin[0], -origin[1], -origin[2]));
-  sceneToModel.copy(modelToScene).invert();
-  const probe = new THREE.Vector3();
-  for (const name of ["x", "y", "z"]) {
-    probe.set(name === "x" ? 1 : 0, name === "y" ? 1 : 0, name === "z" ? 1 : 0);
-    probe.transformDirection(modelToScene);
-    const axis = Math.abs(probe.x) >= Math.abs(probe.y) && Math.abs(probe.x) >= Math.abs(probe.z)
-      ? "x" : Math.abs(probe.y) >= Math.abs(probe.z) ? "y" : "z";
-    axisFrame[name] = { axis, sign: probe[axis] < 0 ? -1 : 1 };
-    MODEL_OF_SCENE[axis] = name;
-  }
-}
-refreshFrames();
-
-/** A scene point as the model's own [x, y, z]. */
-function toModelPoint(point) {
-  const out = point.clone().applyMatrix4(sceneToModel);
-  return [out.x, out.y, out.z];
-}
-
-/** A model [x, y, z] as a scene point. */
-function toScenePoint(triple) {
-  return new THREE.Vector3(triple[0], triple[1], triple[2]).applyMatrix4(modelToScene);
-}
-
-/** Where `value` on one scene axis falls on the model axis that runs along it. */
-function toModelAxis(sceneAxis, value) {
-  const probe = new THREE.Vector3();
-  probe[sceneAxis] = value;
-  const out = probe.applyMatrix4(sceneToModel);
-  return out[MODEL_OF_SCENE[sceneAxis]];
-}
-
-/** And back: a model-axis position as a position on the scene axis. */
-function toSceneAxis(sceneAxis, modelValue) {
-  const at0 = toModelAxis(sceneAxis, 0);
-  const at1 = toModelAxis(sceneAxis, 1);
-  return at1 === at0 ? 0 : (modelValue - at0) / (at1 - at0);
-}
-
-/** A scene direction as the model's own unit [x, y, z]; no origin shift. */
-function toModelDirection(vector) {
-  const out = vector.clone().transformDirection(sceneToModel);
-  return [out.x, out.y, out.z];
-}
-
-/** And back: a model direction as a scene direction. */
-function toSceneDirection(triple) {
-  return new THREE.Vector3(triple[0], triple[1], triple[2])
-    .transformDirection(modelToScene);
-}
+refreshFrames(coordinationMatrix, origin);
 
 /**
  * The origin shift, the model bounds, every placement's world box and how
@@ -2050,77 +1549,6 @@ function resumeInstanceLod(changed) {
   }
 }
 
-function registerChunkGeometry(chunk) {
-  const g = chunk.geometry;
-  let po = 0;
-  let io = 0;
-  let bo = 0;
-  for (let i = 0; i < g.ids.length; i++) {
-    const vc = g.vertexCounts[i];
-    const ic = g.indexCounts[i];
-    const positions = g.positions.subarray(po, po + vc * 3);
-    const indices = g.indices.subarray(io, io + ic);
-    const area = g.areas?.[i];
-    const volume = g.volumes?.[i];
-    registry.set(g.ids[i], {
-      positions,
-      normals: g.normals.subarray(po, po + vc * 3),
-      indices,
-      box: g.bounds.subarray(bo, bo + 6),
-      // Deduplicated, so this runs once per shape however many times it is
-      // placed. Doing it later is not an option: the arrays are freed.
-      // Normal worker parses arrive with this already calculated. The fallback
-      // keeps inline/legacy parsed chunks valid without charging the UI thread
-      // in the normal path.
-      mass: Number.isFinite(area) && Number.isFinite(volume)
-        ? { area, volume } : geometryMass(positions, indices),
-    });
-    po += vc * 3;
-    io += ic;
-    bo += 6;
-  }
-}
-
-/**
- * Add one placement's area, volume and candidate oriented box to its element.
- *
- * IFC placements are rigid in every file worth measuring, so the local numbers
- * carry over unchanged. Where a placement does scale, volume follows the
- * determinant exactly and area follows it only under uniform scale, which is
- * why a scaled element says so rather than quietly reporting the wrong area.
- */
-function accrueMass(rec, geom, m) {
-  const sx = norm3(m[0], m[1], m[2]);
-  const sy = norm3(m[4], m[5], m[6]);
-  const sz = norm3(m[8], m[9], m[10]);
-  const det = sx * sy * sz;
-  if (Math.max(sx, sy, sz) > Math.min(sx, sy, sz) * 1.01) rec.scaled = true;
-  rec.area += geom.mass.area * Math.cbrt(det * det);
-  rec.volume += geom.mass.volume * det;
-  // Biggest part wins the frame: a wall with a small opening solid attached
-  // should be measured along the wall.
-  const reach = norm3(
-    (geom.box[3] - geom.box[0]) * sx,
-    (geom.box[4] - geom.box[1]) * sy,
-    (geom.box[5] - geom.box[2]) * sz);
-  if (reach > rec.obbReach) {
-    rec.obbReach = reach;
-    const local = new Float32Array(16);
-    for (let k = 0; k < 16; k++) local[k] = m[k];
-    // The origin shift happens in f64 here so the f32 store never sees the
-    // georeferenced magnitude that made the shift necessary.
-    local[12] = m[12] - origin[0];
-    local[13] = m[13] - origin[1];
-    local[14] = m[14] - origin[2];
-    rec.obb = { m: local, box: Float32Array.from(geom.box) };
-  }
-}
-
-/** How the batcher tells two placements of one shape apart: shape and alpha. */
-function useKeyFor(geometryID, alpha) {
-  return alpha < 0.999 ? `${geometryID}:${alpha.toFixed(3)}` : `${geometryID}:o`;
-}
-
 function ingestChunk(chunk, layout, uses) {
   const p = chunk.placements;
   const P = p.expressIDs.length;
@@ -2138,8 +1566,8 @@ function ingestChunk(chunk, layout, uses) {
       if (boxes[at + k] < rec.box[k]) rec.box[k] = boxes[at + k];
       if (boxes[at + k + 3] > rec.box[k + 3]) rec.box[k + 3] = boxes[at + k + 3];
     }
-    accrueMass(rec, geom, matrix);
-    recordSnapParts(rec, geom, matrix);
+    accrueMass(rec, geom, matrix, origin);
+    recordSnapParts(rec, geom, matrix, origin);
     triangleCount += geom.indices.length / 3;
 
     const alpha = color[3];
@@ -2248,159 +1676,6 @@ function updateGround() {
 }
 
 // ---------------------------------------------------------------- model load
-// worker.js does the parsing; if workers are unavailable the same parser
-// module runs inline on the main thread as a fallback.
-let worker = null;
-let workerBusy = false;
-let workerIdleTimer = 0;
-let loadGen = 0;
-let activeHandlers = null;
-const WORKER_IDLE_MS = 30_000;
-
-function clearWorkerIdle() {
-  clearTimeout(workerIdleTimer);
-  workerIdleTimer = 0;
-}
-
-function stopWorker() {
-  clearWorkerIdle();
-  if (worker) worker.terminate();
-  worker = null;
-  workerBusy = false;
-}
-
-function scheduleWorkerIdle() {
-  clearWorkerIdle();
-  if (!worker || workerBusy) return;
-  // web-ifc closes the model but its WASM heap stays at its high-water mark.
-  // Keep it briefly for a tab switch, then return that memory to the browser.
-  workerIdleTimer = setTimeout(() => {
-    if (workerBusy) return;
-    stopWorker();
-    releaseInlineParser();
-  }, WORKER_IDLE_MS);
-}
-
-function routeParserMessage(msg) {
-  if (!activeHandlers || msg.seq !== loadGen) return;
-  const h = activeHandlers;
-  if (msg.type === "chunk") h.onChunk(msg);
-  else if (msg.type === "progress") h.onProgress(msg);
-  else if (msg.type === "coordination") h.onCoordination(msg);
-  else if (msg.type === "maps") h.onMaps(msg);
-  else if (msg.type === "tree") h.onTree(msg);
-  else if (msg.type === "done") h.onDone(msg);
-  else if (msg.type === "error" && msg.init_failed) {
-    stopWorker();
-    h.onWorkerLost();
-  }
-  else if (msg.type === "error") h.onError(new Error(msg.message));
-}
-
-function spawnWorker() {
-  clearWorkerIdle();
-  worker = new Worker("/viewer/static/worker.js", { type: "module" });
-  worker.onmessage = (event) => routeParserMessage(event.data);
-  worker.onerror = (event) => {
-    // A worker that cannot boot (or crashed) fails the current load over to
-    // the inline path; the next load will try a fresh worker again.
-    console.warn("[ifc-console] parser worker failed", event.message || event);
-    const h = activeHandlers;
-    stopWorker();
-    if (h) h.onWorkerLost();
-  };
-}
-
-async function parseInline(buffer, handlers) {
-  const seq = loadGen;
-  const [{ IfcAPI }, { parseModel }] = await Promise.all([
-    import("./vendor/web-ifc-api.js"),
-    import("./parser.js"),
-  ]);
-  if (!parseInline.api) {
-    const api = new IfcAPI();
-    api.SetWasmPath("/viewer/static/vendor/", true);
-    await api.Init();
-    parseInline.api = api;
-  }
-  await parseModel(parseInline.api, buffer, (message) => {
-    if (seq === loadGen) routeParserMessage({ seq, ...message });
-  });
-  return handlers;
-}
-
-function parseBuffer(buffer) {
-  clearWorkerIdle();
-  loadGen++;
-  const seq = loadGen;
-  if (workerBusy && worker) {
-    // A parse is still running for a previous revision: wasm cannot be
-    // interrupted, so drop the whole worker and start fresh.
-    stopWorker();
-  }
-  return new Promise((resolve, reject) => {
-    let finished = false;
-    let fallbackStarted = false;
-    let chunks = [];
-    let maps = null;
-    let tree = null;
-    let coordination = null;
-    const handlers = {
-      onChunk: (msg) => chunks.push(msg),
-      onCoordination: (msg) => { coordination = msg.matrix; },
-      onProgress: (msg) => {
-        if (msg.stage === "geometry") {
-          showProgress(`Reading geometry: ${msg.products} elements`, null);
-        } else {
-          showProgress("Reading names and IDs", msg.total ? msg.resolved / msg.total : null);
-        }
-      },
-      onMaps: (msg) => { maps = msg; },
-      onTree: (msg) => { tree = msg.tree; },
-      onDone: () => {
-        finished = true;
-        workerBusy = false;
-        if (activeHandlers === handlers) activeHandlers = null;
-        scheduleWorkerIdle();
-        resolve({ chunks, maps, tree, coordination });
-      },
-      onError: (err) => {
-        finished = true;
-        if (activeHandlers === handlers) activeHandlers = null;
-        stopWorker();
-        reject(err);
-      },
-      onWorkerLost: () => {
-        if (finished || fallbackStarted || seq !== loadGen) return;
-        fallbackStarted = true;
-        chunks = [];
-        maps = null;
-        tree = null;
-        coordination = null;
-        showProgress("Retrying model load", null);
-        parseInline(buffer, handlers).catch(handlers.onError);
-      },
-    };
-    activeHandlers = handlers;
-    if (typeof Worker === "undefined") {
-      // No worker to lose: parse the original buffer with no copy at all.
-      handlers.onWorkerLost();
-      return;
-    }
-    try {
-      if (!worker) spawnWorker();
-      workerBusy = true;
-      // A copy is transferred, not the original: onWorkerLost still needs
-      // readable bytes to fall back to the inline parser.
-      const copy = buffer.slice();
-      worker.postMessage({ seq, buffer: copy.buffer }, [copy.buffer]);
-    } catch {
-      stopWorker();
-      handlers.onWorkerLost();
-    }
-  });
-}
-
 document.addEventListener("visibilitychange", () => {
   clearTimeout(hiddenCacheTimer);
   hiddenCacheTimer = 0;
@@ -2415,55 +1690,6 @@ document.addEventListener("visibilitychange", () => {
   }, HIDDEN_CACHE_MS);
 });
 window.addEventListener("pagehide", stopWorker);
-
-/** The inline web-ifc fallback keeps a WebAssembly heap; let it go when idle. */
-function releaseInlineParser() {
-  if (!parseInline.api) return false;
-  parseInline.api = null;
-  return true;
-}
-
-async function fetchModelBytes(res) {
-  const total = Number(res.headers.get("content-length")) || 0;
-  if (!res.body || !res.body.getReader) {
-    return new Uint8Array(await res.arrayBuffer());
-  }
-  const reader = res.body.getReader();
-  // FileResponse supplies Content-Length. Fill that one allocation directly
-  // instead of retaining every network chunk and then allocating the whole
-  // model again at the end. Unknown/chunked responses keep the fallback list.
-  let buffer = total ? new Uint8Array(total) : null;
-  const parts = buffer ? null : [];
-  let received = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    if (buffer && received + value.length <= buffer.length) {
-      buffer.set(value, received);
-    } else if (buffer) {
-      // A misleading Content-Length should cost one growth, not corrupt data.
-      let size = Math.max(received + value.length, buffer.length * 2, 64 * 1024);
-      const grown = new Uint8Array(size);
-      grown.set(buffer.subarray(0, received));
-      grown.set(value, received);
-      buffer = grown;
-    } else {
-      parts.push(value);
-    }
-    received += value.length;
-    showProgress(
-      `Downloading model: ${(received / 1_048_576).toFixed(1)} MB`,
-      total ? received / total : null);
-  }
-  if (buffer) return received === buffer.length ? buffer : buffer.slice(0, received);
-  buffer = new Uint8Array(received);
-  let offset = 0;
-  for (const part of parts) {
-    buffer.set(part, offset);
-    offset += part.length;
-  }
-  return buffer;
-}
 
 async function loadModel() {
   if (!viewerDocumentOpen) return;
@@ -2639,7 +1865,7 @@ async function buildScene(buffer) {
   // Yield once so the label above actually paints: everything below is one
   // long synchronous block on a big model.
   await nextFrame();
-  for (const chunk of parsed.chunks) registerChunkGeometry(chunk);
+  for (const chunk of parsed.chunks) registerChunkGeometry(chunk, registry);
   const placed = decideOrigin(parsed.chunks);
   modelBox = placed.box;
   const spatial = planSpatialGrid(placed.box, placed.verts, {
@@ -2661,7 +1887,7 @@ async function buildScene(buffer) {
   coordinationMatrix = coordinationApplied
     ? new THREE.Matrix4().fromArray(parsed.coordination)
     : new THREE.Matrix4();
-  refreshFrames();
+  refreshFrames(coordinationMatrix, origin);
   for (const axis of AXES) syncSectionRow(axis);
   let done = 0;
   for (const chunk of parsed.chunks) {
@@ -2673,7 +1899,7 @@ async function buildScene(buffer) {
       await nextFrame();
     }
   }
-  finalizeSnapParts();
+  finalizeSnapParts(elements);
   finalizeAllAccumulators();
   if (parsed.maps) {
     for (let i = 0; i < parsed.maps.guidIds.length; i++) {
@@ -2749,175 +1975,21 @@ async function buildScene(buffer) {
 }
 
 // ---------------------------------------------------------------- spatial tree
-const SPATIAL_TYPES = new Set([
-  "IFCPROJECT", "IFCSITE", "IFCBUILDING", "IFCBUILDINGSTOREY", "IFCSPACE",
-  "IFCFACILITY", "IFCBRIDGE", "IFCROAD", "IFCRAILWAY", "IFCMARINEFACILITY",
-]);
-
-function isSpatial(node) {
-  return SPATIAL_TYPES.has(String(node.type || "").toUpperCase());
-}
-
-function branchElements(node) {
-  const ids = new Set();
-  const visit = (branch) => {
-    if (elements.has(branch.expressID)) ids.add(branch.expressID);
-    for (const child of branch.children || []) visit(child);
-  };
-  visit(node);
-  return [...ids];
-}
-
-function renderTree(rootNode) {
-  const container = $("tree");
-  container.textContent = "";
-  if (!rootNode) return;
-  const list = el("ul");
-  list.appendChild(buildTreeItem(rootNode, 0));
-  container.appendChild(list);
-}
-
-// Children build lazily (on first expand, in slices) so a 100k-element model
-// does not become a 100k-row DOM before the user ever opens a storey.
-const TREE_SLICE = 250;
-
-function buildTreeItem(node, depth) {
-  const li = el("li");
-  const row = el("div", "tree-row");
-  const children = node.children || [];
-  const spatial = isSpatial(node);
-  // Project / Site / Building / Storey come pre-expanded; elements collapsed.
-  const expanded = depth < 4;
-
-  const toggle = el("button", "tree-toggle", children.length ? (expanded ? "▾" : "▸") : " ");
-  toggle.type = "button";
-  if (!children.length) {
-    toggle.disabled = true;
-    toggle.tabIndex = -1;
-    toggle.setAttribute("aria-hidden", "true");
-  }
-  row.appendChild(toggle);
-
-  if (spatial && children.length) {
-    const checkbox = el("input");
-    checkbox.type = "checkbox";
-    checkbox.checked = true;
-    checkbox.title = "toggle visibility of this branch";
-    checkbox.setAttribute(
-      "aria-label",
-      `Show ${node._name || String(node.type || "model branch")}`,
-    );
-    checkbox.addEventListener("change", () => {
-      for (const id of branchElements(node)) {
-        if (checkbox.checked) hiddenByTree.delete(id);
-        else hiddenByTree.add(id);
-      }
-      applyVisibility();
-    });
-    row.appendChild(checkbox);
-  }
-
-  const cls = String(node.type || "?");
-  const label = el("button", "tree-label");
-  label.type = "button";
-  label.appendChild(el("span", null, node._name ? `${node._name} ` : ""));
-  label.appendChild(el("span", "cls", node._name ? `(${cls})` : cls));
-  label.dataset.expressId = node.expressID;
-  label.title = node._name ? `${node._name} (${cls})` : cls;
-  label.setAttribute("aria-pressed", "false");
-  row.appendChild(label);
-  li.appendChild(row);
-
-  let kids = null;
-  let built = 0;
-  const buildSlice = () => {
-    const frag = document.createDocumentFragment();
-    const end = Math.min(children.length, built + TREE_SLICE);
-    for (; built < end; built++) {
-      frag.appendChild(buildTreeItem(children[built], depth + 1));
-    }
-    if (built < children.length) {
-      const moreItem = el("li", "tree-more-item");
-      const more = el("button", "tree-more", `Show ${Math.min(TREE_SLICE, children.length - built)} more (${children.length - built} hidden)`);
-      more.type = "button";
-      more.addEventListener("click", () => {
-        moreItem.remove();
-        buildSlice();
-      });
-      moreItem.appendChild(more);
-      frag.appendChild(moreItem);
-    }
-    kids.appendChild(frag);
-  };
-  const setOpen = (open) => {
-    if (!kids) return;
-    if (open && !built) buildSlice();
-    kids.hidden = !open;
-    toggle.textContent = kids.hidden ? "▸" : "▾";
-    toggle.setAttribute("aria-label", `${kids.hidden ? "Expand" : "Collapse"} ${label.title}`);
-    toggle.setAttribute("aria-expanded", String(!kids.hidden));
-    label.setAttribute("aria-expanded", String(!kids.hidden));
-  };
-  if (children.length) {
-    kids = el("ul");
-    li.appendChild(kids);
-    setOpen(expanded);
-    if (!expanded) toggle.textContent = "▸";
-    toggle.addEventListener("click", (event) => {
-      event.stopPropagation();
-      setOpen(kids.hidden);
-    });
-  }
-
-  // Clicking a name only selects; framing stays on F or the view tools.
-  label.addEventListener("click", (event) => {
-    const additive = event.ctrlKey || event.metaKey;
-    if (spatial) {
-      setOpen(true); // the label is a much bigger target than the arrow
-      setSelection(branchElements(node), additive);
-    } else if (elements.has(node.expressID)) {
-      setSelection([node.expressID], additive);
-    }
-  });
-  label.addEventListener("keydown", (event) => {
-    if (event.key === "ArrowRight" && children.length) {
-      event.preventDefault();
-      setOpen(true);
-      kids.querySelector(".tree-label")?.focus();
-    } else if (event.key === "ArrowLeft" && children.length && !kids.hidden) {
-      event.preventDefault();
-      setOpen(false);
-    } else if (["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) {
-      event.preventDefault();
-      const visible = [...$("tree").querySelectorAll(".tree-label")]
-        .filter((item) => item.offsetParent !== null);
-      const index = visible.indexOf(label);
-      const target = event.key === "Home" ? 0
-        : event.key === "End" ? visible.length - 1
-          : Math.min(
-            visible.length - 1,
-            Math.max(0, index + (event.key === "ArrowDown" ? 1 : -1)),
-          );
-      visible[target]?.focus();
-    }
-  });
-  return li;
-}
-
-function markTreeSelection() {
-  for (const label of document.querySelectorAll(".tree-label.selected")) {
-    label.classList.remove("selected");
-    label.setAttribute("aria-pressed", "false");
-  }
-  for (const id of selection) {
-    const label = document.querySelector(`.tree-label[data-express-id="${id}"]`);
-    if (label) {
-      label.classList.add("selected");
-      label.setAttribute("aria-pressed", "true");
-    }
-  }
-  markSearchSelection();
-}
+bindModelTree({ elements, expressOf, hiddenByTree, selection, setSelection, applyVisibility });
+bindSearch({
+  elements,
+  expressOf,
+  selection,
+  setSelection,
+  fitTo,
+  isolateOnly: (ids) => {
+    userIsolateSet = new Set(ids);
+    applyVisibility();
+    updateToolButtons();
+  },
+  modelQuery,
+});
+bindProperties({ expressOf, setSelection, modelQuery });
 
 // ---------------------------------------------------------------- appearance
 const SELECT_COLOR = "#4f8ff7";
@@ -3736,39 +2808,12 @@ const AXIS_INDEX = { x: 0, y: 1, z: 2 };
 
 // While a cut slider moves, draw the real plane through the model. A number
 // alone cannot show which storey or bay is about to be removed.
-const sectionHelperRoot = new THREE.Group();
-sectionHelperRoot.name = "section-plane-helper";
-sectionHelperRoot.visible = false;
-scene.add(sectionHelperRoot);
 // CAD axis colors are attached to the IFC/model axis, not whichever scene
 // axis it happens to map onto after coordination.
 const SECTION_HELPER_COLORS = { x: 0xe56b70, y: 0x67b886, z: 0x6fa8d8 };
-const sectionHelpers = {};
-for (const axis of AXES) {
-  const geometry = new THREE.PlaneGeometry(1, 1);
-  const fill = new THREE.Mesh(geometry, new THREE.MeshBasicMaterial({
-    color: SECTION_HELPER_COLORS[axis],
-    side: THREE.DoubleSide,
-    transparent: true,
-    opacity: 0.16,
-    depthTest: false,
-    depthWrite: false,
-  }));
-  const border = new THREE.LineSegments(
-    new THREE.EdgesGeometry(geometry),
-    new THREE.LineBasicMaterial({
-      color: SECTION_HELPER_COLORS[axis], transparent: true, opacity: 0.9,
-      depthTest: false, depthWrite: false,
-    }),
-  );
-  fill.renderOrder = 990;
-  border.renderOrder = 991;
-  const group = new THREE.Group();
-  group.add(fill, border);
-  group.visible = false;
-  sectionHelperRoot.add(group);
-  sectionHelpers[axis] = group;
-}
+const { root: sectionHelperRoot, helpers: sectionHelpers } =
+  createSectionHelpers(AXES, SECTION_HELPER_COLORS);
+scene.add(sectionHelperRoot);
 let sectionHelperAxis = null;
 let sectionHelperTimer = 0;
 
@@ -3953,15 +2998,6 @@ const MARKER_PX = 4.5;
 const MEASURE_COLOR = 0xffb454;
 const EMPHASIS_COLOR = 0x5ad1ff;
 
-function screenScaledDot(px, color) {
-  const dot = new THREE.Mesh(
-    new THREE.SphereGeometry(1, 12, 8),
-    new THREE.MeshBasicMaterial({ color, depthTest: true, depthWrite: false }));
-  dot.userData.px = px;
-  dot.renderOrder = 999;
-  return dot;
-}
-
 function syncMarkerScale(marker) {
   const perPixel = Math.max(worldPerPixel(marker.position), 1e-9);
   if (marker.isSprite) {
@@ -3981,103 +3017,6 @@ function syncScreenMarkers() {
   }
 }
 
-// Snap glyphs follow the CAD convention people already read: square for a
-// corner, triangle for a midpoint, circle for a face centre, diamond for a
-// point along an edge, and a plain dot for a bare surface hit.
-const GLYPH_PX = { corner: 13, midpoint: 13, centre: 12, edge: 12, axis: 13, surface: 7 };
-const _glyphTextures = new Map();
-
-function snapGlyphTexture(kind) {
-  let texture = _glyphTextures.get(kind);
-  if (texture) return texture;
-  const size = 64;
-  const canvas = document.createElement("canvas");
-  canvas.width = size;
-  canvas.height = size;
-  const ctx = canvas.getContext("2d");
-  ctx.strokeStyle = "#ffffff";
-  ctx.fillStyle = "#ffffff";
-  ctx.lineWidth = 7;
-  ctx.lineJoin = "miter";
-  const m = 10;
-  if (kind === "corner") {
-    ctx.strokeRect(m, m, size - 2 * m, size - 2 * m);
-  } else if (kind === "midpoint") {
-    ctx.beginPath();
-    ctx.moveTo(size / 2, m);
-    ctx.lineTo(size - m, size - m);
-    ctx.lineTo(m, size - m);
-    ctx.closePath();
-    ctx.stroke();
-  } else if (kind === "centre") {
-    ctx.beginPath();
-    ctx.arc(size / 2, size / 2, size / 2 - m, 0, Math.PI * 2);
-    ctx.stroke();
-    ctx.beginPath();
-    ctx.arc(size / 2, size / 2, 5, 0, Math.PI * 2);
-    ctx.fill();
-  } else if (kind === "edge") {
-    ctx.beginPath();
-    ctx.moveTo(size / 2, m);
-    ctx.lineTo(size - m, size / 2);
-    ctx.lineTo(size / 2, size - m);
-    ctx.lineTo(m, size / 2);
-    ctx.closePath();
-    ctx.stroke();
-  } else if (kind === "axis") {
-    ctx.beginPath();
-    ctx.moveTo(m, size / 2);
-    ctx.lineTo(size - m, size / 2);
-    ctx.moveTo(size / 2, m);
-    ctx.lineTo(size / 2, size - m);
-    ctx.stroke();
-  } else {
-    ctx.beginPath();
-    ctx.arc(size / 2, size / 2, size / 2 - m * 2, 0, Math.PI * 2);
-    ctx.fill();
-  }
-  texture = new THREE.CanvasTexture(canvas);
-  _glyphTextures.set(kind, texture);
-  return texture;
-}
-
-/** A floating dimension tag, drawn once and screen-scaled every frame. */
-function labelSprite(text) {
-  const scale = 2;
-  const canvas = document.createElement("canvas");
-  const ctx = canvas.getContext("2d");
-  const font = `600 ${12 * scale}px "Segoe UI Variable Text", "Segoe UI", Arial, sans-serif`;
-  ctx.font = font;
-  const pad = 7 * scale;
-  canvas.width = Math.ceil(ctx.measureText(text).width) + pad * 2;
-  canvas.height = 21 * scale;
-  ctx.font = font;
-  ctx.fillStyle = "rgba(18, 25, 33, 0.92)";
-  ctx.strokeStyle = "rgba(111, 168, 216, 0.65)";
-  ctx.lineWidth = scale;
-  if (ctx.roundRect) {
-    ctx.beginPath();
-    ctx.roundRect(scale, scale, canvas.width - 2 * scale, canvas.height - 2 * scale, 5 * scale);
-    ctx.fill();
-    ctx.stroke();
-  } else {
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-  }
-  ctx.fillStyle = "#eaf1f7";
-  ctx.textBaseline = "middle";
-  ctx.fillText(text, pad, canvas.height / 2 + scale);
-  const texture = new THREE.CanvasTexture(canvas);
-  texture.colorSpace = THREE.SRGBColorSpace;
-  const sprite = new THREE.Sprite(new THREE.SpriteMaterial({
-    map: texture, depthTest: false, transparent: true,
-  }));
-  sprite.userData.pxW = canvas.width / scale;
-  sprite.userData.pxH = canvas.height / scale;
-  sprite.userData.isLabel = true;
-  sprite.renderOrder = 1002;
-  return sprite;
-}
-
 // In-progress clicks collect here; a commit adopts them into its own group,
 // so one measurement is one deletable, highlightable object.
 let pendingGroup = null;
@@ -4088,15 +3027,6 @@ function ensurePendingGroup() {
     measureGroup.add(pendingGroup);
   }
   return pendingGroup;
-}
-
-function disposeVisual(object) {
-  for (const child of [...object.children]) disposeVisual(child);
-  if (object.geometry) object.geometry.dispose();
-  if (object.material) {
-    if (object.material.map) object.material.map.dispose();
-    object.material.dispose();
-  }
 }
 
 /** Adopt every pending visual into one group, with an optional dimension tag. */
@@ -5308,48 +4238,10 @@ function renderMeasurements() {
     drop.setAttribute("aria-label", "Remove this measurement");
     drop.addEventListener("click", () => deleteMeasurement(m));
     row.appendChild(drop);
-    if (m.kind === "dimensions") {
-      const d = m.data;
-      row.appendChild(el("span", "measure-dist", formatLength(d.thickness)));
-      row.appendChild(el("span", "measure-delta",
-        `${m.label || "element"} · ${formatLength(d.length)} × ${formatLength(d.width)}`
-        + ` × ${formatLength(d.thickness)}`
-        + (d.volume > 0 ? ` · ${formatVolume(d.volume)}` : "")));
-    } else if (m.kind === "path") {
-      row.appendChild(el("span", "measure-dist", formatLength(m.data.distance)));
-      row.appendChild(el("span", "measure-delta",
-        `${m.data.points.length} points · ${m.data.segments.length} segments`));
-    } else if (m.kind === "angle") {
-      row.appendChild(el("span", "measure-dist", `${m.data.degrees.toFixed(1)}°`));
-      row.appendChild(el("span", "measure-delta",
-        `legs ${formatLength(m.data.legs[0])} · ${formatLength(m.data.legs[1])}`));
-    } else if (m.kind === "area") {
-      row.appendChild(el("span", "measure-dist", formatArea(m.data.area)));
-      row.appendChild(el("span", "measure-delta",
-        `${m.data.points.length} points · perimeter ${formatLength(m.data.perimeter)}`
-        + (m.data.flatness > m.data.perimeter * 0.002
-          ? ` · off-plane ${formatLength(m.data.flatness)}` : "")));
-    } else if (m.kind === "laser") {
-      const parts = ["x", "y", "z"].map((axis) => {
-        const value = m.data.axes[axis];
-        return `${axis.toUpperCase()} ${value.span == null ? "-" : formatLength(value.span)}`;
-      });
-      row.appendChild(el("span", "measure-dist", "clearance"));
-      row.appendChild(el("span", "measure-delta", parts.join(" · ")));
-    } else {
-      row.appendChild(el("span", "measure-dist", formatLength(m.distance)));
-      // three.js is Y-up while IFC is Z-up, so report the model's own axes
-      const snapped = (m.ends || []).filter((end) => end && end !== "surface");
-      const slope = m.vertical > 1e-9 && m.horizontal > 1e-9
-        ? ` · slope ${m.slopePercent.toFixed(1)}%` : "";
-      row.appendChild(el("span", "measure-delta",
-        (m.axis ? `${m.axis.toUpperCase()} locked · ` : "")
-        + (snapped.length ? `${snapped.join("/")} · ` : "")
-        + `X ${formatLength(m.delta[SCENE_DELTA[axisFrame.x.axis]])}`
-        + ` · Y ${formatLength(m.delta[SCENE_DELTA[axisFrame.y.axis]])}`
-        + ` · Z ${formatLength(m.delta[SCENE_DELTA[axisFrame.z.axis]])}`
-        + slope));
-    }
+    const text = describeMeasurement(
+      m, { formatLength, formatArea, formatVolume, sceneDelta: SCENE_DELTA });
+    row.appendChild(el("span", "measure-dist", text.value));
+    row.appendChild(el("span", "measure-delta", text.detail));
     // A carried measurement whose element did not come back sits where it was
     // clicked, which is a guess. Say so rather than let it read as measured.
     if (m.drift) {
@@ -5365,8 +4257,6 @@ function renderMeasurements() {
     || (measureCardDismissed && !measureMode)
   );
   if (card.hidden && hadCardFocus) canvas.focus({ preventScroll: true });
-  const launcher = $("tool-open-measure");
-  if (launcher) launcher.setAttribute("aria-expanded", String(!card.hidden));
   const railLauncher = $("btn-tool-measure");
   if (railLauncher) railLauncher.setAttribute("aria-expanded", String(!card.hidden));
   const hint = $("measure-hint");
@@ -5375,7 +4265,7 @@ function renderMeasurements() {
     const snap = snapEnabled
       ? (lastSnapKind && lastSnapKind !== "surface" ? `snapped to ${lastSnapKind}` : "snap on")
       : "snap off (S)";
-    hint.textContent = measureHint(snap);
+    hint.textContent = measureHint(snap, { measureProblem, measureKind, pending, axisLock });
   }
   const count = $("measure-count");
   if (count) count.textContent = String(measurements.length);
@@ -5406,7 +4296,6 @@ function renderMeasurements() {
   invalidate();
 }
 
-/** What to do next, in the words of whichever tool is running. */
 const MEASURE_BUTTONS = {
   distance: $("tool-measure"),
   path: $("tool-measure-path"),
@@ -5422,30 +4311,6 @@ function setSnap(on) {
   if (box) box.checked = snapEnabled;
   clearSnapPreview();
   renderMeasurements();
-}
-
-function measureHint(snap) {
-  if (measureProblem) return `${measureProblem} · choose another point or press Backspace`;
-  if (measureKind === "angle") {
-    if (!pending.length) return `${snap} · click one end of the angle`;
-    if (pending.length === 1) return `${snap} · click the corner the angle sits at`;
-    return `${snap} · click the other end`;
-  }
-  if (measureKind === "area") {
-    if (pending.length < 3) {
-      return `${snap} · click the outline, ${3 - pending.length} more before it closes`;
-    }
-    return `${snap} · ${pending.length} points · click the first point or Finish`;
-  }
-  if (measureKind === "path") {
-    if (!pending.length) return `${snap} · click the first point of the route`;
-    if (pending.length === 1) return `${snap} · click the next point`;
-    return `${snap} · ${pending.length} points · Finish or press Enter`;
-  }
-  if (!pending.length) return `${snap} · click to start, or Alt-click an element for its size`;
-  return axisLock
-    ? `${snap} · locked to ${axisLock.toUpperCase()}`
-    : `${snap} · click the second point; X, Y or Z locks an axis`;
 }
 
 /** Prominent value in the card, including the latest uncommitted preview. */
@@ -5650,131 +4515,6 @@ function handleMeasureClick(clientX, clientY, prefetched = null) {
   clearSnapPreview();
 }
 
-// ---------------------------------------------------------------- properties
-let propertiesRequest = 0;
-async function showProperties(guid) {
-  const request = ++propertiesRequest;
-  const panel = $("props");
-  panel.textContent = "";
-  panel.appendChild(el("p", "hint", "loading…"));
-  let detail;
-  try {
-    const res = await api(`/api/elements/${encodeURIComponent(guid)}${modelQuery()}`);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    detail = await res.json();
-  } catch (err) {
-    if (request !== propertiesRequest) return;
-    panel.textContent = "";
-    panel.appendChild(el("p", "hint", `could not load properties (${err.message})`));
-    return;
-  }
-  if (request !== propertiesRequest) return;
-  panel.textContent = "";
-  const title = detail.attributes && detail.attributes.Name
-    ? String(detail.attributes.Name) : detail.class;
-  panel.appendChild(el("h3", null, title));
-  panel.appendChild(el("div", "guid", `${detail.class} · ${detail.global_id}`));
-
-  if (detail.container && detail.container.length) {
-    const crumb = detail.container.map((c) => c.name || c.class).reverse().join(" / ");
-    panel.appendChild(el("div", "crumb", crumb));
-  }
-
-  if (detail.attributes) {
-    panel.appendChild(sectionTable("Attributes", detail.attributes));
-  }
-  if (detail.type && detail.type.name) {
-    panel.appendChild(sectionTable("Type", { class: detail.type.class, name: detail.type.name }));
-  }
-  const materials = materialRows(detail.materials);
-  if (materials) panel.appendChild(sectionTable("Material", materials));
-  if (detail.decomposition && detail.decomposition.length) {
-    panel.appendChild(partsList("Parts", detail.decomposition));
-  }
-  for (const [pset, props] of Object.entries(detail.psets || {})) {
-    if (props && typeof props === "object") {
-      const { id: _id, ...rest } = props;
-      panel.appendChild(sectionTable(pset, rest));
-    }
-  }
-  for (const [qto, props] of Object.entries(detail.qtos || {})) {
-    if (props && typeof props === "object") {
-      const { id: _id, ...rest } = props;
-      panel.appendChild(sectionTable(`${qto} (quantities)`, rest));
-    }
-  }
-}
-
-// element_detail returns one of several material shapes; flatten whichever
-// arrived into plain key/value rows.
-function materialRows(material) {
-  if (!material) return null;
-  if (material.kind === "material") return material.name ? { Name: material.name } : null;
-  if (material.kind === "layer_set") {
-    const rows = {};
-    if (material.name) rows["Layer set"] = material.name;
-    (material.layers || []).forEach((layer, i) => {
-      const thickness = typeof layer.thickness === "number"
-        ? ` · ${Number(layer.thickness.toFixed(4))}` : "";
-      rows[`Layer ${i + 1}`] = `${layer.name || "?"}${thickness}`;
-    });
-    return Object.keys(rows).length ? rows : null;
-  }
-  const list = material.constituents || material.profiles || material.materials;
-  if (Array.isArray(list) && list.length) {
-    return Object.fromEntries(
-      list.filter(Boolean).map((name, i) => [`Material ${i + 1}`, String(name)]));
-  }
-  return null;
-}
-
-// Parts are navigable, so they are links into the model rather than a table.
-function partsList(titleText, parts) {
-  const details = el("details");
-  details.open = false;
-  details.appendChild(el("summary", null, `${titleText} (${parts.length})`));
-  const list = el("div", "part-list");
-  for (const part of parts) {
-    const id = expressOf.get(part.global_id);
-    const row = el(id !== undefined ? "button" : "div", "part-row", `${part.name || part.class}`);
-    row.appendChild(el("span", "cls", ` ${part.class}`));
-    if (id !== undefined) {
-      row.type = "button";
-      row.classList.add("clickable");
-      row.title = "Select this part";
-      row.addEventListener("click", () => setSelection([id], false));
-    }
-    list.appendChild(row);
-  }
-  details.appendChild(list);
-  return details;
-}
-
-function sectionTable(titleText, obj) {
-  // each section folds, so long property lists stay scannable
-  const details = el("details");
-  details.open = true;
-  details.appendChild(el("summary", null, titleText));
-  const table = el("table");
-  for (const [key, value] of Object.entries(obj)) {
-    if (value === null || value === undefined || value === "") continue;
-    const tr = el("tr");
-    tr.appendChild(el("td", null, key));
-    tr.appendChild(el("td", null,
-      typeof value === "object" ? JSON.stringify(value) : String(value)));
-    table.appendChild(tr);
-  }
-  details.appendChild(table);
-  return details;
-}
-
-function clearProperties() {
-  propertiesRequest++;
-  const panel = $("props");
-  panel.textContent = "";
-  panel.appendChild(el("p", "hint", "Select an element to inspect its IFC data."));
-}
-
 // ---------------------------------------------------------------- websocket
 let ws = null;
 let wsAttempts = 0;
@@ -5814,6 +4554,31 @@ function scheduleReload() {
   // Bursts of edits collapse into one refetch (2 s debounce).
   clearTimeout(reloadTimer);
   reloadTimer = setTimeout(loadModel, 2000);
+}
+
+/**
+ * Take an edit in place when it touched no geometry, else rebuild.
+ *
+ * The properties, the tree labels and the search results are the only things a
+ * property edit can change on screen, and they are refreshed from the server
+ * by element, so a large model is not parsed again for it.
+ */
+function followUpdate(frame) {
+  const plan = planUpdate(frame, { etag: currentEtag });
+  if (plan.kind === "reload") {
+    scheduleReload();
+    return;
+  }
+  if (plan.kind === "none") return;
+  const previous = currentEtag;
+  currentEtag = frame.etag;
+  if (renderedModelId) rekeyParsedModel(renderedModelId, previous, frame.etag);
+  if (readyScene) readyScene = { ...readyScene, etag: frame.etag };
+  applyLabels(plan.names);
+  const shown = [...selection].map((id) => guidOf.get(id)).filter(Boolean).at(-1) || null;
+  if (touchesElement(plan, shown)) showProperties(shown);
+  refreshSearch();
+  sendModelReady();
 }
 
 function setConnectionState(connected, label) {
@@ -5875,6 +4640,7 @@ function handleFrame(frame) {
   switch (frame.type) {
     case "status": {
       setModelInfo(frame);
+      setHistoryControls(frame);
       if (frame.theme) applyTheme(frame.theme);
       // Compare against the model this tab shows, not always the active one:
       // a pinned model would otherwise reload on every status frame.
@@ -5894,10 +4660,11 @@ function handleFrame(frame) {
       if (frame.changes !== undefined) setModelChanges(frame.changes);
       if (frame.reason === "saved") setModelChanges(0);
       if (frame.reason === "loaded") applyColorThemeFrame({ clear: true });
+      setHistoryControls(frame);
       // These describe the active model; a pinned one is read-only and only
       // changes through a status frame (attach, detach, active switch).
       if (viewModelId || !viewerDocumentOpen) break;
-      if (!frame.etag || frame.etag !== currentEtag) scheduleReload();
+      followUpdate(frame);
       break;
     case "mode_changed":
       setMode(frame.mode);
@@ -5910,10 +4677,6 @@ function handleFrame(frame) {
       break;
     case "color_theme":
       if (frameTargetsCurrentModel(frame)) applyColorThemeFrame(frame);
-      break;
-    case "camera":
-      if (frame.view && frame.view !== "current") setView(frame.view, fitTargetIds(frame.fit));
-      else if (frame.fit) fitTo(fitTargetIds(frame.fit));
       break;
     case "screenshot_request":
       handleScreenshot(frame);
@@ -6263,8 +5026,7 @@ function openActiveViewerModel() {
 $("model-tab-open-active").addEventListener("click", openActiveViewerModel);
 $("viewer-empty-open").addEventListener("click", openActiveViewerModel);
 
-// The console can hold more than one model; the picker appears only then.
-// The active model is always the first entry and the default view.
+// The console can hold more than one model. The active one is the default view.
 function renderModelPicker(rows) {
   modelRows = rows || [];
   const residentIds = new Set(modelRows.map((row) => row.id));
@@ -6276,9 +5038,7 @@ function renderModelPicker(rows) {
   for (const modelId of parsedModelCache.keys()) {
     if (!residentIds.has(modelId)) dropParsedModel(modelId);
   }
-  const select = $("model-select");
   const many = modelRows.length > 1;
-  select.hidden = true;
   if (!modelRows.length) viewerDocumentOpen = false;
   if (!many) {
     if (viewModelId !== null) {
@@ -6298,19 +5058,6 @@ function renderModelPicker(rows) {
     viewModelId = null;  // the pinned model was detached: follow the active one
     if (viewerDocumentOpen) scheduleReload();
   }
-  const wanted = viewModelId || (modelRows.find((m) => m.active) || {}).id || "";
-  const signature = modelRows.map((m) => `${m.id}:${m.active}`).join("|");
-  if (select.dataset.signature !== signature) {
-    select.dataset.signature = signature;
-    select.textContent = "";
-    for (const row of modelRows) {
-      const option = document.createElement("option");
-      option.value = row.id;
-      option.textContent = row.active ? `${row.name} (active)` : row.name;
-      select.appendChild(option);
-    }
-  }
-  select.value = wanted;
   renderModelTabs();
   scheduleViewerContext("models");
 }
@@ -6321,120 +5068,15 @@ function currentModelRow() {
 }
 
 // ------------------------------------------------------------- saving
-let noteTimer = 0;
-
-/* One line in the status bar; it clears itself so nothing goes stale. */
-function toast(text, isError = false) {
-  const note = $("action-note");
-  if (!note) return;
-  note.textContent = text;
-  note.dataset.error = isError ? "1" : "0";
-  clearTimeout(noteTimer);
-  noteTimer = setTimeout(() => {
-    note.textContent = "";
-    note.dataset.error = "0";
-  }, isError ? 12000 : 6000);
-}
-
-// Edit mode works in a copy of the opened file, so writing it costs the user
-// nothing: the topbar offers the save and says how much is waiting for it.
-let modelChanges = 0;
-let workingCopy = null;
-
-function setWorkingCopy(copy, origin) {
-  workingCopy = copy;
-  const badge = $("copy-badge");
-  badge.hidden = !copy;
-  if (copy) {
-    badge.title = `Editing a copy: ${copy.name}. `
-      + `${copy.origin_name || origin || "the file you opened"} is not written.`;
-  }
-  updateSaveControls();
-}
-
-function setModelChanges(count) {
-  modelChanges = Number(count) || 0;
-  updateSaveControls();
-}
-
-function updateSaveControls() {
-  const save = $("btn-save-model");
-  const download = $("btn-download-model");
-  const badge = $("save-count");
-  if (!save) return;
-  const dirty = !$("dirty").hidden;
-  save.hidden = !dirty;
-  download.hidden = !viewerDocumentOpen;
-  badge.hidden = modelChanges === 0;
-  badge.textContent = String(modelChanges);
-  const target = workingCopy ? workingCopy.name : ($("model-name").textContent || "the IFC file");
-  const scope = modelChanges
-    ? `${modelChanges} change${modelChanges === 1 ? "" : "s"}`
-    : "the in-memory changes";
-  save.title = workingCopy
-    ? `Write ${scope} to the working copy ${target}. `
-      + `${workingCopy.origin_name || "the file you opened"} stays untouched.`
-    : `Write ${scope} to ${target}.`;
-}
-
-async function saveModelFile() {
-  const save = $("btn-save-model");
-  const label = $("save-label");
-  const previous = label.textContent;
-  save.disabled = true;
-  label.textContent = "Saving...";
-  try {
-    const response = await api("/api/model/save", { method: "POST" });
-    const payload = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(payload.message || payload.error || `HTTP ${response.status}`);
-    setModelChanges(0);
-    $("dirty").hidden = true;
-    toast(payload.saved
-      ? `Saved ${payload.working_copy ? "the working copy" : ""} ${payload.path}`.trim()
-      : "Nothing to save");
-  } catch (exc) {
-    toast(`Could not save: ${exc.message || exc}`, true);
-  } finally {
-    save.disabled = false;
-    label.textContent = previous;
-    updateSaveControls();
-  }
-}
-
-/* Stream what is in memory now, without writing anything. */
-async function downloadModelFile() {
-  const button = $("btn-download-model");
-  button.disabled = true;
-  try {
-    const params = new URLSearchParams({ download: "1" });
-    if (viewModelId) params.set("model", viewModelId);
-    const response = await api(`/api/model.ifc?${params}`);
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const disposition = response.headers.get("content-disposition") || "";
-    const named = /filename="([^"]+)"/.exec(disposition);
-    const blob = await response.blob();
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = named ? named[1] : "model.ifc";
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 10000);
-  } catch (exc) {
-    toast(`Could not download: ${exc.message || exc}`, true);
-  } finally {
-    button.disabled = false;
-  }
-}
+bindFileActions({ isViewerOpen: () => viewerDocumentOpen, pinnedModelId: () => viewModelId });
 
 function setModelInfo(status) {
   const label = $("model-name");
   if (status) {
     if (status.models) renderModelPicker(status.models);
     const row = viewerDocumentOpen ? currentModelRow() : activeModelRow();
-    // With the picker visible the select already names the model; showing it
-    // twice in a one-line topbar just costs space.
+    // The model tabs already name the model; showing it twice in a one-line
+    // topbar just costs space.
     label.hidden = modelRows.length > 0 && viewerDocumentOpen;
     label.textContent = (row && row.name) || status.model || "no model";
     label.title = label.textContent;
@@ -6482,7 +5124,7 @@ async function refreshStatus() {
 
 // ---------------------------------------------------------------- toolbar
 // Camera framing lives on the F key and the model auto-fits on load; view
-// presets and fits are still driven by the assistant over the websocket.
+// presets and fits are driven by the assistant through viewer commands.
 // Switching model reloads the scene; the active model is the default view.
 function selectViewerModel(picked) {
   if (!modelRows.some((row) => row.id === picked)) return false;
@@ -6522,15 +5164,9 @@ function selectViewerModel(picked) {
   return true;
 }
 
-$("model-select").addEventListener("change", (e) => {
-  selectViewerModel(e.target.value);
-});
-
 $("btn-clear-hl").addEventListener("click", () => {
   applyHighlightFrame({ clear: true });
 });
-$("btn-save-model").addEventListener("click", () => { void saveModelFile(); });
-$("btn-download-model").addEventListener("click", () => { void downloadModelFile(); });
 $("legend-clear").addEventListener("click", () => {
   applyColorThemeFrame({ clear: true });
 });
@@ -6771,7 +5407,6 @@ $("tool-measure-laser").addEventListener("click", () => {
     "", null, [anchorAt(centre, id)]);
   $("measure-card").hidden = false;
 });
-$("tool-measure-clear").addEventListener("click", () => clearMeasurements());
 for (const btn of document.querySelectorAll("#tools-panel [data-view]")) {
   btn.addEventListener("click", () => setView(btn.dataset.view, null));
 }
@@ -6902,14 +5537,6 @@ $("sel-workflow").addEventListener("click", async () => {
 });
 
 // -- measurement controls
-const measureQuickActions = document.querySelector(
-  '#tools-panel [data-tool-panel="measure"] .tool-action-grid',
-);
-if (measureQuickActions) {
-  measureQuickActions.classList.add("measure-quick-actions");
-  $("measure-card").querySelector(".measure-readout").before(measureQuickActions);
-}
-
 $("btn-tool-measure").addEventListener("click", (event) => {
   event.stopPropagation();
   closePopovers();
@@ -6920,15 +5547,6 @@ $("btn-tool-measure").addEventListener("click", (event) => {
   }
 });
 
-const openMeasure = $("tool-open-measure");
-if (openMeasure) {
-  openMeasure.addEventListener("click", () => {
-    closePopovers();
-    setToolPanel(null);
-    setMeasureMode(true, measureKind || "distance");
-    MEASURE_BUTTONS[measureKind]?.focus({ preventScroll: true });
-  });
-}
 for (const [kind, button] of Object.entries(MEASURE_BUTTONS)) {
   // Clicking the tool that is already running turns measuring off; clicking
   // another switches to it without a stop in between.
@@ -6966,198 +5584,7 @@ if (measureClose) {
 updateToolButtons();
 updateVisibilityInfo();
 
-// ---------------------------------------------------------------- search
-// The server does the matching: the client only ever learns GlobalIds and
-// express ids for the geometry it drew, never names or types.
-const SEARCH_DEBOUNCE = 250;
-let searchTimer = null;
-let searchRequest = 0;
-let searchAbort = null;
-let searchHits = [];  // expressIDs of the current result set, in row order
-
-function searchIds() {
-  return searchHits.filter((id) => elements.has(id));
-}
-
-function cancelPendingSearch() {
-  searchRequest++;
-  if (searchTimer !== null) clearTimeout(searchTimer);
-  searchTimer = null;
-  if (searchAbort) searchAbort.abort();
-  searchAbort = null;
-}
-
-function resetSearchResults() {
-  searchHits = [];
-  const box = $("search-results");
-  box.hidden = true;
-  box.textContent = "";
-  box.setAttribute("aria-busy", "false");
-  $("tree").hidden = false;
-}
-
-function clearSearch(refocus) {
-  cancelPendingSearch();
-  $("search-input").value = "";
-  $("search-clear").hidden = true;
-  resetSearchResults();
-  if (refocus) $("search-input").focus();
-}
-
-function renderSearch(payload) {
-  const box = $("search-results");
-  box.textContent = "";
-  box.setAttribute("aria-busy", "false");
-  searchHits = [];
-
-  const head = el("div", "search-head");
-  const found = payload.truncated
-    ? `${payload.results.length} of ${payload.total}`
-    : `${payload.total} match${payload.total === 1 ? "" : "es"}`;
-  head.appendChild(el("span", null, found));
-  head.appendChild(el("span", "spacer"));
-  const selectAll = el("button", null, "Select");
-  selectAll.title = "Select every element in the result list";
-  const isolate = el("button", null, "Isolate");
-  isolate.title = "Show only the elements in the result list";
-  head.appendChild(selectAll);
-  head.appendChild(isolate);
-  box.appendChild(head);
-
-  if (!payload.total) {
-    box.appendChild(el("p", "hint", "No elements match. Try an IFC class such as IfcDoor."));
-  }
-
-  for (const row of payload.results) {
-    const id = expressOf.get(row.global_id);
-    if (id !== undefined) searchHits.push(id);
-    const hit = el("button", "search-hit");
-    hit.type = "button";
-    hit.appendChild(el("span", "name", row.name || row.class));
-    const detail = [row.class, row.storey, row.type_name].filter(Boolean).join(" · ");
-    hit.appendChild(el("span", "meta-line", detail));
-    if (id === undefined) {
-      hit.disabled = true;
-      hit.title = "No geometry in this model";
-    } else {
-      hit.dataset.expressId = id;
-      hit.setAttribute("aria-pressed", "false");
-      hit.title = "Select this element. Press Enter to select and zoom.";
-      hit.addEventListener("click", () => setSelection([id], false));
-      hit.addEventListener("dblclick", () => fitTo([id]));
-      hit.addEventListener("keydown", (event) => {
-        if (event.key !== "Enter") return;
-        event.preventDefault();
-        setSelection([id], false);
-        fitTo([id]);
-      });
-    }
-    box.appendChild(hit);
-  }
-
-  const ids = searchIds();
-  selectAll.disabled = isolate.disabled = ids.length === 0;
-  selectAll.addEventListener("click", () => setSelection(searchIds(), false));
-  isolate.addEventListener("click", () => {
-    const targets = searchIds();
-    if (!targets.length) return;
-    userIsolateSet = new Set(targets);
-    applyVisibility();
-    updateToolButtons();
-  });
-
-  markSearchSelection();
-  box.hidden = false;
-  $("tree").hidden = true;
-}
-
-function markSearchSelection() {
-  for (const hit of document.querySelectorAll(".search-hit")) {
-    const id = Number(hit.dataset.expressId);
-    const selected = selection.has(id);
-    hit.classList.toggle("selected", selected);
-    if (!hit.disabled) hit.setAttribute("aria-pressed", String(selected));
-  }
-}
-
-async function runSearch(term) {
-  if (searchAbort) searchAbort.abort();
-  const request = ++searchRequest;
-  const controller = new AbortController();
-  searchAbort = controller;
-  const box = $("search-results");
-  box.textContent = "";
-  box.setAttribute("aria-busy", "true");
-  box.appendChild(el("p", "hint", "Searching elements…"));
-  box.hidden = false;
-  $("tree").hidden = true;
-  let payload;
-  try {
-    const res = await api(
-      `/api/search?q=${encodeURIComponent(term)}${modelQuery().replace("?", "&")}`,
-      { signal: controller.signal },
-    );
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    payload = await res.json();
-  } catch (err) {
-    if (request !== searchRequest || err.name === "AbortError") return;
-    box.textContent = "";
-    box.setAttribute("aria-busy", "false");
-    box.appendChild(el("p", "hint", `Search failed (${err.message}). Press Enter to try again.`));
-    return;
-  } finally {
-    if (searchAbort === controller) searchAbort = null;
-  }
-  if (request !== searchRequest) return;
-  renderSearch(payload);
-}
-
-$("search-input").addEventListener("input", () => {
-  const term = $("search-input").value.trim();
-  $("search-clear").hidden = !term;
-  cancelPendingSearch();
-  if (term.length < 2) {
-    resetSearchResults();
-    return;
-  }
-  searchTimer = setTimeout(() => {
-    searchTimer = null;
-    runSearch(term);
-  }, SEARCH_DEBOUNCE);
-});
-
-$("search-input").addEventListener("keydown", (e) => {
-  if (e.key === "Escape") {
-    e.stopPropagation();
-    clearSearch(true);
-  } else if (e.key === "Enter") {
-    if (searchTimer !== null) clearTimeout(searchTimer);
-    searchTimer = null;
-    const term = $("search-input").value.trim();
-    cancelPendingSearch();
-    if (term.length >= 2) runSearch(term);
-    else resetSearchResults();
-  }
-});
-
-$("search-clear").addEventListener("click", () => clearSearch(true));
-
-function refreshSearch() {
-  cancelPendingSearch();
-  const term = $("search-input").value.trim();
-  if (term.length >= 2) runSearch(term);
-  else resetSearchResults();
-}
-
 // ---------------------------------------------------------------- saved views
-// Camera poses live in localStorage next to the panel layout: they belong to
-// this browser, not to the model, and survive reloads and model edits.
-const MAX_SAVED_VIEWS = 12;
-
-function savedViews() {
-  return Array.isArray(uiState.views) ? uiState.views : (uiState.views = []);
-}
-
 function captureView(name) {
   return {
     name,
@@ -7233,78 +5660,9 @@ function restoreView(view) {
   invalidate();
 }
 
-function renderSavedViews() {
-  const box = $("saved-views");
-  box.textContent = "";
-  const views = savedViews();
-  if (!views.length) {
-    box.appendChild(el("div", "tool-note empty", "none saved yet"));
-    return;
-  }
-  views.forEach((view, index) => {
-    const row = el("div", "saved-view");
-    const go = el("button", "tool-btn go", view.name);
-    go.title = `Go to ${view.name}`;
-    go.addEventListener("click", () => restoreView(view));
-    const drop = el("button", "drop", "×");
-    drop.title = `Delete ${view.name}`;
-    drop.setAttribute("aria-label", `Delete ${view.name}`);
-    drop.addEventListener("click", () => {
-      views.splice(index, 1);
-      saveUi();
-      renderSavedViews();
-    });
-    row.appendChild(go);
-    row.appendChild(drop);
-    box.appendChild(row);
-  });
-}
-
-function saveCurrentView() {
-  const views = savedViews();
-  const input = $("view-name");
-  const name = input.value.trim() || `View ${views.length + 1}`;
-  const existing = views.findIndex((v) => v.name === name);
-  if (existing >= 0) {
-    views[existing] = captureView(name);
-  } else {
-    views.push(captureView(name));
-    if (views.length > MAX_SAVED_VIEWS) views.shift();
-  }
-  input.value = "";
-  saveUi();
-  renderSavedViews();
-}
-
-$("tool-save-view").addEventListener("click", saveCurrentView);
-$("view-name").addEventListener("keydown", (e) => {
-  if (e.key === "Enter") saveCurrentView();
-});
+bindSavedViews({ captureView, restoreView });
 
 // ---------------------------------------------------------------- ui state
-// Panel widths/visibility and scene settings persist across sessions.
-function isPlainObject(value) {
-  return value !== null
-    && typeof value === "object"
-    && !Array.isArray(value)
-    && Object.getPrototypeOf(value) === Object.prototype;
-}
-
-const uiState = (() => {
-  try {
-    const saved = JSON.parse(localStorage.getItem("ifc-console-viewer-ui") || "{}");
-    return isPlainObject(saved) ? saved : {};
-  } catch {
-    return {};
-  }
-})();
-function saveUi() {
-  try {
-    localStorage.setItem("ifc-console-viewer-ui", JSON.stringify(uiState));
-  } catch {
-    // Storage can be unavailable in private mode or full.
-  }
-}
 setThemePreference(uiState.themePreference || "system", { persist: false });
 // The remembered reading choices, before anything is drawn with a number on it.
 lengthUnitChoice = LENGTH_UNITS[uiState.lengthUnit] ? uiState.lengthUnit : "file";
@@ -7333,182 +5691,12 @@ if (typeof uiState.slice === "number" && uiState.slice > 0) setSliceDepth(uiStat
 for (const axis of AXES) syncSectionRow(axis);
 syncSliceInput();
 
-function effectiveViewerWidth() {
-  const dock = document.getElementById("chat-dock");
-  const chatWidth = dock && !dock.hidden ? dock.getBoundingClientRect().width : 0;
-  return window.innerWidth - chatWidth;
-}
-
-function syncPanelScrim() {
-  const compact = effectiveViewerWidth() <= 620;
-  const sidePanelOpen = !$("tree-panel").classList.contains("collapsed")
-    || !$("props-panel").classList.contains("collapsed");
-  $("panel-scrim").hidden = !compact || !sidePanelOpen;
-}
-
-function closeOtherCompactPanel(openKey) {
-  if (effectiveViewerWidth() > 620 || uiState[openKey] !== true) return;
-  const dock = document.getElementById("chat-dock");
-  if (dock && !dock.hidden) setChat(false);
-  if (openKey === "treeOpen" && uiState.propsOpen === true) {
-    uiState.propsOpen = false;
-    applyPropsPanel();
-  } else if (openKey === "propsOpen" && uiState.treeOpen === true) {
-    uiState.treeOpen = false;
-    applyTreePanel();
-  }
-}
-
-function initSidePanel(
-  panelId,
-  splitId,
-  tabId,
-  closeId,
-  widthKey,
-  openKey,
-  side,
-  openByDefault,
-) {
-  const panel = $(panelId);
-  const splitter = $(splitId);
-  const tab = $(tabId);
-  const close = $(closeId);
-  const clampW = (w) => {
-    // Keep a useful canvas visible when both side panels are open.
-    const max = Math.max(
-      160,
-      Math.min(window.innerWidth * 0.45, (window.innerWidth - 280) / 2),
-    );
-    return Math.min(Math.max(Math.round(w), 160), max);
-  };
-  // Properties start closed: an empty panel should not cost the 3D view 320px.
-  const isOpen = () => uiState[openKey] ?? openByDefault;
-  const setWidth = (width) => {
-    const value = clampW(width);
-    uiState[widthKey] = value;
-    panel.style.width = `${value}px`;
-    splitter.setAttribute("aria-valuemin", "160");
-    splitter.setAttribute("aria-valuemax", String(clampW(window.innerWidth)));
-    splitter.setAttribute("aria-valuenow", String(value));
-    splitter.setAttribute("aria-valuetext", `${value} pixels`);
-  };
-  const apply = () => {
-    const open = isOpen();
-    const chatDockElement = document.getElementById("chat-dock");
-    const chatCoversLeftTab = panelId === "tree-panel"
-      && window.innerWidth <= 1040
-      && chatDockElement
-      && !chatDockElement.hidden;
-    panel.classList.toggle("collapsed", !open);
-    panel.inert = !open;
-    splitter.classList.toggle("collapsed", !open);
-    tab.hidden = open || chatCoversLeftTab;
-    tab.setAttribute("aria-expanded", String(open));
-    if (uiState[widthKey]) setWidth(uiState[widthKey]);
-    else {
-      panel.style.width = "";
-      const fallback = panelId === "tree-panel" ? 260 : 320;
-      const value = clampW(fallback);
-      splitter.setAttribute("aria-valuemin", "160");
-      splitter.setAttribute("aria-valuemax", String(clampW(window.innerWidth)));
-      splitter.setAttribute("aria-valuenow", String(value));
-      splitter.setAttribute("aria-valuetext", `${value} pixels`);
-    }
-    syncPanelScrim();
-    scheduleViewerContext("panels");
-  };
-  const setOpen = (open, { focus = true } = {}) => {
-    uiState[openKey] = Boolean(open);
-    if (open) closeOtherCompactPanel(openKey);
-    saveUi();
-    apply();
-    if (focus) {
-      if (open) close.focus({ preventScroll: true });
-      else tab.focus({ preventScroll: true });
-    }
-  };
-  splitter.addEventListener("pointerdown", (e) => {
-    e.preventDefault();
-    splitter.setPointerCapture(e.pointerId);
-    splitter.classList.add("dragging");
-    const startX = e.clientX;
-    const startW = panel.getBoundingClientRect().width;
-    const move = (ev) => {
-      const dx = ev.clientX - startX;
-      setWidth(side === "left" ? startW + dx : startW - dx);
-    };
-    const up = (ev) => {
-      splitter.classList.remove("dragging");
-      splitter.releasePointerCapture(ev.pointerId);
-      splitter.removeEventListener("pointermove", move);
-      splitter.removeEventListener("pointerup", up);
-      saveUi();
-    };
-    splitter.addEventListener("pointermove", move);
-    splitter.addEventListener("pointerup", up);
-  });
-  splitter.addEventListener("dblclick", () => {
-    delete uiState[widthKey];
-    saveUi();
-    apply();
-  });
-  splitter.addEventListener("keydown", (event) => {
-    if (event.key === "Home") {
-      event.preventDefault();
-      delete uiState[widthKey];
-      saveUi();
-      apply();
-      return;
-    }
-    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
-    event.preventDefault();
-    const current = uiState[widthKey]
-      || panel.getBoundingClientRect().width
-      || (panelId === "tree-panel" ? 260 : 320);
-    const movement = event.key === "ArrowRight" ? 16 : -16;
-    setWidth(current + (side === "left" ? movement : -movement));
-    saveUi();
-    resize();
-  });
-  tab.addEventListener("click", () => setOpen(true));
-  close.addEventListener("click", () => setOpen(false));
-  window.addEventListener("resize", apply);
-  apply();
-  return { apply, isOpen, setOpen };
-}
-
-const treePanelController =
-  initSidePanel(
-    "tree-panel",
-    "split-tree",
-    "tree-panel-tab",
-    "tree-panel-close",
-    "treeWidth",
-    "treeOpen",
-    "left",
-    window.innerWidth > 620,
-  );
-const propsPanelController = initSidePanel(
-  "props-panel",
-  "split-props",
-  "props-panel-tab",
-  "props-panel-close",
-  "propsWidth",
-  "propsOpen",
-  "right",
-  false,
-);
-const applyTreePanel = treePanelController.apply;
-const applyPropsPanel = propsPanelController.apply;
-
-$("panel-scrim").addEventListener("click", () => {
-  const restore = propsPanelController.isOpen() ? $("props-panel-tab") : $("tree-panel-tab");
-  uiState.treeOpen = false;
-  uiState.propsOpen = false;
-  saveUi();
-  applyTreePanel();
-  applyPropsPanel();
-  restore.focus({ preventScroll: true });
+bindWorkspaceLayout({
+  isViewerOpen: () => viewerDocumentOpen,
+  resize,
+  scheduleViewerContext,
+  syncViewerSurface,
+  viewerComponentHost,
 });
 
 const POPOVERS = [
@@ -7545,7 +5733,6 @@ function setToolPanel(name, { focus = false, persist = true } = {}) {
     sectionNode.hidden = !valid || sectionNode.dataset.toolPanel !== valid;
   }
   $("tool-hidden-info").hidden = valid !== "visibility";
-  panel.querySelector(".measure-launcher-note").hidden = true;
   for (const button of document.querySelectorAll("#viewer-toolbar [data-tool-panel]")) {
     button.setAttribute("aria-expanded", String(button.dataset.toolPanel === valid));
   }
@@ -7599,7 +5786,6 @@ for (const button of document.querySelectorAll("#viewer-toolbar [data-tool-panel
     setToolPanel(activeToolPanel === name ? null : name);
   });
 }
-$("btn-tools").addEventListener("click", () => setToolPanel("visibility"));
 $("tools-panel").addEventListener("click", (event) => event.stopPropagation());
 $("tools-panel-close").addEventListener("click", () => {
   const trigger = document.querySelector(`#viewer-toolbar [data-tool-panel="${activeToolPanel}"]`);
@@ -8120,308 +6306,7 @@ function commandFailure(error) {
   return where ? `${error} (${where})` : String(error);
 }
 
-// ---------------------------------------------------------- extension panel
-// The panel is a separate component and only loaded when its launcher names
-// it. A /viewer tab therefore pays no Agent JavaScript, CSS, layout or memory.
-const chatDock = $("chat-dock");
-const chatResize = $("chat-dock-resize");
-const chatBtn = $("btn-chat");
-const extensionPanelPrimary = Boolean(requestedPanel);
-const CHAT_DOCK_MIN_WIDTH = 520;
-const CHAT_DOCK_DEFAULT_WIDTH = 720;
-const CHAT_CANVAS_MIN_WIDTH = 420;
-const CHAT_DOCK_RESIZE_WIDTH = 5;
-const CHAT_DOCK_OVERLAY_WIDTH = 1040;
-let chatPanel = null;
-let chatLoadPromise = null;
-let chatPanelDefinition = null;
-let chatDesiredOpen = extensionPanelPrimary;
-let chatRequestVersion = 0;
-
-function loadPanelStylesheet(url) {
-  if (!url || document.querySelector(`link[data-extension-style="${url}"]`)) return;
-  const link = document.createElement("link");
-  link.rel = "stylesheet";
-  link.href = url;
-  link.dataset.extensionStyle = url;
-  document.head.append(link);
-}
-
-function visiblePanelFootprint(panelId, splitterId) {
-  const panel = $(panelId);
-  if (panel.classList.contains("collapsed")) return 0;
-  return panel.getBoundingClientRect().width
-    + $(splitterId).getBoundingClientRect().width;
-}
-
-function availableChatDockWidth() {
-  const layoutWidth = $("layout").getBoundingClientRect().width || window.innerWidth;
-  return Math.floor(
-    layoutWidth
-      - visiblePanelFootprint("tree-panel", "split-tree")
-      - visiblePanelFootprint("props-panel", "split-props")
-      - CHAT_CANVAS_MIN_WIDTH
-      - CHAT_DOCK_RESIZE_WIDTH,
-  );
-}
-
-function chatDockMaxWidth() {
-  const viewportCap = Math.round(window.innerWidth * 0.68);
-  // Below this breakpoint the dock overlays the viewer and therefore does not
-  // consume a canvas flex track. On desktop, account for every visible viewer
-  // panel before allowing the chat to grow.
-  if (window.innerWidth <= CHAT_DOCK_OVERLAY_WIDTH) {
-    return Math.max(CHAT_DOCK_MIN_WIDTH, viewportCap);
-  }
-  return Math.max(
-    CHAT_DOCK_MIN_WIDTH,
-    Math.min(viewportCap, availableChatDockWidth()),
-  );
-}
-
-function currentChatWidth() {
-  return uiState.chatWidth
-    || chatDock.getBoundingClientRect().width
-    || CHAT_DOCK_DEFAULT_WIDTH;
-}
-
-function syncChatResizeAria(width = currentChatWidth()) {
-  const max = chatDockMaxWidth();
-  const value = Math.min(Math.max(Math.round(width), CHAT_DOCK_MIN_WIDTH), max);
-  chatResize.setAttribute("aria-valuemin", String(CHAT_DOCK_MIN_WIDTH));
-  chatResize.setAttribute("aria-valuemax", String(max));
-  chatResize.setAttribute("aria-valuenow", String(value));
-  chatResize.setAttribute("aria-valuetext", `${value} pixels`);
-  return value;
-}
-
-function setChatWidth(width) {
-  const value = syncChatResizeAria(width);
-  chatDock.style.width = `${value}px`;
-  uiState.chatWidth = value;
-}
-
-function applyChatWidthForViewport() {
-  if (window.innerWidth <= CHAT_DOCK_OVERLAY_WIDTH) {
-    chatDock.style.width = "";
-    syncChatResizeAria();
-  } else if (uiState.chatWidth) {
-    setChatWidth(uiState.chatWidth);
-  } else {
-    syncChatResizeAria();
-  }
-}
-
-function setChatPanelVisible(visible) {
-  if (chatPanel && typeof chatPanel.setVisible === "function") {
-    chatPanel.setVisible(Boolean(visible));
-  }
-}
-
-function applyChatChrome(open) {
-  // Let the panel dismiss transient UI while it can still measure its host.
-  if (!open) setChatPanelVisible(false);
-  document.body.classList.toggle("chat-open", open);
-  chatDock.hidden = !open;
-  chatResize.hidden = !open || !viewerDocumentOpen;
-  chatBtn.setAttribute("aria-pressed", String(open));
-  if (viewerDocumentOpen) applyChatWidthForViewport();
-  else chatDock.style.width = "";
-  applyTreePanel();
-  if (open) setChatPanelVisible(true);
-  syncViewerSurface();
-}
-
-function closePanelsForChat(force = false) {
-  let changed = false;
-  const propsOpen = propsPanelController.isOpen();
-  if (
-    propsOpen
-    && (force || availableChatDockWidth() < CHAT_DOCK_MIN_WIDTH)
-  ) {
-    uiState.propsOpen = false;
-    applyPropsPanel();
-    changed = true;
-  }
-
-  const treeOpen = treePanelController.isOpen();
-  if (
-    treeOpen
-    && (force || availableChatDockWidth() < CHAT_DOCK_MIN_WIDTH)
-  ) {
-    uiState.treeOpen = false;
-    applyTreePanel();
-    changed = true;
-  }
-  return changed;
-}
-
-async function setChat(open, { force = false } = {}) {
-  if (extensionPanelPrimary && !force) open = true;
-  const requestVersion = ++chatRequestVersion;
-  chatDesiredOpen = Boolean(open);
-  uiState.chatOpen = chatDesiredOpen;
-  if (chatDesiredOpen && !chatPanelDefinition) {
-    applyChatChrome(false);
-    return;
-  }
-  // three panels plus the 3D view do not fit a normal window; the properties
-  // panel is the one the chat replaces, so fold it away rather than letterbox
-  // the model.
-  if (chatDesiredOpen && viewerDocumentOpen) closePanelsForChat(true);
-  applyChatChrome(chatDesiredOpen);
-  saveUi();
-  resize();
-  if (!chatDesiredOpen) return;
-
-  try {
-    if (!chatPanel) {
-      loadPanelStylesheet(chatPanelDefinition.stylesheet_url);
-      chatLoadPromise ||= import(chatPanelDefinition.module_url)
-        .then((module) => {
-          const mountPanel = module.mountPanel || module.mountChat;
-          if (typeof mountPanel !== "function") {
-            throw new TypeError("extension panel module has no mountPanel export");
-          }
-          chatPanel ||= mountPanel(chatDock, { viewer: viewerComponentHost.api });
-          return chatPanel;
-        })
-        .finally(() => { chatLoadPromise = null; });
-      await chatLoadPromise;
-      // Opening and closing can race the lazy import. Reconcile the mounted
-      // panel with the latest request before the stale caller returns.
-      setChatPanelVisible(chatDesiredOpen);
-    }
-  } catch (error) {
-    console.error("[ifc-console] chat module failed", error);
-    if (requestVersion === chatRequestVersion && chatDesiredOpen) {
-      chatDesiredOpen = false;
-      uiState.chatOpen = false;
-      applyChatChrome(false);
-      saveUi();
-      resize();
-      showOverlay(
-        "Could not open the assistant",
-        "The local chat module did not load.",
-        { label: "Try again", run: () => setChat(true) },
-        "error",
-      );
-    }
-    return;
-  }
-  if (requestVersion !== chatRequestVersion || !chatDesiredOpen || !chatPanel) return;
-  chatPanel.focus();
-}
-
-function reconcileCompactLayout() {
-  let changed = chatDesiredOpen && viewerDocumentOpen ? closePanelsForChat() : false;
-  if (viewerDocumentOpen) applyChatWidthForViewport();
-  else chatDock.style.width = "";
-  if (window.innerWidth > 620) {
-    if (changed) saveUi();
-    syncPanelScrim();
-    return;
-  }
-  const treeOpen = treePanelController.isOpen();
-  const propsOpen = propsPanelController.isOpen();
-  let compactChanged = false;
-  if (chatDesiredOpen) {
-    if (treeOpen) {
-      uiState.treeOpen = false;
-      compactChanged = true;
-    }
-    if (propsOpen) {
-      uiState.propsOpen = false;
-      compactChanged = true;
-    }
-  } else if (treeOpen && propsOpen) {
-    uiState.propsOpen = false;
-    compactChanged = true;
-  }
-  if (compactChanged) {
-    applyTreePanel();
-    applyPropsPanel();
-    changed = true;
-  }
-  if (changed) saveUi();
-  syncPanelScrim();
-}
-
-// A viewer session with no assistant extension should not offer a button that
-// opens a dead panel. The extension manifest supplies its module and styling;
-// core never needs to know where the companion package stores those assets.
-function setChatAvailable(panel, enabled) {
-  const available = Boolean(
-    requestedPanel && panel?.name === requestedPanel && enabled,
-  );
-  chatPanelDefinition = available ? panel : null;
-  chatBtn.hidden = !available;
-  if (panel?.label) {
-    chatBtn.title = `Toggle ${panel.label.toLowerCase()} panel (C)`;
-    chatBtn.setAttribute("aria-label", `Toggle the ${panel.label.toLowerCase()} panel`);
-  }
-  if (!available && chatDesiredOpen) setChat(false, { force: true });
-  else if (available && chatDesiredOpen) void setChat(true);
-  syncViewerSurface();
-}
-
-chatBtn.addEventListener("click", () => {
-  if (extensionPanelPrimary && !chatDock.hidden) chatPanel?.focus();
-  else setChat(chatDock.hidden);
-});
-
-chatResize.addEventListener("pointerdown", (e) => {
-  e.preventDefault();
-  chatResize.setPointerCapture(e.pointerId);
-  const startX = e.clientX;
-  const startWidth = chatDock.getBoundingClientRect().width;
-  const move = (ev) => {
-    setChatWidth(startWidth + (ev.clientX - startX));
-    resize();
-  };
-  const up = () => {
-    chatResize.removeEventListener("pointermove", move);
-    chatResize.removeEventListener("pointerup", up);
-    saveUi();
-  };
-  chatResize.addEventListener("pointermove", move);
-  chatResize.addEventListener("pointerup", up);
-});
-
-chatResize.addEventListener("keydown", (event) => {
-  if (event.key === "Home") {
-    event.preventDefault();
-    delete uiState.chatWidth;
-    chatDock.style.width = "";
-    syncChatResizeAria(CHAT_DOCK_DEFAULT_WIDTH);
-    saveUi();
-    resize();
-    return;
-  }
-  if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
-  event.preventDefault();
-  const movement = event.key === "ArrowLeft" ? -16 : 16;
-  setChatWidth(currentChatWidth() + movement);
-  saveUi();
-  resize();
-});
-
-// Side-panel toggles and drags change the chat's safe maximum without a
-// viewport resize. Re-clamp before paint so they cannot squeeze away the 3D
-// canvas or leave the dock wider than its current workspace permits.
-const chatLayoutObserver = new ResizeObserver(() => {
-  if (!chatDesiredOpen || !viewerDocumentOpen) return;
-  const changed = closePanelsForChat();
-  applyChatWidthForViewport();
-  if (changed) saveUi();
-  resize();
-});
-chatLayoutObserver.observe($("tree-panel"));
-chatLayoutObserver.observe($("props-panel"));
-
-window.addEventListener("resize", reconcileCompactLayout);
-reconcileCompactLayout();
-
+// ---------------------------------------------------------------- shortcuts
 window.addEventListener("keydown", (e) => {
   if (e.defaultPrevented) return;
   if (e.key === "Escape") {
@@ -8490,7 +6375,7 @@ window.addEventListener("keydown", (e) => {
   } else if (key === "c") {
     e.preventDefault();
     if (!chatBtn.hidden) {
-      if (agentWorkspacePrimary && !chatDock.hidden) chatPanel?.focus();
+      if (extensionPanelPrimary && !chatDock.hidden) chatPanel?.focus();
       else setChat(chatDock.hidden);
     }
   } else if (key === "g") {

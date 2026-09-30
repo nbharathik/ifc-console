@@ -10,6 +10,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import re
 import secrets
 import stat
 from collections.abc import Iterator
@@ -17,7 +18,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
 from ifc_console.sandbox.protocol import MAX_EXEC_OUTPUT_CHARS
 from ifc_console.themes import THEME_PATTERN
@@ -67,6 +68,19 @@ class ExecSettings(BaseModel):
     import_roots_extra: list[str] = Field(default_factory=list)
 
 
+class McpSettings(BaseModel):
+    # What tools/list shows when a client does not ask for a profile itself.
+    # lean lists a small core plus find_tools/call_tool; every tool stays
+    # callable by name in either profile.
+    tool_profile: str = Field(default="full", pattern="^(full|lean)$")
+
+
+class EditSettings(BaseModel):
+    # Edits since the model was loaded that /undo can step back through. Each
+    # step keeps a serialized copy of what it touched; 0 turns undo off.
+    undo_depth: int = Field(default=20, ge=0, le=64)
+
+
 class SandboxSettings(BaseModel):
     """Where generated code runs. See docs/safety.md."""
 
@@ -83,6 +97,9 @@ class SandboxSettings(BaseModel):
     # one that pays for it. Off by default: it holds a second copy of the
     # model, which is not worth it for sessions that never run code.
     warm_on_load: bool = False
+    # Stop the worker after this many idle seconds and give its copy of the
+    # model back; the next run starts it again. 0 keeps it for the session.
+    idle_stop_s: float = Field(default=300.0, ge=0)
 
 
 class FilesSettings(BaseModel):
@@ -126,9 +143,6 @@ class ChatSettings(BaseModel):
     provider: str = Field(default="openai", pattern="^(openai|anthropic|openrouter|local)$")
     model: str = ""
     base_url: str = ""  # overrides the provider preset (a local vLLM, say)
-    # Lend the model the ifc-console tools. The ask/edit gate still applies.
-    tools: bool = True
-    max_tool_rounds: int = Field(default=8, ge=1, le=32)
     # Refuse any provider URL that is not on this machine.
     local_only: bool = False
     # Covers the wait for the first token, not just the connect: a local model
@@ -158,6 +172,59 @@ class PluginSettings(BaseModel):
     allow: list[str] = Field(default_factory=list)
 
 
+class HarnessEngineSettings(BaseModel):
+    """One external agent engine, started as a subprocess and driven over ACP."""
+
+    name: str = Field(pattern=r"^[a-z][a-z0-9-]{0,31}$")
+    label: str = Field(default="", max_length=60)
+    command: str = Field(min_length=1, max_length=400)
+    args: list[str] = Field(default_factory=list)
+    env: dict[str, str] = Field(default_factory=dict)
+    # run: a scratch folder under the console home. project: the project
+    # folder, which lets the engine's own tools touch the user's files.
+    cwd: str = Field(default="run", pattern="^(run|project|home)$")
+    # How the engine reaches the console's tools: the stdio bridge works with
+    # every ACP agent; http needs the agent to advertise it.
+    mcp: str = Field(default="bridge", pattern="^(bridge|http)$")
+    # An ACP session mode to select (OpenCode exposes its agents as modes).
+    mode: str = Field(default="", max_length=64)
+    # Where the composed instructions go: the first prompt, a file in the
+    # run folder, both, or nowhere.
+    instructions: str = Field(default="prompt", pattern="^(prompt|file|both|none)$")
+    instructions_file: str = Field(default="AGENTS.md", max_length=64)
+    # The user asserts the engine talks to a local model; chat.local_only
+    # refuses engines without it.
+    local: bool = False
+    idle_timeout_s: int = Field(default=600, ge=30, le=86_400)
+    # Provider key variables handed to this engine, e.g. ["OPENAI_API_KEY"].
+    # Unset means what the engine's template needs; an empty list means none.
+    forward_keys: list[str] | None = None
+
+    @field_validator("forward_keys")
+    @classmethod
+    def _key_names(cls, value: list[str] | None) -> list[str] | None:
+        for name in value or ():
+            if not re.fullmatch(r"[A-Z][A-Z0-9_]{2,63}", name):
+                raise ValueError(f"{name!r} is not an environment variable name")
+        return value
+
+
+class HarnessSettings(BaseModel):
+    """External agent engines (OpenCode, Codex, ...) behind the panel. Off by default."""
+
+    enabled: bool = False
+    engines: list[HarnessEngineSettings] = Field(default_factory=list)
+    keep_run_dirs: int = Field(default=5, ge=0, le=100)
+
+    @model_validator(mode="after")
+    def _unique_names(self) -> HarnessSettings:
+        names = [engine.name for engine in self.engines]
+        duplicates = sorted({name for name in names if names.count(name) > 1})
+        if duplicates:
+            raise ValueError(f"duplicate harness engine names: {', '.join(duplicates)}")
+        return self
+
+
 class RecentsSettings(BaseModel):
     max: int = Field(default=20, ge=1)
 
@@ -181,6 +248,8 @@ class LoggingSettings(BaseModel):
 
 class TuiSettings(BaseModel):
     theme: str = Field(default="blue", pattern=THEME_PATTERN)
+    # compact folds a burst of reads into one feed line; verbose prints every call.
+    feed: str = Field(default="compact", pattern="^(compact|verbose)$")
 
 
 class Settings(BaseModel):
@@ -188,6 +257,8 @@ class Settings(BaseModel):
     mode: ModeSettings = Field(default_factory=ModeSettings)
     server: ServerSettings = Field(default_factory=ServerSettings)
     exec: ExecSettings = Field(default_factory=ExecSettings)
+    edit: EditSettings = Field(default_factory=EditSettings)
+    mcp: McpSettings = Field(default_factory=McpSettings)
     sandbox: SandboxSettings = Field(default_factory=SandboxSettings)
     files: FilesSettings = Field(default_factory=FilesSettings)
     workspace: WorkspaceSettings = Field(default_factory=WorkspaceSettings)
@@ -195,6 +266,7 @@ class Settings(BaseModel):
     chat: ChatSettings = Field(default_factory=ChatSettings)
     knowledge: KnowledgeSettings = Field(default_factory=KnowledgeSettings)
     plugins: PluginSettings = Field(default_factory=PluginSettings)
+    harness: HarnessSettings = Field(default_factory=HarnessSettings)
     recents: RecentsSettings = Field(default_factory=RecentsSettings)
     sessions: SessionsSettings = Field(default_factory=SessionsSettings)
     automation: AutomationSettings = Field(default_factory=AutomationSettings)

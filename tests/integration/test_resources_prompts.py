@@ -130,16 +130,13 @@ async def test_find_unclassified_prompt_stays_on_the_selector(harness_factory, w
     assert "execute_ifc_code" not in text
 
 
-async def test_only_declared_result_shapes_are_published(ask_harness):
-    """A bare Envelope schema is the same for every tool, so publishing one per
-    tool is pure context cost and makes FastMCP send each result twice."""
+async def test_no_result_schema_is_published(ask_harness):
+    """An output schema is pure context cost and makes the transport send each
+    result twice; the data shapes live in the operation registry."""
     listed = await ask_harness.session.list_tools()
-    with_schema = [tool for tool in listed.tools if tool.outputSchema]
 
-    assert 0 < len(with_schema) < len(listed.tools) // 4
-    for tool in with_schema:
-        assert tool.outputSchema["$defs"], tool.name
-    # every remaining title restated the key it sat under
+    assert not [tool.name for tool in listed.tools if tool.outputSchema]
+    # every title would have restated the key it sat under
     for tool in listed.tools:
         for name, field in (tool.inputSchema.get("properties") or {}).items():
             assert "title" not in field, f"{tool.name}.{name}"

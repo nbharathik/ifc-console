@@ -52,6 +52,30 @@ REGISTRY: dict[str, Command] = {}
 # Names that moved in 0.1.4. They keep working; typing one prints where it went.
 RENAMED = {"open": "file", "model": "info"}
 ALIASES = {"exit": "quit", **RENAMED}
+# Commands folded under a parent since 0.2.0: `/models attach x` is `/attach x`.
+# The old names still run; they are only left out of /help and the menu.
+FOLDED: dict[str, tuple[str, ...]] = {
+    "models": ("list", "attach", "detach", "use", "info"),
+    "file": ("recent", "workspace"),
+    "connect": ("copy", "port"),
+    "settings": ("theme", "sandbox", "kb"),
+    "status": ("audit",),
+    "agent": ("workflows",),
+}
+HIDDEN = frozenset(name for names in FOLDED.values() for name in names if name != "list")
+
+
+def route_subcommand(cmd: Command, args: str) -> tuple[Command, str]:
+    """`/models attach x` runs the attach command with `x`; anything else is unchanged."""
+    names = FOLDED.get(cmd.name)
+    if not names or not args:
+        return cmd, args
+    head, _, rest = args.partition(" ")
+    sub = head.lower()
+    if sub not in names:
+        return cmd, args
+    target = REGISTRY.get("models" if sub == "list" else sub)
+    return (target, rest.strip()) if target is not None else (cmd, args)
 
 
 def resolve_prefix(prefix: str) -> set[str]:
@@ -97,6 +121,14 @@ def _strip_quotes(text: str) -> str:
     return text
 
 
+def _profile_for(core: Any, client: str) -> str | None:
+    """The tool profile to write into a client's setup, when it differs from the default."""
+    from ifc_console.tui.client_scan import DEFAULT_PROFILE
+
+    wanted = DEFAULT_PROFILE.get(client)
+    return wanted if wanted != core.settings.mcp.tool_profile else None
+
+
 def _client_config(core: Any, client: str) -> str:
     """Build one copy-ready configuration for the shared console."""
     from ifc_console.cli import build_config_snippet
@@ -104,6 +136,7 @@ def _client_config(core: Any, client: str) -> str:
     return build_config_snippet(
         client,
         None,
+        tools=_profile_for(core, client),
         port=core.port,
         # The active model is session state selected with /file, never config.
         file=None,
@@ -152,8 +185,9 @@ async def dispatch(console: ConsoleScreen, line: str) -> None:
             hint = f" (did you mean {', '.join('/' + m for m in matches)}?)" if matches else ""
             console.print(f"[red]unknown command /{escape(name)}[/red]{hint}; try /help")
             return
+    cmd, routed = route_subcommand(cmd, args.strip())
     try:
-        await cmd.handler(console, args.strip())
+        await cmd.handler(console, routed)
     except Exception as exc:  # a broken command must not kill the console
         console.print(f"[red]/{cmd.name} failed: {escape(f'{type(exc).__name__}: {exc}')}[/red]")
 
@@ -170,15 +204,15 @@ _TUI_HINTS = {
     "WORKSPACE_DISABLED": "/settings workspace.enabled true turns indexing on",
 }
 
-_AGENTS_INSTALL_HINT = "install [b]ifc-console-agents[/b] to add the Agent workspace"
-
-
 def _require_agents(console: ConsoleScreen) -> bool:
-    """Keep the core console usable when the optional agent product is absent."""
+    """Keep the core console usable if the agents extension failed to load."""
     core = console.core
     if core.extensions.available("agents") and core.agent_packs is not None:
         return True
-    console.print(f"[yellow]agent features are not installed[/yellow]; {_AGENTS_INSTALL_HINT}")
+    console.print(
+        "[yellow]the agents extension did not load[/yellow]; "
+        "run [b]ifc-console doctor[/b] for the reason"
+    )
     return False
 
 
@@ -322,7 +356,7 @@ async def apply_workspace_choice(console: ConsoleScreen, choice) -> None:
     )
     if loaded or attached:
         console.print(
-            "[dim]attached files stay read-only; the LLM sees them through list_models[/dim]"
+            "[dim]attached files stay read-only; clients see them through list_models[/dim]"
         )
 
 
@@ -359,16 +393,23 @@ async def _help(console: ConsoleScreen, args: str) -> None:
         console.print("\n".join(lines))
         return
 
-    width = max(len(c.usage) for c in REGISTRY.values())
+    shown = [c for c in REGISTRY.values() if c.name not in HIDDEN]
+    width = max(len(c.usage) for c in shown)
     lines = ["[b]commands[/b]  [dim](/help <command> explains one)[/dim]"]
     for group in _GROUPS:
-        members = [c for c in REGISTRY.values() if c.group == group]
+        members = [c for c in shown if c.group == group]
         if not members:
             continue
         lines.append(f"  [dim]{group}[/dim]")
         for cmd in members:
             lines.append(f"    [cyan]{cmd.usage:<{width}}[/cyan]  {cmd.help}")
     lines.append("")
+    lines.append(
+        "  [dim]/attach, /detach, /use and /info are now /models attach|detach|use|info; "
+        "/recent and /workspace live under /file; /copy and /port under /connect; "
+        "/theme, /sandbox and /kb under /settings; /audit under /status; /workflows "
+        "under /agent. The old names still work.[/dim]"
+    )
     lines.append(
         "  typing / opens the command menu: Tab completes, Up/Down or the mouse "
         "pick, Enter selects, Esc closes"
@@ -396,12 +437,84 @@ async def _help(console: ConsoleScreen, args: str) -> None:
 async def _tools(console: ConsoleScreen, args: str) -> None:
     from ifc_console.tui.tool_catalog import render_catalog
 
+    words = args.split()
+    if words and words[0].lower() == "profile":
+        _tools_profile(console, [word.lower() for word in words[1:]])
+        return
     console.print(await render_catalog(console.core, REGISTRY, args))
+
+
+def _tools_profile(console: ConsoleScreen, rest: list[str]) -> None:
+    core = console.core
+    current = core.settings.mcp.tool_profile
+    if not rest:
+        lines = [
+            f"tool profile: [b]{current}[/b]  [dim](for clients that do not ask for one)[/dim]",
+            "  full  lists every tool",
+            "  lean  lists 14 tools plus find_tools and call_tool; every tool stays callable",
+            "  [cyan]/tools profile lean[/cyan] or [cyan]/tools profile full[/cyan] changes it",
+        ]
+        for record in core.clients.active():
+            if record.profile:
+                lines.append(f"  {escape(record.label)} asked for {record.profile}")
+        console.print("\n".join(lines))
+        return
+    value = rest[0]
+    if value not in ("full", "lean"):
+        console.print("[red]usage: /tools profile [full|lean][/red]")
+        return
+    if value == current:
+        console.print(f"tool profile is already {value}")
+        return
+    try:
+        core.store.set_user("mcp.tool_profile", value)
+    except (KeyError, ValueError, ValidationError) as exc:
+        console.print(f"[red]could not set the profile: {escape(str(exc))}[/red]")
+        return
+    core.catalog_epoch += 1
+    core.audit.record("tool_profile", profile=value, by="user")
+    console.print(
+        f"tool profile is now [b]{value}[/b]. Clients see it the next time they list "
+        "tools; one that cached its list needs a reconnect."
+    )
+
+
+def _ago(seconds: float) -> str:
+    seconds = max(0, int(seconds))
+    if seconds < 90:
+        return f"{seconds}s ago"
+    if seconds < 5400:
+        return f"{seconds // 60}m ago"
+    return f"{seconds // 3600}h ago"
+
+
+@command("clients", "/clients", "list the AI clients that have connected", "connect")
+async def _clients(console: ConsoleScreen, _args: str) -> None:
+    import time
+
+    core = console.core
+    rows = core.clients.active()
+    if not rows:
+        console.print(
+            "[dim](no client has connected in the last 15 minutes; /connect prints setup)[/dim]"
+        )
+        return
+    default = core.settings.mcp.tool_profile
+    now = time.time()
+    lines = ["[b]clients[/b]  [dim](seen in the last 15 minutes)[/dim]"]
+    for record in rows:
+        last = f"  last: {escape(record.last_tool)}" if record.last_tool else ""
+        errors = f", {record.errors} failed" if record.errors else ""
+        lines.append(
+            f"  {escape(record.label):<26} {record.transport:<7} {record.profile or default:<5}"
+            f" {record.calls} call(s){errors}{last}  [dim]{_ago(now - record.last_seen)}[/dim]"
+        )
+    console.print("\n".join(lines))
 
 
 @command(
     "file",
-    "/file [path|filter]",
+    "/file [path|filter|recent|workspace]",
     "open a model: no argument picks from this folder, a path opens it",
     "files",
     examples=("/file", "/file tower", "/file C:/models/tower.ifc"),
@@ -444,8 +557,8 @@ async def _workspace(console: ConsoleScreen, args: str) -> None:
 
 @command(
     "models",
-    "/models",
-    "list loaded models and attached files",
+    "/models [attach|detach|use|info]",
+    "list loaded models and attached files; attach one, detach one, switch, or count",
     "models",
 )
 async def _models(console: ConsoleScreen, _args: str) -> None:
@@ -662,10 +775,32 @@ async def _viewer(console: ConsoleScreen, args: str) -> None:
     present_viewer_url(console, url, target)
 
 
+async def _print_detected_clients(console: ConsoleScreen) -> None:
+    """What this machine has and whether each client already points here."""
+    from ifc_console.tui import client_scan
+
+    core = console.core
+    try:
+        found = await asyncio.to_thread(client_scan.scan, core.port)
+    except Exception:  # detection is a convenience; the menu still works
+        return
+    notes = {
+        "not found": "[dim]not found[/dim]",
+        "installed": "installed, no ifc-console entry",
+        "configured": "[green]configured[/green]",
+        "stale": "[yellow]set up for another port[/yellow] (print the setup again)",
+    }
+    lines = ["[b]clients on this machine[/b]"]
+    for status in found:
+        profile = _profile_for(core, status.client) or core.settings.mcp.tool_profile
+        lines.append(f"  {status.label:<16} {notes[status.state]}  [dim]tools: {profile}[/dim]")
+    console.print("\n".join(lines))
+
+
 @command(
     "connect",
-    "/connect [client|all]",
-    "choose an MCP client and show its setup",
+    "/connect [client|all|copy|port]",
+    "choose an MCP client and show its setup; copy a setup or move the port",
     "connect",
     examples=("/connect", "/connect codex", "/connect all"),
 )
@@ -673,6 +808,7 @@ async def _connect(console: ConsoleScreen, args: str) -> None:
     core = console.core
     args = args.strip().lower()
     if not args:
+        await _print_detected_clients(console)
         show_choices = getattr(console, "show_command_choices", None)
         if callable(show_choices):
             show_choices("connect")
@@ -724,6 +860,12 @@ async def _connect(console: ConsoleScreen, args: str) -> None:
         "before ifc-console does: it connects on its own once the console is "
         "up, with no client restart.[/dim]"
     )
+    chosen = sorted({_profile_for(core, client) or core.settings.mcp.tool_profile for client in wanted})
+    if chosen == ["lean"]:
+        console.print(
+            "[dim]lean lists 14 tools and a search for the rest, which is much cheaper "
+            "in context; /tools profile full lists everything.[/dim]"
+        )
     console.print(
         "[dim]model paths are intentionally omitted. Start ifc-console and use "
         "/file to open or switch models without changing the client setup.[/dim]"
@@ -791,7 +933,12 @@ async def _copy(console: ConsoleScreen, args: str) -> None:
         )
 
 
-@command("status", "/status", "model, selection, save destination, and runtime status", "session")
+@command(
+    "status",
+    "/status [audit]",
+    "model, selection, save destination, and runtime status; audit shows the log",
+    "session",
+)
 async def _status(console: ConsoleScreen, _args: str) -> None:
     core = console.core
     s = core.session
@@ -804,7 +951,7 @@ async def _status(console: ConsoleScreen, _args: str) -> None:
             f"  active   {escape(str(core.models.active_id))} "
             "(only the active model can be edited in edit mode)"
         )
-        lines.append(f"  revision {s.fingerprint}:{s.revision}")
+        lines.append(f"  revision {s.revision_id}")
         lines.append(f"  original {escape(str(s.origin_path))}")
         if s.working_copy is not None:
             lines.append(f"  copy     {escape(str(s.working_copy.path))}")
@@ -851,7 +998,7 @@ async def _status(console: ConsoleScreen, _args: str) -> None:
     else:
         lines.append("  tools    no tool activity observed by this console yet")
     if not core.extensions.available("agents"):
-        lines.append("  agent    unavailable (optional browser workspace; install ifc-console-agents)")
+        lines.append("  agent    unavailable (the agents extension did not load; ifc-console doctor)")
     elif core.chat.enabled:
         model = core.chat.model or "no model chosen"
         lines.append(f"  agent    on  {core.chat.provider} | {model}")
@@ -1002,18 +1149,10 @@ async def _save(console: ConsoleScreen, args: str) -> None:
         return
     console.print(f"[dim]saving {escape(target.name)}...[/dim]")
     try:
-        result = await core.session.save(target, core.backups)
+        result = await core.save_model(by="user", target=target)
     except Exception as exc:
         console.print(f"[red]save failed: {escape(str(exc))}[/red]")
         return
-    core.recents.touch(
-        Path(result["path"]),
-        size_bytes=result["size_bytes"],
-        schema=core.session.schema or "?",
-        mode=core.policy.mode.value,
-    )
-    core.audit.record("save", **result)
-    core.events.emit("model_saved", **result)
     backup = f" (backup: {escape(str(result['backup_path']))})" if result.get("backup_path") else ""
     console.print(f"[green]saved[/green] {escape(str(result['path']))}{backup}")
     copy = core.session.working_copy
@@ -1022,6 +1161,57 @@ async def _save(console: ConsoleScreen, args: str) -> None:
             f"[dim]this is the working copy; {escape(copy.origin.name)} is unchanged. "
             f"/save <path> writes the result somewhere else[/dim]"
         )
+
+
+async def _step_history(console: ConsoleScreen, direction: str) -> None:
+    core = console.core
+    if not core.session.loaded:
+        console.print("no model loaded")
+        return
+    step = core.undo if direction == "undo" else core.redo
+    try:
+        await step(by="user")
+    except ToolError as exc:  # success is printed by the model_undone/redone event
+        console.print(f"[yellow]{escape(exc.message)}[/yellow]")
+        console.print(f"  [dim]{escape(exc.hint)}[/dim]")
+
+
+@command("undo", "/undo", "step the model back one edit", "session", examples=("/undo",))
+async def _undo(console: ConsoleScreen, _args: str) -> None:
+    await _step_history(console, "undo")
+
+
+@command("redo", "/redo", "replay the edit you just undid", "session", examples=("/redo",))
+async def _redo(console: ConsoleScreen, _args: str) -> None:
+    await _step_history(console, "redo")
+
+
+@command("changes", "/changes", "list the edits made since the model was loaded", "session")
+async def _changes(console: ConsoleScreen, _args: str) -> None:
+    session = console.core.session
+    if not session.loaded:
+        console.print("no model loaded")
+        return
+    history = session.history
+    if not history.applied and not history.undone:
+        console.print("[dim](no edits since the model was loaded)[/dim]")
+        return
+    saved = history.saved_index
+    lines = ["[b]edits[/b]  [dim](newest last; /undo steps back)[/dim]"]
+    if saved <= 0 and history.applied:
+        lines.append("  [dim]-- file on disk --[/dim]")
+    for index, record in enumerate(history.applied, start=1):
+        counts = f"+{record.summary.created} ~{record.summary.edited} -{record.summary.removed}"
+        stamp = record.at[11:19]
+        flag = "" if record.undoable else " [dim](cannot undo)[/dim]"
+        lines.append(
+            f"  {stamp}  {escape(record.description)}  [dim]{counts}[/dim]{flag}"
+        )
+        if index == saved:
+            lines.append("  [dim]-- file on disk --[/dim]")
+    if history.undone:
+        lines.append(f"  [dim]{len(history.undone)} undone, /redo replays them[/dim]")
+    console.print("\n".join(lines))
 
 
 @command(
@@ -1100,8 +1290,8 @@ async def _audit(console: ConsoleScreen, args: str) -> None:
 
 @command(
     "settings",
-    "/settings [key value]",
-    "list settings, or set a user setting",
+    "/settings [key value|theme|sandbox|kb]",
+    "list settings, or set a user setting; theme, sandbox and kb have their own pages",
     "session",
     examples=("/settings", "/settings workspace.enabled true"),
 )
@@ -1243,10 +1433,8 @@ async def _agent_open(console: ConsoleScreen, name: str) -> None:
     await _agent_open_url(console, agent=pack.info.name)
 
 
-async def _agent_open_url(
-    console: ConsoleScreen, *, agent: str | None = None, builder: bool = False
-) -> None:
-    """Enable the panel and open the requested agent surface directly."""
+async def _agent_open_url(console: ConsoleScreen, *, agent: str) -> None:
+    """Enable the panel and open the requested agent directly."""
     if not _require_agents(console):
         return
     core = console.core
@@ -1256,9 +1444,8 @@ async def _agent_open_url(
     newly_enabled = not core.chat.enabled
     core.enable_chat()
     head, _, fragment = core.agent_url.partition("#")
-    query = f"agent={agent}" if agent else "builder=1"
     joiner = "&" if "?" in head else "?"
-    url = f"{head}{joiner}{query}" + (f"#{fragment}" if fragment else "")
+    url = f"{head}{joiner}agent={agent}" + (f"#{fragment}" if fragment else "")
     console.app.copy_to_clipboard(url)
     import webbrowser
 
@@ -1266,7 +1453,7 @@ async def _agent_open_url(
         opened = webbrowser.open(url)
     except Exception:
         opened = False
-    label = "custom agent builder" if builder else core.agent_packs.get(agent or "").info.title
+    label = core.agent_packs.get(agent).info.title
     if newly_enabled:
         console.print(
             "[yellow]Agent prompts and model context may go to the provider you choose. "
@@ -1299,14 +1486,13 @@ async def _agent_pick(console: ConsoleScreen) -> None:
 
 @command(
     "agent",
-    "/agent [name|new|list|files|off]",
-    "open General or a named agent, or compose one from capability blocks",
+    "/agent [name|list|files|workflows|off]",
+    "open General or a named agent",
     "connect",
     examples=(
         "/agent",
         "/agent list",
         "/agent measurement",
-        "/agent new",
         "/agent files",
         "/agent off",
     ),
@@ -1325,10 +1511,6 @@ async def _agent(console: ConsoleScreen, args: str) -> None:
         core.disable_chat()
         console.print("Agent workspace disabled; any API key held for this run is gone")
         console.refresh_status()
-        return
-
-    if parts and parts[0] in {"new", "build", "custom"}:
-        await _agent_open_url(console, builder=True)
         return
 
     if parts and parts[0] == "files":
@@ -1380,8 +1562,7 @@ async def _agent(console: ConsoleScreen, args: str) -> None:
         )
     lines.append(
         "[dim]/agent opens General; /agent <name> opens another directly; "
-        "/agent new builds one from blocks; /agent files shows references; "
-        "/agent off disables the workspace[/dim]"
+        "/agent files shows references; /agent off disables the workspace[/dim]"
     )
     console.print("\n".join(lines))
 
@@ -1399,7 +1580,7 @@ async def _workflows(console: ConsoleScreen, args: str) -> None:
     core = console.core
     parts = args.strip().split()
 
-    from ifc_console_agents.paths import workflow_registry
+    from ifc_console.agents.paths import workflow_registry
 
     registry = workflow_registry(core)
     if parts and parts[0].casefold() == "list":

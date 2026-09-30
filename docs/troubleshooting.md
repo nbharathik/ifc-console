@@ -81,8 +81,7 @@ It prepares a link; it does not launch a tab. Ctrl+click the link or use
 ## Agent workspace
 
 **Chat cannot reach a provider.**
-Confirm `ifc-console-agents` is installed, then check the key, model ID, and
-base URL. Local servers need an OpenAI-compatible `/v1` URL, and
+Check the key, model ID, and base URL. Local servers need an OpenAI-compatible `/v1` URL, and
 `chat.local_only=true` refuses remote URLs on purpose. The console, MCP
 server, SDK, and viewer keep working if the extension fails to load.
 

@@ -1,4 +1,4 @@
-"""The core wheel remains complete when no agent product can be imported."""
+"""The console and viewer keep working when the agents extension cannot load."""
 
 from __future__ import annotations
 
@@ -21,19 +21,15 @@ def test_core_import_cli_viewer_and_operations_work_without_agents(tmp_path: Pat
 
         class NoAgents(importlib.abc.MetaPathFinder):
             def find_spec(self, fullname, path=None, target=None):
-                if fullname == "ifc_console_agents" or fullname.startswith("ifc_console_agents."):
+                if fullname == "ifc_console.agents" or fullname.startswith("ifc_console.agents."):
                     raise ModuleNotFoundError(
-                        f"blocked optional module {{fullname}}", name="ifc_console_agents"
+                        f"blocked module {{fullname}}", name="ifc_console.agents"
                     )
                 return None
 
         sys.meta_path.insert(0, NoAgents())
 
         import ifc_console
-        namespace = {{}}
-        exec("from ifc_console import *", namespace)
-        assert "Workbench" in namespace
-        assert "Agent" not in namespace
         from ifc_console.app import AppCore
         from ifc_console.application.operations import build_operations
         from ifc_console.settings import SettingsStore
@@ -41,18 +37,13 @@ def test_core_import_cli_viewer_and_operations_work_without_agents(tmp_path: Pat
 
         assert assets.available()
         assert ifc_console.Workbench
-        try:
-            getattr(ifc_console, "Agent")
-        except AttributeError as exc:
-            assert "ifc-console-agents" in str(exc)
-        else:
-            raise AssertionError("optional Agent unexpectedly resolved")
 
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)
             core = AppCore(SettingsStore(home=root / "home", project_dir=root, env={{}}))
             try:
                 assert not core.extensions.available("agents")
+                assert [r.status for r in core.extensions.records] == ["error"]
                 build_operations(core)
                 assert "list_agent_skills" not in core.operations
                 assert "open_viewer" in core.operations
@@ -62,6 +53,23 @@ def test_core_import_cli_viewer_and_operations_work_without_agents(tmp_path: Pat
     )
     completed = subprocess.run(
         [sys.executable, "-I", "-c", script],
+        cwd=tmp_path,
+        text=True,
+        capture_output=True,
+        timeout=60,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+
+
+def test_importing_the_package_and_cli_never_loads_the_agents(tmp_path: Path) -> None:
+    script = (
+        "import sys; import ifc_console; import ifc_console.cli; "
+        "assert not any(m.startswith('ifc_console.agents') for m in sys.modules), "
+        "sorted(m for m in sys.modules if m.startswith('ifc_console.agents'))"
+    )
+    completed = subprocess.run(
+        [sys.executable, "-c", script],
         cwd=tmp_path,
         text=True,
         capture_output=True,

@@ -29,7 +29,7 @@ shows the exact options of your installed version.
 | `--mode ask\|edit` | starting mode |
 | `--port N` | HTTP port, default `8383` |
 | `--viewer` | enable the viewer at startup |
-| `--agent` | open the Agent workspace; needs `ifc-console-agents` |
+| `--agent` | open the Agent workspace |
 | `--allow-dir PATH` | add a readable folder; repeatable |
 | `--no-tui` | run the HTTP server without the terminal UI |
 | `--log-level LEVEL` | `debug`, `info`, `warning`, or `error` |
@@ -80,7 +80,7 @@ under a lock.
 | `sessions list\|show\|verify` | audit sessions |
 | `recents list\|clear` | recently opened models |
 | `knowledge build\|status\|search` | the offline IFC reference index |
-| `keys set\|list\|delete` | provider keys in the system keyring; needs `ifc-console-agents` |
+| `keys set\|list\|delete` | provider keys in the system keyring; needs `ifc-console[agents]` |
 
 ## Exit codes
 
@@ -125,7 +125,11 @@ one process with `IFC_CONSOLE_<SECTION>_<KEY>`, for example
 | `mode.default` | `ask` | startup mode |
 | `server.port` | `8383` | HTTP port for MCP and the viewer |
 | `sandbox.mode` | `auto` | `auto`, `strict`, or `off` for read-only generated code |
+| `sandbox.idle_stop_s` | `300` | stop the sandbox worker, and its copy of the model, after this many idle seconds; `0` keeps it |
 | `exec.timeout_seconds` | `30` | time limit for one read-only code run |
+| `edit.undo_depth` | `20` | edits `/undo` can step back over; `0` turns undo off |
+| `mcp.tool_profile` | `full` | tools a client is shown by default: `full` or `lean` |
+| `tui.feed` | `compact` | `compact` folds a burst of reads into one line, `verbose` prints each call |
 | `files.allowed_dirs` | `[]` | extra readable folders |
 | `files.allow_ai_save` | `false` | let AI tools write the file you opened |
 | `files.working_copy` | `true` | edit mode works in a copy |

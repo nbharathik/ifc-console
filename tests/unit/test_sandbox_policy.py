@@ -39,6 +39,25 @@ def test_build_normalises_and_separates_read_from_write(tmp_path: Path) -> None:
     assert policy.allow_process is False
 
 
+def test_exempt_dirs_are_readable_carve_outs_and_never_writable(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    working = home / "working"
+    working.mkdir(parents=True)
+
+    policy = SandboxPolicy.build(
+        read_dirs=[],
+        scratch_dir=tmp_path / "scratch",
+        deny_dirs=[home],
+        memory_mb=512,
+        exempt_dirs=[working],
+    )
+    normal = os.path.normcase(str(working.resolve()))
+    assert policy.exempt_roots == (normal,)
+    assert normal in policy.read_roots
+    assert normal not in policy.write_roots
+    assert SandboxPolicy.from_dict(policy.to_dict()) == policy
+
+
 def test_policy_round_trips_over_the_wire(tmp_path: Path) -> None:
     policy = SandboxPolicy.build(
         read_dirs=[tmp_path], scratch_dir=tmp_path / "s", deny_dirs=[], memory_mb=99

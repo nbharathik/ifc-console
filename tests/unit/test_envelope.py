@@ -21,6 +21,21 @@ def test_ok_truncates_oversized_payload() -> None:
     assert "preview" in out["data"]
 
 
+def test_a_callable_char_limit_is_read_when_the_envelope_is_built() -> None:
+    """The limit is a setting the user can change mid-session; a tool registered
+    earlier must honour the new value on its next call."""
+    limit = {"chars": 1_000}
+    big = {"blob": "x" * 5000}
+
+    small = ok(big, {"mode": "ask"}, char_limit=lambda: limit["chars"])
+    limit["chars"] = 100_000
+    full = ok(big, {"mode": "ask"}, char_limit=lambda: limit["chars"])
+
+    assert small.meta["truncated"] is True
+    assert full.data == big
+    assert "truncated" not in full.meta
+
+
 def test_ok_makes_arbitrary_values_serializable() -> None:
     class Odd:
         def __str__(self) -> str:

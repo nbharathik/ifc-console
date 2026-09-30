@@ -23,7 +23,22 @@ ifc-console mcp-config --client codex
 ```
 
 Client names are `claude-code`, `claude-desktop`, `cursor`, `vscode`, and
-`codex`.
+`codex`. `/connect` with no name also shows which of them this machine has and
+whether each already points at this console.
+
+## Tool profiles
+
+Listing all 71 tools costs a client about 68,000 characters of context in every
+session. The `lean` profile lists 14 tools plus `find_tools` and `call_tool`,
+about 17,000 characters; the model searches for the rest when it needs it.
+`/connect` writes `lean` into every setup except Claude Code's, which searches
+tools itself. Change the console-wide default with `/tools profile full` or
+`/tools profile lean`, or pass `--tools lean` to `mcp-config` and to the bridge.
+Every tool stays callable in either profile. See [MCP tools](tools.md#tool-profiles).
+
+`/clients` lists who has connected and how much each has done; the feed names
+the client on each call and folds a burst of reads into one line
+(`tui.feed = verbose` prints every call).
 
 ## How it connects
 

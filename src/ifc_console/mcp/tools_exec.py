@@ -10,6 +10,7 @@ land in the live model and already required edit mode.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import time
 from typing import TYPE_CHECKING, Annotated, Any
 
@@ -39,34 +40,27 @@ from ifc_console.session import executor
 
 if TYPE_CHECKING:
     from ifc_console.app import AppCore
+    from ifc_console.session.model import MutationOutcome
 
 EXEC_ANN = ToolAnnotations(readOnlyHint=False, destructiveHint=True)
 
 # The static half of the description. The environment half is resolved at
 # registration, so a model reads what this installation actually has instead
 # of writing a script against a library that is not here.
-_DESCRIPTION_HEAD = (
-    "[EDIT-capable] Run Python against the loaded IFC with IfcOpenShell "
-    "pre-imported. "
-)
+_DESCRIPTION_HEAD = "[EDIT-capable] Run Python on the loaded IFC (IfcOpenShell pre-imported). "
 
 _DESCRIPTION_TAIL = (
-    "stdout is captured; the value of a "
-    "final bare expression is returned like a REPL. The session mode gates "
-    "mutation: in ask mode (the default), code that would mutate the model is "
-    "rejected with an error; generate and show code to the user instead, or "
-    "ask them to switch to edit mode. In edit mode mutations run. Include a "
-    "one-line `description` of intent; the user sees it in their terminal and "
-    "audit log. For follow-up edits pass the analysis `target_context` as "
-    "`expected_context`: stale model/revision/selection or missing targets are "
-    "rejected before any code runs. This precondition does not limit which "
-    "objects your Python changes; use the explicit analysed GlobalIds. "
-    "After mutating, the model is dirty. AI saving is disabled by "
-    "default, so the user reviews and runs /save or /reload; when explicitly "
-    "enabled, finish batches with save_ifc_file. Eligible read-only runs use "
-    "an isolated sandbox with no "
-    "network and no file access outside the model directories. Auto mode can "
-    "report and use guarded in-process fallback; strict mode refuses it."
+    "stdout is captured; the last bare expression is returned. "
+    "Ask mode (the default) blocks mutating code: show it to the user or have "
+    "them switch to edit mode, which runs it. "
+    "Pass a one-line `description`; the user sees it. "
+    "Pass the analysis `target_context` as `expected_context` to reject stale "
+    "context before code runs (it does not restrict which objects your code "
+    "touches). "
+    "An edit is one undo step and code that raises is rolled back whole. "
+    "AI saving is off by default: the user runs /save or /reload; if enabled, "
+    "finish batches with save_ifc_file. "
+    "Read-only runs use an isolated sandbox with no network."
 )
 
 
@@ -90,18 +84,16 @@ def build_description(core: AppCore) -> str:
     )
     blocked = ", ".join(environment["blocked"])
     reach = (
-        "Any other installed package imports too, so use the library that fits; one "
-        "that is not installed fails with ModuleNotFoundError."
+        "Any other installed package imports too."
         if environment["policy"] == "open"
         else "Nothing outside that list may be imported."
     )
     return (
-        f"{_DESCRIPTION_HEAD}Pre-injected, no import needed: {injected}. "
-        f"Installed and known to work: {installed}. {reach} Blocked, so do not "
-        f"write against them: {blocked} and anything else that reaches "
-        f"{environment['blocked_reason']}. This is not Blender; there is no bpy. "
-        "open() is read-only and limited to the allowed directories; write IFC "
-        f"with save_ifc_file. {_DESCRIPTION_TAIL}"
+        f"{_DESCRIPTION_HEAD}Injected (no import): {injected}. "
+        f"Installed: {installed}. {reach} Blocked: {blocked} and anything else "
+        f"reaching {environment['blocked_reason']}. No bpy. "
+        "open() is read-only, allowed directories only; write IFC with "
+        f"save_ifc_file. {_DESCRIPTION_TAIL}"
     )
 
 
@@ -118,7 +110,7 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
     @enveloped(core, "execute_ifc_code")
     @core.active_model_operation
     async def execute_ifc_code(
-        code: Annotated[str, Field(description="Python source. No bpy; this is not Blender.")],
+        code: Annotated[str, Field(description="Python source (no bpy).")],
         description: Annotated[
             str,
             Field(
@@ -209,21 +201,30 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
                 "reason above, or to set sandbox.mode to auto.",
             )
 
-        return await _run_in_process(
-            core,
-            code,
-            cls,
-            description,
-            allow_mutation=allow_mutation,
-            allow_system=allow_system,
-            expected_context=expected_context,
-            # Only worth saying when the sandbox was wanted and could not run;
-            # a user who turned it off does not need telling every call.
-            fallback_reason=(
-                sandbox_failure
-                or (decision.reason if not decision.use and core.sandbox.enabled else "")
-            ),
-        )
+        async with contextlib.AsyncExitStack() as stack:
+            if allow_mutation:
+                await stack.enter_async_context(session.edit_lock)
+                if core.policy.decide(cls.op_class) is not verdict:
+                    raise ToolError(
+                        "EXEC_BLOCKED",
+                        "the session's policy changed while this call waited for an earlier edit.",
+                        "Resubmit the call.",
+                    )
+            return await _run_in_process(
+                core,
+                code,
+                cls,
+                description,
+                allow_mutation=allow_mutation,
+                allow_system=allow_system,
+                expected_context=expected_context,
+                # Only worth saying when the sandbox was wanted and could not run;
+                # a user who turned it off does not need telling every call.
+                fallback_reason=(
+                    sandbox_failure
+                    or (decision.reason if not decision.use and core.sandbox.enabled else "")
+                ),
+            )
 
 
 async def _run_sandboxed(
@@ -378,6 +379,12 @@ def _raise_sandbox_failure(core: AppCore, code: str, cls: Any, result: SandboxRe
     )
 
 
+def _rolled_back(failure: BaseException | None) -> bool:
+    """Whether a failed edit was undone, and the undo checked."""
+    outcome = getattr(failure, "mutation_outcome", None)
+    return bool(outcome is not None and outcome.rolled_back and outcome.verified)
+
+
 async def _run_in_process(
     core: AppCore,
     code: str,
@@ -410,51 +417,89 @@ async def _run_in_process(
 
     mutation_started = False
     input_context: dict[str, Any] = {}
+    outcome: MutationOutcome | None = None
+    # Set when the caller stopped waiting (timeout, cancel) while the worker
+    # went on; the worker then announces the finished edit itself.
+    abandoned = False
+    loop = asyncio.get_running_loop()
+
+    def announce_late() -> None:
+        record = outcome.record if outcome is not None else None
+        if record is not None:
+            core.events.emit(
+                "model_mutated",
+                tool="execute_ifc_code",
+                description=description,
+                changes=session.change_count,
+                **record.event_fields(),
+            )
+
+    def run_code() -> executor.ExecResult:
+        with (
+            entity_mutation_lock(enabled=not allow_mutation),
+            model_write_lock(enabled=not core.policy.allow_ai_save),
+        ):
+            return executor.run(compiled, namespace, output_limit=settings.exec.output_char_limit)
 
     def job() -> tuple[executor.ExecResult, int | None, int | None]:
-        nonlocal mutation_started, input_context
+        nonlocal mutation_started, input_context, outcome
         if expected_context is not None:
             require_target_context(core, expected_context)
         input_context = execution_context(session, expected_context)
         pre = session.max_id()
         if allow_mutation:
-            # The thread that performs the edit owns the flag. A cancelled or
+            # The thread that performs the edit owns the flags. A cancelled or
             # timed-out await unwinds while this thread keeps mutating, and a
-            # false clean flag silently discards the edit at the next open.
+            # false clean flag silently discards the edit at the next open. The
+            # edit is one transaction: it is kept whole or rolled back whole.
             mutation_started = True
-            session.mark_dirty()
-        with (
-            entity_mutation_lock(enabled=not allow_mutation),
-            model_write_lock(enabled=not core.policy.allow_ai_save),
-        ):
-            result = executor.run(compiled, namespace, output_limit=settings.exec.output_char_limit)
+            result, outcome = session.mutate(
+                run_code, tool="execute_ifc_code", description=description
+            )
+            if abandoned:
+                loop.call_soon_threadsafe(announce_late)
+        else:
+            result = run_code()
         post = session.max_id()
         return result, pre, post
 
     announced = False
 
-    def announce_mutation() -> None:
-        """Publish what job() already flagged, so live consumers refresh."""
+    def announce_mutation(failure: BaseException | None = None) -> None:
+        """Publish what job() flagged, so live consumers refresh."""
         nonlocal announced
         if not mutation_started or announced:
             return
         announced = True
-        changes = session.record_change(description, tool="execute_ifc_code")
+        if _rolled_back(failure):
+            return  # the model is as it was; there is nothing to show
+        record = outcome.record if outcome is not None else None
         core.events.emit(
             "model_mutated",
             tool="execute_ifc_code",
             description=description,
-            changes=changes,
+            changes=session.change_count,
+            **(record.event_fields() if record is not None else {}),
         )
 
-    def partial_change_data() -> dict[str, Any]:
+    def failure_data(failure: BaseException | None = None) -> dict[str, Any]:
         if not mutation_started:
             return {}
-        return {
+        rollback = getattr(failure, "mutation_outcome", None)
+        if _rolled_back(failure):
+            return {
+                "rolled_back": True,
+                "verified": True,
+                "target_context": execution_context(session, expected_context),
+            }
+        data: dict[str, Any] = {
             "partial_changes_possible": True,
             "input_context": input_context,
             "target_context": execution_context(session, expected_context),
         }
+        if rollback is not None:
+            data.update(rolled_back=rollback.rolled_back, verified=rollback.verified)
+        return data
 
     # Generating geometry takes longer than answering a question, and a
     # mutating run that times out costs the user their changes, so an edit is
@@ -469,16 +514,18 @@ async def _run_in_process(
         )
     except ToolError as exc:
         # includes EXEC_TIMEOUT, where the worker is still mutating
-        announce_mutation()
+        abandoned = True
+        announce_mutation(exc)
         if mutation_started:
-            exc.data = {**(exc.data or {}), **partial_change_data()}
+            exc.data = {**(exc.data or {}), **failure_data(exc)}
         raise
     except asyncio.CancelledError:
         # a BaseException, so the handlers below never see it
+        abandoned = True
         announce_mutation()
         raise
     except GuardError as exc:
-        announce_mutation()
+        announce_mutation(exc)
         core.audit.record("exec", ok=False, blocked=True, op_class=cls.op_class.value, code=code)
         ai_save_blocked = not core.policy.allow_ai_save and "writing an IFC file" in str(exc)
         raise ToolError(
@@ -492,27 +539,46 @@ async def _run_in_process(
                 "intended, ask the user to run /mode edit in the ifc-console "
                 "terminal and resubmit."
             ),
-            data=partial_change_data() or None,
+            data=failure_data(exc) or None,
         ) from exc
     except Exception as exc:
-        announce_mutation()
+        announce_mutation(exc)
         core.audit.record("exec", ok=False, op_class=cls.op_class.value, error=repr(exc), code=code)
+        if _rolled_back(exc):
+            hint = (
+                "The run was rolled back, so the model is unchanged. Read the "
+                "traceback in data, fix the code, and resubmit."
+            )
+        elif mutation_started:
+            hint = (
+                "Read the traceback in data. Changes may be partial: read back the "
+                "intended objects and retry only unfinished edits."
+            )
+        else:
+            hint = "Read the traceback in data, fix the code, and resubmit."
         raise ToolError(
             "EXEC_ERROR",
             f"{type(exc).__name__}: {exc}",
-            "Read the traceback in data. Changes may be partial: read back the intended "
-            "objects and retry only unfinished edits."
-            if mutation_started
-            else "Read the traceback in data, fix the code, and resubmit.",
-            data={"traceback": executor.format_traceback(exc), **partial_change_data()},
+            hint,
+            data={"traceback": executor.format_traceback(exc), **failure_data(exc)},
         ) from exc
     duration_ms = int((time.perf_counter() - start) * 1000)
 
     mutated = False
+    record = outcome.record if outcome is not None else None
     if allow_mutation:
-        mutated = True
-        # Lets live consumers (the web viewer) refresh their copy.
-        announce_mutation()
+        unrecorded = (
+            record is None and pre is not None and post is not None and post > pre
+        )
+        if unrecorded:
+            # Entities the transaction log never saw (a low-level call): the
+            # edit stays, but nothing here can undo it.
+            session.mark_dirty()
+            session.record_change(description, tool="execute_ifc_code")
+        mutated = record is not None or unrecorded
+        if mutated:
+            # Lets live consumers (the web viewer) refresh their copy.
+            announce_mutation()
     elif pre is not None and post is not None and post > pre:
         # a guarded run grew the model: classifier false negative
         session.tainted = True
@@ -541,7 +607,11 @@ async def _run_in_process(
         "input_context": input_context,
         "target_context": execution_context(session, expected_context),
     }
-    if mutated:
+    if record is not None:
+        data["change"] = record.to_dict(detail=True)
+    if allow_mutation and not mutated:
+        data["note"] = "the code ran but changed nothing in the model"
+    elif mutated:
         copy = session.working_copy
         if copy is not None:
             data["note"] = (

@@ -115,6 +115,14 @@ def _classification_coverage(ifc: Any, total: int) -> dict[str, Any]:
     }
 
 
+def disk_stamp(session: Any) -> tuple[str, Any]:
+    """Cache-key part for reads that report the file (name, size, mtime).
+
+    Saving keeps the model's identity, so these reads must key on the file.
+    """
+    return (str(session.path), session.disk_key)
+
+
 def build_project_info(ifc: Any, path: Path | None) -> dict[str, Any]:
     file_block: dict[str, Any] = {}
     if path is not None and path.exists():

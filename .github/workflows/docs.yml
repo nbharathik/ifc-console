@@ -41,8 +41,8 @@ jobs:
       - name: Build documentation
         run: |
           uv lock --check
-          uv sync --extra docs
-          uv run mkdocs build --strict
+          uv sync --group docs
+          uv run --no-sync mkdocs build --strict
       - name: Upload GitHub Pages artifact
         uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:

@@ -1,8 +1,11 @@
-"""Structured output: a tool advertises an outputSchema only when it declared a
-bounded result shape, because a bare Envelope schema is identical for every tool
-and declaring one also makes the transport send each result twice. The text
-block always carries the whole {ok, data, error, meta} envelope, so nothing is
-reachable only through structuredContent."""
+"""Results are one text block of one-line JSON, and no tool publishes an outputSchema.
+
+A published output schema costs every listing thousands of characters and makes
+the transport send each result twice, as text and as structured content. The
+text block carries the whole {ok, data, error, meta} envelope, so nothing is
+reachable only through structuredContent, and the operation registry keeps the
+declared data shapes for callers that want them.
+"""
 
 from __future__ import annotations
 
@@ -14,52 +17,43 @@ import pytest
 pytestmark = pytest.mark.asyncio
 
 
-async def test_results_carry_structured_content_and_text(harness_factory, work_model: Path):
+async def test_a_result_is_one_line_of_json_in_one_text_block(harness_factory, work_model: Path):
     h = await harness_factory(model=work_model)
     result = await h.session.call_tool("get_session_status", {})
-    structured = result.structuredContent
-    assert structured is not None
-    assert structured["ok"] is True
-    assert structured["data"]["model"]["loaded"] is True
-    assert structured["meta"]["mode"] == "ask"
-    # the text block still carries the same envelope for text-only clients
-    text_payload = json.loads(result.content[0].text)
-    assert text_payload["ok"] is True
-    assert text_payload["data"]["model"]["loaded"] is True
+
+    assert result.structuredContent is None
+    assert len(result.content) == 1
+    text = result.content[0].text
+    assert "\n" not in text
+    payload = json.loads(text)
+    assert payload["ok"] is True
+    assert payload["data"]["model"]["loaded"] is True
+    assert payload["meta"]["mode"] == "ask"
 
 
-async def test_an_error_is_readable_whether_or_not_a_schema_was_declared(harness_factory):
+async def test_an_error_is_readable_from_the_text_block(harness_factory):
     """A failure has to be machine readable from the text block alone, because
     that is the only channel every tool shares."""
     h = await harness_factory(model=None)
     result = await h.session.call_tool("validate_model", {})
     payload = json.loads(result.content[0].text)
+
     assert payload["ok"] is False
     assert payload["error"]["code"] == "NO_MODEL_LOADED"
     assert payload["error"]["hint"]
-    # and where a tool did declare a bounded shape, the structured copy agrees
-    status = await h.session.call_tool("get_session_status", {})
-    assert status.structuredContent is not None
-    assert status.structuredContent == json.loads(status.content[0].text)
+    assert result.structuredContent is None
 
 
-async def test_only_a_declared_bounded_shape_is_advertised(harness_factory, work_model: Path):
+async def test_no_tool_advertises_an_output_schema(harness_factory, work_model: Path):
     h = await harness_factory(model=work_model)
     listed = await h.session.list_tools()
-    schemas = {tool.name: tool.outputSchema for tool in listed.tools}
 
-    # A tool with a small declared payload publishes it, and what it publishes
-    # is the envelope wrapping that payload rather than a bare Envelope.
-    status = schemas["get_session_status"]
-    assert status is not None
-    assert set(status.get("properties", {})) >= {"ok", "data", "error", "meta"}
+    assert all(tool.outputSchema is None for tool in listed.tools)
 
-    # A bulk result publishes nothing: the schema would be identical for every
-    # such tool, and declaring it would double every result on the wire.
-    assert schemas["query_elements"] is None
-    assert schemas["get_element_geometry"] is None
 
-    # Whatever is advertised must be worth its size.
-    for name, schema in schemas.items():
-        if schema is not None:
-            assert len(json.dumps(schema)) <= 2_500, name
+async def test_the_registry_still_declares_the_data_shapes(harness_factory, work_model: Path):
+    h = await harness_factory(model=work_model)
+    specs = h.core.operations
+
+    assert specs.require("query_elements").data_schema is not None
+    assert specs.require("get_session_status").data_schema is not None

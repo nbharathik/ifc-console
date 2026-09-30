@@ -5,11 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import pytest
-
 from ifc_console.mcp.tools_knowledge import _field_equals, _loose
-
-pytestmark = pytest.mark.asyncio
 
 
 def test_loose_matching_ignores_spaces_and_case():

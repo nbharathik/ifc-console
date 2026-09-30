@@ -1091,54 +1091,21 @@ class AsyncWorkbench:
         {"text", "tool_calls", "usage", "turns"}; pass on_event to watch the
         stream as it happens.
         """
-        try:
-            from ifc_console_agents.chat.agent import converse
-        except ModuleNotFoundError as exc:
-            if exc.name != "ifc_console_agents":
-                raise
-            raise IfcConsoleError(
-                "EXTRA_NOT_INSTALLED",
-                "LLM conversations are provided by ifc-console-agents",
-                "Install ifc-console-agents and retry.",
-            ) from exc
+        from ifc_console.agents.ask import ask
 
-        turns = list(history or []) + [{"role": "user", "text": prompt}]
-        parts: list[str] = []
-        calls: list[dict[str, Any]] = []
-        usage: dict[str, Any] = {}
-        error: str | None = None
-        async for event in converse(
-            self._core,
-            turns=turns,
-            provider_id=provider,
+        return await ask(
+            self,
+            prompt,
+            provider=provider,
             model=model,
-            base_url=base_url,
             api_key=api_key,
+            base_url=base_url,
             system=system,
-            use_tools=tools,
-            options=options,
-        ):
-            if on_event is not None:
-                on_event(event)
-            kind = event.get("type")
-            if kind == "content":
-                parts.append(event["text"])
-            elif kind == "tool_result":
-                calls.append(
-                    {"name": event["name"], "ok": event["ok"], "summary": event["summary"]}
-                )
-            elif kind == "usage":
-                for key in ("in", "out"):
-                    value = event.get(key)
-                    if value is not None:
-                        usage[key] = usage.get(key, 0) + value
-            elif kind == "error":
-                error = event["text"]
-        text = "".join(parts).strip()
-        if error and not text:
-            raise IfcConsoleError("CHAT_FAILED", error, "Check the provider, model, and key.")
-        turns.append({"role": "assistant", "text": text})
-        return {"text": text, "tool_calls": calls, "usage": usage, "turns": turns, "error": error}
+            tools=tools,
+            history=history,
+            on_event=on_event,
+            **options,
+        )
 
     # -- knowledge ------------------------------------------------------------
     def build_knowledge(self, *, force: bool = False) -> dict[str, Any]:
@@ -1189,6 +1156,30 @@ class AsyncWorkbench:
     # -- writes ---------------------------------------------------------------
     async def run_code(self, code: str, description: str = "") -> dict[str, Any]:
         return await self._data("execute_ifc_code", code=code, description=description)
+
+    async def set_properties(
+        self, changes: list[dict[str, Any]], *, dry_run: bool = False, description: str = ""
+    ) -> dict[str, Any]:
+        """Set property values on elements, all or nothing. See the tool description."""
+        return await self._data(
+            "set_properties", changes=changes, dry_run=dry_run, description=description
+        )
+
+    async def undo(self) -> dict[str, Any]:
+        """Step the model back one edit; returns what that edit was."""
+        return await self._history_step("undo")
+
+    async def redo(self) -> dict[str, Any]:
+        """Replay the edit an undo just stepped back over."""
+        return await self._history_step("redo")
+
+    async def _history_step(self, direction: str) -> dict[str, Any]:
+        step = self._core.undo if direction == "undo" else self._core.redo
+        try:
+            record = await step(by="sdk")
+        except ToolError as exc:
+            raise _sdk_error(exc) from exc
+        return {**record.to_dict(detail=True), "dirty": self._core.session.dirty}
 
     async def export_csv(self, selector: str, path: str | Path, **kwargs: Any) -> dict[str, Any]:
         return await self._data("export_csv", selector=selector, path=str(path), **kwargs)
@@ -1245,14 +1236,14 @@ class _Loop:
         future = asyncio.run_coroutine_threadsafe(coro, self.loop)
         try:
             return future.result(timeout)
-        except FutureTimeoutError:
+        except FutureTimeoutError as exc:
             future.cancel()
             drain = asyncio.run_coroutine_threadsafe(self._cancel_and_drain(coro), self.loop)
             with suppress(FutureCancelledError, FutureTimeoutError):
                 drain.result(timeout=10.0)
             with suppress(FutureCancelledError, FutureTimeoutError):
                 future.result(timeout=1.0)
-            raise
+            raise TimeoutError(f"timed out after {timeout} seconds") from exc
 
     def close(self) -> None:
         if self.closed:
@@ -1767,6 +1758,19 @@ class Workbench:
     # -- writes ---------------------------------------------------------------
     def run_code(self, code: str, description: str = "") -> dict[str, Any]:
         return self._run(lambda: self._wb.run_code(code, description))
+
+    def set_properties(
+        self, changes: list[dict[str, Any]], *, dry_run: bool = False, description: str = ""
+    ) -> dict[str, Any]:
+        return self._run(
+            lambda: self._wb.set_properties(changes, dry_run=dry_run, description=description)
+        )
+
+    def undo(self) -> dict[str, Any]:
+        return self._run(lambda: self._wb.undo())
+
+    def redo(self) -> dict[str, Any]:
+        return self._run(lambda: self._wb.redo())
 
     def export_csv(self, selector: str, path: str | Path, **kwargs: Any) -> dict[str, Any]:
         return self._run(lambda: self._wb.export_csv(selector, path, **kwargs))

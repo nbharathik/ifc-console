@@ -15,7 +15,7 @@ import argparse
 import asyncio
 from pathlib import Path
 
-from ifc_console_agents import Agent, AgentLimits, ProviderModel
+from ifc_console.agents import Agent, AgentLimits, ProviderModel
 
 from ifc_console import LocalRuntime
 

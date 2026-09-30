@@ -525,7 +525,7 @@ class TransactionService:
                 "Create a new approval for this ChangeSet.",
             )
 
-        async with self._commit_lock, self.core.active_session() as session:
+        async with self._commit_lock, self.core.exclusive_session() as session:
             session.require_writable()
             revision_before = self._validate_target(session, change_record.change_set)
             assert session.path is not None
@@ -639,7 +639,7 @@ class TransactionService:
                 "Pass confirm=true only after reviewing the commit receipt.",
             )
         commit_record = self.get_commit(commit_id)
-        async with self._commit_lock, self.core.active_session() as session:
+        async with self._commit_lock, self.core.exclusive_session() as session:
             session.require_writable()
             if session.dirty:
                 raise ToolError(
@@ -929,6 +929,8 @@ class TransactionService:
             commit_id=record.commit_id,
             change_set_id=record.result.change_set_id,
             path=str(target),
+            geometry=False,
+            guids=list(record.result.changed_global_ids),
         )
         return record
 
@@ -1108,6 +1110,8 @@ class TransactionService:
             restore_id=record.restore_id,
             commit_id=commit_record.commit_id,
             path=str(target),
+            geometry=False,
+            guids=list(commit_record.result.changed_global_ids),
         )
         return record
 
@@ -1282,7 +1286,7 @@ class TransactionService:
         return RevisionRef(
             workspace_id=self.core.workspace_id,
             model_id=session.model_id,
-            revision_id=f"{session.fingerprint}:{session.revision}",
+            revision_id=session.revision_id,
             content_sha256=session.source_sha256,
         )
 
@@ -1326,6 +1330,7 @@ class TransactionService:
             scratch_dir=work,
             deny_dirs=[self.core.store.home],
             memory_mb=self.core.settings.sandbox.memory_mb,
+            exempt_dirs=self.core.sandbox_read_exemptions(),
         )
         input_path = work / "input.json"
         context = current_operation_context()

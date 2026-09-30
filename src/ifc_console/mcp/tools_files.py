@@ -104,21 +104,22 @@ def _scan_ifc_files(
 
 
 def register(mcp: OperationRegistry, core: AppCore) -> None:
-    limit_ = core.settings.exec.output_char_limit
+    def limit_() -> int:
+        return core.settings.exec.output_char_limit
 
     @mcp.tool(
         annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False),
         description=(
             "[QUERY] IFC files the server may open: recent files plus .ifc/.ifczip/"
-            ".ifcxml found in the allowed directories. Returns path, size, modified "
-            "time, and (when cheaply readable) schema."
+            ".ifcxml in the allowed directories, with path, size, modified time and "
+            "schema when cheaply readable."
         ),
     )
     @enveloped(core, "list_ifc_files")
     async def list_ifc_files(
         dir: Annotated[
             str | None,
-            Field(description="Restrict to one directory (must be inside allowed dirs)."),
+            Field(description="Restrict to one directory inside the allowed dirs."),
         ] = None,
         recursive: bool = False,
         limit: Annotated[int, Field(ge=1, le=500)] = 100,
@@ -154,9 +155,8 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
     @mcp.tool(
         annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False),
         description=(
-            "[SESSION] Load a different IFC file into the session (replaces the "
-            "current model; the user sees the switch in their terminal). Path "
-            "must be inside the allowed directories; see list_ifc_files. Fails "
+            "[SESSION] Load another IFC file, replacing the current model. Path "
+            "must be inside the allowed directories (see list_ifc_files). Fails "
             "if there are unsaved changes."
         ),
     )
@@ -198,13 +198,11 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
     @mcp.tool(
         annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True),
         description=(
-            "[EDIT] Save the model. No arguments = save to its own file (in "
-            "place). output_path = save-as (refuses to overwrite unless "
-            "overwrite=true). A timestamped backup of any file being replaced is "
-            "stored automatically. Clears the dirty flag. Unavailable in ask "
-            "mode. In edit mode the model is normally a working copy, and this "
-            "writes that copy; the file the user opened is never the target "
-            "unless files.allow_ai_save is on."
+            "[EDIT] Save the model: no arguments saves in place, output_path saves "
+            "as (refuses to overwrite unless overwrite=true). Any replaced file is "
+            "backed up automatically. Unavailable in ask mode. In edit mode the "
+            "model is normally a working copy and this writes that copy; the file "
+            "the user opened is never the target unless files.allow_ai_save is on."
         ),
     )
     @enveloped(core, "save_ifc_file")
@@ -260,13 +258,5 @@ def register(mcp: OperationRegistry, core: AppCore) -> None:
                 "Detach that model first, or save to a different path.",
             )
 
-        result = await session.save(target, core.backups)
-        core.recents.touch(
-            Path(result["path"]),
-            size_bytes=result["size_bytes"],
-            schema=session.schema or "?",
-            mode=core.policy.mode.value,
-        )
-        core.audit.record("save", **result)
-        core.events.emit("model_saved", **result)
+        result = await core.save_model(by="assistant", target=target)
         return ok(result, core.session_meta(), char_limit=limit_)

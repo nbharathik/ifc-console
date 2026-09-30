@@ -44,37 +44,50 @@ Type `/` to browse commands. Unique prefixes work, so `/stat` runs `/status`.
 | Command | Use |
 | :--- | :--- |
 | `/file [path]` | pick or open the active model |
-| `/workspace [dir]` | browse a folder and attach related files |
-| `/attach <path>` / `/detach <id>` | add or remove a read-only model or companion file |
-| `/use <id>` | make an attached model the active one |
+| `/file recent` | recently opened models |
+| `/file workspace [dir]` | browse a folder and attach related files |
 | `/models` | list resident models and attachments |
-| `/info` | entity counts for the active model |
+| `/models attach <path>` / `detach <id>` | add or remove a read-only model or companion file |
+| `/models use <id>` | make an attached model the active one |
+| `/models info` | entity counts for the active model |
 | `/save [path]` / `/reload` | keep or discard changes |
+| `/undo` / `/redo` | step back over an edit, or replay it |
+| `/changes` | list the edits since the model was loaded, with the saved state marked |
+
+Each edit the AI makes is one step. `/undo` works after a save too; the model
+is then unsaved again. The last 20 steps are kept (`edit.undo_depth`).
 
 ### Session and browser
 
 | Command | Use |
 | :--- | :--- |
 | `/mode [ask\|edit]` | show or change what the AI may do |
-| `/sandbox [auto\|strict\|off\|restart]` | control generated-code isolation |
 | `/viewer [browser\|vscode]` | open the 3D viewer, or prepare a link for VS Code's browser |
-| `/agent [name\|new\|list\|off]` | open the optional Agent workspace |
-| `/connect [client\|all]` | print a client's setup |
-| `/copy [client\|url\|viewer\|token]` | copy connection data |
-| `/port <n>` | move the HTTP server |
-| `/theme [light\|dark\|modern\|blue]` | change the console and viewer theme |
+| `/agent [name\|list\|off]` | open the optional Agent workspace |
+| `/agent workflows [name]` | open the workflows page, or list what a project can run |
+| `/connect [client\|all]` | show which clients are on this machine, or print a client's setup |
+| `/connect copy [client\|url\|viewer\|token]` | copy connection data |
+| `/connect port <n>` | move the HTTP server |
+| `/clients` | list the AI clients that have connected |
+| `/tools profile [full\|lean]` | show or change which tools clients are shown |
 
 ### Help and diagnostics
 
 | Command | Use |
 | :--- | :--- |
 | `/status` | model, revision, selection, save destination |
+| `/status audit [n]` | show recent audit records |
 | `/tools [section]` | inspect AI tools, prompts, resources, or settings |
-| `/kb [query]` | search the offline IFC reference |
 | `/settings [key value]` | inspect or change settings |
-| `/audit [n]` | show recent audit records |
+| `/settings theme [light\|dark\|modern\|blue]` | change the console and viewer theme |
+| `/settings sandbox [auto\|strict\|off\|restart]` | control generated-code isolation |
+| `/settings kb [query]` | search the offline IFC reference |
 | `/help [command]` | show help |
 | `/clear` / `/quit` | clear the feed or exit |
+
+Before 0.2.0 several of these were top-level commands (`/attach`, `/detach`,
+`/use`, `/info`, `/recent`, `/workspace`, `/copy`, `/port`, `/theme`, `/sandbox`,
+`/kb`, `/audit`, `/workflows`). The old names still work.
 
 ## Files
 

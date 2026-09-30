@@ -33,17 +33,18 @@ READ_ANN = OperationAnnotations(
 
 
 def register(registry: OperationRegistry, core: AppCore) -> None:
-    char_limit = core.settings.exec.output_char_limit
+    def char_limit() -> int:
+        return core.settings.exec.output_char_limit
 
     @registry.tool(
         annotations=PREVIEW_ANN,
         data_model=ChangeSetData,
         description=(
             "[PREVIEW] Build a revision-bound ChangeSet for occurrence-level "
-            "IfcPropertySingleValue values. Missing properties and property sets may be "
-            "created only when create_missing is explicit. The live model and source IFC are untouched. "
-            "This writes a local preview artifact but cannot approve or commit it. "
-            "Approval and commit remain explicit SDK or CLI caller actions."
+            "IfcPropertySingleValue values. Missing properties and property sets are "
+            "created only when create_missing is true. Writes a local preview artifact; "
+            "the live model and source IFC are untouched. Approval and commit are "
+            "explicit SDK or CLI actions."
         ),
     )
     @enveloped(core, "preview_property_change")
@@ -76,9 +77,9 @@ def register(registry: OperationRegistry, core: AppCore) -> None:
         data_model=ChangeSetData,
         required_capabilities=(Capability.MODEL_PREVIEW, Capability.ARTIFACT_WRITE),
         description=(
-            "[PREVIEW] Build one revision-bound ChangeSet containing multiple "
+            "[PREVIEW] Build one revision-bound ChangeSet with several "
             "occurrence-level property assignments for the same elements. The live model "
-            "and source IFC are untouched; approval and commit remain explicit caller actions."
+            "and source IFC are untouched; approval and commit are explicit caller actions."
         ),
     )
     @enveloped(core, "preview_property_changes")
@@ -102,10 +103,10 @@ def register(registry: OperationRegistry, core: AppCore) -> None:
         annotations=PREVIEW_ANN,
         data_model=ChangeSetData,
         description=(
-            "[PREVIEW] Build a revision-bound ChangeSet that directly assigns a typed "
+            "[PREVIEW] Build a revision-bound ChangeSet that assigns a typed "
             "classification reference to IFC occurrences. Missing systems and references "
-            "are created in the candidate only. The source IFC is untouched, and approval "
-            "and commit remain explicit SDK or CLI caller actions."
+            "are created in the candidate only. The source IFC is untouched; approval "
+            "and commit are explicit SDK or CLI actions."
         ),
     )
     @enveloped(core, "preview_classification_assignment")
@@ -133,7 +134,7 @@ def register(registry: OperationRegistry, core: AppCore) -> None:
         annotations=READ_ANN,
         data_model=ChangeSetData,
         description=(
-            "[PREVIEW] Read a verified ChangeSet artifact. This cannot approve, commit, "
+            "[PREVIEW] Read a verified ChangeSet artifact. Cannot approve, commit, "
             "or restore model bytes."
         ),
     )
@@ -149,12 +150,11 @@ def register(registry: OperationRegistry, core: AppCore) -> None:
     @registry.tool(
         annotations=READ_ANN,
         description=(
-            "[QUERY] List every element in the open model that carries an "
-            "AI-authored property set. Agents write only into the reserved "
-            "IfcConsole_AI_ namespace, so this is the complete inventory of "
-            "AI-assisted data in the file, with the provenance record (agent, "
-            "model, method, source document) stored beside each value. Use it "
-            "to review, report, or strip that layer."
+            "[QUERY] List every element in the open model with an AI-authored "
+            "property set. Agents write only into the reserved IfcConsole_AI_ "
+            "namespace; the provenance record (agent, model, method, source "
+            "document) sits beside each value. Use it to review, report, or "
+            "strip that layer."
         ),
     )
     @enveloped(core, "list_ai_authored_properties")

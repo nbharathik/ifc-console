@@ -101,7 +101,7 @@ async def test_mcp_is_a_projection_of_the_operation_registry(tmp_path: Path) -> 
         for name, definition in definitions.items():
             tool = tools[name]
             assert tool.inputSchema == definition.input_schema
-            assert tool.outputSchema == definition.output_schema
+            assert tool.outputSchema is None  # declared in the registry, not on the wire
             assert tool.annotations.readOnlyHint == definition.annotations.readOnlyHint
             assert tool.annotations.destructiveHint == definition.annotations.destructiveHint
     finally:

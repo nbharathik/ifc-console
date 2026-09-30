@@ -240,7 +240,7 @@ class OperationService:
         session = self.core.session
         revision_id = None
         if session.loaded:
-            revision_id = f"{session.fingerprint}:{session.revision}"
+            revision_id = session.revision_id
         model = ModelContext(
             model_id=getattr(session, "model_id", None),
             revision_id=revision_id,
@@ -490,6 +490,8 @@ def build_operations(core: AppCore) -> OperationService:
 
     from ifc_console.mcp import (
         tools_analysis,
+        tools_catalog,
+        tools_edit,
         tools_exec,
         tools_files,
         tools_insight,
@@ -506,7 +508,9 @@ def build_operations(core: AppCore) -> OperationService:
     tools_analysis.register(registry, core)
     tools_insight.register(registry, core)
     tools_exec.register(registry, core)
+    tools_edit.register(registry, core)
     tools_files.register(registry, core)
+    tools_catalog.register(registry, core)
     tools_workspace.register(registry, core)
     # Viewer operations stay in every interface. Their handlers report live
     # readiness, and open_viewer can activate the bundled browser surface.

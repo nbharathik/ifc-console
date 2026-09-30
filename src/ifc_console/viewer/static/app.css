@@ -226,21 +226,6 @@ body {
   font-weight: 400;
 }
 
-/* Only rendered once the console holds more than one model. */
-#model-select {
-  max-width: 30vw;
-  padding: 2px 4px;
-  border: 1px solid var(--line-strong);
-  border-radius: 4px;
-  background: var(--surface);
-  color: var(--text);
-  font: inherit;
-  font-size: 12px;
-  font-weight: 550;
-}
-
-#model-select:focus-visible { outline: 2px solid var(--accent); }
-
 /* The agent header and this rail occupy the same workspace row. Keeping the
    rail in the viewer grid makes its first IFC tab follow the viewer edge when
    the agent panel is opened or resized. */
@@ -1019,16 +1004,6 @@ body.viewer-closed #viewer-stage:has(#viewer-empty[hidden]) { display: none; }
 
 /* Viewer tool panels open from the instrument rail and remain pinned until
    their icon or close button is used. */
-#btn-tools {
-  position: absolute;
-  top: 10px;
-  left: 10px;
-  z-index: 20;
-  background: var(--surface);
-  border-color: var(--line-strong);
-  box-shadow: var(--shadow-pop);
-}
-
 #tools-panel {
   top: 10px;
   right: 12px;
@@ -1219,22 +1194,6 @@ button:disabled {
   gap: 7px;
 }
 
-.tool-btn-primary {
-  min-height: 32px;
-  color: var(--measure-bright);
-  background: var(--measure-wash);
-  border-color: var(--measure-line);
-}
-
-.tool-btn-primary:hover {
-  color: var(--text);
-  background: color-mix(in srgb, var(--measure-wash) 70%, var(--surface-hover));
-  border-color: var(--measure);
-}
-
-.tool-btn-primary[aria-expanded="true"] .tool-chevron { transform: rotate(90deg); }
-.tool-chevron { transition: transform var(--ease); }
-
 .tool-action-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1250,15 +1209,6 @@ button:disabled {
 }
 
 .tool-btn-compact svg { width: 14px; height: 14px; }
-
-.tool-btn-subtle {
-  min-height: 24px;
-  justify-content: flex-start;
-  color: var(--text-quiet);
-  font-size: 10.5px;
-}
-
-.tool-btn-subtle:hover { color: var(--danger); }
 
 /* -- measurements */
 /* What the click would snap to, named beside the cursor. Fixed, because it
@@ -2269,7 +2219,6 @@ kbd {
   #dirty { display: none !important; }
   #save-label { display: none; }
   .save-action { padding: 0 7px; }
-  .toolbar-sep { display: none; }
   #tree-panel,
   #props-panel {
     position: absolute;

@@ -342,9 +342,8 @@ async def test_model_events_translate_to_frames(core, hub, work_model: Path):
     await asyncio.sleep(0)  # let the scheduled broadcast task run
     frames = ws.frames("model_updated")
     assert frames and frames[-1]["reason"] == "loaded"
-    assert frames[-1]["etag"] == (
-        f"{core.session.model_id}-{core.session.fingerprint}-{core.session.revision}"
-    )
+    s = core.session
+    assert frames[-1]["etag"] == f"{s.model_id}-{s.fingerprint}-{s.load_nonce}-{s.revision}"
     assert ws.frames("status")[-1]["model"] == work_model.name
 
     core.events.emit("model_mutated", tool="test")
@@ -430,6 +429,23 @@ async def test_saving_never_asks_the_tab_to_rebuild(core, hub, work_model: Path)
     frame = ws.frames("model_updated")[-1]
     assert frame["reason"] == "saved"
     assert frame["geometry"] is False
+
+
+@pytest.mark.parametrize(
+    ("event", "reason"), [("model_committed", "committed"), ("model_restored", "restored")]
+)
+async def test_a_commit_or_restore_refreshes_the_tab(
+    core, hub, work_model: Path, event: str, reason: str
+):
+    """A structured commit reloads the model from disk; the tab must hear it."""
+    ws = _attach(hub)
+    await core.open_model(work_model)
+    core.events.emit(event, path=str(work_model), geometry=False, guids=["g-1"])
+    await asyncio.sleep(0)
+    frame = ws.frames("model_updated")[-1]
+    assert frame["reason"] == reason
+    assert frame["geometry"] is False
+    assert frame["elements"] == ["g-1"]
 
 
 async def test_a_mutation_names_the_elements_it_touched(core, hub, work_model: Path):

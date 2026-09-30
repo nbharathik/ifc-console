@@ -127,6 +127,40 @@ def register(mcp: MCPServer, core: AppCore) -> None:
             "so the user sees the result in 3D."
         )
 
+    @mcp.prompt(
+        description="Extract parameters from a catalogue you hold and reconcile them with the model."
+    )
+    def catalogue_parameters() -> str:
+        return (
+            "The catalogue or PDF is yours; ifc-console cannot read it and never "
+            "indexed it.\n"
+            "1. Extract and explain first. Extraction authorizes analysis and "
+            "visual evidence, not IFC edits, even in edit mode. Read "
+            "get_viewer_selection, keep its target_context, and use its model_id "
+            "and explicit GlobalIds. Record the page or table, the IFC or geometry "
+            "source, units, method and assumptions per parameter. Say whether each "
+            "value is measured, estimated or interpreted, and report catalogue, "
+            "name and geometry disagreements without forcing them to agree.\n"
+            "2. Reuse evidence: analyze_element_geometry returns model_revision and "
+            "target_context; export_measurement_report keeps a report artifact "
+            "(notes can hold your page references). A changed model or catalogue "
+            "needs revalidation.\n"
+            "3. Only when asked to update: re-read the selection and get_element "
+            "for the original GlobalIds and compare with the kept context. Show a "
+            "compact parameter, value, unit, owner, set, field and reason table. "
+            "Check applicability with audit_element_properties, get_schema_docs and "
+            "get_api_docs (property or quantity; element, type or profile owner).\n"
+            "4. Write with set_properties (dry_run first) or execute_ifc_code, "
+            "passing the kept target_context as expected_context. A "
+            "REVISION_CONFLICT means nothing ran: resolve the mismatch and "
+            "revalidate, never swap the context to force a retry. Read existing "
+            "sets first, then read the values, units and owners back.\n"
+            "5. Report analysis, proposed mapping, in-memory changes and saved "
+            "changes separately. A failed run is rolled back; the viewer already "
+            "shows landed edits. Save only per meta.ai_save_allowed, and never say "
+            "the original was saved when a working copy was."
+        )
+
     @mcp.prompt(description="The selector syntax cheat sheet for query_elements.")
     def selector_help() -> str:
         return (

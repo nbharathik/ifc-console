@@ -18,15 +18,19 @@ flowchart TB
     core --> workers["restricted processes<br/>read-only code, validation, transactions"]
 ```
 
-## Two packages
+## One package, two layers
 
-| Package | Owns |
+| Module | Owns |
 | :--- | :--- |
-| `ifc-console` | terminal, MCP server, SDK, IFC operations, jobs and workflows, the viewer |
-| `ifc-console-agents` | provider chat, agent packs, the Agent panel, document ingestion |
+| `ifc_console` | terminal, MCP server, SDK, IFC operations, jobs and workflows, the viewer |
+| `ifc_console.agents` | provider chat, agent packs, workflows in chat, the Agent panel, engines, skills |
 
-The agents package plugs in through the `ifc_console.extensions` entry point.
-Core never imports it, so everything in core works without an LLM.
+`ifc_console.agents` plugs in as a built-in extension: it is imported only when
+the console attaches it, never by `import ifc_console`. If it fails to load, the
+console, MCP server, SDK, and viewer keep working. Third-party extensions use the
+`ifc_console.extensions` entry point. The `[agents]` extra adds libraries that
+talk to the outside (ACP engines, the system keyring, PDF); the Agent workspace
+itself runs on the base install.
 
 ## The operation contract
 
@@ -40,6 +44,15 @@ paths are host actions and are never exposed as tools.
 IfcOpenShell file objects are not thread-safe, so each resident model has one
 worker thread and every access is serialized through it. One model is active
 and writable; attached models are read-only.
+
+One gate sits above the model threads. Work on a model (queries, viewer
+requests, edits, saves, read-only code runs) holds it shared, so those overlap.
+Changing which models are loaded (opening, switching, detaching, committing a
+ChangeSet) holds it exclusive and waits for shared work to finish. A large file
+parses outside the gate: the current model keeps answering, and only the swap at
+the end is exclusive. Edits and saves also take a per-model lock, so they run one
+at a time. A call that arrives while the first model is still loading waits up to
+20 seconds, then answers `MODEL_BUSY`.
 
 ```mermaid
 flowchart LR
@@ -67,5 +80,5 @@ runs, and transactions use supervised subprocesses. Results return to the
 loop and update the console and every connected browser tab.
 
 The viewer is plain browser modules plus Three.js and web-ifc, shipped inside
-the package. It makes no requests outside localhost. When the agents package
-is installed, its panel's JavaScript and CSS load only when you open it.
+the package. It makes no requests outside localhost. The Agent panel's
+JavaScript and CSS load only when you open it.

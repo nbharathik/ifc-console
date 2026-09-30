@@ -8,9 +8,9 @@ from pathlib import Path
 
 import pytest
 
-pytest.importorskip("ifc_console_agents")
+pytest.importorskip("ifc_console.agents")
 
-from ifc_console.cli import _cmd_agents_pack  # noqa: E402
+from ifc_console.cli.agents import _cmd_agents_pack  # noqa: E402
 
 SKILL = "---\nname: demo-skill\ndescription: A demo.\nkind: prose\n---\n\n## Steps\n1. look\n"
 

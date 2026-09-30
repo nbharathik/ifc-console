@@ -98,18 +98,24 @@ async def test_missing_target_prevents_any_code_execution(harness_factory, work_
     assert not h.core.session.dirty
 
 
-async def test_failed_guarded_script_reports_possible_partial_edits(harness_factory, work_model):
+async def test_failed_guarded_script_is_rolled_back_and_keeps_the_context(
+    harness_factory, work_model
+):
     h = await harness_factory(model=work_model, mode=Mode.EDIT)
     gid, context = await _target(h)
+    original = h.core.session.ifc.by_guid(gid).Name
     result = await h.call(
         "execute_ifc_code", code=_rename(gid) + "\n1 / 0", expected_context=context
     )
     assert result["error"]["code"] == "EXEC_ERROR"
-    assert result["data"]["partial_changes_possible"] is True
-    assert result["data"]["input_context"] == context
-    assert result["data"]["target_context"]["revision"] > context["revision"]
-    assert result["meta"]["dirty"] is True
-    assert h.core.session.ifc.by_guid(gid).Name == "Reviewed wall"
+    assert result["data"]["rolled_back"] is True
+    assert result["data"]["verified"] is True
+    assert "partial_changes_possible" not in result["data"]
+    assert result["data"]["target_context"] == context
+    assert result["meta"]["dirty"] is False
+    assert h.core.session.ifc.by_guid(gid).Name == original
+    retry = await h.call("execute_ifc_code", code=_rename(gid), expected_context=context)
+    assert retry["ok"]
 
 
 class _Viewer:

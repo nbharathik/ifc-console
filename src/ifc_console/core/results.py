@@ -49,6 +49,7 @@ ERROR_CODES = (
     "GEOMETRY_ANALYSIS_FAILED",
     "INTERNAL_ERROR",
     "INVALID_GEOMETRY",
+    "INVALID_IFC",
     "INVALID_INPUT",
     "INVALID_OUTPUT",
     "INVALID_QUERY",
@@ -66,6 +67,8 @@ ERROR_CODES = (
     "MODEL_NOT_FOUND",
     "MODEL_READ_ONLY",
     "MODEL_TOO_LARGE",
+    "NOTHING_TO_REDO",
+    "NOTHING_TO_UNDO",
     "NOT_FOUND",
     "NO_GEOMETRY",
     "NO_MATCH",
@@ -79,12 +82,14 @@ ERROR_CODES = (
     "SANDBOX_UNAVAILABLE",
     "SOURCE_CHANGED",
     "STORE_BUSY",
+    "TOOL_SOURCE_FAILED",
     "TOO_MANY_ELEMENTS",
     "TRANSACTION_INTERRUPTED",
     "TRANSACTION_JOURNAL_BUSY",
     "TRANSACTION_JOURNAL_CORRUPT",
     "TRANSACTION_JOURNAL_INVALID",
     "TRANSACTION_RECOVERY_REQUIRED",
+    "UNDO_FAILED",
     "UNSAVED_CHANGES",
     "VALIDATION_FAILED",
     "VIEWER_BUSY",
@@ -97,6 +102,7 @@ ERROR_CODES = (
     "WORKFLOW_INPUT_EMPTY",
     "WORKFLOW_INPUT_LIMIT",
     "WORKFLOW_INTERRUPTED",
+    "WORKFLOW_INVALID",
     "WORKFLOW_MANIFEST_INVALID",
     "WORKFLOW_MANIFEST_TOO_LARGE",
     "WORKFLOW_NOT_FOUND",
@@ -144,6 +150,11 @@ def dump(obj: Any) -> str:
     return json.dumps(obj, indent=2, ensure_ascii=False, default=str)
 
 
+def dump_compact(obj: Any) -> str:
+    """What a model reads: no indentation, which is a third of a large listing."""
+    return json.dumps(obj, separators=(",", ":"), ensure_ascii=False, default=str)
+
+
 def _jsonable(obj: Any) -> Any:
     return json.loads(json.dumps(obj, ensure_ascii=False, default=str))
 
@@ -156,7 +167,7 @@ _PREVIEW_NOTE = "result truncated: refine the query, lower `limit`, or select fe
 
 
 def _render(payload: dict[str, Any], meta: dict[str, Any]) -> str:
-    return dump({"ok": True, "data": payload, "meta": meta})
+    return dump_compact({"ok": True, "data": payload, "meta": meta})
 
 
 def _page_key(payload: dict[str, Any]) -> str | None:
@@ -244,8 +255,15 @@ def _previewed(
 
 
 def ok(
-    data: dict[str, Any], meta: dict[str, Any], *, char_limit: int = 40_000, **extra_meta: Any
+    data: dict[str, Any],
+    meta: dict[str, Any],
+    *,
+    char_limit: int | Callable[[], int] = 40_000,
+    **extra_meta: Any,
 ) -> Envelope:
+    """A success envelope; ``char_limit`` may be a callable read at call time."""
+    if callable(char_limit):
+        char_limit = char_limit()
     payload = _jsonable(data)
     merged = _jsonable({**meta, **extra_meta})
     rendered = _render(payload, merged)

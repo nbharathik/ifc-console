@@ -1,0 +1,3979 @@
+{
+  "envelope": {
+    "$defs": {
+      "ErrorInfo": {
+        "properties": {
+          "code": {
+            "description": "Stable machine-readable code; see ERROR_CODES.",
+            "title": "Code",
+            "type": "string"
+          },
+          "hint": {
+            "description": "What to do next; follow it instead of retrying blindly.",
+            "title": "Hint",
+            "type": "string"
+          },
+          "message": {
+            "description": "What went wrong, in one sentence.",
+            "title": "Message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "hint"
+        ],
+        "title": "ErrorInfo",
+        "type": "object"
+      }
+    },
+    "description": "The public tool-result contract.",
+    "properties": {
+      "data": {
+        "anyOf": [
+          {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Data"
+      },
+      "error": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/ErrorInfo"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null
+      },
+      "meta": {
+        "additionalProperties": true,
+        "title": "Meta",
+        "type": "object"
+      },
+      "ok": {
+        "title": "Ok",
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "ok"
+    ],
+    "title": "Envelope",
+    "type": "object"
+  },
+  "error_codes": [
+    "AI_SAVE_DISABLED",
+    "APPROVAL_MISMATCH",
+    "APPROVAL_NOT_FOUND",
+    "APPROVAL_REQUIRED",
+    "ARTIFACT_CORRUPT",
+    "ARTIFACT_EXPORT_FAILED",
+    "ARTIFACT_GC_CONFLICT",
+    "ARTIFACT_GC_FAILED",
+    "ARTIFACT_NOT_FOUND",
+    "ARTIFACT_STORE_BUSY",
+    "ARTIFACT_STORE_CORRUPT",
+    "ASK_MODE_BLOCKED",
+    "BATCH_CANCELLED",
+    "BATCH_CHILD_FAILED",
+    "BATCH_INTERRUPTED",
+    "BATCH_NOT_FOUND",
+    "BATCH_NOT_RESUMABLE",
+    "BATCH_SERVICE_CLOSED",
+    "BATCH_SOURCE_CHANGED",
+    "BATCH_STORE_FAILED",
+    "BATCH_SUPERVISOR_FAILED",
+    "BATCH_TIMEOUT",
+    "CAPABILITY_DENIED",
+    "CHANGESET_INVALID",
+    "CHANGESET_NOT_FOUND",
+    "CHAT_FAILED",
+    "COMMIT_FAILED",
+    "COMMIT_NOT_FOUND",
+    "CONSOLE_AUTH_FAILED",
+    "CONSOLE_NOT_RUNNING",
+    "EXEC_BLOCKED",
+    "EXEC_ERROR",
+    "EXEC_TIMEOUT",
+    "EXTRA_NOT_INSTALLED",
+    "FILE_EXISTS",
+    "FILE_NOT_FOUND",
+    "FRAME_UNAVAILABLE",
+    "GEOMETRY_ANALYSIS_FAILED",
+    "INTERNAL_ERROR",
+    "INVALID_GEOMETRY",
+    "INVALID_IFC",
+    "INVALID_INPUT",
+    "INVALID_OUTPUT",
+    "INVALID_QUERY",
+    "JOB_CANCELLED",
+    "JOB_NOT_CANCELLABLE",
+    "JOB_NOT_FOUND",
+    "JOB_RESULT_INVALID",
+    "JOB_SERVICE_CLOSED",
+    "JOB_SPEC_INVALID",
+    "JOB_TIMEOUT",
+    "JOB_WORKER_FAILED",
+    "KNOWLEDGE_DISABLED",
+    "KNOWLEDGE_NOT_READY",
+    "MODEL_BUSY",
+    "MODEL_NOT_FOUND",
+    "MODEL_READ_ONLY",
+    "MODEL_TOO_LARGE",
+    "NOTHING_TO_REDO",
+    "NOTHING_TO_UNDO",
+    "NOT_FOUND",
+    "NO_GEOMETRY",
+    "NO_MATCH",
+    "NO_MODEL_LOADED",
+    "PATH_NOT_ALLOWED",
+    "PROPERTY_NOT_FOUND",
+    "RESTORE_CONFLICT",
+    "RESTORE_NOT_FOUND",
+    "RESULT_TOO_LARGE",
+    "REVISION_CONFLICT",
+    "SANDBOX_UNAVAILABLE",
+    "SOURCE_CHANGED",
+    "STORE_BUSY",
+    "TOOL_SOURCE_FAILED",
+    "TOO_MANY_ELEMENTS",
+    "TRANSACTION_INTERRUPTED",
+    "TRANSACTION_JOURNAL_BUSY",
+    "TRANSACTION_JOURNAL_CORRUPT",
+    "TRANSACTION_JOURNAL_INVALID",
+    "TRANSACTION_RECOVERY_REQUIRED",
+    "UNDO_FAILED",
+    "UNSAVED_CHANGES",
+    "VALIDATION_FAILED",
+    "VIEWER_BUSY",
+    "VIEWER_ERROR",
+    "VIEWER_NOT_CONNECTED",
+    "VIEWER_TIMEOUT",
+    "VIEWER_UNAVAILABLE",
+    "WORKFLOW_CANCELLED",
+    "WORKFLOW_DEPENDENCY_FAILED",
+    "WORKFLOW_INPUT_EMPTY",
+    "WORKFLOW_INPUT_LIMIT",
+    "WORKFLOW_INTERRUPTED",
+    "WORKFLOW_INVALID",
+    "WORKFLOW_MANIFEST_INVALID",
+    "WORKFLOW_MANIFEST_TOO_LARGE",
+    "WORKFLOW_NOT_FOUND",
+    "WORKFLOW_NOT_RESUMABLE",
+    "WORKFLOW_PATH_INVALID",
+    "WORKFLOW_SERVICE_CLOSED",
+    "WORKFLOW_SOURCE_CHANGED",
+    "WORKFLOW_STEP_FAILED",
+    "WORKFLOW_STORE_CORRUPT",
+    "WORKFLOW_STORE_FAILED",
+    "WORKFLOW_SUPERVISOR_FAILED",
+    "WORKFLOW_TIMEOUT",
+    "WORKSPACE_BUDGET",
+    "WORKSPACE_DISABLED"
+  ],
+  "tools": [
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
+          "detail": {
+            "default": "standard",
+            "enum": [
+              "compact",
+              "standard",
+              "full"
+            ],
+            "type": "string"
+          },
+          "frame": {
+            "default": "semantic",
+            "enum": [
+              "semantic",
+              "placement",
+              "principal",
+              "world"
+            ],
+            "type": "string"
+          },
+          "global_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 25,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "include_alternatives": {
+            "default": true,
+            "type": "boolean"
+          },
+          "include_outline": {
+            "default": false,
+            "type": "boolean"
+          },
+          "include_sections": {
+            "default": true,
+            "type": "boolean"
+          },
+          "max_elements": {
+            "default": 10,
+            "maximum": 25,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "measurement_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 80,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "measurement_set": {
+            "default": "standard",
+            "enum": [
+              "standard",
+              "profile",
+              "envelope",
+              "fabrication"
+            ],
+            "type": "string"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "offset": {
+            "default": 0,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "physical_only": {
+            "default": true,
+            "type": "boolean"
+          },
+          "precision": {
+            "default": "standard",
+            "enum": [
+              "standard",
+              "high"
+            ],
+            "type": "string"
+          },
+          "selector": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "station_strategy": {
+            "default": "auto",
+            "enum": [
+              "auto",
+              "fixed",
+              "none"
+            ],
+            "type": "string"
+          },
+          "stations": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "number"
+                },
+                "maxItems": 17,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "type": "object"
+      },
+      "name": "analyze_element_geometry",
+      "output_schema": null,
+      "read_only": true
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "$defs": {
+          "ColorGroup": {
+            "properties": {
+              "color": {
+                "anyOf": [
+                  {
+                    "pattern": "^#[0-9a-fA-F]{6}$",
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "global_ids": {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 5000,
+                "minItems": 1,
+                "type": "array"
+              },
+              "label": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "label",
+              "global_ids"
+            ],
+            "title": "ColorGroup",
+            "type": "object"
+          }
+        },
+        "properties": {
+          "clear": {
+            "default": false,
+            "type": "boolean"
+          },
+          "groups": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/$defs/ColorGroup"
+                },
+                "maxItems": 24,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "model_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "title": {
+            "default": "",
+            "maxLength": 80,
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "apply_color_theme",
+      "output_schema": null,
+      "read_only": false
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
+          "dry_run": {
+            "default": true,
+            "type": "boolean"
+          },
+          "global_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 200,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "include_evidence": {
+            "default": false,
+            "type": "boolean"
+          },
+          "limit": {
+            "default": 10,
+            "maximum": 25,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "max_matches": {
+            "default": 100,
+            "maximum": 200,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "minimum_confidence": {
+            "anyOf": [
+              {
+                "enum": [
+                  "low",
+                  "medium",
+                  "high",
+                  "exact"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "name": {
+            "type": "string"
+          },
+          "offset": {
+            "default": 0,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "selector": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
+      "name": "apply_measurement_skill",
+      "output_schema": null,
+      "read_only": true
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
+          "max_examples": {
+            "default": 5,
+            "maximum": 20,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "type": "object"
+      },
+      "name": "assess_model_quality",
+      "output_schema": null,
+      "read_only": true
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
+          "alias": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "path": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "type": "object"
+      },
+      "name": "attach",
+      "output_schema": null,
+      "read_only": false
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
+          "detail": {
+            "default": "compact",
+            "enum": [
+              "compact",
+              "full"
+            ],
+            "type": "string"
+          },
+          "global_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 50,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "max_elements": {
+            "default": 10,
+            "maximum": 50,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "pset_names": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 20,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "psets": {
+            "default": "core",
+            "enum": [
+              "core",
+              "present",
+              "all"
+            ],
+            "type": "string"
+          },
+          "selector": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "type": "object"
+      },
+      "name": "audit_element_properties",
+      "output_schema": null,
+      "read_only": true
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
+          "arguments": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "name": {
+            "maxLength": 80,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
+      "name": "call_tool",
+      "output_schema": null,
+      "read_only": false
+    },
+    {
+      "destructive": true,
+      "input_schema": {
+        "properties": {
+          "job_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "job_id"
+        ],
+        "type": "object"
+      },
+      "name": "cancel_job",
+      "output_schema": null,
+      "read_only": false
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
+          "checks": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 8,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "max_elements": {
+            "default": 5000,
+            "maximum": 20000,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "max_findings": {
+            "default": 20,
+            "maximum": 200,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "type": "object"
+      },
+      "name": "check_model_health",
+      "output_schema": null,
+      "read_only": true
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
+          "include_geometry": {
+            "default": true,
+            "type": "boolean"
+          },
+          "include_properties": {
+            "default": true,
+            "type": "boolean"
+          },
+          "max_changes": {
+            "default": 100,
+            "maximum": 1000,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "max_elements": {
+            "default": 5000,
+            "maximum": 20000,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "move_tolerance": {
+            "default": 0.01,
+            "maximum": 100.0,
+            "minimum": 0.0,
+            "type": "number"
+          },
+          "other_model": {
+            "type": "string"
+          },
+          "physical_only": {
+            "default": true,
+            "type": "boolean"
+          },
+          "selector": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "volume_tolerance": {
+            "default": 0.01,
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "type": "number"
+          }
+        },
+        "required": [
+          "other_model"
+        ],
+        "type": "object"
+      },
+      "name": "compare_models",
+      "output_schema": null,
+      "read_only": true
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
+          "aggregate_by": {
+            "default": "class",
+            "enum": [
+              "class",
+              "type",
+              "storey",
+              "material",
+              "none"
+            ],
+            "type": "string"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "quantities": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "selector": {
+            "type": "string"
+          },
+          "source": {
+            "default": "stored",
+            "enum": [
+              "stored",
+              "derived"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "selector"
+        ],
+        "type": "object"
+      },
+      "name": "compute_quantities",
+      "output_schema": null,
+      "read_only": true
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
+          "action": {
+            "enum": [
+              "context",
+              "set_view",
+              "set_camera",
+              "fit",
+              "set_projection",
+              "section",
+              "select",
+              "isolate",
+              "hide",
+              "show_all",
+              "focus",
+              "unfocus",
+              "measure_elements",
+              "measure_clearance",
+              "measure_points",
+              "clear_measurements",
+              "save_view",
+              "restore_view",
+              "list_views"
+            ],
+            "type": "string"
+          },
+          "camera": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "clear": {
+            "default": false,
+            "type": "boolean"
+          },
+          "guids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 500,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "model_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "name": {
+            "anyOf": [
+              {
+                "maxLength": 80,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "padding": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0,
+                "maximum": 100,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "points": {
+            "anyOf": [
+              {
+                "items": {
+                  "items": {
+                    "type": "number"
+                  },
+                  "type": "array"
+                },
+                "maxItems": 200,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "projection": {
+            "anyOf": [
+              {
+                "enum": [
+                  "perspective",
+                  "orthographic"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "section": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "selection": {
+            "default": false,
+            "type": "boolean"
+          },
+          "selector": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "slice_depth": {
+            "anyOf": [
+              {
+                "maximum": 1000,
+                "minimum": 0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "view": {
+            "anyOf": [
+              {
+                "enum": [
+                  "top",
+                  "bottom",
+                  "front",
+                  "back",
+                  "left",
+                  "right",
+                  "iso"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "type": "object"
+      },
+      "name": "control_viewer",
+      "output_schema": null,
+      "read_only": false
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {},
+        "type": "object"
+      },
+      "name": "describe_capabilities",
+      "output_schema": null,
+      "read_only": true
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
+          "id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
+      "name": "detach",
+      "output_schema": null,
+      "read_only": false
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
+          "max_elements": {
+            "default": 1000,
+            "maximum": 5000,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "max_results": {
+            "default": 200,
+            "maximum": 1000,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "mode": {
+            "default": "overlap",
+            "enum": [
+              "overlap",
+              "clearance"
+            ],
+            "type": "string"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "other_model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "physical_only": {
+            "default": true,
+            "type": "boolean"
+          },
+          "precision": {
+            "default": "sampled",
+            "enum": [
+              "sampled",
+              "fast",
+              "exact"
+            ],
+            "type": "string"
+          },
+          "set_a": {
+            "type": "string"
+          },
+          "set_b": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "tolerance": {
+            "default": 0.01,
+            "maximum": 10.0,
+            "minimum": 0.0,
+            "type": "number"
+          }
+        },
+        "required": [
+          "set_a"
+        ],
+        "type": "object"
+      },
+      "name": "detect_clashes",
+      "output_schema": null,
+      "read_only": true
+    },
+    {
+      "destructive": true,
+      "input_schema": {
+        "$defs": {
+          "SelectionContext": {
+            "additionalProperties": false,
+            "properties": {
+              "client_id": {
+                "anyOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "global_ids": {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 500,
+                "type": "array"
+              },
+              "model_id": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "model_id",
+              "client_id",
+              "global_ids"
+            ],
+            "title": "SelectionContext",
+            "type": "object"
+          },
+          "TargetContext": {
+            "additionalProperties": false,
+            "properties": {
+              "fingerprint": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "global_ids": {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 500,
+                "type": "array"
+              },
+              "model_id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "revision": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "selection": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/SelectionContext"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              }
+            },
+            "required": [
+              "model_id",
+              "fingerprint",
+              "revision"
+            ],
+            "title": "TargetContext",
+            "type": "object"
+          }
+        },
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "description": {
+            "default": "",
+            "maxLength": 200,
+            "type": "string"
+          },
+          "expected_context": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/TargetContext"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "code"
+        ],
+        "type": "object"
+      },
+      "name": "execute_ifc_code",
+      "output_schema": null,
+      "read_only": false
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
+          "fields": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "limit": {
+            "default": 10000,
+            "maximum": 100000,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "overwrite": {
+            "default": false,
+            "type": "boolean"
+          },
+          "path": {
+            "type": "string"
+          },
+          "properties": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 20,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "selector": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "selector",
+          "path"
+        ],
+        "type": "object"
+      },
+      "name": "export_csv",
+      "output_schema": null,
+      "read_only": false
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
+          "global_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 25,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "include_qtos": {
+            "default": true,
+            "type": "boolean"
+          },
+          "notes": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "overwrite": {
+            "default": false,
+            "type": "boolean"
+          },
+          "path": {
+            "type": "string"
+          },
+          "selector": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "stations": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "number"
+                },
+                "maxItems": 7,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "title": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "type": "object"
+      },
+      "name": "export_measurement_report",
+      "output_schema": null,
+      "read_only": false
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
+          "kinds": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "limit": {
+            "default": 30,
+            "maximum": 200,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "query": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "refresh": {
+            "default": false,
+            "type": "boolean"
+          }
+        },
+        "type": "object"
+      },
+      "name": "find_files",
+      "output_schema": null,
+      "read_only": true
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
+          "limit": {
+            "default": 6,
+            "maximum": 15,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "query": {
+            "maxLength": 300,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "type": "object"
+      },
+      "name": "find_tools",
+      "output_schema": null,
+      "read_only": true
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
+      "name": "get_agent_skill",
+      "output_schema": null,
+      "read_only": true
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
+          "function": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "search": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "type": "object"
+      },
+      "name": "get_api_docs",
+      "output_schema": null,
+      "read_only": true
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
+          "artifact_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "artifact_id"
+        ],
+        "type": "object"
+      },
+      "name": "get_artifact",
+      "output_schema": null,
+      "read_only": true
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
+          "change_set_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "change_set_id"
+        ],
+        "type": "object"
+      },
+      "name": "get_change_set",
+      "output_schema": null,
+      "read_only": true
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
+          "global_ids": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 50,
+            "minItems": 1,
+            "type": "array"
+          },
+          "include": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "global_ids"
+        ],
+        "type": "object"
+      },
+      "name": "get_element",
+      "output_schema": null,
+      "read_only": true
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
+          "global_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 500,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "max_elements": {
+            "default": 500,
+            "maximum": 2000,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "offset": {
+            "default": 0,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "physical_only": {
+            "default": true,
+            "type": "boolean"
+          },
+          "selector": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "type": "object"
+      },
+      "name": "get_element_geometry",
+      "output_schema": null,
+      "read_only": true
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "type": "object"
+      },
+      "name": "get_georeferencing",
+      "output_schema": null,
+      "read_only": true
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "type": "object"
+      },
+      "name": "get_ifc_project_info",
+      "output_schema": null,
+      "read_only": true
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
+          "job_id": {
+            "type": "string"
+          },
+          "wait_seconds": {
+            "default": 0,
+            "maximum": 3600,
+            "minimum": 0,
+            "type": "number"
+          }
+        },
+        "required": [
+          "job_id"
+        ],
+        "type": "object"
+      },
+      "name": "get_job",
+      "output_schema": null,
+      "read_only": true
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
+          "key": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "key"
+        ],
+        "type": "object"
+      },
+      "name": "get_knowledge_record",
+      "output_schema": null,
+      "read_only": true
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
+          "ifc_class": {
+            "type": "string"
+          },
+          "property_name": {
+            "type": "string"
+          },
+          "type_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "ifc_class",
+          "property_name"
+        ],
+        "type": "object"
+      },
+      "name": "get_measurement_recipe",
+      "output_schema": null,
+      "read_only": true
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
+          "format": {
+            "default": "jpeg",
+            "enum": [
+              "jpeg",
+              "png"
+            ],
+            "type": "string"
+          },
+          "max_size": {
+            "default": 1600,
+            "maximum": 2048,
+            "minimum": 256,
+            "type": "integer"
+          },
+          "page": {
+            "minimum": 1,
+            "type": "integer"
+          },
+          "path": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          },
+          "quality": {
+            "default": 88,
+            "maximum": 100,
+            "minimum": 40,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "path",
+          "page"
+        ],
+        "type": "object"
+      },
+      "name": "get_project_document_page",
+      "output_schema": null,
+      "read_only": true
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
+          "path": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "type": "object"
+      },
+      "name": "get_project_reference_image",
+      "output_schema": null,
+      "read_only": true
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
+          "global_ids": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 100,
+            "minItems": 1,
+            "type": "array"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "psets_only": {
+            "default": false,
+            "type": "boolean"
+          },
+          "qtos_only": {
+            "default": false,
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "global_ids"
+        ],
+        "type": "object"
+      },
+      "name": "get_psets",
+      "output_schema": null,
+      "read_only": true
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
+          "attribute": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "entity": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "property": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "pset": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "schema": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "type": "object"
+      },
+      "name": "get_schema_docs",
+      "output_schema": null,
+      "read_only": true
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {},
+        "type": "object"
+      },
+      "name": "get_session_status",
+      "output_schema": null,
+      "read_only": true
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
+          "depth": {
+            "default": 10,
+            "maximum": 20,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "include_element_counts": {
+            "default": true,
+            "type": "boolean"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "root_global_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "type": "object"
+      },
+      "name": "get_spatial_structure",
+      "output_schema": null,
+      "read_only": true
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {},
+        "type": "object"
+      },
+      "name": "get_viewer_measurements",
+      "output_schema": null,
+      "read_only": true
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
+          "fit": {
+            "anyOf": [
+              {
+                "enum": [
+                  "all",
+                  "selection",
+                  "highlighted"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "format": {
+            "default": "jpeg",
+            "enum": [
+              "jpeg",
+              "png"
+            ],
+            "type": "string"
+          },
+          "max_size": {
+            "default": 800,
+            "maximum": 2048,
+            "minimum": 64,
+            "type": "integer"
+          },
+          "model_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "quality": {
+            "default": 85,
+            "maximum": 100,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "view": {
+            "default": "current",
+            "enum": [
+              "top",
+              "bottom",
+              "front",
+              "back",
+              "left",
+              "right",
+              "iso",
+              "current"
+            ],
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "get_viewer_screenshot",
+      "output_schema": null,
+      "read_only": true
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {},
+        "type": "object"
+      },
+      "name": "get_viewer_selection",
+      "output_schema": null,
+      "read_only": true
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
+          "clear": {
+            "default": false,
+            "type": "boolean"
+          },
+          "color": {
+            "default": "#ff3b30",
+            "pattern": "^#[0-9a-fA-F]{6}$",
+            "type": "string"
+          },
+          "fit": {
+            "default": true,
+            "type": "boolean"
+          },
+          "global_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 500,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "isolate": {
+            "default": false,
+            "type": "boolean"
+          },
+          "model_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "type": "object"
+      },
+      "name": "highlight_elements",
+      "output_schema": null,
+      "read_only": false
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
+          "backend": {
+            "default": "auto",
+            "enum": [
+              "auto",
+              "builtin",
+              "trimesh"
+            ],
+            "type": "string"
+          },
+          "global_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 100,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "include_filtered_preview": {
+            "default": false,
+            "type": "boolean"
+          },
+          "max_elements": {
+            "default": 25,
+            "maximum": 100,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "max_triangles": {
+            "anyOf": [
+              {
+                "maximum": 1000000,
+                "minimum": 1,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "offset": {
+            "default": 0,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "physical_only": {
+            "default": true,
+            "type": "boolean"
+          },
+          "selector": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "tessellation": {
+            "default": "analysis",
+            "enum": [
+              "standard",
+              "analysis"
+            ],
+            "type": "string"
+          },
+          "tolerance": {
+            "default": 1e-09,
+            "exclusiveMinimum": 0.0,
+            "maximum": 0.01,
+            "type": "number"
+          }
+        },
+        "type": "object"
+      },
+      "name": "inspect_element_mesh",
+      "output_schema": null,
+      "read_only": true
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {},
+        "type": "object"
+      },
+      "name": "list_agent_skills",
+      "output_schema": null,
+      "read_only": true
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
+          "limit": {
+            "default": 200,
+            "maximum": 2000,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "type": "object"
+      },
+      "name": "list_ai_authored_properties",
+      "output_schema": null,
+      "read_only": true
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
+          "limit": {
+            "default": 50,
+            "maximum": 500,
+            "minimum": 1,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "name": "list_artifacts",
+      "output_schema": null,
+      "read_only": true
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
+          "dir": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "limit": {
+            "default": 100,
+            "maximum": 500,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "recursive": {
+            "default": false,
+            "type": "boolean"
+          }
+        },
+        "type": "object"
+      },
+      "name": "list_ifc_files",
+      "output_schema": null,
+      "read_only": true
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
+          "limit": {
+            "default": 50,
+            "maximum": 500,
+            "minimum": 1,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "name": "list_jobs",
+      "output_schema": null,
+      "read_only": true
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {},
+        "type": "object"
+      },
+      "name": "list_models",
+      "output_schema": null,
+      "read_only": true
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
+          "media": {
+            "anyOf": [
+              {
+                "enum": [
+                  "document",
+                  "image",
+                  "pdf",
+                  "markdown",
+                  "text"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "type": "object"
+      },
+      "name": "list_project_documents",
+      "output_schema": null,
+      "read_only": true
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
+          "fields": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "limit": {
+            "default": 10,
+            "maximum": 25,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "nearest": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "number"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "table": {
+            "maxLength": 300,
+            "minLength": 1,
+            "type": "string"
+          },
+          "where": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "table"
+        ],
+        "type": "object"
+      },
+      "name": "lookup_table_rows",
+      "output_schema": null,
+      "read_only": true
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
+          "direction": {
+            "items": {
+              "type": "number"
+            },
+            "maxItems": 3,
+            "minItems": 3,
+            "type": "array"
+          },
+          "frame": {
+            "default": "world",
+            "enum": [
+              "world",
+              "local",
+              "principal"
+            ],
+            "type": "string"
+          },
+          "global_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 100,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "max_elements": {
+            "default": 25,
+            "maximum": 100,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "max_triangles": {
+            "anyOf": [
+              {
+                "maximum": 1000000,
+                "minimum": 1,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "offset": {
+            "default": 0,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "physical_only": {
+            "default": true,
+            "type": "boolean"
+          },
+          "selector": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "tessellation": {
+            "default": "analysis",
+            "enum": [
+              "standard",
+              "analysis"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "direction"
+        ],
+        "type": "object"
+      },
+      "name": "measure_directional_extent",
+      "output_schema": null,
+      "read_only": true
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
+          "global_ids_a": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 200,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "global_ids_b": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 200,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "max_elements": {
+            "default": 200,
+            "maximum": 1000,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "physical_only": {
+            "default": true,
+            "type": "boolean"
+          },
+          "set_a": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "set_b": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "type": "object"
+      },
+      "name": "measure_distance",
+      "output_schema": null,
+      "read_only": true
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
+          "axis": {
+            "default": "local_y",
+            "enum": [
+              "local_x",
+              "local_y",
+              "local_z",
+              "world_x",
+              "world_y",
+              "world_z"
+            ],
+            "type": "string"
+          },
+          "exclude_layers": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 20,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "global_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 500,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "include_layers": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 20,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "max_elements": {
+            "default": 500,
+            "maximum": 2000,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "method": {
+            "enum": [
+              "stored_qto",
+              "layer_sum",
+              "geometry_extent"
+            ],
+            "type": "string"
+          },
+          "metric": {
+            "anyOf": [
+              {
+                "maxLength": 80,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "offset": {
+            "default": 0,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "physical_only": {
+            "default": true,
+            "type": "boolean"
+          },
+          "qto_set": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "quantity": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "selector": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "method"
+        ],
+        "type": "object"
+      },
+      "name": "measure_elements",
+      "output_schema": null,
+      "read_only": true
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
+          "backend": {
+            "default": "auto",
+            "enum": [
+              "auto",
+              "builtin",
+              "trimesh"
+            ],
+            "type": "string"
+          },
+          "direction": {
+            "items": {
+              "type": "number"
+            },
+            "maxItems": 3,
+            "minItems": 3,
+            "type": "array"
+          },
+          "frame": {
+            "default": "world",
+            "enum": [
+              "world",
+              "local",
+              "principal"
+            ],
+            "type": "string"
+          },
+          "global_id": {
+            "maxLength": 64,
+            "minLength": 1,
+            "type": "string"
+          },
+          "max_intersections": {
+            "default": 64,
+            "maximum": 128,
+            "minimum": 2,
+            "type": "integer"
+          },
+          "max_triangles": {
+            "anyOf": [
+              {
+                "maximum": 1000000,
+                "minimum": 1,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "origin": {
+            "items": {
+              "type": "number"
+            },
+            "maxItems": 3,
+            "minItems": 3,
+            "type": "array"
+          },
+          "tessellation": {
+            "default": "analysis",
+            "enum": [
+              "standard",
+              "analysis"
+            ],
+            "type": "string"
+          },
+          "tolerance": {
+            "default": 1e-06,
+            "exclusiveMinimum": 0.0,
+            "maximum": 0.01,
+            "type": "number"
+          }
+        },
+        "required": [
+          "global_id",
+          "origin",
+          "direction"
+        ],
+        "type": "object"
+      },
+      "name": "measure_local_thickness",
+      "output_schema": null,
+      "read_only": true
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
+          "path": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "type": "object"
+      },
+      "name": "open_ifc_file",
+      "output_schema": null,
+      "read_only": false
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
+          "open_browser": {
+            "default": true,
+            "type": "boolean"
+          },
+          "wait_for_connection_s": {
+            "default": 8.0,
+            "maximum": 30,
+            "minimum": 0,
+            "type": "number"
+          }
+        },
+        "type": "object"
+      },
+      "name": "open_viewer",
+      "output_schema": null,
+      "read_only": false
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {},
+        "type": "object"
+      },
+      "name": "orient",
+      "output_schema": null,
+      "read_only": true
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
+          "classification_name": {
+            "maxLength": 255,
+            "minLength": 1,
+            "type": "string"
+          },
+          "expected_revision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "global_ids": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 500,
+            "minItems": 1,
+            "type": "array"
+          },
+          "identification": {
+            "maxLength": 255,
+            "minLength": 1,
+            "type": "string"
+          },
+          "reference_name": {
+            "maxLength": 255,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "global_ids",
+          "classification_name",
+          "identification",
+          "reference_name"
+        ],
+        "type": "object"
+      },
+      "name": "preview_classification_assignment",
+      "output_schema": null,
+      "read_only": false
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
+      "name": "preview_measurement_skill_migration",
+      "output_schema": null,
+      "read_only": true
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
+          "create_missing": {
+            "default": false,
+            "type": "boolean"
+          },
+          "expected_revision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "global_ids": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 500,
+            "minItems": 1,
+            "type": "array"
+          },
+          "nominal_type": {
+            "anyOf": [
+              {
+                "maxLength": 255,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "property_name": {
+            "maxLength": 255,
+            "minLength": 1,
+            "type": "string"
+          },
+          "pset_name": {
+            "maxLength": 255,
+            "minLength": 1,
+            "type": "string"
+          },
+          "value": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "integer"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "global_ids",
+          "pset_name",
+          "property_name",
+          "value"
+        ],
+        "type": "object"
+      },
+      "name": "preview_property_change",
+      "output_schema": null,
+      "read_only": false
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "$defs": {
+          "PropertyPreview": {
+            "additionalProperties": false,
+            "properties": {
+              "create_missing": {
+                "default": false,
+                "type": "boolean"
+              },
+              "nominal_type": {
+                "anyOf": [
+                  {
+                    "maxLength": 255,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "property_name": {
+                "maxLength": 255,
+                "minLength": 1,
+                "type": "string"
+              },
+              "pset_name": {
+                "maxLength": 255,
+                "minLength": 1,
+                "type": "string"
+              },
+              "value": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "boolean"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "pset_name",
+              "property_name",
+              "value"
+            ],
+            "title": "PropertyPreview",
+            "type": "object"
+          }
+        },
+        "properties": {
+          "expected_revision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "global_ids": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 500,
+            "minItems": 1,
+            "type": "array"
+          },
+          "properties": {
+            "items": {
+              "$ref": "#/$defs/PropertyPreview"
+            },
+            "maxItems": 16,
+            "minItems": 1,
+            "type": "array"
+          }
+        },
+        "required": [
+          "global_ids",
+          "properties"
+        ],
+        "type": "object"
+      },
+      "name": "preview_property_changes",
+      "output_schema": null,
+      "read_only": false
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
+          "fields": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "limit": {
+            "default": 50,
+            "maximum": 500,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "offset": {
+            "default": 0,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "order_by": {
+            "default": "class",
+            "enum": [
+              "class",
+              "name",
+              "storey"
+            ],
+            "type": "string"
+          },
+          "properties": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 20,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "query": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "type": "object"
+      },
+      "name": "query_elements",
+      "output_schema": null,
+      "read_only": true
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
+          "box": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "number"
+                },
+                "maxItems": 6,
+                "minItems": 6,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "distance": {
+            "default": 1.0,
+            "maximum": 1000.0,
+            "minimum": 0.0,
+            "type": "number"
+          },
+          "max_elements": {
+            "default": 1000,
+            "maximum": 5000,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "max_results": {
+            "default": 100,
+            "maximum": 500,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "physical_only": {
+            "default": true,
+            "type": "boolean"
+          },
+          "relation": {
+            "enum": [
+              "inside",
+              "crosses",
+              "above",
+              "below",
+              "within_distance",
+              "within_box"
+            ],
+            "type": "string"
+          },
+          "selector": {
+            "default": "IfcElement",
+            "type": "string"
+          },
+          "target_global_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "tolerance": {
+            "default": 0.01,
+            "maximum": 10.0,
+            "minimum": 0.0,
+            "type": "number"
+          }
+        },
+        "required": [
+          "relation"
+        ],
+        "type": "object"
+      },
+      "name": "query_spatial",
+      "output_schema": null,
+      "read_only": true
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
+          "applies_to": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "content": {
+            "maxLength": 60000,
+            "type": "string"
+          },
+          "description": {
+            "maxLength": 200,
+            "type": "string"
+          },
+          "kind": {
+            "anyOf": [
+              {
+                "const": "parametric_measurement",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "name": {
+            "maxLength": 64,
+            "type": "string"
+          },
+          "overwrite": {
+            "default": false,
+            "type": "boolean"
+          },
+          "schema_version": {
+            "anyOf": [
+              {
+                "const": 2,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "name",
+          "description",
+          "content"
+        ],
+        "type": "object"
+      },
+      "name": "save_agent_skill",
+      "output_schema": null,
+      "read_only": false
+    },
+    {
+      "destructive": true,
+      "input_schema": {
+        "properties": {
+          "output_path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "overwrite": {
+            "default": false,
+            "type": "boolean"
+          }
+        },
+        "type": "object"
+      },
+      "name": "save_ifc_file",
+      "output_schema": null,
+      "read_only": false
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
+          "limit": {
+            "default": 50,
+            "maximum": 500,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "offset": {
+            "default": 0,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "term": {
+            "maxLength": 500,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "term"
+        ],
+        "type": "object"
+      },
+      "name": "search_elements",
+      "output_schema": null,
+      "read_only": true
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
+          "corpus": {
+            "default": "all",
+            "enum": [
+              "builtin",
+              "project",
+              "all"
+            ],
+            "type": "string"
+          },
+          "kind": {
+            "anyOf": [
+              {
+                "items": {
+                  "enum": [
+                    "entity",
+                    "pset",
+                    "property",
+                    "type",
+                    "api",
+                    "recipe",
+                    "doc",
+                    "row"
+                  ],
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "limit": {
+            "default": 10,
+            "maximum": 50,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "query": {
+            "type": "string"
+          },
+          "schema": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "type": "object"
+      },
+      "name": "search_ifc_knowledge",
+      "output_schema": null,
+      "read_only": true
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
+          "model_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "model_id"
+        ],
+        "type": "object"
+      },
+      "name": "set_active_model",
+      "output_schema": null,
+      "read_only": false
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "$defs": {
+          "PropertyChange": {
+            "additionalProperties": false,
+            "properties": {
+              "global_ids": {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 500,
+                "minItems": 1,
+                "type": "array"
+              },
+              "property": {
+                "maxLength": 120,
+                "minLength": 1,
+                "type": "string"
+              },
+              "pset": {
+                "maxLength": 120,
+                "minLength": 1,
+                "type": "string"
+              },
+              "type": {
+                "anyOf": [
+                  {
+                    "maxLength": 60,
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "value": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "boolean"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "global_ids",
+              "pset",
+              "property",
+              "value"
+            ],
+            "title": "PropertyChange",
+            "type": "object"
+          }
+        },
+        "properties": {
+          "changes": {
+            "items": {
+              "$ref": "#/$defs/PropertyChange"
+            },
+            "maxItems": 50,
+            "minItems": 1,
+            "type": "array"
+          },
+          "description": {
+            "default": "",
+            "maxLength": 200,
+            "type": "string"
+          },
+          "dry_run": {
+            "default": false,
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "changes"
+        ],
+        "type": "object"
+      },
+      "name": "set_properties",
+      "output_schema": null,
+      "read_only": false
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
+          "backend": {
+            "default": "auto",
+            "enum": [
+              "auto",
+              "builtin",
+              "trimesh"
+            ],
+            "type": "string"
+          },
+          "frame": {
+            "default": "world",
+            "enum": [
+              "world",
+              "local",
+              "principal"
+            ],
+            "type": "string"
+          },
+          "global_id": {
+            "maxLength": 64,
+            "minLength": 1,
+            "type": "string"
+          },
+          "include_outline": {
+            "default": true,
+            "type": "boolean"
+          },
+          "max_triangles": {
+            "anyOf": [
+              {
+                "maximum": 1000000,
+                "minimum": 1,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "normal": {
+            "items": {
+              "type": "number"
+            },
+            "maxItems": 3,
+            "minItems": 3,
+            "type": "array"
+          },
+          "origin": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "number"
+                },
+                "maxItems": 3,
+                "minItems": 3,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "outline_points": {
+            "default": 160,
+            "maximum": 256,
+            "minimum": 12,
+            "type": "integer"
+          },
+          "tessellation": {
+            "default": "analysis",
+            "enum": [
+              "standard",
+              "analysis"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "global_id",
+          "normal"
+        ],
+        "type": "object"
+      },
+      "name": "slice_element_mesh",
+      "output_schema": null,
+      "read_only": true
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
+          "expected_revision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "express_rules": {
+            "default": false,
+            "type": "boolean"
+          },
+          "ids_paths": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "max_issues": {
+            "default": 200,
+            "maximum": 2000,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "type": "object"
+      },
+      "name": "submit_validation_job",
+      "output_schema": null,
+      "read_only": false
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
+          "ids_path": {
+            "type": "string"
+          },
+          "max_failures": {
+            "default": 50,
+            "maximum": 500,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "ids_path"
+        ],
+        "type": "object"
+      },
+      "name": "validate_ids",
+      "output_schema": null,
+      "read_only": true
+    },
+    {
+      "destructive": false,
+      "input_schema": {
+        "properties": {
+          "express_rules": {
+            "default": false,
+            "type": "boolean"
+          },
+          "max_issues": {
+            "default": 200,
+            "maximum": 2000,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "type": "object"
+      },
+      "name": "validate_model",
+      "output_schema": null,
+      "read_only": true
+    }
+  ]
+}

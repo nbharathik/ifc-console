@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from ifc_console.core.results import dump, ok
+from ifc_console.core.results import dump_compact, ok
 
 
 def _rows(count: int) -> list[dict[str, str]]:
@@ -13,7 +13,8 @@ def _rows(count: int) -> list[dict[str, str]]:
 
 
 def _rendered(envelope) -> str:
-    return dump({"ok": True, "data": envelope.data, "meta": envelope.meta})
+    # the size ok() holds a result to is the size that goes on the wire
+    return dump_compact({"ok": True, "data": envelope.data, "meta": envelope.meta})
 
 
 def test_oversized_list_is_paged_not_stringified() -> None:
